@@ -53,6 +53,26 @@ def _run(args, cwd=None, timeout=600):
         return 1, "", str(e)
 
 
+# The identity Otto commits under when the MACHINE has none. `git commit` hard-fails with
+# "Author identity unknown" if neither user.name nor user.email resolves, and `_finalize` reads
+# that as `committed=False` — so repo mode goes quiet: no commit, no push, no PR, and the run
+# still reports a workspace it wrote nothing to. That is the default state of a fresh machine
+# and of every CI runner (measured: 6 workspace tests red on GitHub Actions, green on a laptop).
+_FALLBACK_AUTHOR = ("Otto", "otto@localhost")
+
+
+def _identity(path):
+    """`-c user.*` args for a commit, and ONLY when the clone can't resolve an identity itself.
+
+    Passing them unconditionally would be worse than the bug it fixes: every repo-mode PR would
+    be authored by "Otto" instead of the operator, on machines that were configured correctly.
+    So probe first (`git config` resolves local -> global -> system) and fill only a real gap."""
+    if all(_run(["git", "-C", path, "config", "--get", k])[1]
+           for k in ("user.name", "user.email")):
+        return []
+    return ["-c", f"user.name={_FALLBACK_AUTHOR[0]}", "-c", f"user.email={_FALLBACK_AUTHOR[1]}"]
+
+
 def _safe(run_id):
     return re.sub(r"[^0-9A-Za-z._-]+", "-", str(run_id or "run")).strip("-") or "run"
 
@@ -635,7 +655,8 @@ def _finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None
     committed = False
     if _dirty(path):
         _run(["git", "-C", path, "add", "-A"])
-        rc, _, _ = _run(["git", "-C", path, "commit", "-m", (title or "otto: automated change")[:100]])
+        rc, _, _ = _run(["git", "-C", path, *_identity(path), "commit",
+                         "-m", (title or "otto: automated change")[:100]])
         committed = rc == 0
     # Whether OTTO's own branch has anything to push — judged on that branch's tip, NOT on the
     # checked-out HEAD: a capability that drove its own git leaves the clone parked on ITS branch,

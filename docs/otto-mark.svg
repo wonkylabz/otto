@@ -1,8 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Otto">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="Otto">
   <title>Otto</title>
-  <!-- Gapped ring + arrowhead + solid centre: the attempt -> verify -> retry loop, and an "O".
-       Geometry is shared with the #mk symbol in web/index.html and docs/otto-icon.svg. -->
-  <path d="M19.42 9.3A7.9 7.9 0 1 1 14.18 4.41" fill="none" stroke="#AF5000" stroke-width="3" stroke-linecap="round"/>
-  <path d="M17.7 4.98 12.94 6.68 13.8 1.76Z" fill="#713600"/>
-  <circle cx="12" cy="12" r="3.2" fill="#713600"/>
+  <!-- Otto's face on the app tile. Geometry is byte-for-byte the `#mk` symbol in
+       web/index.html; the colours are that symbol's accent / on-accent / warn tokens
+       resolved at the DEFAULT theme, because a standalone file inherits no palette.
+       (No doubled hyphen anywhere in this comment: XML forbids it, and the file then
+       fails to parse and renders as a broken image with no error.) -->
+  <rect width="100" height="100" rx="26" fill="#AF5000"/>
+  <g fill="none" stroke="#FFF9EC" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 50 32 L 50 19"/>
+    <path d="M 28 42 C 28 37, 31 34, 36 34 L 64 34 C 69 34, 72 37, 72 42 L 72 68 C 72 73, 69 76, 64 76 L 36 76 C 31 76, 28 73, 28 68 Z"/>
+    <path d="M 28 50 C 24 49, 22 51, 22 55 C 22 59, 24 61, 28 60"/>
+    <path d="M 72 50 C 76 49, 78 51, 78 55 C 78 59, 76 61, 72 60"/>
+  </g>
+  <circle cx="50" cy="15" r="5" fill="#6B5600"/>
+  <rect x="39.5" y="45" width="7" height="20" rx="3.5" fill="#FFF9EC"/>
+  <rect x="53.5" y="45" width="7" height="20" rx="3.5" fill="#FFF9EC"/>
 </svg>

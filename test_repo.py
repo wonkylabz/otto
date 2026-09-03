@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import chats
 import claude_cli
 import config
@@ -878,6 +879,46 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(out["pushed"])
         self.assertIsNone(out["pr_url"])
         self.assertIn("PR not opened", out["detail"])
+
+    def test_finalize_commits_on_a_machine_with_no_git_identity(self):
+        """A fresh machine has no `user.name`/`user.email`, and neither does any CI runner.
+
+        `git commit` hard-fails there ("Author identity unknown"), `_finalize` reads a non-zero
+        rc as `committed=False`, and repo mode then goes SILENT: no commit, no push, no PR, and
+        a result that still names a workspace. Nothing raises. Found by running this suite on
+        GitHub Actions, where six workspace tests went red against a green laptop — the laptop
+        had a global identity and the runner did not. `_identity` fills the gap and only the gap.
+
+        The clone `provision` makes carries no local config, so stripping the env is enough to
+        reproduce: HOME redirected, both GIT_CONFIG_* pointed at an empty file."""
+        empty = os.path.join(tempfile.mkdtemp(prefix="otto-nogit-"), "none")
+        with mock.patch.dict(os.environ, {"HOME": os.path.dirname(empty),
+                                          "GIT_CONFIG_GLOBAL": empty,
+                                          "GIT_CONFIG_SYSTEM": empty}):
+            # UNSET, not empty-string: git reads `GIT_AUTHOR_NAME=""` as a set-but-blank
+            # identity and fails even where config would have answered — which would break
+            # the fixture's own setup commits and prove nothing about the clone.
+            for k in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                      "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"):
+                os.environ.pop(k, None)
+            # the guard itself must agree there is nothing for a fresh clone to inherit
+            self.assertTrue(self.ws._identity(os.path.dirname(empty)),
+                            "no identity should resolve here")
+            out = self._finalize_with_failing_pr_create(
+                'a pull request for branch "otto/wf-test-4" into branch "master" already '
+                "exists:\nhttps://github.com/o/r/pull/343",
+                pr_view_url="https://github.com/o/r/pull/343")
+        self.assertTrue(out["committed"], "the work was never committed: " + str(out["detail"]))
+        self.assertTrue(out["pushed"])
+
+    def test_finalize_does_not_stamp_otto_over_a_real_git_identity(self):
+        """The fallback must never displace a configured operator. `-c user.*` always WINS over
+        config, so passing it unconditionally would author every repo-mode PR as "Otto" on
+        exactly the machines that were set up correctly — a quieter regression than the bug."""
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = self._git_repo(tmp)                       # sets user.name/user.email locally
+        self.assertEqual(self.ws._identity(repo), [])
 
     def test_diff_flags_head_move_or_dirty_flip(self):
         # In-place edit detection (#59) — pure comparison of two snapshots.

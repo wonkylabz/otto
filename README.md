@@ -1,4 +1,4 @@
-<img src="docs/otto-icon.svg" width="64" align="right" alt="">
+<img src="docs/otto-mark.svg" width="72" align="right" alt="">
 
 # Otto
 
