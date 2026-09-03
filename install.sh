@@ -52,6 +52,16 @@ done
 log() { echo "==> $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Never run the whole installer as root: the venv, .env and data/ would end up
+# root-owned and unwritable by the service, and on macOS root has no GUI launchd
+# domain at all (`launchctl bootstrap gui/0` -> "Domain does not support specified
+# action"). The two optional fallbacks below escalate with sudo on their own.
+if [ "$(id -u)" = "0" ]; then
+  die "don't run this with sudo. Otto runs as you (\`claude -p\` uses your" \
+      "subscription and ~/.claude); the only steps that need root escalate on their" \
+      "own. Re-run as: ./install.sh"
+fi
+
 # --- 1. hard prerequisites -------------------------------------------------
 
 command -v python3 >/dev/null 2>&1 || die "python3 not found — install Python 3.9+ first."
@@ -264,3 +274,11 @@ EOF
 # Informational only — a fresh install legitimately has warnings (empty catalogue, no repos);
 # never fail the install over them.
 "$PY" doctor.py || true
+
+# The URL again, LAST — by the time the doctor has printed its findings the summary
+# above is several screens up, so the one thing the reader needs next is the one
+# thing that scrolled away.
+cat <<EOF
+
+==> Otto is at http://localhost:${PORT}
+EOF
