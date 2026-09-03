@@ -1,0 +1,29 @@
+# The suite is stdlib + temporalio, hits no network and spends no tokens, so CI is the whole
+# smoke test a PR needs. It deliberately does NOT install the `claude` CLI: if a test starts
+# needing it, that test has stopped being a unit test.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt
+      # Temporal tests self-skip without `temporalio`, so a missing install would go GREEN
+      # having tested nothing — the same trap as running the suite under a bare python3.
+      - run: python -c "import temporalio, sys; print('temporalio', temporalio.__file__)"
+      - run: python -m unittest

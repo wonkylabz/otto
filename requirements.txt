@@ -1,0 +1,6 @@
+# Pinned to a known-good release so a rebuilt venv / re-run installer can't
+# silently drift onto a breaking version (bites during recovery — see issue #134).
+# The SDK and the Temporal CLI (install.sh) use UNRELATED version schemes and are
+# bumped independently — never copy one's number onto the other. Bump this to the
+# version the suite actually passed against, and re-run the suite.
+temporalio==1.30.0

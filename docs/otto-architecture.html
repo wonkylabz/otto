@@ -1,0 +1,316 @@
+<title>Otto — orchestration layer</title>
+<style>
+  :root{
+    --ink:#1B2230; --ink-soft:#5A6478; --ink-faint:#8A93A6;
+    --paper:#EEF1F5; --surface:#FFFFFF; --border:#D5DBE5;
+    --core:#0F7B8A; --core-deep:#0A5A66; --core-tint:#E3F1F2; --core-line:#9FCBD2;
+    --ai:#3F9D6D; --ai-tint:#E7F3EC; --ai-line:#AFD7C2;
+    --human:#C5781F; --human-tint:#FAEEDB; --human-line:#E6C690;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    padding:40px 20px 64px;
+  }
+  .wrap{max-width:1120px; margin:0 auto}
+
+  /* ---- header ---- */
+  header{margin-bottom:32px}
+  .eyebrow{
+    font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--core-deep); font-weight:650; margin:0 0 14px;
+  }
+  .titlerow{display:flex; align-items:center; gap:18px; flex-wrap:wrap}
+  /* Otto's loop-O mark, in this doc's palette (the app's copy lives in web/index.html). */
+  .mark{width:39px; height:39px; flex:none; color:var(--core)}
+  h1{font-size:32px; line-height:1.1; letter-spacing:-.02em; margin:0; text-wrap:balance; font-weight:720}
+  .sub{margin:12px 0 0; font-size:16px; color:var(--ink-soft); max-width:62ch}
+
+  .legend{display:flex; gap:20px; flex-wrap:wrap; margin-top:22px; font-size:13px}
+  .legend span{display:inline-flex; align-items:center; gap:8px; color:var(--ink-soft)}
+  .swatch{width:13px; height:13px; border-radius:3px; flex:none}
+  .sw-core{background:var(--core)} .sw-ai{background:var(--ai)} .sw-human{background:var(--human)}
+
+  /* ---- generic section scaffolding ---- */
+  .band-label{
+    font-size:12px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--ink-faint); font-weight:650; margin:0 0 12px;
+  }
+  .flow{display:flex; flex-direction:column; align-items:center}
+  .chev{color:var(--core-line); font-size:20px; line-height:1; margin:10px 0}
+
+  /* ---- ingress ---- */
+  .ingress{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; width:100%}
+  .card{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:16px 18px;
+  }
+  .card h3{margin:0; font-size:15px; font-weight:650}
+  .card .tag{
+    display:inline-block; margin-top:8px; font-size:11px; font-family:var(--mono);
+    color:var(--ink-soft); background:var(--paper); border:1px solid var(--border);
+    padding:2px 7px; border-radius:20px;
+  }
+  .card p{margin:10px 0 0; font-size:13px; color:var(--ink-soft)}
+
+  /* ---- core band ---- */
+  .core{
+    width:100%; background:linear-gradient(180deg,#fff, var(--core-tint));
+    border:1.5px solid var(--core-line); border-radius:14px;
+    padding:22px; box-shadow:0 1px 0 rgba(15,123,138,.06), 0 14px 28px -22px rgba(10,90,102,.5);
+  }
+  .core-head{display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:18px}
+  .core-head h2{margin:0; font-size:18px; font-weight:700; color:var(--core-deep)}
+  .core-head .why{font-size:13px; color:var(--ink-soft)}
+  .pipe{display:grid; grid-template-columns:repeat(6,1fr); gap:0}
+  .step{position:relative; padding:0 14px; display:flex; flex-direction:column; gap:6px}
+  .step + .step{border-left:1px dashed var(--core-line)}
+  .step .n{font-family:var(--mono); font-size:11px; color:var(--core); font-weight:600}
+  .step h4{margin:0; font-size:14px; font-weight:650}
+  .step p{margin:0; font-size:12px; color:var(--ink-soft); line-height:1.45}
+  .step code{font-family:var(--mono); font-size:11px; background:#fff; border:1px solid var(--core-line); padding:1px 4px; border-radius:4px}
+  .gate-flag{
+    margin-top:6px; align-self:flex-start; font-size:11px; font-weight:600;
+    color:var(--human); background:var(--human-tint); border:1px solid var(--human-line);
+    padding:2px 8px; border-radius:20px; display:inline-flex; gap:5px; align-items:center;
+  }
+  .core-foot{
+    margin-top:18px; padding-top:14px; border-top:1px solid var(--core-line);
+    font-size:12.5px; color:var(--ink-soft); display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+  }
+  .core-foot strong{color:var(--core-deep); font-weight:650}
+
+  /* ---- capabilities ---- */
+  .plug-note{font-size:13px; color:var(--ink-soft); text-align:center; margin:0 0 20px; max-width:60ch}
+  .domains{display:grid; grid-template-columns:repeat(auto-fit,minmax(232px,1fr)); gap:14px; width:100%}
+  .domain{
+    background:var(--surface); border:1px solid var(--border); border-radius:11px;
+    padding:15px 16px 16px; display:flex; flex-direction:column; gap:11px;
+  }
+  .domain h3{margin:0; font-size:13.5px; font-weight:700; letter-spacing:-.01em}
+  .domain .stage{font-size:11px; color:var(--ink-faint); font-weight:500}
+  .tiles{display:flex; flex-wrap:wrap; gap:6px}
+  .tile{
+    font-family:var(--mono); font-size:11.5px; color:var(--ai); font-weight:550;
+    background:var(--ai-tint); border:1px solid var(--ai-line);
+    padding:3px 8px; border-radius:6px;
+  }
+
+  /* ---- external systems lane ---- */
+  .ext{
+    width:100%; margin-top:22px; background:var(--surface);
+    border:1px dashed var(--border); border-radius:11px; padding:15px 18px 17px;
+  }
+  .ext-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:12px}
+  .ext-head h3{margin:0; font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint); font-weight:650}
+  .ext-head span{font-size:12.5px; color:var(--ink-faint)}
+  .ext-tiles{display:flex; flex-wrap:wrap; gap:8px}
+  .ext-tile{
+    font-size:12.5px; color:var(--ink-soft); font-weight:550;
+    background:var(--paper); border:1px solid var(--border);
+    padding:4px 11px; border-radius:7px;
+  }
+
+  /* ---- footnote ---- */
+  .footnote{
+    margin-top:34px; background:var(--surface); border:1px solid var(--border);
+    border-left:3px solid var(--core); border-radius:10px; padding:18px 20px;
+  }
+  .footnote h3{margin:0 0 8px; font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--core-deep)}
+  .footnote p{margin:0; font-size:14px; color:var(--ink); max-width:78ch}
+  .footnote p + p{margin-top:8px; color:var(--ink-soft); font-size:13px}
+
+  @media (max-width:760px){
+    .pipe{grid-template-columns:repeat(2,1fr); gap:16px}
+    .step{padding:0}
+    .step + .step{border-left:none}
+    .ingress{grid-template-columns:1fr}
+    h1{font-size:26px}
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Architecture · revised from "Where are we going"</p>
+    <div class="titlerow">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M19.42 9.3A7.9 7.9 0 1 1 14.18 4.41" fill="none" stroke="currentColor"
+          stroke-width="3" stroke-linecap="round"/>
+        <path d="M17.7 4.98 12.94 6.68 13.8 1.76Z" fill="var(--core-deep)"/>
+        <circle cx="12" cy="12" r="3.2" fill="var(--core-deep)"/>
+      </svg>
+      <h1>Otto is the orchestration layer</h1>
+    </div>
+    <p class="sub">Not one agent sitting in the lifecycle — the platform every agent plugs into. One path takes any request in, routes it, gates the risky steps for a human, runs it, and records what happened.</p>
+    <div class="legend">
+      <span><i class="swatch sw-core"></i> Otto core — the path every request takes</span>
+      <span><i class="swatch sw-ai"></i> AI capability — a routed agent or skill</span>
+      <span><i class="swatch sw-human"></i> Human gate — approval on writes</span>
+    </div>
+  </header>
+
+  <section class="flow">
+    <p class="band-label" style="align-self:flex-start">How work arrives — three adapters, one workflow</p>
+    <div class="ingress">
+      <div class="card">
+        <h3>Web chat</h3>
+        <span class="tag">interactive</span>
+        <p>A person is watching, so Otto can clarify before it acts.</p>
+      </div>
+      <div class="card">
+        <h3>Schedules</h3>
+        <span class="tag">unattended · time</span>
+        <p>Cron via Temporal. No audience — skips clarify, writes only if the trigger pre-approves.</p>
+      </div>
+      <div class="card">
+        <h3>Events &amp; webhooks</h3>
+        <span class="tag">unattended · reactive</span>
+        <p>Signed inbound events map to a request, then deliver the result to a target.</p>
+      </div>
+    </div>
+
+    <div class="chev" aria-hidden="true">▼</div>
+
+    <div class="core">
+      <div class="core-head">
+        <h2>Otto — one path for every request</h2>
+        <span class="why">Adding a capability is a registry entry, not a new system.</span>
+      </div>
+      <div class="pipe">
+        <div class="step">
+          <span class="n">01</span>
+          <h4>Route</h4>
+          <p>Pick the most specific capability for the request.</p>
+        </div>
+        <div class="step">
+          <span class="n">02</span>
+          <h4>Clarify</h4>
+          <p>Ask a follow-up — only when someone's there to answer.</p>
+        </div>
+        <div class="step">
+          <span class="n">03</span>
+          <h4>Risk gate</h4>
+          <p>Reads run on their own. Writes stop here.</p>
+          <span class="gate-flag">✋ human approval</span>
+        </div>
+        <div class="step">
+          <span class="n">04</span>
+          <h4>Run</h4>
+          <p><code>claude -p</code> drives the real tools and subagents.</p>
+        </div>
+        <div class="step">
+          <span class="n">05</span>
+          <h4>Verify → retry</h4>
+          <p>Judge the result, fold critique back, escalate the model on the last try.</p>
+        </div>
+        <div class="step">
+          <span class="n">06</span>
+          <h4>Remember &amp; record</h4>
+          <p>Distil durable facts to memory; append the run to the audit log.</p>
+        </div>
+      </div>
+      <div class="core-foot">
+        <strong>Model gateway</strong>
+        <span>maps each phase — route · clarify · memory · verify · execution — to the cheapest capable model. Execution stays Claude.</span>
+      </div>
+    </div>
+
+    <div class="chev" aria-hidden="true">▼</div>
+
+    <p class="band-label" style="align-self:flex-start">Capabilities plug in as tiles</p>
+    <p class="plug-note">Agents that would otherwise sit side by side across the lifecycle become routed capabilities behind that single path. The lifecycle stages don't go away — they're how the tiles are grouped.</p>
+    <div class="domains">
+      <div class="domain">
+        <h3>Research</h3>
+        <span class="stage">Idea → validated direction</span>
+        <div class="tiles">
+          <span class="tile">deep-research</span>
+          <span class="tile">tech-investigation</span>
+          <span class="tile">empirical-investigation</span>
+        </div>
+      </div>
+      <div class="domain">
+        <h3>Feature gathering</h3>
+        <span class="stage">Requests → triaged work</span>
+        <div class="tiles">
+          <span class="tile">github-issue</span>
+          <span class="tile">product-manager</span>
+          <span class="tile">github-pr-review</span>
+        </div>
+      </div>
+      <div class="domain">
+        <h3>Planning</h3>
+        <span class="stage">Work → implementation plan</span>
+        <div class="tiles">
+          <span class="tile">design-doc</span>
+          <span class="tile">Plan</span>
+        </div>
+      </div>
+      <div class="domain">
+        <h3>Implementation</h3>
+        <span class="stage">Issue → PR → self-review</span>
+        <div class="tiles">
+          <span class="tile">implementer</span>
+          <span class="tile">code-review</span>
+        </div>
+      </div>
+      <div class="domain">
+        <h3>Build · test · deploy</h3>
+        <span class="stage">CI/CD pipeline</span>
+        <div class="tiles">
+          <span class="tile">ci-deploy</span>
+          <span class="tile">ci-build-status</span>
+          <span class="tile">deploy-status</span>
+        </div>
+      </div>
+      <div class="domain">
+        <h3>Ops &amp; monitoring</h3>
+        <span class="stage">Cloud &amp; cluster health</span>
+        <div class="tiles">
+          <span class="tile">incident</span>
+          <span class="tile">k8s-health</span>
+          <span class="tile">aws-health</span>
+          <span class="tile">incident-inspector</span>
+        </div>
+      </div>
+      <div class="domain">
+        <h3>Metrics &amp; reporting</h3>
+        <span class="stage">How the team &amp; platform perform</span>
+        <div class="tiles">
+          <span class="tile">daily-summary</span>
+          <span class="tile">board-status</span>
+          <span class="tile">work-checkin</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="chev" aria-hidden="true">▼</div>
+
+    <div class="ext">
+      <div class="ext-head">
+        <h3>External systems</h3>
+        <span>what Otto <em>calls</em> — not part of the platform. Capabilities reach these through <code style="font-family:var(--mono);font-size:11px">claude -p</code> tools and MCP servers.</span>
+      </div>
+      <div class="ext-tiles">
+        <span class="ext-tile">CI/CD</span>
+        <span class="ext-tile">AWS</span>
+        <span class="ext-tile">Kubernetes / EKS</span>
+        <span class="ext-tile">GitHub</span>
+        <span class="ext-tile">New Relic</span>
+        <span class="ext-tile">Grafana</span>
+        <span class="ext-tile">Slack</span>
+        <span class="ext-tile">PagerDuty</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="footnote">
+    <h3>About the tiles</h3>
+    <p>The capability tiles are an <em>example</em> landscape — one team's agents and skills, not what Otto ships. Otto discovers whatever lives in your own <code style="font-family:var(--mono);font-size:11px">~/.claude</code>; only the handful under <code style="font-family:var(--mono);font-size:11px">capabilities/</code> come with it.</p>
+    <p>The point of the drawing is that the agents aren't peers of Otto — they run <em>inside</em> it. Otto is the connective tissue: ingress, routing, the write-approval gate, the verify loop, and the memory + audit trail are shared by every capability. So the lifecycle is open-ended: a new agent is a tile dropped into the registry, and it inherits routing, gating, verification and audit for free.</p>
+  </div>
+</div>

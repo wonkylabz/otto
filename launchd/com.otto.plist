@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent for Otto — the launchd equivalent of systemd/otto.service.
+  A per-user AGENT (not a root LaunchDaemon): execution is `claude -p` against the
+  user's subscription + ~/.claude, so it must run AS THE USER, never root — the same
+  reason the Linux unit is a systemd user unit, not a system unit.
+
+  Rendered by launchd/install.sh (which substitutes __OTTO_DIR__ / __PATH__) into
+  ~/Library/LaunchAgents/com.otto.plist. It just wraps run.sh (one process that
+  brings up Temporal + worker + web server and traps SIGTERM to tear them down), so
+  it can't drift from the manual `./run.sh` path.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.otto</string>
+
+  <!-- run.sh cd's to its own dir, but set it explicitly so relative state (./data) is right. -->
+  <key>WorkingDirectory</key>
+  <string>__OTTO_DIR__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__OTTO_DIR__/run.sh</string>
+  </array>
+
+  <!--
+    `claude` lives in ~/.local/bin, which the launchd agent PATH does NOT include by
+    default (claude_cli / "claude -p" would ENOENT without it) — exactly the systemd
+    unit's PATH gotcha. This is install.sh's invoking-shell PATH, not a fixed list:
+    MCP servers shell out to npx/uvx/etc, which may only resolve via a version
+    manager's shims (asdf, nvm, ...). run launchd/install.sh from a normal login shell.
+  -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+
+  <!-- Start at login and keep it up. SuccessfulExit=false mirrors systemd's
+       Restart=on-failure: relaunch on a crash/non-zero exit, but stay down after a
+       clean `launchctl bootout` (which SIGTERMs run.sh -> exit 0). -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- launchd has no journald; send run.sh's stdout/stderr to a file under ./data
+       (gitignored runtime state). These files are the launchd equivalent of the
+       systemd unit's journal (tail data/service.log to follow it). -->
+  <key>StandardOutPath</key>
+  <string>__OTTO_DIR__/data/service.log</string>
+  <key>StandardErrorPath</key>
+  <string>__OTTO_DIR__/data/service.log</string>
+
+  <!-- Give run.sh's SIGTERM trap time to kill Temporal + worker + server before SIGKILL. -->
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

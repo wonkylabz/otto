@@ -1,0 +1,28 @@
+[Unit]
+Description=Otto — local agentic orchestrator (Temporal dev server + worker + web server)
+# Local-only stack; nothing here needs the network to be "online", but the
+# subprocesses (claude -p, model gateway) do reach out once requests arrive.
+After=default.target
+
+[Service]
+Type=simple
+# run.sh cd's to its own dir, but set it explicitly so relative state (./data) is right.
+WorkingDirectory=__OTTO_DIR__
+# run.sh: loads .env, brings up Temporal (skipped if 7233 is already serving),
+# the worker, then foregrounds the web server. It traps SIGTERM/INT and kills
+# the children it started — so a clean `systemctl --user stop` tears the stack down.
+ExecStart=__OTTO_DIR__/run.sh
+# `claude` lives in ~/.local/bin, which the systemd --user PATH does NOT include
+# by default (claude_cli.run_json/"claude -p" would ENOENT without it). This is
+# install.sh's invoking shell PATH, not a fixed list — MCP servers shell out to
+# npx/uvx/etc, which may only resolve via a version manager's shims (asdf, nvm, ...).
+Environment=PATH=__PATH__
+# SIGTERM the whole cgroup on stop so temporal + worker + server all go down even
+# if run.sh's own trap misses one.
+KillMode=control-group
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

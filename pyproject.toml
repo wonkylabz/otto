@@ -1,0 +1,30 @@
+# Metadata only. Otto is not a library — it is a service you clone and run (`./install.sh`,
+# then `./run.sh`), so there is no build backend and nothing here installs anything. This file
+# exists so tooling can read the licence, the Python floor and the one dependency without
+# parsing a shell script.
+[project]
+name = "otto-orchestrator"
+version = "0.1.0"
+description = "Local agentic orchestrator for your Claude Code subagents and skills, with routing, approval gates, verification and a durable Temporal run pipeline."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+keywords = ["claude", "claude-code", "agents", "orchestrator", "temporal", "llm"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Build Tools",
+]
+# The whole dependency list. Everything else Otto uses is stdlib; `claude`, `git` and the
+# Temporal CLI are external binaries, not packages (see README Prerequisites).
+dependencies = ["temporalio==1.30.0"]
+
+[project.urls]
+Homepage = "https://github.com/wonkylabz/otto"
+Issues = "https://github.com/wonkylabz/otto/issues"

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Otto">
+  <title>Otto</title>
+  <!-- App/favicon form: the mark on the cream tile so it holds on any browser theme.
+       Byte-for-byte the same geometry as the data-URI favicon in web/index.html. -->
+  <rect width="32" height="32" rx="7" fill="#FDFBD4"/>
+  <g transform="scale(1.3333)">
+    <path d="M19.42 9.3A7.9 7.9 0 1 1 14.18 4.41" fill="none" stroke="#AF5000" stroke-width="3" stroke-linecap="round"/>
+    <path d="M17.7 4.98 12.94 6.68 13.8 1.76Z" fill="#713600"/>
+    <circle cx="12" cy="12" r="3.2" fill="#713600"/>
+  </g>
+</svg>

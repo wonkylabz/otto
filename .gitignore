@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local environment — secrets (e.g. OTTO_EVENT_SECRET); never commit. See .env.example.
+.env
+.env.bak*
+
+# Otto runtime state — local, per-machine, sometimes sensitive (endpoints, request text).
+# Regenerated at runtime with sensible defaults, so safe to leave untracked.
+#
+# The directory entries below carry NO trailing slash on purpose. `data/memory/` matches only
+# something git can already see is a directory, so on a fresh clone — before the first run
+# creates it — the path is unignored and the store lands in `git status` (and, once, in a
+# commit). Slashless matches the path whether or not it exists yet, which is the whole window
+# this list has to cover. Guarded by test_core.DataDirIgnoredTests.
+data/*.json
+data/*.log
+data/audit.log.*
+data/audit-content.log.*
+data/*.db*
+data/*.lock
+data/memory
+data/transcripts
+data/.mcp-active.json
+data/tickets
+!data/.gitkeep
+data/local-sessions
+# Isolated repo clones (workspace.py). Each is a full checkout WITH its own .git, so an
+# in-flight repo-mode run otherwise surfaces as an untracked embedded repo in `git status`.
+data/workspaces
+# Managed clones of repos registered by URL (repos.py) — same reason as above: each carries its
+# own .git, and this one is long-lived rather than per-run.
+data/repos
+
+# Editor / agent per-machine config that is not part of the project.
+.claude/settings.local.json
+
+# Local scratch that is not part of the project: terminal scrollback, and a manual audit
+# export superseded by data/otto.db. Another repo cloned into this directory for convenience
+# is also scratch — ignore it by name here rather than committing it by accident.
+/error.log
+/external-audit.log
+# Brand assets with unverified provenance — do not ship until their licence is known.
+/Otto Mascot Design.zip

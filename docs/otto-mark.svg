@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Otto">
+  <title>Otto</title>
+  <!-- Gapped ring + arrowhead + solid centre: the attempt -> verify -> retry loop, and an "O".
+       Geometry is shared with the #mk symbol in web/index.html and docs/otto-icon.svg. -->
+  <path d="M19.42 9.3A7.9 7.9 0 1 1 14.18 4.41" fill="none" stroke="#AF5000" stroke-width="3" stroke-linecap="round"/>
+  <path d="M17.7 4.98 12.94 6.68 13.8 1.76Z" fill="#713600"/>
+  <circle cx="12" cy="12" r="3.2" fill="#713600"/>
+</svg>
