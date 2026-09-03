@@ -30,6 +30,15 @@ if [ "$(uname -s)" != "Darwin" ]; then
   echo "This installer is macOS-only. On Linux use systemd/install.sh." >&2
   exit 1
 fi
+# root has no GUI domain (`gui/0` doesn't exist), so every launchctl call below dies
+# with "Domain does not support specified action" — and the agent must run as the
+# user anyway, for ~/.claude. Refuse rather than half-install.
+if [ "$(id -u)" = "0" ]; then
+  echo "Do not run this with sudo — Otto is a per-user LaunchAgent (it runs \`claude -p\`" >&2
+  echo "against your subscription and ~/.claude). Re-run as yourself:" >&2
+  echo "  ./install.sh" >&2
+  exit 1
+fi
 if [ ! -x "$DIR/run.sh" ]; then
   echo "run.sh missing or not executable at $DIR/run.sh" >&2
   exit 1
@@ -43,12 +52,18 @@ mkdir -p "$AGENT_DIR" "$DIR/data"
 sed -e "s#__OTTO_DIR__#${DIR}#g" -e "s#__PATH__#${PATH_LINE}#g" \
   "$TEMPLATE" > "$PLIST"
 
-# Modern launchctl (macOS 10.11+): bootout any stale copy, then bootstrap + enable +
+# Modern launchctl (macOS 10.11+): bootout any stale copy, then enable + bootstrap +
 # kickstart so it's running now and set to start at login. bootout is best-effort
 # (errors if not currently loaded).
+#
+# `enable` comes BEFORE `bootstrap`, not after: a label disabled once (an explicit
+# `launchctl disable`, or a `bootout` on some macOS versions) is remembered in the
+# domain's disabled list forever, and bootstrapping a disabled label fails with the
+# unhelpful "Bootstrap failed: 5: Input/output error". `enable` is a domain-level
+# operation that works on a label that isn't loaded, so it clears that first.
 launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
-launchctl bootstrap "$DOMAIN" "$PLIST"
 launchctl enable "$DOMAIN/$LABEL"
+launchctl bootstrap "$DOMAIN" "$PLIST"
 launchctl kickstart -k "$DOMAIN/$LABEL"
 
 cat <<EOF
