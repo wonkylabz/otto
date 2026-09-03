@@ -5880,14 +5880,24 @@ class RealHeartbeatPlumbingTests(unittest.TestCase):
         def slow(payload: dict) -> str:
             # Blocks exactly the way a real `claude -p` turn does: no yields, no awaits, and
             # nothing inside it ever calls heartbeat itself.
+            #
+            # Blocks until the beats ARRIVE, not for a fixed window. The original slept 0.2s
+            # and demanded 3 beats at a 20ms interval, which is an assertion about how promptly
+            # the MACHINE schedules a starved helper thread — a loaded macOS runner delivered 2
+            # and failed a working implementation. The property under test is that a beat from
+            # this thread reaches the real Temporal API at all; the deadline only stops a truly
+            # dead heartbeat from hanging the suite.
             self.assertTrue(tact.in_activity())
-            time.sleep(0.2)
+            deadline = time.monotonic() + 10
+            while len(beats) < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
             return "done"
 
         self.assertEqual(env.run(slow, {}), "done")
         self.assertGreaterEqual(len(beats), 3,
-                                f"the real API received {len(beats)} beats in 0.2s at a 20ms "
-                                "interval — heartbeating is not actually reaching Temporal")
+                                f"the real API received {len(beats)} beats while a 20ms-interval "
+                                "activity blocked for up to 10s — heartbeating is not actually "
+                                "reaching Temporal")
         self.assertEqual(beats[0][0], "probe")            # labelled for the Temporal UI
         self.assertTrue(all(isinstance(b[1], int) for b in beats))   # elapsed seconds
 
