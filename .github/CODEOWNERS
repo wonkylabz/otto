@@ -1,0 +1,4 @@
+# Every change needs a review from the repo owner.
+# GitHub only ENFORCES this once a branch protection rule requires code-owner
+# review; without one it just auto-requests the review on every PR.
+*       @msosas
