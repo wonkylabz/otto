@@ -43,6 +43,30 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 
+async def _time_skipping_env(attempts=3):
+    """`WorkflowEnvironment.start_time_skipping()`, retried. Use this, never the raw call.
+
+    It boots a real ephemeral Temporal test server and gives up on a hard-coded 5s connect
+    timeout. That is generous on a laptop and tight on a cold CI runner, so roughly one job in
+    six died with "Failed connecting to test server after 5 seconds" — on a DIFFERENT test each
+    time, since any of the 51 call sites can be the unlucky one. A red suite that moves around
+    like that says nothing about the code and trains everyone to re-run instead of read it.
+
+    Retry the STARTUP, never the test body: a flaky server boot and a flaky assertion look
+    identical in a log, and only one of them is safe to paper over."""
+    import asyncio
+    last = None
+    for i in range(attempts):
+        try:
+            return await WorkflowEnvironment.start_time_skipping()
+        except RuntimeError as e:                # the Rust bridge raises a bare RuntimeError
+            if "test server" not in str(e):      # a real failure must not be retried into noise
+                raise
+            last = e
+            await asyncio.sleep(0.5 * (i + 1))
+    raise last
+
+
 # The execution BACKEND is now chosen from the models config (a local execution model routes
 # runs at local_runtime instead of claude -p), so tests must never read the developer's real
 # data/models.json — a live Admin pick would silently redirect every mocked run. Pin a
@@ -1775,7 +1799,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         from activities import (clarify_request, deliver_result, record_attempt, record_skip,
                                 route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="evtq", workflows=[OttoWorkflow],
@@ -1816,7 +1840,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         engine.clarify = lambda req, c: "Which environment?"
         engine.run_attempt = fake_run_attempt
         try:
-            async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with await _time_skipping_env() as env:
                 with ThreadPoolExecutor(max_workers=4) as ex:
                     async with Worker(
                         env.client, task_queue="clarq", workflows=[OttoWorkflow],
@@ -1853,7 +1877,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
                                 record_chat, record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="chatq", workflows=[OttoWorkflow],
@@ -1899,7 +1923,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("verify blew up")
         engine.verify = boom
         with self.assertRaises(Exception):
-            async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with await _time_skipping_env() as env:
                 with ThreadPoolExecutor(max_workers=4) as ex:
                     async with Worker(
                         env.client, task_queue="failq", workflows=[OttoWorkflow],
@@ -1930,7 +1954,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         from activities import (clarify_request, deliver_result, plan_capability, record_attempt,
                                 record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="askq", workflows=[OttoWorkflow],
@@ -1977,7 +2001,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
             pushes.append({"title": title, "lines": lines, "detail": detail, "wid": wid,
                            "tags": tags, "kind": kind, "priority": priority}) or True)
         try:
-            async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with await _time_skipping_env() as env:
                 with ThreadPoolExecutor(max_workers=4) as ex:
                     async with Worker(
                         env.client, task_queue="ntfq", workflows=[OttoWorkflow],
@@ -2049,7 +2073,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
             priority="high", kind=None, wid=None, actions=None: (
             pushes.append({"title": title, "kind": kind}) or True)
         try:
-            async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with await _time_skipping_env() as env:
                 with ThreadPoolExecutor(max_workers=4) as ex:
                     async with Worker(
                         env.client, task_queue="intq", workflows=[OttoWorkflow],
@@ -2384,7 +2408,7 @@ class ExecRetryPolicyTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="retq", workflows=[OttoWorkflow],
@@ -2456,7 +2480,7 @@ class WorkflowHarnessDeathTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings,
                                 run_capability, resolve_pr_target,
             check_grounding, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="hdq", workflows=[OttoWorkflow],
@@ -2542,7 +2566,7 @@ class WorkflowSignalTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding,
                                 snapshot_repos, suggest_repo, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="itq", workflows=[OttoWorkflow],
@@ -2623,7 +2647,7 @@ class ResumeWriteGateTests(unittest.IsolatedAsyncioTestCase):
                                 record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, verify_capability)
         self.intent["write"] = write_intent
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="rq", workflows=[OttoWorkflow],
@@ -2735,7 +2759,7 @@ class DiscussionTurnTests(unittest.IsolatedAsyncioTestCase):
             check_grounding,
                                 verify_capability)
         self.intent["write"] = write_intent
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="dq", workflows=[OttoWorkflow],
@@ -2863,7 +2887,7 @@ class UnattendedResumeDeliveryTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_chat, run_capability, resolve_pr_target,
             check_grounding, snapshot_settings)
         reply_to = {"kind": "slack_thread", "channel": "C7", "thread_ts": "100.0"}
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="rq", workflows=[OttoWorkflow],
@@ -2905,7 +2929,7 @@ class UnattendedResumeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. restart it", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
         engine.record_skip = lambda request, c, reason="DENIED", **kw: None
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="rq", workflows=[OttoWorkflow],
@@ -2998,7 +3022,7 @@ class PreAuthorizedGateTests(unittest.IsolatedAsyncioTestCase):
                                 route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, snapshot_repos,
                                 suggest_repo, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="paq", workflows=[OttoWorkflow],
@@ -3096,7 +3120,7 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
             check_grounding, snapshot_repos, suggest_repo,
                                 verify_capability)
         self.intent["write"] = write_intent
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="frq", workflows=[OttoWorkflow],
@@ -3244,7 +3268,7 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_revision_feedback_folds_into_a_new_plan_and_the_final_request(self):
         from workflows import OttoWorkflow
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             async for h in self._start(env, "prq1"):
                 st = await self._await_status(
                     h, lambda st: st["awaiting_approval"], "never reached awaiting_approval")
@@ -3285,7 +3309,7 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
             return {"plan": f"1. plan version {n}", "cost": 0, "tokens": None}
 
         engine.plan_preview = blocking_preview
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             async for h in self._start(env, "prq4"):
                 st = await self._await_status(
                     h, lambda st: st["awaiting_approval"], "never reached awaiting_approval")
@@ -3313,7 +3337,7 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_declining_after_a_revision_still_skips_cleanly(self):
         from workflows import OttoWorkflow
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             async for h in self._start(env, "prq2"):
                 await self._await_status(
                     h, lambda st: st["awaiting_approval"], "never reached awaiting_approval")
@@ -3330,7 +3354,7 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
         from workflows import OttoWorkflow
         os.environ["OTTO_MAX_PLAN_REVISIONS"] = "1"
         self.addCleanup(os.environ.pop, "OTTO_MAX_PLAN_REVISIONS", None)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             async for h in self._start(env, "prq3"):
                 await self._await_status(
                     h, lambda st: st["awaiting_approval"], "never reached awaiting_approval")
@@ -3402,7 +3426,7 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="swq", workflows=[OttoWorkflow],
@@ -3434,7 +3458,7 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
                                 notify_human, plan_swarm, record_attempt, record_chat, record_skip,
                                 route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="swaq", workflows=[OttoWorkflow],
@@ -3463,7 +3487,7 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
             check_grounding,
                                 verify_capability)
         engine.decompose = lambda request, caps, project_root=None: []      # one cohesive task
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="sw1q", workflows=[OttoWorkflow],
@@ -3533,7 +3557,7 @@ class WorkflowPlanModeTests(unittest.IsolatedAsyncioTestCase):
             check_grounding, verify_capability)
         engine.plan_steps = lambda request, cap, force_claude=True: steps
         engine.run_plan = lambda request, cap, steps, **k: plan_result
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="pmq", workflows=[OttoWorkflow],
@@ -3592,7 +3616,7 @@ class WorkflowPlanModeTests(unittest.IsolatedAsyncioTestCase):
         engine.run_plan = lambda *a, **k: {"result": "PLAN", "passed": True, "cost": 0,
                                            "tokens": {"output": 0}, "steps_run": 1, "replans": 0,
                                            "budget_stop": False}
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="pmoffq", workflows=[OttoWorkflow],
@@ -3650,7 +3674,7 @@ class WorkflowRunbookTests(unittest.IsolatedAsyncioTestCase):
                                 plan_swarm, plan_task_steps, record_attempt, record_skip,
                                 route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="rbq", workflows=[OttoWorkflow],
@@ -3779,7 +3803,7 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
                                 provision_workspace, resolve_pr_target,
             check_grounding, record_attempt, record_skip,
                                 route_request, snapshot_settings, run_capability, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="repoq", workflows=[OttoWorkflow],
@@ -3836,7 +3860,7 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
                                 route_request, snapshot_settings, run_capability, verify_capability)
         engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {
             "passed": False, "critique": "not convinced"}
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="repofailq", workflows=[OttoWorkflow],
@@ -3875,7 +3899,7 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
                                 provision_workspace, resolve_pr_target,
             check_grounding, record_attempt, record_skip,
                                 route_request, snapshot_settings, run_capability, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="hintq", workflows=[OttoWorkflow],
@@ -3976,7 +4000,7 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
             check_grounding,
                                 recover_pr_branch, record_attempt, record_skip, run_capability,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="rrq", workflows=[OttoWorkflow],
@@ -4032,7 +4056,7 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
             check_grounding,
                                 recover_pr_branch, record_attempt, record_skip, run_capability,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="rrq2", workflows=[OttoWorkflow],
@@ -4077,7 +4101,7 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
                                 verify_capability)
         engine.pr_url_from_run = lambda wid: "https://github.com/o/myrepo/pull/39"
         self.recovered["branch"] = "38"                   # gh resolves the PR to agent branch `38`
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="rrq4", workflows=[OttoWorkflow],
@@ -4136,7 +4160,7 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
                     "origin": "", "head": "h0"}
         self.workspace.provision = branchless_provision
 
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="rrq4", workflows=[OttoWorkflow],
@@ -4191,7 +4215,7 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
             raise ValueError("fetch of existing branch failed: not found")
         self.workspace.provision = failing_provision
 
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="rrq5", workflows=[OttoWorkflow],
@@ -4238,7 +4262,7 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
             raise ValueError("fetch of existing branch otto/web-orig1 failed: branch not found")
         self.workspace.provision = failing_provision
 
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="rrq3", workflows=[OttoWorkflow],
@@ -4330,7 +4354,7 @@ class WorkflowInteractiveRepoDetectTests(unittest.IsolatedAsyncioTestCase):
                                 provision_workspace, resolve_pr_target,
             check_grounding, record_attempt, record_skip, route_request, snapshot_settings,
                                 run_capability, suggest_repo, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="detq", workflows=[OttoWorkflow],
@@ -4449,7 +4473,7 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
             check_grounding, qa_capability,
                                 record_attempt,
                                 record_skip, route_request, snapshot_settings, run_capability, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="qaq", workflows=[OttoWorkflow],
@@ -4586,7 +4610,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
             check_grounding, record_attempt,
                                 record_skip,
                                 review_capability, route_request, snapshot_settings, run_capability, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq", workflows=[OttoWorkflow],
@@ -4651,7 +4675,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                                 record_skip, review_capability, route_request, snapshot_settings,
                                 run_capability, verify_capability)
         self.provision_raises = True
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq2", workflows=[OttoWorkflow],
@@ -4699,7 +4723,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                                 run_capability, verify_capability)
         import config
         self.fix_errors = True
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq3", workflows=[OttoWorkflow],
@@ -4758,7 +4782,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                                 record_skip, review_capability, route_request, snapshot_settings,
                                 run_capability, verify_capability)
         import config
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq4", workflows=[OttoWorkflow],
@@ -4840,7 +4864,7 @@ class WorkflowInPlaceGuardTests(unittest.IsolatedAsyncioTestCase):
                                 plan_swarm, record_attempt, record_skip, route_request, snapshot_settings,
                                 run_capability, resolve_pr_target,
             check_grounding, snapshot_repos, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="ipq", workflows=[OttoWorkflow],
@@ -4874,7 +4898,7 @@ class ActivityFailFastTests(unittest.IsolatedAsyncioTestCase):
         # Worker is MISSING plan_swarm (the first activity a fresh request now calls) and
         # route_request. With no retry policy an unregistered activity loops forever (the
         # time-skipping env would hang); the guard makes it fail on the first attempt instead.
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="ffq", workflows=[OttoWorkflow],
@@ -5130,7 +5154,7 @@ class WorkflowNeedsHumanTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="nhq", workflows=[OttoWorkflow],
@@ -5246,7 +5270,7 @@ class WorkflowFailureDetailTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings,
                                 run_capability, resolve_pr_target,
             check_grounding, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="detailq", workflows=[OttoWorkflow],
@@ -5332,7 +5356,7 @@ class WorkflowStrictLocalTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="strictq", workflows=[OttoWorkflow],
@@ -5417,7 +5441,7 @@ class WorkflowClaudeAuthWallTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings,
                                 run_capability, resolve_pr_target,
             check_grounding, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="authq", workflows=[OttoWorkflow],
@@ -5515,7 +5539,7 @@ class WorkflowBudgetTests(unittest.IsolatedAsyncioTestCase):
                                 record_attempt, record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding,
                                 verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="bdq", workflows=[OttoWorkflow],
@@ -5992,7 +6016,7 @@ class GateDeadlineAndDenialIdentityTests(unittest.IsolatedAsyncioTestCase):
                                 record_skip, route_request, run_capability, resolve_pr_target,
             check_grounding, snapshot_repos,
                                 snapshot_settings, suggest_repo, verify_capability)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="gtq", workflows=[OttoWorkflow],
@@ -6072,7 +6096,7 @@ class GateDeadlineAndDenialIdentityTests(unittest.IsolatedAsyncioTestCase):
         os.environ["OTTO_GATE_TIMEOUT_H"] = "0"
         try:
             self.assertEqual(config.setting("gate_timeout_h"), 0.0)
-            async with await WorkflowEnvironment.start_time_skipping() as env:
+            async with await _time_skipping_env() as env:
                 with ThreadPoolExecutor(max_workers=4) as ex:
                     async with Worker(
                         env.client, task_queue="gtq0", workflows=[OttoWorkflow],
@@ -6159,7 +6183,7 @@ class BrainstormRunTests(unittest.IsolatedAsyncioTestCase):
         from activities import (check_grounding, deliver_result, detect_repo_changes, estop_check,
                                 notify_human, record_attempt, record_chat, resolve_pr_target,
                                 run_capability, snapshot_repos, snapshot_settings)
-        async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(
                     env.client, task_queue="bsq", workflows=[OttoWorkflow],
