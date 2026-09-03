@@ -26,6 +26,11 @@ import workspace
 _caps = None
 
 
+# Ceiling on waiting for an in-flight beat at teardown. Short: the only thing being waited on
+# is one `activity.heartbeat` call, and the thread is a daemon, so overrunning it is safe.
+_BEAT_JOIN_S = 5
+
+
 @contextlib.contextmanager
 def _heartbeating(what, every_s=None):
     """Beat on a timer for as long as a long BLOCKING activity runs.
@@ -65,7 +70,14 @@ def _heartbeating(what, every_s=None):
     try:
         yield
     finally:
+        # JOIN, don't just signal. `stop.set()` alone leaves a beat that is already inside
+        # `activity.heartbeat` free to land AFTER the activity returned — a heartbeat for a
+        # slot doing nothing, and on a slow machine it is the common case, not the race
+        # (measured: a macOS CI runner produced one every time). The join is bounded by the
+        # one in-flight call, and the thread stays daemon so a wedged beat can never hold a
+        # worker shutdown open.
         stop.set()
+        t.join(timeout=_BEAT_JOIN_S)
 
 
 def _heartbeats(what, every_s=None):

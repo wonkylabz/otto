@@ -2852,7 +2852,10 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         self.assertTrue(all(b[0] == "in-activity" for b in beats),
                         "a beat ran outside the activity context — contextvars were not copied")
         self.assertEqual(beats[0][1][0], "run")               # labelled, so the UI names it
-        # And it STOPS: a beat outliving its activity heartbeats a slot that is doing nothing.
+        # And it STOPS DEAD at the boundary: a beat outliving its activity heartbeats a slot
+        # that is doing nothing. `stop.set()` alone does not give this — a beat already inside
+        # `activity.heartbeat` still lands, which a macOS CI runner hit every run — so the
+        # context manager joins the thread and the count is frozen the instant it returns.
         n = len(beats)
         time.sleep(0.08)
         self.assertEqual(len(beats), n, "the beat thread outlived the context manager")
