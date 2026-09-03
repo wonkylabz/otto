@@ -2799,6 +2799,20 @@ class WorkflowComplexityTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "the heartbeat seam lives on the Temporal layer")
+def _until(pred, timeout=10, tick=0.01):
+    """Block until `pred()` holds, or the deadline. Returns the final verdict.
+
+    A heartbeat test must wait for BEATS, never for a wall-clock window. A fixed sleep turns
+    "does this beat?" into "does this machine schedule a starved helper thread promptly?", and
+    a loaded CI runner answers no: macOS delivered 4 beats where a 0.15s sleep at a 0.01s
+    interval expects 15, failing a working implementation. The deadline exists only so a
+    genuinely dead heartbeat fails in seconds instead of hanging the suite."""
+    end = time.monotonic() + timeout
+    while not pred() and time.monotonic() < end:
+        time.sleep(tick)
+    return pred()
+
+
 class ExecutionHeartbeatTests(unittest.TestCase):
     """Long execution activities beat on a timer so Temporal learns a WORKER died within
     `_HEARTBEAT` instead of at `start_to_close_timeout`. That is the whole reason the ceiling
@@ -2831,10 +2845,10 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         try:
             marker.set("in-activity")
             with activities._heartbeating("run", every_s=0.01):
-                time.sleep(0.15)
+                _until(lambda: len(beats) >= 3)
         finally:
             pass
-        self.assertGreaterEqual(len(beats), 3, f"the work blocked 0.15s at a 0.01s beat: {beats}")
+        self.assertGreaterEqual(len(beats), 3, f"a 0.01s beat produced none in 10s: {beats}")
         self.assertTrue(all(b[0] == "in-activity" for b in beats),
                         "a beat ran outside the activity context — contextvars were not copied")
         self.assertEqual(beats[0][1][0], "run")               # labelled, so the UI names it
@@ -2859,7 +2873,7 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         self.addCleanup(lambda: setattr(tact, "heartbeat", real_hb))
         self.addCleanup(lambda: setattr(tact, "in_activity", real_in))
         with activities._heartbeating("run", every_s=0.01):
-            time.sleep(0.15)
+            _until(lambda: len(calls) > 4)
         self.assertGreater(len(calls), 4, f"beating stopped after the failures: {len(calls)}")
 
     def test_heartbeating_outside_an_activity_is_a_no_op(self):
