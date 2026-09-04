@@ -4611,7 +4611,12 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # local model everywhere an operator looks, so the degradation was invisible for as long as
     # it ran (user-observed: qwen ticked on PLAN, every plan written by sonnet). A silent
     # substitution is the one class of bug no amount of reading the call site catches.
-    MAX_RULES_BYTES = 63455   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 63960 for the Slack-context date rule and the run-note audience rule: WHEN a context
+    # message was sent is not in the payload the model sees, so undated history is indistinguishable
+    # from now and a summary of it is a fabrication no judge can catch; and a note appended AFTER
+    # the model wrote its reply is downstream of every output contract, so the only thing that can
+    # keep it out of a colleague's DM is the audience split at the delivery seam.
+    MAX_RULES_BYTES = 63960   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

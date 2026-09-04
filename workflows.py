@@ -698,9 +698,16 @@ class OttoWorkflow:
                              "unattended": unattended},
                             start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                         if reply_to:
+                            # A person waiting in Slack gets a person's answer: the banner names
+                            # an approval window they never saw (see `_shape_result`).
+                            said = msg
+                            if self._audience == contracts.CONVERSATION_AUDIENCE:
+                                said = (f"Sorry — I couldn't get this cleared in time, so I "
+                                        f"haven't done anything. {config.OWNER_NAME} will need "
+                                        f"to pick it up.")
                             await workflow.execute_activity(
                                 deliver_result,
-                                {"reply_to": reply_to, "result": msg, "cap": cap,
+                                {"reply_to": reply_to, "result": said, "cap": cap,
                                  "run_id": workflow.info().workflow_id, "session_id": None},
                                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                     await self._record_chat(params, request, msg, resume, cap)
@@ -1233,6 +1240,9 @@ class OttoWorkflow:
         self._leave("RUN")
 
         result = out["result"]
+        # Notes ABOUT THE RUN, in Otto's own vocabulary — for the operator's record only, see
+        # `_shape_result`. Anything the READER needs (a PR url) goes in `result`, not here.
+        notes = []
         # Whether automated verification passed. The verify_exhausted needs-human decision is
         # DEFERRED to after the repo finalize below: a repo-mode run's deliverable is a DRAFT PR
         # that by design awaits human review on GitHub, so a failed verify there is advisory (the
@@ -1261,7 +1271,7 @@ class OttoWorkflow:
         if pr and pr.get("pr_url") and params.get("review", True):
             self._enter("REVIEW")
             review = await self._run_review_loop(request, cap, repo, pr["pr_url"])
-            result += self._review_summary(review)
+            notes.append(self._review_summary(review))
             self._leave("REVIEW")
             # A review that didn't come back clean needs a human (PR stays draft).
             if review.get("state") in ("fail", "inconclusive"):
@@ -1275,7 +1285,7 @@ class OttoWorkflow:
         if params.get("qa") and pr and pr.get("pr_url") and not self._needs_human:
             self._enter("QA")
             qa = await self._run_qa_loop(request, cap, repo, pr["pr_url"])
-            result += self._qa_summary(qa)
+            notes.append(self._qa_summary(qa))
             self._leave("QA")
             # QA that didn't cleanly pass needs a human (PR stays draft) — same Blocked routing.
             if qa.get("state") in ("fail", "inconclusive"):
@@ -1297,8 +1307,8 @@ class OttoWorkflow:
         # unguarded, the mode's first reply lands in needs-human and the chat renders Blocked.
         if verdict is not None and not passed and not self._needs_human:
             if pr_opened:
-                result += ("\n\n_⚠️ Automated verification didn't pass — the draft PR is open for "
-                           "your review; check it carefully before merging._")
+                notes.append("\n\n_⚠️ Automated verification didn't pass — the draft PR is open for "
+                             "your review; check it carefully before merging._")
             else:
                 self._needs_human = {"reason": ("harness_exhausted" if self._harness_stop
                                                 else "verify_exhausted")}
@@ -1314,29 +1324,26 @@ class OttoWorkflow:
             in_place = det.get("changed") or None
             if in_place:
                 names = ", ".join(c["name"] for c in in_place)
-                result += (f"\n\n⚠️ _Edited live checkout(s) outside an isolated workspace: "
-                           f"**{names}**. Pick the repo in the composer to run in a clone + PR instead._")
+                notes.append(f"\n\n⚠️ _Edited live checkout(s) outside an isolated workspace: "
+                             f"**{names}**. Pick the repo in the composer to run in a clone + PR instead._")
 
         # A WORKER run without repo-mode cannot deliver: the worker never runs git itself
         # (repo-mode owns commit/branch/PR), so its edits are stranded UNCOMMITTED in whatever
         # cwd it ran in and "the change is ready" reads as success. Say so explicitly and name
         # the fix — auto-engage can only match repos REGISTERED on this machine.
         if cap["name"] == config.WORKER_CAP and not ws:
-            result += ("\n\n⚠️ _No isolated workspace was engaged, so nothing was committed and "
-                       "no PR could be opened (the worker never runs git itself). Register the "
-                       "target repo under Admin → Project repos — auto-detect only matches "
-                       "registered repos — or pick it in the composer, then retry._")
+            notes.append("\n\n⚠️ _No isolated workspace was engaged, so nothing was committed and "
+                         "no PR could be opened (the worker never runs git itself). Register the "
+                         "target repo under Admin → Project repos — auto-detect only matches "
+                         "registered repos — or pick it in the composer, then retry._")
 
-        # If the run needs a human, prepend an unmistakable banner to whatever we deliver, then
-        # finalize it exactly like every other terminal state. This path used to only push a
-        # notification, so verify_exhausted / qa_* / review_* / budget_exceeded left NO durable
-        # audit row — /api/needs-you saw them solely through live Temporal visibility, and the
-        # trail showed nothing but failed attempts once history aged out. Finalizing here also
-        # keeps ONE notifier per terminal state (the finalizer's) instead of two that can drift.
+        # A needs-human run finalizes exactly like every other terminal state (the banner itself
+        # is `_shape_result`'s). This path used to only push a notification, so verify_exhausted /
+        # qa_* / review_* / budget_exceeded left NO durable audit row — /api/needs-you saw them
+        # solely through live Temporal visibility, and the trail showed nothing but failed
+        # attempts once history aged out. ONE notifier per terminal state (the finalizer's).
         if self._needs_human:
             self._terminal = dict(self._needs_human)
-            result = _NEEDS_HUMAN_BANNER.get(
-                self._needs_human["reason"], "⚠️ **Needs human review.**") + "\n\n" + result
             await workflow.execute_activity(
                 finalize_terminal,
                 {"wid": wid, "request": request, "cap": cap,
@@ -1344,6 +1351,7 @@ class OttoWorkflow:
                  "unattended": unattended},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
 
+        reply, result = self._shape_result(result, notes)
         # Deliver the result to its reply target (unattended runs have no on-screen audience).
         if reply_to:
             # Card destination: Blocked when it needs a human; else Review when a draft PR is
@@ -1353,7 +1361,7 @@ class OttoWorkflow:
                 reply_to = {**reply_to, "repo_edit": bool(pr and pr.get("pr_url")),
                             "blocked": bool(self._needs_human)}
             delivered = await workflow.execute_activity(
-                deliver_result, {"reply_to": reply_to, "result": result, "cap": cap,
+                deliver_result, {"reply_to": reply_to, "result": reply, "cap": cap,
                                  "run_id": workflow.info().workflow_id,
                                  # Lets a conversational sink (a Slack thread) record what a
                                  # follow-up needs to CONTINUE this run instead of starting cold.
@@ -1388,6 +1396,25 @@ class OttoWorkflow:
                 "git_branch": (pr.get("branch") if pr else None) if repo else None,
                 "in_place": in_place, "qa": qa, "review": review, "chat_key": chat_key,
                 "cost": self._spent["cost"], "times": self._times}
+
+    def _shape_result(self, result, notes):
+        """Split what the READER gets from what the RECORD keeps: `(reply, record)`.
+
+        A CONVERSATION audience (a person in a Slack exchange) gets the answer alone. Everything
+        else here is written in Otto's own vocabulary — workspaces, verify rounds, Admin screens,
+        `_NEEDS_HUMAN_BANNER` — and a colleague can act on none of it; the human who CAN act reads
+        the record, on the chat thread and Needs-you. Measured (slack-D06G601G0R1-1788479715): a
+        "Register the target repo under Admin → Project repos" footer posted under a reply to a
+        third party, on a request that was never about a repo. The notes are appended AFTER the
+        model wrote the reply, so the output contract (`_DIRECT_REPLY_FORMAT`) can't police them."""
+        record = result
+        if self._needs_human:
+            record = _NEEDS_HUMAN_BANNER.get(
+                self._needs_human["reason"], "⚠️ **Needs human review.**") + "\n\n" + record
+        record += "".join(str(n) for n in notes if n)
+        if self._audience == contracts.CONVERSATION_AUDIENCE:
+            return result, record
+        return record, record
 
     def _account(self, out):
         """Add one activity's output-token + USD spend to the run's budget accumulator."""

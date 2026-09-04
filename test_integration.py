@@ -3110,12 +3110,14 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
             setattr(engine, n, fn)
         self.activities._caps = self._orig_caps
 
-    async def _drive(self, *, write_intent, approve=None):
+    async def _drive(self, *, write_intent, approve=None, params=None):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (clarify_request, classify_request, detect_repo_changes,
-                                plan_capability, plan_swarm, record_attempt, record_skip,
+        from activities import (clarify_request, classify_request, deliver_result,
+                                detect_repo_changes, finalize_terminal, notify_human, open_chat,
+                                plan_capability, plan_swarm, record_attempt, record_chat,
+                                record_skip,
                                 route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, snapshot_repos, suggest_repo,
                                 verify_capability)
@@ -3126,12 +3128,15 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
                     env.client, task_queue="frq", workflows=[OttoWorkflow],
                     activities=[route_request, snapshot_settings, plan_swarm, clarify_request, classify_request,
                                 plan_capability, suggest_repo, run_capability, resolve_pr_target, check_grounding, verify_capability,
-                                record_attempt, record_skip, snapshot_repos, detect_repo_changes],
+                                record_attempt, record_skip, snapshot_repos, detect_repo_changes,
+                                deliver_result, record_chat, open_chat, notify_human,
+                                finalize_terminal],
                     activity_executor=ex,
                 ):
                     h = await env.client.start_workflow(
                         OttoWorkflow.run,
-                        {"request": "create a ticket for the OOM and add it to the board"},
+                        {"request": "create a ticket for the OOM and add it to the board",
+                         **(params or {})},
                         id="fr-" + uuid.uuid4().hex[:8], task_queue="frq")
                     if approve is not None:
                         for _ in range(100):
@@ -3185,6 +3190,49 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["cap"]["name"], registry.WORKER_NAME)   # the swap is visible downstream
         self.assertEqual(ran, [registry.WORKER_NAME])                # the worker actually executed
         self.assertEqual(self.skips, [])
+
+    async def _worker_run(self, reply_to):
+        """The same misroute-to-worker run, delivered somewhere. Returns (out, delivered_text)."""
+        assistant, worker = registry._general_assistant(), registry._general_worker()
+        self.activities._caps = [assistant, worker]
+        engine.plan = lambda request, caps, project_root=None: assistant
+        engine.run_attempt = lambda request, cap, **k: {
+            "workflow": k.get("wid") or "wf-fresh", "result": "implemented it", "cost": 0.0,
+            "session_id": "s", "model": "m", "attempt": k.get("attempt", 1)}
+        sent = []
+        orig = delivery.deliver
+        delivery.deliver = lambda reply_to, result, cap=None, run_id=None: (
+            sent.append(result) or "posted")
+        try:
+            out = await self._drive(write_intent=True, approve=True,
+                                    params={"reply_to": reply_to})
+        finally:
+            delivery.deliver = orig
+        self.assertEqual(len(sent), 1, "the result was never delivered")
+        return out, sent[0]
+
+    async def test_slack_reply_is_the_answer_alone_and_the_record_keeps_the_notes(self):
+        """A colleague on Slack gets the ANSWER; the run notes stay on the operator's record.
+
+        Measured (slack-D06G601G0R1-1788479715): a general-worker run answering a third party's DM
+        posted "…Register the target repo under Admin → Project repos…" under its reply — Otto's
+        own vocabulary, about a screen the reader has no access to, on a request that was never
+        about a repo. Same failure `_DIRECT_REPLY_FORMAT` and `_TLDR_SHAPE` exist to prevent, one
+        layer further down: the note is appended AFTER the model has written the reply."""
+        out, sent = await self._worker_run({"kind": "slack_thread", "channel": "C7",
+                                            "thread_ts": "100.0"})
+        self.assertEqual(sent, "implemented it")                 # nothing but the answer
+        self.assertNotIn("Admin", sent)
+        self.assertNotIn("isolated workspace", sent)
+        # …and the operator still sees it, on the return value the chat thread + web UI render.
+        self.assertIn("No isolated workspace was engaged", out["result"])
+
+    async def test_a_report_target_still_gets_the_run_notes(self):
+        """The control that proves it is the AUDIENCE doing this, not a blanket removal: a ticket
+        comment is a durable record for the operator's own team, so the note belongs in it."""
+        out, sent = await self._worker_run({"kind": "github_issue", "repo": "o/r", "number": 4})
+        self.assertIn("No isolated workspace was engaged", sent)
+        self.assertEqual(sent, out["result"])
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
@@ -6075,10 +6123,13 @@ class GateDeadlineAndDenialIdentityTests(unittest.IsolatedAsyncioTestCase):
         # An expired gate is NOT a human decision, so it must not masquerade as one.
         self.assertEqual([e for e in engine.iter_audit_entries()
                           if e.get("outcome") == "denied"], [])
-        # ...and the Slack thread that asked is TOLD, instead of getting silence.
+        # ...and the Slack thread that asked is TOLD, instead of getting silence — in the
+        # READER's terms. `_NEEDS_HUMAN_BANNER` names an approval window a colleague never saw,
+        # so it stays on the record (asserted above) and the thread gets a person's sentence.
         self.assertEqual(len(self.delivered), 1)
         self.assertEqual(self.delivered[0][0]["kind"], "slack_thread")
-        self.assertIn("Nobody approved this in time", self.delivered[0][1])
+        self.assertIn("haven't done anything", self.delivered[0][1])
+        self.assertNotIn("approval", self.delivered[0][1].lower())
 
     async def test_zero_restores_the_unbounded_wait(self):
         # The escape hatch must actually disable the deadline rather than shorten it to nothing.

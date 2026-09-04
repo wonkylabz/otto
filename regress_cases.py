@@ -32,14 +32,17 @@ A case is a dict:
     run      () -> output
     check    (output) -> (ok: bool, detail: str)
 """
+import datetime
 import os
 import re
+import time
 
 import config
 import contracts
 import engine
 import gateway
 import registry
+import slack
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "regress", "fixtures")
 
@@ -347,6 +350,61 @@ def _c_no_reply_rejected_for_a_report():
 def _k_no_reply_rejected_for_a_report(v):
     return (not v["passed"]), ("correctly not accepted for a report audience" if not v["passed"]
                                else "the silence sentinel leaked into the report audience")
+
+
+# =================================================================================================
+# Slack context freshness (cheap — one execution-tier completion)
+# =================================================================================================
+
+# The DM whose stale spine got reported as today's news (slack-D06DXA34BEZ-1788480668). Kept
+# verbatim-shaped rather than as a fixture file: the DATES have to be relative to run time, since
+# what is being measured is whether the model reads the stamps at all.
+_STALE_DM = [
+    ("U016TMD7JBX", "Today's GPU driver upgrade failed: driver 610.57.04 causes Xid 31 faults on "
+                    "T4/A10G/L40S, the renderer crash-loops every five minutes."),
+    ("U016TMD7JBX", "oooh, we should probably rollback entirely, the infra PR I mean"),
+    (f"{config.OWNER_NAME} (the person you are answering for)",
+     "I saw it wasn't going to be productive and gave up"),
+    ("U016TMD7JBX", "every 5 minutes is the same loop with Paul + Claude. same as yesterday."),
+]
+
+
+def _c_stale_slack_context_is_not_today():
+    now = time.time()
+    old = now - 3 * 86400
+    thread = [slack.stamp(old + i * 60) + f"{who}: {text}"
+              for i, (who, text) in enumerate(_STALE_DM)]
+    params = slack.to_request({"channel": "D2", "ts": str(now), "is_dm": True,
+                               "text": "Summarise what you've seen today.",
+                               "thread": thread}, {})
+    reply = gateway.complete(
+        "execution", contracts._DIRECT_REPLY_FORMAT + "\n\n" + params["request"]) or ""
+    return {"reply": reply.strip(), "day": datetime.date.fromtimestamp(old)}
+
+
+def _k_stale_slack_context_is_not_today(out):
+    """PASS iff the reply DATES the thread it summarises. The stamps are the only place the model
+    could learn that day from, so naming it is proof it read them; summarising the incident with
+    no date at all is the failure, and it is what the live reply did ("In this thread today: the
+    GPU driver upgrade …"). Saying nothing about the incident is also a pass — declining to
+    summarise is not the reported bug.
+
+    Measured 2026-09-04 on qwen38-flash-next: stamps stripped, 5/5 replies opened "So today's
+    thread: the GPU driver upgrade …" and named no date at all; with the stamps, 5/6 named the
+    real day while still summarising ("nothing from today (Sept 4) — the only thread I can see is
+    from Sept 1, where …") and 1/6 declined outright. An earlier, prohibition-shaped framing
+    ("never date it to today") pushed 6/6 into refusing to summarise anything, which is why the
+    text asks for WHEN instead."""
+    reply, day = out["reply"], out["day"]
+    named = [t for t in (day.isoformat(), day.strftime("%b %-d"), day.strftime("%B %-d"),
+                         f"Sep {day.day}st", f"Sept {day.day}", f"the {day.day}st",
+                         f"the {day.day}nd", f"the {day.day}rd", f"the {day.day}th") if t in reply]
+    if named:
+        return True, f"dated the thread to {named[0]} ({day})"
+    if not re.search(r"610|xid|driver|crash-?loop|a10g|l40s", reply, re.I):
+        return True, "declined to summarise rather than re-dating it"
+    return False, ("summarised a 3-day-old thread with no date on it; reply began: "
+                   + reply[:130].replace("\n", " "))
 
 
 # =================================================================================================
@@ -751,6 +809,10 @@ CASES = [
     {"id": "no-reply-report-scoped", "tier": "cheap", "incident": "2026-07-31, config.is_no_reply",
      "what": "the silence sentinel is conversational-audience only, never valid in a report",
      "run": _c_no_reply_rejected_for_a_report, "check": _k_no_reply_rejected_for_a_report},
+    {"id": "slack-stale-context-not-today", "tier": "cheap",
+     "incident": "slack-D06DXA34BEZ-1788480668, 2026-09-04",
+     "what": "a 3-day-old DM spine is reported with its own date, never as what happened today",
+     "run": _c_stale_slack_context_is_not_today, "check": _k_stale_slack_context_is_not_today},
     {"id": "critic-collateral-damage", "tier": "cheap", "incident": "web-c73ff2a5, 2026-08-03",
      "what": "the plan critic catches an unscoped DENY that would also block metrics/probes",
      "run": _c_critic_finds_collateral_damage, "check": _k_critic_finds_collateral_damage},
