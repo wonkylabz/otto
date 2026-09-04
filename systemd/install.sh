@@ -18,6 +18,17 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # a normal interactive shell (not a bare `sh -c`) so those tools are on $PATH.
 PATH_LINE="$PATH"
 
+# Root has its own systemd --user session, not yours: the unit would land in root's manager,
+# where it cannot see your ~/.claude — and `claude -p` runs against YOUR subscription and YOUR
+# agents, so the service must run as you. Same reasoning as launchd/install.sh, which already
+# refuses. This one is reachable directly (the README points at it for reinstalling just the
+# service), so the guard in the top-level install.sh does not cover it.
+if [ "$(id -u)" = "0" ]; then
+  echo "Do not run this with sudo — Otto is a per-user systemd service (it runs \`claude -p\`" >&2
+  echo "against your subscription and ~/.claude). Re-run as yourself:" >&2
+  echo "  systemd/install.sh" >&2
+  exit 1
+fi
 if [ ! -x "$DIR/run.sh" ]; then
   echo "run.sh missing or not executable at $DIR/run.sh" >&2
   exit 1
