@@ -1272,9 +1272,10 @@ class SlackTests(unittest.TestCase):
             slack._api = lambda m, **kw: (calls.append((m, kw)) or hist)
             self.assertEqual(
                 slack.channel_context("D2", "30.0"),
-                ["U2: is ci working for you?",
-                 "you (Otto, in this conversation earlier): CI is up",
-                 "the operator (the person you are answering for): it looks like, yeah"])
+                [slack.stamp("10.0") + "U2: is ci working for you?",
+                 slack.stamp("15.0") + "you (Otto, in this conversation earlier): CI is up",
+                 slack.stamp("20.0")
+                 + "the operator (the person you are answering for): it looks like, yeah"])
             self.assertEqual(calls[0][0], "conversations.history")
             self.assertEqual(calls[0][1]["latest"], "30.0")
             # No channel or no ts -> no call at all (context is a bonus, never a blocker).
@@ -1292,10 +1293,50 @@ class SlackTests(unittest.TestCase):
             slack._own_posts = lambda: {"15.0"}
             own = {"user": "U1", "ts": "15.0", "text": "CI is up", "bot_id": "B1"}
             self.assertEqual(slack._context_lines([own], 8, 400),
-                             ["you (Otto, in this conversation earlier): CI is up"])
+                             [slack.stamp("15.0")
+                              + "you (Otto, in this conversation earlier): CI is up"])
             self.assertIsNone(slack._clean(own, "D2", allow_self=True))   # bot_id -> never a trigger
         finally:
             slack._ME, slack._own_posts = orig_me, orig_own
+
+    def test_context_lines_are_dated_so_old_history_is_not_read_as_today(self):
+        """Slack context is a channel's recent SPINE, not "what happened today" — a DM that went
+        quiet for a week still yields eight lines. Undated, the model read them as now: measured
+        (slack-D06DXA34BEZ-1788480668), "Summarise what you've seen today" came back as a
+        confident account of a GPU-driver incident from an earlier day, opening "In this thread
+        today". Each line carries the day it was actually sent, computed here independently of
+        `slack.stamp`."""
+        import datetime
+        old = time.time() - 3 * 86400
+        line, = slack._context_lines([{"user": "U2", "ts": str(old), "text": "rolling it back"}],
+                                     8, 400)
+        day = datetime.date.fromtimestamp(old).isoformat()
+        self.assertTrue(line.startswith(f"[{day} "), line)
+        self.assertNotIn(datetime.date.today().isoformat(), line)   # not silently re-dated to now
+        self.assertTrue(line.endswith("U2: rolling it back"))
+        # An unreadable ts costs the prefix, never the line — context is a bonus, never a blocker.
+        self.assertEqual(slack._context_lines([{"user": "U2", "ts": None, "text": "hi"}], 8, 400),
+                         ["U2: hi"])
+
+    def test_to_request_dates_the_context_and_asks_when_not_today(self):
+        """The framing has to say the same thing the stamps do — and anchor "now" to the message
+        being answered, since a local model has no reliable idea what today is."""
+        trigger = time.time()
+        out = slack.to_request({"channel": "D2", "ts": str(trigger), "text": "summarise today",
+                                "is_dm": True,
+                                "thread": [slack.stamp(trigger - 3 * 86400) + "U2: rolled back"]},
+                               {})["request"]
+        self.assertIn(slack.stamp(trigger).strip("[] "), out)   # when the request itself arrived
+        self.assertIn("read the timestamps", out)
+        self.assertIn("say WHEN it happened", out)
+
+    def test_followup_is_stamped_too(self):
+        """A follow-up can land days after the turn it continues, and the resumed session's own
+        history says nothing about when "now" is."""
+        ts = time.time()
+        out = slack.to_followup({"channel": "D2", "ts": str(ts), "text": "and today?"},
+                                {"session": "s1"}, {})["request"]
+        self.assertIn(slack.stamp(ts).strip("[] "), out)
 
     def test_channel_context_survives_an_api_failure(self):
         orig_api = slack._api

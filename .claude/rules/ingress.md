@@ -14,6 +14,7 @@ Five adapters normalizing into one `OttoWorkflow`: web chat (`web/index.html`+`s
 - **A thread Otto replied in is watched** (`slack._poll_threads`) — `conversations.history` omits thread replies. `conversations.replies` includes the parent and treats `oldest` as inclusive, so filter `ts > cursor` yourself. One turn at a time via a pending flag (`PENDING_STALE_S`=1800).
 - **Continuity is per-conversation** (`slack.conversation_key`) — a DM keys on the channel, a channel thread on `channel|thread_ts`. Keying a DM on the thread breaks continuity.
 - **A new task in an old conversation is handed off, not resumed** (`engine.followup_handoff`) — resume binds the session's cap for life and skips repo-mode/verify/review.
+- **Every context line is DATED** (`slack.stamp`) — the spine is the last N messages whenever they were sent, and undated they read as now: "summarise what you've seen today" retold a days-old incident as today's news (`SlackTests`).
 - `channel_context`/`thread_context` are the cold-start fallback only, not the continuity mechanism.
 - `allow_self` is scoped to the owner's own self-DM (`slack._self_test`) — raw, it also answers the owner inside a third party's DM.
 - Allowlist entries may be labelled (`U01ABCDE2FG  #alex`); strip via `slack.entry_id`/`allow_ids`, never compare raw.
