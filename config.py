@@ -4,6 +4,49 @@ import re
 import shlex
 import subprocess
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Otto's version, read from the ONE place it is written: pyproject.toml's [project].version.
+# Otto is cloned and run, never pip-installed, so importlib.metadata has nothing to read — and
+# a second literal in Python is how a service ends up reporting a version it is not running
+# (test_core.VersioningTests). Parsed once at import; a checkout with an unreadable pyproject
+# reports the sentinel rather than refusing to boot, since nothing here is load-bearing.
+def _pyproject_version():
+    try:
+        import tomllib
+        with open(os.path.join(_HERE, "pyproject.toml"), "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except Exception:
+        return "0.0.0+unknown"
+
+
+VERSION = _pyproject_version()
+
+_REVISION = None            # sentinel: None = not looked up yet, "" = looked up and unavailable
+
+
+def revision():
+    """Short commit sha of the running checkout ("" outside git, or with no git binary).
+
+    A release tag and every commit after it share one VERSION, and Otto is normally run from a
+    working checkout — so the sha is the half of "what is actually running" that a version
+    number cannot answer. Lazy and cached: it shells out, and no import-time caller needs it."""
+    global _REVISION
+    if _REVISION is None:
+        try:
+            _REVISION = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=_HERE,
+                                       capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            _REVISION = ""
+    return _REVISION
+
+
+def version_string():
+    """`0.1.0+8c7c7f3` — semver build metadata, the form for logs and the UI's title text."""
+    rev = revision()
+    return f"{VERSION}+{rev}" if rev else VERSION
+
+
 # Model used for routing (Router #1's decision, on the cloud tier).
 ROUTER_MODEL = os.environ.get("OTTO_ROUTER_MODEL", "claude-sonnet-4-6")
 
@@ -612,7 +655,7 @@ def secret_status():
     return out
 
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(_HERE, "data")
 
 # The ONE SQLite database the JSON stores are migrating into (issue #103) — audit + chats today,
 # more stores per later phases. Modules keep their own module-level alias (engine._DB,
