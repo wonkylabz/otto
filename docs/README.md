@@ -7,6 +7,7 @@ See `maintaining-docs.md` for which tier a new rule belongs in.
 - **`operating.md`** — setup, the background service, running, restart discipline, global pause.
 - **`testing.md`** — the unit suite, the regression corpus, how to write a guard test.
 - **`maintaining-docs.md`** — the three tiers, the rule format, and the enforced ceilings.
+- **`releasing.md`** — what Otto's version number means, and how to cut and publish a release.
 
 ## Architecture diagram
 

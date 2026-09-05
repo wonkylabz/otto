@@ -66,6 +66,15 @@ Those files are written for Claude Code as much as for you: Otto is developed wi
 rules files are digested into its own convention judges. Follow the same tiering when you add
 a rule — `docs/maintaining-docs.md` explains which tier it belongs in.
 
+## Versioning
+
+Otto's version lives in exactly one place — `pyproject.toml`'s `[project].version` — and
+everything else (`config.VERSION`, `/api/health`, the UI, the git tag) reads it from there;
+`test_core.VersioningTests` fails if a second literal appears. Put anything an operator would
+notice under `## [Unreleased]` in `CHANGELOG.md`, in *their* vocabulary: what changes for them
+and what they must do about it. `docs/releasing.md` explains what a MAJOR/MINOR/PATCH bump
+means for a service, and `python3 release.py patch|minor|major` cuts one.
+
 ## Style
 
 Match the surrounding code. In particular: comments here explain **why** a guard exists,

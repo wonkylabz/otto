@@ -167,6 +167,9 @@
   .wordmark { display: flex; flex-direction: column; }
   .wordmark b { font-weight: 600; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; }
   .wordmark span { color: var(--dim); font-size: 12px; letter-spacing: .01em; }
+  /* Version rides the wordmark, not the Admin tab: the first question about a
+     misbehaving Otto is which one is running, and a tab hides an Admin field. */
+  .wordmark .ver { font-variant-numeric: tabular-nums; }
   .status { margin-left: auto; display: flex; align-items: center; gap: 18px; font-size: 12px; color: var(--text-2); }
   .status b { color: var(--text); font-weight: 600; }
 
@@ -2384,7 +2387,7 @@ window.paintFavicon();
   <svg class="mark" aria-hidden="true"><use href="#mk"/></svg>
   <div class="wordmark">
     <b>Otto</b>
-    <span>agentic ops &middot; live backend</span>
+    <span>agentic ops &middot; live backend &middot; <span class="ver" id="ver">&mdash;</span></span>
   </div>
   <nav class="tabs">
     <button class="tab active" data-view="chat">Chat</button>
@@ -3429,6 +3432,15 @@ document.getElementById("estop").addEventListener("click", toggleEstop);
 // First paint before any poll lands, so a page loaded while paused never shows a running Otto.
 (async()=>{ try{ applyEstop(await (await fetch("/api/estop")).json()); }catch(e){} })();
 
+// The running build, painted from /api/health. The version alone can't identify it — Otto
+// runs from a working checkout, so a tag and every commit after it share one number; the sha
+// goes in the title so the chip stays short.
+function applyVersion(h){
+  const el=document.getElementById("ver"); if(!el || !h || !h.version) return;
+  el.textContent="v"+h.version;
+  el.title=h.revision ? ("version "+h.version+", commit "+h.revision) : ("version "+h.version);
+}
+
 async function refreshHealth(){
   // Re-checked before every turn, not just at page load: a tab loaded during a backend
   // restart otherwise latches TEMPORAL=false and silently degrades every later run to the
@@ -3438,6 +3450,7 @@ async function refreshHealth(){
     const h=await (await fetch("/api/health")).json();
     TEMPORAL = !!(h.temporal && h.connected);
     applyEstop(h.estop);      // rides the same payload — no extra request per turn
+    applyVersion(h);          // likewise: a restart onto a new build repaints on the next turn
     // Plan-then-execute opt-in toggle: shown only when the backend enabled it AND we're on the
     // durable path (the workflow is what reads params.plan_mode). Off → hide + uncheck. Only the
     // toggle itself hides — Memory/Model share this bar and stay visible regardless (#runbar was

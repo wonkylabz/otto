@@ -832,6 +832,11 @@ class Handler(BaseHTTPRequestHandler):
             # probe) so any tab can feed the Admin-tab warning badge cheaply on its poll.
             broken = gateway.unhealthy_models()
             self._send(200, json.dumps({"temporal": TEMPORAL_OK, "connected": _temporal_connected(),
+                                        # Which Otto is actually serving this tab. The sha is the
+                                        # half the version can't answer: Otto runs from a working
+                                        # checkout, so a release tag and every commit after it
+                                        # report the same number.
+                                        "version": config.VERSION, "revision": config.revision(),
                                         "gateway": gateway.stats(),
                                         "plan_mode": config.setting("plan_mode"),
                                         "mcp": {"unhealthy": policy.unhealthy_count(POLICY)},

@@ -1339,6 +1339,139 @@ class TemporalPinTests(unittest.TestCase):
                             "unrelated, so this is the copied-number bug, not a coincidence")
 
 
+class VersioningTests(unittest.TestCase):
+    """Otto's version is written ONCE, in `pyproject.toml`, and everything else reads it.
+
+    A service that misreports its own version is worse than one with no version at all: every
+    bug report after the drift is filed against a build nobody ran. The failure mode is not
+    exotic — a release bumps `pyproject.toml`, a banner or a constant elsewhere keeps the old
+    literal, and nothing anywhere errors. So the guard is the grep: no second literal, and the
+    three readers (`config`, the changelog, the tag scheme) must agree.
+
+    `docs/releasing.md` carries what a MAJOR/MINOR/PATCH bump means for a service."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+    # The two files that state a version by design, plus the doc that explains the scheme.
+    EXEMPT = {"pyproject.toml", "CHANGELOG.md", "docs/releasing.md", "release.py"}
+
+    def _pyproject_version(self):
+        with open(os.path.join(self.ROOT, "pyproject.toml"), encoding="utf-8") as f:
+            m = re.search(r'^version = "([^"]+)"', f.read(), re.M)
+        self.assertIsNotNone(m, "pyproject.toml must declare [project].version")
+        return m.group(1)
+
+    def _changelog(self):
+        with open(os.path.join(self.ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_declared_version_is_semver(self):
+        v = self._pyproject_version()
+        self.assertRegex(v, self.SEMVER, f"version {v!r} is not X.Y.Z — see docs/releasing.md")
+
+    def test_config_reads_the_version_instead_of_restating_it(self):
+        self.assertEqual(config.VERSION, self._pyproject_version(),
+                         "config.VERSION disagrees with pyproject.toml — it must PARSE that "
+                         "file, never carry its own literal")
+
+    def test_the_running_version_reaches_the_operator(self):
+        """The number is only worth keeping if the operator can see which one is serving them:
+        `/api/health` carries it, and the UI paints it beside the wordmark."""
+        with open(os.path.join(self.ROOT, "server.py"), encoding="utf-8") as f:
+            self.assertIn('"version": config.VERSION', f.read(),
+                          "/api/health stopped serving the version — the UI chip goes blank and "
+                          "'which build is this?' becomes unanswerable from the browser")
+        with open(os.path.join(self.ROOT, "web", "index.html"), encoding="utf-8") as f:
+            ui = f.read()
+        self.assertIn('id="ver"', ui, "the header lost its version chip")
+        self.assertIn("function applyVersion(", ui, "the version painter is gone")
+        # The CALL, not the definition: `applyVersion(h)` matches its own `function`
+        # line, so the loose spelling passed with the health payload never reaching it.
+        self.assertIn("applyVersion(h);", ui,
+                      "refreshHealth no longer feeds /api/health to the version chip")
+
+    def test_the_changelog_is_dated_ordered_and_headed_by_this_version(self):
+        text = self._changelog()
+        self.assertIn("## [Unreleased]", text,
+                      "CHANGELOG.md needs an [Unreleased] section to accumulate into, or every "
+                      "change lands in a released section that was already published")
+        rel = re.findall(r"^## \[(\d+\.\d+\.\d+)\] - (\d{4}-\d{2}-\d{2})$", text, re.M)
+        self.assertTrue(rel, "CHANGELOG.md has no released section shaped `## [X.Y.Z] - DATE`")
+        self.assertEqual(rel[0][0], self._pyproject_version(),
+                         "the newest changelog section is not the version pyproject declares — "
+                         "one of the two was bumped by hand; release.py moves both together")
+        keys = [tuple(int(x) for x in v.split(".")) for v, _ in rel]
+        self.assertEqual(keys, sorted(keys, reverse=True),
+                         f"changelog sections are not newest-first: {[v for v, _ in rel]}")
+
+    def test_no_tracked_file_carries_a_second_version_literal(self):
+        """The whole point of one source of truth: a banner, a constant or a doc line holding
+        `0.1.0` survives every release and starts lying at the next one."""
+        ls = subprocess.run(["git", "ls-files", "-z"], cwd=self.ROOT,
+                            capture_output=True, text=True)
+        if ls.returncode != 0:
+            self.skipTest("not a git checkout")
+        v = self._pyproject_version()
+        # A version in prose ("v0.1.0") or in an assignment — not any bare 0.1.0, which would
+        # match an unrelated pin or a percentage and make the guard noise.
+        needle = re.compile(rf"v{re.escape(v)}\b|version[^\n]{{0,24}}{re.escape(v)}", re.I)
+        hits = []
+        for rel in ls.stdout.split("\0"):
+            if not rel or rel in self.EXEMPT or rel.startswith("docs/otto-architecture"):
+                continue
+            path = os.path.join(self.ROOT, rel)
+            if os.path.abspath(path) == os.path.abspath(__file__):
+                continue                        # this file names the pattern, not a version
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as f:
+                    body = f.read()
+            except OSError:                     # a staged deletion, a submodule
+                continue
+            if needle.search(body):
+                hits.append(rel)
+        self.assertEqual(hits, [],
+                         f"these files restate the version {v}: {hits}. Read it from "
+                         "config.VERSION (or /api/health) instead — a copy drifts silently at "
+                         "the next release.")
+
+
+class ReleaseScriptTests(unittest.TestCase):
+    """`release.py` IS the release process (docs/releasing.md describes it rather than listing
+    steps), so its two pure functions are the ones that decide what a tag means and whether the
+    changelog stays navigable. Both are exercised here off-disk — the script itself refuses a
+    dirty tree, so nothing in the suite can run it end to end."""
+
+    def setUp(self):
+        import release
+        self.release = release
+
+    def test_bump_walks_semver_and_accepts_an_explicit_version(self):
+        self.assertEqual(self.release.bump("1.2.3", "patch"), "1.2.4")
+        self.assertEqual(self.release.bump("1.2.3", "minor"), "1.3.0")
+        self.assertEqual(self.release.bump("1.2.3", "major"), "2.0.0")
+        self.assertEqual(self.release.bump("1.2.3", "9.0.1"), "9.0.1")
+
+    def test_an_empty_unreleased_section_is_detected(self):
+        """Releasing an empty section publishes a version whose changelog says nothing — the
+        one mistake a human makes when the work landed but the entry never did."""
+        self.assertEqual(self.release.unreleased_body(
+            "# C\n\n## [Unreleased]\n\n## [0.1.0] - 2026-09-04\n\n- first\n"), "")
+        self.assertIn("- added", self.release.unreleased_body(
+            "# C\n\n## [Unreleased]\n\n- added a thing\n\n## [0.1.0] - 2026-09-04\n"))
+
+    def test_closing_a_section_re_points_both_compare_links(self):
+        text = ("## [Unreleased]\n\n- a thing\n\n## [0.1.0] - 2026-09-04\n\n- first\n\n"
+                "[Unreleased]: https://example.invalid/compare/v0.1.0...HEAD\n"
+                "[0.1.0]: https://example.invalid/releases/tag/v0.1.0\n")
+        out = self.release.rewrite_changelog(text, "0.1.0", "0.2.0", "2026-09-05")
+        self.assertIn("## [0.2.0] - 2026-09-05", out)
+        self.assertIn("## [Unreleased]\n\n## [0.2.0]", out,
+                      "Unreleased must survive the release, empty, for the next change to land in")
+        self.assertIn("compare/v0.2.0...HEAD", out, "Unreleased still compares against the old tag")
+        self.assertIn("[0.2.0]: ", out, "the new section has no link definition, so it renders bare")
+        self.assertIn("- a thing", out, "the entries were dropped instead of being released")
+
+
 class NotificationContentTests(unittest.TestCase):
     """The rule that request/ticket/message CONTENT reaches a push only through `detail` is
     enforced at the SIGNATURE (delivery.notify has no body param) — but a call site can still
