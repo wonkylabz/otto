@@ -669,12 +669,17 @@ class OttoWorkflow:
                                  # would belong to.
                                  "awaiting_wid": workflow.info().workflow_id},
                                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
-                        except Exception:  # noqa: BLE001 - a courtesy note, never the run
+                        except Exception as e:  # noqa: BLE001 - a courtesy note, never the run
                             # A progress note is worth strictly less than the run it describes:
                             # this one arrives AFTER a plan preview has already been paid for
                             # (measured at $0.82), so letting a failed post discard an approved
                             # write would be the expensive half failing for the cheap half.
-                            pass
+                            #
+                            # LOGGED, not silent. Swallowing it is right for the run and wrong for
+                            # diagnosis: a NameError in the activity shipped precisely because the
+                            # only symptom was a gate that said nothing, and nothing here said why.
+                            workflow.logger.warning(
+                                f"gate notice to the asker failed: {_failure_detail(e)}")
                     if not await self._gate_wait(
                             lambda: self._decision is not None
                             or self._plan_feedback is not None):

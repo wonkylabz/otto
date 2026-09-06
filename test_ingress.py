@@ -2231,6 +2231,54 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         finally:
             slack.post = orig
 
+    def test_the_activity_actually_runs(self):
+        """The one that was missing, and the reason a NameError shipped.
+
+        Every other test here either calls `delivery.interim` directly or greps `workflows.py` for
+        the call — so the ACTIVITY between them was never executed. It referenced a module-level
+        `delivery` that does not exist in `activities` (every activity in that module imports it
+        locally), and because the workflow deliberately wraps the call so a failed note cannot
+        kill the run, the failure was invisible from the outside: the run parked correctly, the
+        gate card appeared, and the thread was simply never told. Live on
+        `slack-b-D0BVD1F856Y-1788736699-386419` — three failed attempts in the worker log and no
+        other symptom anywhere.
+
+        A guard that cannot kill the thing it guards needs a test that runs it, precisely because
+        nothing else will complain."""
+        import activities
+        posted, armed = [], []
+        orig = slack.post, slack.mark_awaiting_gate
+        try:
+            slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+                posted.append((ch, text, thread_ts, identity)) or True)
+            slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user": (
+                armed.append((ch, root, wid, identity)))
+            out = activities.interim_notice({
+                "reply_to": {"kind": "slack_thread", "channel": "D1", "thread_ts": None,
+                             "identity": "bot"},
+                "text": "needs approval", "awaiting_wid": "slack-b-D1-9-0"})
+        finally:
+            slack.post, slack.mark_awaiting_gate = orig
+        self.assertIn("posted", out["status"])
+        self.assertEqual(posted, [("D1", "needs approval", None, "bot")])
+        # ...and the same call is what arms the conversation, so a reply can clear the gate.
+        self.assertEqual(armed, [("D1", None, "slack-b-D1-9-0", "bot")])
+
+    def test_the_activity_arms_nothing_when_there_is_no_wid(self):
+        """A notice with no run to point at must not leave a conversation armed for a gate that
+        does not exist — the next plain "no" would be read as a verdict."""
+        import activities
+        armed = []
+        orig = slack.post, slack.mark_awaiting_gate
+        try:
+            slack.post = lambda *a, **k: True
+            slack.mark_awaiting_gate = lambda *a, **k: armed.append(a)
+            activities.interim_notice({"reply_to": {"kind": "slack_thread", "channel": "D1"},
+                                       "text": "hello"})
+        finally:
+            slack.post, slack.mark_awaiting_gate = orig
+        self.assertEqual(armed, [])
+
     def test_the_workflow_tells_the_asker_once_and_cannot_die_doing_it(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "workflows.py")).read()

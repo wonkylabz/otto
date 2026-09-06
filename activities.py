@@ -624,7 +624,14 @@ def interim_notice(payload: dict) -> dict:
 
     Deliberately not `deliver_result`: that one marks the run delivered (so the real answer would
     later be swallowed by `_slack`'s idempotency check), records the Claude session, and clears
-    the conversation's in-flight flag. This posts and nothing else. Never raises."""
+    the conversation's in-flight flag. This posts and nothing else.
+
+    `delivery` is imported HERE, like every other activity in this module — the module-level name
+    does not exist, and the workflow wraps this call so a failed note cannot kill the run, which
+    means a NameError here is invisible from the outside: the run parks correctly and simply says
+    nothing. That is exactly what happened (`slack-b-D0BVD1F856Y-1788736699-386419`, three failed
+    attempts in the worker log, a silent gate on the asker's side)."""
+    import delivery
     reply_to = payload.get("reply_to")
     status = delivery.interim(reply_to, payload.get("text", ""))
     # A gate notice also ARMS the conversation: the reply that clears it has to be matchable to
