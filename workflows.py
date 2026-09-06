@@ -725,28 +725,39 @@ class OttoWorkflow:
                             cleanup_workspace, {"run_id": git_run_id},
                             start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                     msg = "Declined — nothing was run."
+                    # What the ASKER is told. A conversation audience never saw the approval card,
+                    # so neither wording may mention one (see `_shape_result`).
+                    said = msg
+                    if self._audience == contracts.CONVERSATION_AUDIENCE:
+                        said = (f"{config.OWNER_NAME} didn't approve that, so I haven't done "
+                                f"anything. Let me know if you'd like me to try something else.")
                     if gate_expired:
                         self._terminal = {"reason": "gate_timeout"}
                         msg = _NEEDS_HUMAN_BANNER["gate_timeout"]
+                        said = msg
+                        if self._audience == contracts.CONVERSATION_AUDIENCE:
+                            said = (f"Sorry — I couldn't get this cleared in time, so I "
+                                    f"haven't done anything. {config.OWNER_NAME} will need "
+                                    f"to pick it up.")
                         await workflow.execute_activity(
                             finalize_terminal,
                             {"wid": workflow.info().workflow_id, "request": request, "cap": cap,
                              "reason": "gate_timeout", "reply_to": reply_to, "repo": repo,
                              "unattended": unattended},
                             start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
-                        if reply_to:
-                            # A person waiting in Slack gets a person's answer: the banner names
-                            # an approval window they never saw (see `_shape_result`).
-                            said = msg
-                            if self._audience == contracts.CONVERSATION_AUDIENCE:
-                                said = (f"Sorry — I couldn't get this cleared in time, so I "
-                                        f"haven't done anything. {config.OWNER_NAME} will need "
-                                        f"to pick it up.")
-                            await workflow.execute_activity(
-                                deliver_result,
-                                {"reply_to": reply_to, "result": said, "cap": cap,
-                                 "run_id": workflow.info().workflow_id, "session_id": None},
-                                start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                    # BOTH endings deliver, not just the expiry. A plain decline used to return
+                    # here in silence: the asker got an ack, then nothing, ever — the same gap the
+                    # gate notice closed, on the other side of the gate. And because delivery is
+                    # what calls `record_conversation_session`, skipping it also left the Slack
+                    # conversation's in-flight flag set, so that DM answered NOTHING for the full
+                    # PENDING_STALE_S (30min) afterwards, and would leave the gate-armed marker
+                    # standing for 25h. One missing delivery, three symptoms.
+                    if reply_to:
+                        await workflow.execute_activity(
+                            deliver_result,
+                            {"reply_to": reply_to, "result": said, "cap": cap,
+                             "run_id": workflow.info().workflow_id, "session_id": None},
+                            start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                     await self._record_chat(params, request, msg, resume, cap)
                     return ({"result": msg, "session_id": resume, "cap": cap,
                              "needs_human": self._terminal, "times": self._times}, request)

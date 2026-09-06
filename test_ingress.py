@@ -2231,6 +2231,35 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         finally:
             slack.post = orig
 
+    def test_a_DECLINE_answers_the_asker_and_unjams_the_conversation(self):
+        """The other side of the gate, and the one that actually bit.
+
+        The decline path delivered only when the gate EXPIRED; a human pressing Decline returned
+        in silence. Three symptoms from one missing delivery, and only the first is obvious:
+        the asker is never told (ack, then nothing, ever); `record_conversation_session` never
+        runs, so the Slack conversation keeps its in-flight flag and answers NOTHING for the full
+        PENDING_STALE_S afterwards; and the gate-armed marker stands for GATE_STALE_S, so a later
+        plain "no" reads as a verdict on a finished run. Observed live: a DM went deaf for 30
+        minutes after a decline (`slack-b-D0BVD1F856Y-1788736699-386419`, denied 11:41:52)."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "workflows.py")).read()
+        block = src[src.index('msg = "Declined — nothing was run."'):
+                    src.index("await self._record_chat(params, request, msg, resume, cap)")]
+        # The delivery must NOT be nested under the expiry branch.
+        deliver_at = block.index("deliver_result")
+        expired_at = block.index("if gate_expired:")
+        self.assertGreater(deliver_at, expired_at)
+        tail = block[block.index("if reply_to:"):]
+        self.assertIn("deliver_result", tail)
+        for line in tail.splitlines():
+            if line.strip():
+                self.assertFalse(line.startswith(" " * 28) and "gate_expired" in line)
+        # Both endings say something, and neither mentions an approval card to someone who never
+        # saw one — a decline and an expiry are different events with different wording.
+        self.assertIn("didn't approve that", block)
+        self.assertIn("couldn't get this cleared in time", block)
+        self.assertEqual(2, block.count("CONVERSATION_AUDIENCE"))
+
     def test_the_activity_actually_runs(self):
         """The one that was missing, and the reason a NameError shipped.
 
