@@ -1593,3 +1593,39 @@ async def _poll_status():
         "next_run": nxt[0].astimezone().isoformat(timespec="minutes") if nxt else None,
         "last_run": recent[-1].scheduled_at.astimezone().isoformat(timespec="seconds") if recent else None,
     }
+    out.update(await _poll_health(c))
+    return out
+
+
+async def _poll_health(c):
+    """Whether the poll is actually SUCCEEDING, not merely scheduled.
+
+    A schedule that fires happily into an activity that raises every time is indistinguishable
+    from a quiet Slack: the card says "listening, next run in 40s" and no message is ever
+    answered. That is not hypothetical — a malformed conversation record crashed `poll_slack` on
+    every fire for 2h39m, and the only trace of it anywhere was a stack in /tmp/otto-worker.log.
+    Nothing else in Otto watches this: the Reaper sweeps OttoWorkflows, and a poll produces no
+    audit row, no board card and no needs-human.
+
+    Best-effort — an unreadable history reports nothing rather than a false alarm."""
+    fails, seen, last_error = 0, 0, None
+    try:
+        async for wf in c.list_workflows('WorkflowType = "SlackPollWorkflow"'):
+            status = getattr(wf.status, "name", str(wf.status))
+            if status == "RUNNING":
+                continue
+            seen += 1
+            if status in ("FAILED", "TIMED_OUT", "TERMINATED"):
+                fails += 1
+                last_error = last_error or status
+            if seen >= 5:
+                break
+    except Exception:  # noqa: BLE001 - visibility unavailable; report nothing, never a false alarm
+        return {}
+    if not seen:
+        return {}
+    # Every one of the last few failed: this is broken, not flaky. One failure among several is
+    # a transient (a Slack 500, a restart mid-activity) and Temporal's retry covers it — saying
+    # so would train the operator to ignore the line that matters.
+    return {"failing": fails >= seen, "recent_failures": fails, "recent_checked": seen,
+            "last_failure": last_error}

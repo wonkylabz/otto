@@ -18,9 +18,9 @@ def trace(tag, msg):
     # a long-lived background thread whose only output is traces (slack_socket) would otherwise
     # have them sit unflushed for the life of the process — invisible exactly when being read.
     if _COLOR:
-        print(f"   {_C.get(tag,'')}[{tag:<7}]{_R} {msg}")
+        print(f"   {_C.get(tag,'')}[{tag:<7}]{_R} {msg}", flush=True)
     else:
-        print(f"   [{tag:<7}] {msg}")
+        print(f"   [{tag:<7}] {msg}", flush=True)
 
 
 def say(msg=""):

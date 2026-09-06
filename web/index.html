@@ -4693,6 +4693,9 @@ async function loadSlackConfig(){
   else if(!d.temporal){ status=`<span class="warn">needs Temporal (run via ./run.sh)</span>`; badgeCls='warn'; badgeLabel='no Temporal'; }
   else if(!c.enabled){ status=`<span class="warn">disabled</span> — enable to start listening`; badgeCls='off'; badgeLabel='off'; }
   else if(!poll.exists){ status=`enabled, but no poll schedule yet — restart the server to create it`; badgeCls='warn'; badgeLabel='starting…'; }
+  else if(poll.failing){ status=`enabled, but every poll is failing &mdash; see below`; badgeCls='warn'; badgeLabel='failing'; }
+  else if(d.scopes && d.scopes.known && (d.scopes.missing||[]).length){
+    status=`enabled, but the token can't read anything &mdash; see below`; badgeCls='warn'; badgeLabel='no scopes'; }
   else {
     status=`listening as <b>${esc(d.self||'you')}</b>, polling every <b>${esc(""+(c.poll_seconds||60))}s</b>`
         +(poll.paused?` · <span class="warn">paused</span>`:``)
@@ -4722,6 +4725,7 @@ async function loadSlackConfig(){
           title="${d.token_set?'enable / disable':'needs OTTO_SLACK_USER_TOKEN before it can be enabled'}"></span>
         <span class="jcron">Slack listener</span></div>
         <div class="jstatus">${status}</div>
+        ${scopeWarning(d.scopes)}${scopeNote(d.scopes)}${pollFailureNote(poll)}
         <div class="jstatus">allowlist: <b>${nUsers}</b> user(s), <b>${nChans}</b> channel(s)
           · watch: ${c.watch_dms!==false?'DMs':''}${(c.watch_dms!==false&&c.watch_mentions!==false)?' + ':''}${c.watch_mentions!==false?'mentions':''}${(c.watch_dms===false&&c.watch_mentions===false)?'nothing':''}
           ${c.cap?` · pinned &rarr; <b>${esc(c.cap)}</b>`:''}</div>

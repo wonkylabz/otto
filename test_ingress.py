@@ -2153,6 +2153,53 @@ class SlackBadgeIndependenceTests(unittest.TestCase):
                              f"the bot card must not read the user identity's {other}")
 
 
+class SlackPollHealthTests(unittest.TestCase):
+    """A poll that FIRES but fails every time is invisible: the card reads "listening, next run in
+    40s" while nothing is answered, no audit row is written, no board card appears and the Reaper
+    (which sweeps OttoWorkflows) never looks at it. Measured live at 2h39m of dead listener whose
+    only trace anywhere was a stack in /tmp/otto-worker.log."""
+
+    class _WF:
+        def __init__(self, status):
+            self.status = type("S", (), {"name": status})()
+
+    def _health(self, statuses):
+        import asyncio
+        class C:
+            async def _gen(inner):
+                for st in statuses:
+                    yield SlackPollHealthTests._WF(st)
+            def list_workflows(inner, q):
+                return inner._gen()
+        return asyncio.run(slack._poll_health(C()))
+
+    def test_all_recent_runs_failing_is_reported(self):
+        h = self._health(["FAILED"] * 5)
+        self.assertTrue(h["failing"])
+        self.assertEqual(h["last_failure"], "FAILED")
+
+    def test_one_bad_run_among_good_ones_is_not(self):
+        """Temporal retries, and a restart mid-activity or a Slack 500 shows up here. Flagging a
+        transient would train the operator to scroll past the line that matters."""
+        self.assertFalse(self._health(["COMPLETED", "FAILED", "COMPLETED"])["failing"])
+        self.assertFalse(self._health(["COMPLETED"] * 5)["failing"])
+
+    def test_a_running_poll_is_not_evidence_either_way(self):
+        """An in-flight poll has no verdict yet; counting it would flip the badge on every fire."""
+        self.assertEqual(self._health(["RUNNING"]), {})
+        self.assertTrue(self._health(["RUNNING", "FAILED", "FAILED"])["failing"])
+
+    def test_no_history_and_a_broken_visibility_read_report_nothing(self):
+        """A false alarm is worse than none — it is the boy who cried wolf on the one panel that
+        has to be trusted when it does fire."""
+        self.assertEqual(self._health([]), {})
+        import asyncio
+        class Boom:
+            def list_workflows(inner, q):
+                raise RuntimeError("visibility unavailable")
+        self.assertEqual(asyncio.run(slack._poll_health(Boom())), {})
+
+
 class SlackSocketModeTests(unittest.TestCase):
     """Socket Mode — instant delivery for the bot identity.
 
