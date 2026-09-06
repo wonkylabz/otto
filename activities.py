@@ -101,6 +101,13 @@ def _capabilities():
 
 
 def _cap(name):
+    # Total on purpose: callers pass whatever a stored record happened to hold, and a missing
+    # name means "no capability" — the same answer as an unknown one. Returning None here rather
+    # than raising is what keeps one malformed record from taking down a whole poll (see
+    # SlackListenerActivityTests: a greeted-but-never-run conversation has no cap, and the crash
+    # that caused killed every channel's delivery for hours with no symptom but silence).
+    if not name:
+        return None
     caps = _capabilities()
     c = next((c for c in caps if c.name == name), None)
     # Tolerate a "kind:name" form (e.g. a config default like "agent:sre-qa"): catalogue cap
@@ -881,6 +888,19 @@ def poll_slack(payload: dict) -> dict:
         def _seen(msg=msg):
             slack.mark_seen(msg)
 
+        def _watch(msg, ack_ts, wid=None, pending=False, identity=identity):
+            """Watch the conversation Otto is answering IN — which is wherever its reply goes, so
+            this is derived from `slack.reply_target` (via `ack_ts`) and never re-decided here.
+
+            The distinction that was wrong: `in_thread` is True only for a message ALREADY in a
+            watched thread, so deriving the target from it watched the CHANNEL for the message
+            that STARTS a thread — and a channel record is skipped by `_poll_threads`
+            (`threads_only`), so the thread Otto had just replied in was never polled. `seen` is
+            set whenever there is a thread, because a record with no cursor is skipped too."""
+            slack.watch_conversation(msg["channel"], ack_ts, wid=wid,
+                                     seen=msg["ts"] if ack_ts else None,
+                                     pending=pending, identity=identity)
+
         # A pleasantry with no request never becomes a run — answering it costs one post instead
         # of a verify ladder that dead-ends in a needs-human banner (see slack.is_pleasantry).
         # Mid-conversation ("thanks!") it gets no reply at all: greeting_template introduces Otto
@@ -893,6 +913,13 @@ def poll_slack(payload: dict) -> dict:
             elif slack.post(msg["channel"], _hello_text(identity), thread_ts=ack_ts,
                             identity=identity):
                 _seen()
+                # Otto has now SPOKEN here, so the conversation is live and its next message must
+                # reach it — the whole point of a greeting is to invite one. Without this the
+                # thread is unwatched and the reply lands nowhere any poller reads (observed live:
+                # "@Otto are you there" -> greeting -> the actual question, never answered).
+                # No run happened, so no `wid` (nothing to key a chat thread on) and no `pending`
+                # (nothing in flight — a stale flag here would deafen the thread for 30 minutes).
+                _watch(msg, ack_ts, wid=None, pending=False)
                 greeted.append(slack.wid_for(msg))
             continue
 
@@ -952,9 +979,7 @@ def poll_slack(payload: dict) -> dict:
                 acked_ts.add(ack_key)
             # Track this conversation from now on (or refresh it), marking the run in flight so the
             # next message waits for it to deliver instead of racing its session.
-            slack.watch_conversation(msg["channel"], msg["thread_ts"] if in_thread else None,
-                                     wid=None if rec else wid,
-                                     seen=msg["ts"] if in_thread else None, pending=True)
+            _watch(msg, ack_ts, wid=None if rec else wid, pending=True)
             if not in_thread:
                 slack.record_seen(msg["channel"], msg["ts"], identity)
             picked.append(wid)

@@ -1682,13 +1682,20 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(self.seen, [])                     # not advanced -> retried next poll
 
     def test_first_message_starts_tracking_its_conversation(self):
+        # A DM, stated explicitly: this test's invariant is specifically the DM one, and the
+        # fixture used to leave `is_dm` off — which makes it a CHANNEL message, where the opposite
+        # is correct (Otto replies in a thread there, so the thread is what must be watched; see
+        # test_a_channel_mention_watches_the_THREAD_it_replied_in). The two cases now each have
+        # their own test instead of one fixture standing for both and asserting only one.
+        self.slack.poll = lambda cfg: [{"channel": "D2", "ts": "9.0", "thread_ts": None,
+                                        "user": "U2", "text": "deploy?", "is_dm": True}]
         self.activities.poll_slack({})
-        # (channel, thread root, owning run id, cursor seed, in-flight). A top-level message is
-        # tracked as the CHANNEL's conversation (root None) reading through the channel cursor, so
-        # the next message resumes it — that key being the thread instead is what split one DM into
-        # ten cold runs. The run is marked in flight so the next message waits for it.
-        self.assertEqual(self.watched, [("C7", None, "slack-C7-9-0", None, True)])
-        self.assertEqual(self.seen, [("C7", "9.0")])
+        # (channel, thread root, owning run id, cursor seed, in-flight). A DM's top level IS the
+        # conversation, so it is tracked as the CHANNEL (root None) and read through the channel
+        # cursor — keying it on the thread instead is what split one DM into ten cold runs. The
+        # run is marked in flight so the next message waits for it.
+        self.assertEqual(self.watched, [("D2", None, "slack-D2-9-0", None, True)])
+        self.assertEqual(self.seen, [("D2", "9.0")])
 
     def _followup(self, **rec):
         base = {"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000",
