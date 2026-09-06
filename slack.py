@@ -734,6 +734,29 @@ def is_pending(rec, now=None):
     return slack_state.is_pending(rec, now if now is not None else time.time(), PENDING_STALE_S)
 
 
+# How long a conversation keeps treating a bare "yes" as a gate decision. Longer than
+# PENDING_STALE_S because a gate legitimately stands for hours — `gate_timeout_h` (24h) is its
+# real deadline, and this sits just past it so the window closes with the gate, not before it.
+GATE_STALE_S = int(os.environ.get("OTTO_SLACK_GATE_STALE_H") or 25) * 3600
+
+
+def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER):
+    """Record (or clear, wid=None) that this conversation is waiting on an approval gate."""
+    if not channel:
+        return
+    now = time.time()
+    storage.mutate_json(
+        _STATE,
+        lambda st: slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
+                                           wid=wid, identity=identity),
+        slack_state.empty())
+
+
+def awaiting_gate(rec, now=None):
+    """The run id this conversation is waiting on approval for, or None. PURE given `now`."""
+    return slack_state.awaiting_gate(rec, now if now is not None else time.time(), GATE_STALE_S)
+
+
 def record_conversation_session(channel, thread_ts=None, session=None, cap=None, last_reply=None,
                                 identity=USER):
     """Record what the NEXT message in this conversation needs in order to continue it, and clear
@@ -747,6 +770,10 @@ def record_conversation_session(channel, thread_ts=None, session=None, cap=None,
                                               MAX_THREADS, session=session, cap=cap,
                                               last_reply=last_reply, identity=identity),
         slack_state.empty())
+    # The run has delivered, so whatever gate it was at is resolved. Cleared here rather than on
+    # the approve path because EVERY exit resolves it — approved, declined, expired or crashed —
+    # and a stale marker would make the next plain "no" read as a verdict on a finished run.
+    mark_awaiting_gate(channel, thread_ts, wid=None, identity=identity)
 
 
 # --- allowlist + request shaping -------------------------------------------
@@ -1261,7 +1288,8 @@ def _poll_dms(cfg, out, identity=USER):
         # (see conversation_key). Skipped — not dropped — while the previous run is in flight: the
         # cursor doesn't advance, so these messages are picked up on a later poll, in order.
         rec = conversation_record(cid, identity=identity)
-        if is_pending(rec):
+        gate_wid = awaiting_gate(rec)
+        if is_pending(rec) and not gate_wid:
             continue
         hist = _api("conversations.history", identity=identity, channel=cid, oldest=cur,
                     limit=50).get("messages") or []
@@ -1271,7 +1299,9 @@ def _poll_dms(cfg, out, identity=USER):
                 # A DM's own threads still behave like threads; only its top level is the
                 # conversation, and `_poll_threads` handles the rest.
                 out.append({**c, "is_dm": True,
-                            "conversation": (None if c.get("thread_ts") else rec)})
+                            "conversation": (None if c.get("thread_ts") else rec),
+                            **({"gate_wid": gate_wid} if gate_wid and not c.get("thread_ts")
+                               else {})})
 
 
 def _poll_mentions(cfg, out):
@@ -1384,11 +1414,16 @@ def _poll_threads(cfg, out):
         # answered by the other one — mid-thread, that reads as a stranger barging in.
         if not identity_enabled(identity, cfg):
             continue
-        if is_pending(rec, now):
+        # A conversation parked at an approval gate stays readable: its next message might be
+        # the decision that unparks it. Ordinary messages are still held back — the activity
+        # decides that, because `pending` means "one turn at a time" and only a DECISION is
+        # exempt from it. Without this the "yes" sat unread for PENDING_STALE_S (30min) and the
+        # feature would have looked broken in exactly the way the gate already did.
+        gate_wid = awaiting_gate(rec, now)
+        if is_pending(rec, now) and not gate_wid:
             continue
         self_ok = _self_test(cfg, cid) if identity == USER else False
-        msgs = _api("conversations.replies", identity=identity, channel=cid, ts=root,
-                    oldest=cur,
+        msgs = _api("conversations.replies", identity=identity, channel=cid, ts=root, oldest=cur,
                     limit=50).get("messages") or []
         for m in msgs:
             c = _clean(m, cid, self_ok, identity)
@@ -1401,6 +1436,8 @@ def _poll_threads(cfg, out):
             c["thread_ts"] = root
             c["conversation"] = rec
             c["in_thread"] = True
+            if gate_wid:
+                c["gate_wid"] = gate_wid       # the run this conversation is waiting on
             out.append(c)
 
 
@@ -1512,6 +1549,29 @@ def start_run(wid, params):
             return "duplicate"
         trace("SLACK", f"start_run {wid} failed: {str(e)[:140]}")
         return "failed"
+
+
+def signal_decision(wid, approved):
+    """Send an approve/deny decision to a parked workflow. Returns True on success.
+
+    The same signal the web gate's Approve/Deny buttons send (`server._wf_signal`) — a Slack
+    decision is not a second kind of approval, it is the same one arriving by a different door,
+    so it must land on the same signal or the two can diverge in what "approved" means."""
+    import temporal_client as tc
+    if not (tc.OK and wid):
+        return False
+
+    async def _go():
+        from workflows import OttoWorkflow
+        c = await tc.client()
+        await c.get_workflow_handle(wid).signal(OttoWorkflow.approve, bool(approved))
+        return True
+
+    try:
+        return bool(tc.run(_go()))
+    except Exception as e:  # noqa: BLE001 - a dead/finished run is the common case
+        trace("SLACK", f"gate signal to {wid} failed: {str(e)[:120]}")
+        return False
 
 
 # --- Temporal poll schedule (mirrors board.reconcile_schedule) -------------

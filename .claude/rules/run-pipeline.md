@@ -20,6 +20,7 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 - The plan must be the **last** thing the cap says — only the final turn is captured.
 - Preview timeout is 900s; `plan_capability`'s activity timeout must stay well above it (17min).
 - A failed pass yields no plan text, never its error sentinel rendered as one; an empty plan at the gate shows an explicit note rather than a bare approval card.
+- **A parked gate TELLS THE ASKER** (`delivery.interim`, once per run) — the ntfy push goes to the OWNER, so the asker gets an ack then silence (67min, measured). Conversations only, and wrapped: a note must not kill a paid-for plan (`GateNoticeToTheAskerTests`).
 - **The gate wait is BOUNDED** (`_gate_wait`, `gate_timeout_h`=24h, 0=off) — an ingress whose asker can't see the approval card parks forever otherwise. Expiry DECLINES: `gate_timeout` needs-human + a word to `reply_to`, never an approval (`GateDeadlineAndDenialIdentityTests`).
 - **A decline is audited under the run's OWN wid** — `record_skip` minting a fresh one orphans the row from the preview the human declined, the chat and the board card.
 - **"Request changes" (`revise_plan`)** folds free-text feedback into the request and re-previews, bounded by `max_plan_revisions` (3).

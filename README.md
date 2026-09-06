@@ -275,6 +275,19 @@ search, at the cost of one extra step: **invite the bot to each channel** (`/inv
   you already hold does not gain it, and this is the single most common reason a fresh bot is
   silent. Otto shows the same check on the Events tab.
 
+### 3. Configure it (Events tab → Slack → **Bot user**)
+
+- `bot_enabled: true`
+- `bot_allow_channels` — channel IDs the bot may answer in. **This list is the bound**: the bot
+  reads only the channels named here *and* that it's been invited to. A channel it's in but not
+  listed is ignored; a channel listed but not invited to yields nothing.
+- `bot_allow_users` — who may **DM** the bot. Both lists empty means nobody, same safe default.
+- `bot_approvers` — who may clear an approval gate by replying in the thread (see below).
+  **Empty by default, and separate from the two lists above on purpose.**
+- `bot_watch_dms` / `bot_watch_mentions`, `bot_ack_template`, `bot_greeting_template`
+
+Poll interval, write approval and the pinned capability are shared with auto-answer.
+
 ### 4. Instant replies (optional — Socket Mode)
 
 Without this the bot answers on the poll, so up to `poll_seconds` late. Socket Mode is an outbound
@@ -319,6 +332,24 @@ Leave `poll_seconds` at 60. It's the backstop that makes the socket safe to lose
 past `OTTO_SLACK_DOWNTIME_S` (300) would make every poll look like a resume-after-downtime and
 start burning backlog.
 
+### 5. Approving a write from Slack (optional)
+
+Reads answer immediately. A **write** pauses for approval, and Otto now says so in the thread:
+
+> That needs [you]'s approval before I can do it — I've put it in front of them. I'll reply here
+> as soon as it's cleared.
+
+By default you clear it on the **Needs-you board** (or the ntfy Approve/Deny buttons). Add your
+own Slack ID to `bot_approvers` and you can also clear it by replying in the thread:
+
+- `approve` / `yes` / `go ahead` / `lgtm` / `ship it` / 👍 → runs it
+- `no` / `deny` / `cancel` / `stop` / 👎 → declines; nothing runs
+
+Three things worth knowing, because they are what makes this safe to switch on:
+
+- **`bot_approvers` is not `bot_allow_users`.** Being allowed to ask Otto for something is not
+  being allowed to authorise it — otherwise a colleague's request approves its own write. Only
+  IDs on this list count, and an empty list means nobody.
 - **The whole message must be the decision.** "yes, but change the title first" approves nothing,
   and neither does "I'd approve this once the leak is fixed". Anything else is treated as an
   ordinary message, which leaves the gate shut — the safe direction.

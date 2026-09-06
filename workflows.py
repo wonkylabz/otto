@@ -28,7 +28,8 @@ with workflow.unsafe.imports_passed_through():
                             merge_results, notify_human, plan_capability, plan_swarm, open_chat,
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack, pr_head_branch,
                             provision_workspace, resolve_pr_target, check_grounding,
-                            qa_capability, reap_stuck, record_attempt, record_chat, record_skip,
+                            interim_notice, qa_capability, reap_stuck,
+                            record_attempt, record_chat, record_skip,
                             recover_pr_branch, review_capability, judge_review, route_request,
                             run_capability, snapshot_repos, snapshot_settings, suggest_repo,
                             verify_capability)
@@ -231,6 +232,7 @@ class OttoWorkflow:
         self._replanning = False       # True only while a revision round's re-preview is in flight
         self._awaiting_clarification = False
         self._awaiting_approval = False
+        self._gate_told_asker = False
         self._risk_reason = None       # WHY the approval gate fired — shown on the gate card
         # True when a write-bound session's follow-up was re-read as a DISCUSSION turn (a
         # question / brainstorm that mutates nothing), so this turn drops to read tools and
@@ -643,6 +645,36 @@ class OttoWorkflow:
                                        tags=["warning"],
                                        priority="max", kind="approval",   # a run is parked
                                        wid=workflow.info().workflow_id)
+                    # The ntfy push above goes to the OWNER. Nobody has told the person who
+                    # ASKED — and from their side the conversation simply stopped: an ack, then
+                    # silence, for as long as the gate stands (measured: 67 minutes on a Slack DM
+                    # that eventually ran). `_gate_wait`'s own docstring predicted this and
+                    # bounded the wait instead of closing it; the bound only speaks after 24h.
+                    #
+                    # Conversation audiences only (delivery.interim), and once per run however
+                    # many revision rounds the gate goes through — the asker is not the one
+                    # revising, so a notice per round is noise from their side.
+                    if reply_to and not self._gate_told_asker:
+                        self._gate_told_asker = True
+                        try:
+                            await workflow.execute_activity(
+                                interim_notice,
+                                {"reply_to": reply_to,
+                                 "text": (f"That needs {config.OWNER_NAME}'s approval before I "
+                                          f"can do it — I've put it in front of them. I'll reply "
+                                          f"here as soon as it's cleared."),
+                                 # Arms the conversation so a reply CAN clear it. Who may
+                                 # actually do so is decided at the other end, against
+                                 # `bot_approvers` — this only says which run a decision
+                                 # would belong to.
+                                 "awaiting_wid": workflow.info().workflow_id},
+                                start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                        except Exception:  # noqa: BLE001 - a courtesy note, never the run
+                            # A progress note is worth strictly less than the run it describes:
+                            # this one arrives AFTER a plan preview has already been paid for
+                            # (measured at $0.82), so letting a failed post discard an approved
+                            # write would be the expensive half failing for the cheap half.
+                            pass
                     if not await self._gate_wait(
                             lambda: self._decision is not None
                             or self._plan_feedback is not None):

@@ -1526,8 +1526,9 @@ class SlackListenerActivityTests(unittest.TestCase):
         cap.risk = "read"
         activities._caps = [cap]                          # so activities._cap("answer-thing") resolves
         self._orig = {n: getattr(slack, n)
-                      for n in ("load", "enabled", "poll", "post", "start_run", "record_seen",
-                                "watch_conversation", "thread_context", "channel_context")}
+                      for n in ("load", "enabled", "any_enabled", "poll", "post", "start_run",
+                                "record_seen", "watch_conversation", "thread_context",
+                                "channel_context", "signal_decision", "mark_awaiting_gate")}
         slack.enabled = lambda cfg=None: True
         slack.any_enabled = lambda cfg=None: True
         slack.load = lambda: {**slack._DEFAULTS, "enabled": True, "cap": "answer-thing",
@@ -1557,6 +1558,144 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.activities._caps = self._orig_caps
         for n, v in self._orig.items():
             setattr(self.slack, n, v)
+
+    def test_a_watched_conversation_with_no_bound_cap_does_not_crash_the_poll(self):
+        """A conversation record can exist with no capability on it, and the resume path used to
+        hand that None straight to `_cap`, which crashed the whole activity.
+
+        Every message in every channel then went unanswered — the poll is one activity for all of
+        them, so one bad record is a total outage, and Temporal just retried it forever. The only
+        symptom was silence: no reply, no needs-human, no board card, cursors frozen at the last
+        good poll. Live: 2h39m of dead listener, found only in the worker log.
+
+        Two ways to get such a record, one of them routine: a greeting watches a conversation
+        before any run has bound a capability to it, and a run that fails before delivering never
+        records one either."""
+        for rec in ({"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000"},   # greeted only
+                    {"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000",
+                     "session": "s1"},                                             # no cap
+                    {"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000",
+                     "session": "s1", "cap": {}},                                  # empty cap
+                    {"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000",
+                     "session": "s1", "cap": {"name": None}}):
+            with self.subTest(rec=rec):
+                self.started.clear()
+                self.slack.poll = lambda cfg, rec=rec: [
+                    {"channel": "C7", "ts": "20.0", "thread_ts": "9.0", "user": "U2",
+                     "text": "what's the latest version?", "identity": "bot",
+                     "in_thread": True, "conversation": rec}]
+                out = self.activities.poll_slack({})       # must not raise
+                # ...and it must still do the work: a fresh run, since there is nothing to resume.
+                self.assertEqual(len(self.started), 1, "the message must still start a run")
+                self.assertEqual(out["resumed"], [], "nothing to resume without a bound cap")
+
+    def _armed(self, text, user="U1", approvers=("U1",)):
+        """One message arriving in a conversation parked at a gate."""
+        self.signalled = []
+        self.disarmed = []
+        self.slack.signal_decision = lambda wid, ok: (
+            self.signalled.append((wid, ok)) or True)
+        self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user": (
+            self.disarmed.append((ch, root, wid)))
+        self.slack.load = lambda: {**self.slack._DEFAULTS, "enabled": True, "bot_enabled": True,
+                                   "cap": "answer-thing", "ack_template": "hold on…",
+                                   "bot_approvers": list(approvers)}
+        self.slack.poll = lambda cfg: [{
+            "channel": "C9", "ts": "20.0", "thread_ts": "5.0", "user": user, "text": text,
+            "identity": "bot", "in_thread": True, "gate_wid": "slack-b-C9-5-0",
+            "conversation": {"channel": "C9", "thread_ts": "5.0", "cursor": "5.000000",
+                             "gate_wid": "slack-b-C9-5-0"}}]
+        return self.activities.poll_slack({})
+
+    def test_an_approver_saying_yes_clears_the_gate(self):
+        out = self._armed("approve")
+        self.assertEqual(self.signalled, [("slack-b-C9-5-0", True)])
+        self.assertEqual(out["decided"], ["slack-b-C9-5-0"])
+        self.assertEqual(self.started, [], "a decision must never also start a run")
+        self.assertIn("Approved", self.posts[-1][1])
+        # Disarmed, or the next message in the thread is read as another verdict.
+        self.assertIn(("C9", "5.0", None), self.disarmed)
+
+    def test_a_non_approver_saying_yes_clears_nothing_and_is_not_told_why(self):
+        """Telling a colleague "you may not approve that" advertises that a gate exists and
+        invites them to push at it. Their message is simply not a decision — and the cursor does
+        NOT advance, so it is answered normally once the gate resolves, in order."""
+        out = self._armed("approve", user="U5")
+        self.assertEqual(self.signalled, [])
+        self.assertEqual(out["decided"], [])
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.posts, [], "nothing is said back to an unauthorised approver")
+        self.assertEqual(self.seen, [], "the cursor must not advance — the message still needs "
+                                        "handling once the gate clears")
+
+    def test_an_ordinary_message_at_a_gate_waits_rather_than_starting_a_second_run(self):
+        """The parked run is still holding the conversation. Starting a second one here would
+        run two turns of the same thread at once — the exact race `pending` exists to stop."""
+        out = self._armed("actually, what's the latest version?")
+        self.assertEqual(self.signalled, [])
+        self.assertEqual(self.started, [])
+        self.assertEqual(out["decided"], [])
+        self.assertEqual(self.seen, [])
+
+    def test_a_decision_for_a_run_that_is_already_gone_disarms_instead_of_hanging(self):
+        """A gate can be cleared from the board, expire, or the run can be terminated. The
+        conversation must stop treating replies as verdicts rather than swallowing them forever."""
+        self.signalled = []
+        self.disarmed = []
+        self.slack.signal_decision = lambda wid, ok: False        # the workflow is gone
+        self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user": (
+            self.disarmed.append((ch, root, wid)))
+        self.slack.load = lambda: {**self.slack._DEFAULTS, "bot_enabled": True,
+                                   "bot_approvers": ["U1"], "cap": "answer-thing"}
+        self.slack.poll = lambda cfg: [{
+            "channel": "C9", "ts": "20.0", "thread_ts": "5.0", "user": "U1", "text": "approve",
+            "identity": "bot", "in_thread": True, "gate_wid": "slack-b-C9-5-0",
+            "conversation": {"channel": "C9", "thread_ts": "5.0", "cursor": "5.000000"}}]
+        out = self.activities.poll_slack({})
+        self.assertEqual(out["decided"], [])
+        self.assertIn(("C9", "5.0", None), self.disarmed)
+        self.assertEqual(self.seen, [], "left for normal handling on the next poll")
+
+    def test_a_channel_mention_watches_the_THREAD_it_replied_in(self):
+        """Otto answers a channel @-mention IN A THREAD, so the thread is the conversation from
+        that moment on. Watching the CHANNEL instead leaves that thread unwatched: a follow-up in
+        it is invisible to every poller (`conversations.history` omits thread replies, and the
+        reply carries no @-mention for the search/mention path to find), so the conversation
+        dead-ends after exactly one turn.
+
+        The rule already exists — "a thread Otto replied in is watched" (ingress.md) — but the
+        watch target was derived from `in_thread`, which is False for the message that STARTS the
+        thread. `slack.reply_target` is the one place that decides where Otto speaks, so it has to
+        be the one place that decides what gets watched."""
+        self.slack.poll = lambda cfg: [{"channel": "C7", "ts": "9.0", "thread_ts": None,
+                                        "user": "U2", "text": "what's the latest issue?",
+                                        "identity": "bot"}]
+        self.activities.poll_slack({})
+        self.assertEqual(len(self.watched), 1)
+        ch, root, _wid, seen, _pending = self.watched[0]
+        self.assertEqual((ch, root), ("C7", "9.0"),
+                         "a channel mention must watch the thread its answer goes into")
+        # `_poll_threads` skips any record without a cursor, so an unset `seen` is the same as
+        # not watching it at all.
+        self.assertEqual(seen, "9.0")
+
+    def test_a_greeting_still_watches_the_conversation_it_greeted_in(self):
+        """Reported live: `@Otto are you there` -> "Hi! I'm Otto. What do you need?" -> the real
+        question typed into that thread got no reply, ever.
+
+        The pleasantry short-circuit posts and returns before the watch, so Otto had spoken in a
+        thread it was not listening to. The greeting exists to invite the next message; not
+        watching for it is the one thing that makes it useless."""
+        self.slack.poll = lambda cfg: [{"channel": "C7", "ts": "9.0", "thread_ts": None,
+                                        "user": "U2", "text": "hey", "identity": "bot"}]
+        out = self.activities.poll_slack({})
+        self.assertEqual(len(out["greeted"]), 1)
+        self.assertEqual(len(self.started), 0)              # still no run for a pleasantry
+        self.assertEqual(len(self.watched), 1, "the greeted thread must be watched")
+        ch, root, wid, seen, pending = self.watched[0]
+        self.assertEqual((ch, root, seen), ("C7", "9.0", "9.0"))
+        self.assertIsNone(wid, "no run happened, so there is no run to key a chat thread on")
+        self.assertFalse(pending, "nothing is in flight — a pending flag would deafen the thread")
 
     def test_starts_run_posts_ack_and_advances_cursor(self):
         out = self.activities.poll_slack({})

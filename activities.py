@@ -618,6 +618,29 @@ def record_attempt(payload: dict) -> None:
 
 
 @activity.defn
+def interim_notice(payload: dict) -> dict:
+    """Tell the asker something WHILE the run is still going — currently: that it has parked on
+    an approval gate they cannot see.
+
+    Deliberately not `deliver_result`: that one marks the run delivered (so the real answer would
+    later be swallowed by `_slack`'s idempotency check), records the Claude session, and clears
+    the conversation's in-flight flag. This posts and nothing else. Never raises."""
+    reply_to = payload.get("reply_to")
+    status = delivery.interim(reply_to, payload.get("text", ""))
+    # A gate notice also ARMS the conversation: the reply that clears it has to be matchable to
+    # this specific run, and the conversation record is the only place both ends can see. Done
+    # here, next to the notice, so a conversation can never be armed without the asker having
+    # been told what for.
+    wid = payload.get("awaiting_wid")
+    if wid and (reply_to or {}).get("kind") == "slack_thread":
+        import slack
+        slack.mark_awaiting_gate(reply_to.get("channel"), reply_to.get("thread_ts"),
+                                 wid=wid, identity=slack.identity_of(reply_to))
+    activity.logger.info(f"interim notice -> {status}")
+    return {"status": status}
+
+
+@activity.defn
 def deliver_result(payload: dict) -> dict:
     """Send a finished unattended run's result to its reply target (webhook, etc.)."""
     import delivery
@@ -905,7 +928,43 @@ def poll_slack(payload: dict) -> dict:
         # of a verify ladder that dead-ends in a needs-human banner (see slack.is_pleasantry).
         # Mid-conversation ("thanks!") it gets no reply at all: greeting_template introduces Otto
         # to a stranger, and re-introducing itself as a conversation's last word is noise.
-        if slack.is_pleasantry(msg.get("text")):
+        # A conversation parked at an approval gate: this reply may be the decision that clears
+        # it. Handled BEFORE everything else — a parked run is holding the conversation, so
+        # nothing else may be started here, and the message must not be read as a new task.
+        gate_wid = msg.get("gate_wid")
+        if gate_wid:
+            decision = slack.parse_decision(msg.get("text"))
+            allowed = slack.may_approve(cfg, msg.get("user"), identity)
+            if decision is None or not allowed:
+                # Not a decision, or not from someone who may make one. The cursor deliberately
+                # does NOT advance: the conversation is still one-turn-at-a-time, so this message
+                # is handled after the gate resolves, in order. An unauthorised "yes" is simply
+                # not a decision — saying "you may not approve" would tell a colleague a gate
+                # exists and invite them to push at it.
+                if decision is not None and not allowed:
+                    activity.logger.info(
+                        f"slack: ignoring a gate decision from {msg.get('user')} "
+                        f"(not in bot_approvers)")
+                continue
+            ok = slack.signal_decision(gate_wid, decision)
+            if not ok:
+                # The run is gone (finished, expired, terminated). Clear the marker so the
+                # conversation stops interpreting replies as verdicts on a run that no longer
+                # exists, and leave the message to be handled normally next poll.
+                slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity)
+                continue
+            slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity)
+            _seen()
+            slack.post(msg["channel"],
+                       "Approved — running it now." if decision
+                       else "OK, I won't do it. Nothing was run.",
+                       thread_ts=ack_ts, identity=identity)
+            decided.append(gate_wid)
+            continue
+
+        # `summons` is a bare "@otto" that stripped to nothing (slack.strip_self_mention) — the
+        # bot equivalent of a greeting, and the poller is the only thing that can tell.
+        if msg.get("summons") or slack.is_pleasantry(msg.get("text")):
             mid_conversation = bool(rec and rec.get("session"))
             if mid_conversation:
                 _seen()

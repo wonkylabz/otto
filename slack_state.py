@@ -234,6 +234,44 @@ def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, 
     return st
 
 
+def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, identity=USER):
+    """Mark this conversation as WAITING on an approval gate for run `wid` (or clear it, wid=None).
+
+    Kept next to `pending_at` rather than replacing it: the conversation IS still in flight (its
+    run has not delivered), so the one-turn-at-a-time rule must keep holding back ordinary
+    messages. This only says that one specific kind of reply — a decision — is now meaningful,
+    and which run it belongs to."""
+    key = conversation_key(channel, thread_ts, identity)
+    threads = prune_threads(st.setdefault("threads", {}), now, ttl_s, max_threads)
+    rec = dict(threads.get(key) or {})
+    rec.update({"channel": channel, "thread_ts": thread_ts, "identity": identity or USER,
+                "at": now})
+    if wid:
+        rec["gate_wid"] = wid
+        rec["gate_at"] = now
+    else:
+        rec.pop("gate_wid", None)
+        rec.pop("gate_at", None)
+    threads[key] = rec
+    st["threads"] = prune_threads(threads, now, ttl_s, max_threads)
+    return st
+
+
+def awaiting_gate(rec, now, stale_s):
+    """The run id this conversation is waiting on approval for, or None.
+
+    Bounded by the same reasoning as `is_pending`: a workflow that died at the gate must not leave
+    a conversation permanently interpreting "no" as a verdict on a run that no longer exists.
+    Deliberately a LONGER window than PENDING_STALE_S — a gate legitimately stands for hours (its
+    own deadline is `gate_timeout_h`, 24h by default), which is exactly why the asker needed
+    telling in the first place."""
+    rec = rec or {}
+    wid, at = rec.get("gate_wid"), float(rec.get("gate_at") or 0)
+    if not wid or not at:
+        return None
+    return wid if now - at < stale_s else None
+
+
 def record_session(st, channel, thread_ts, now, ttl_s, max_threads,
                    session=None, cap=None, last_reply=None, identity=USER):
     """Record what the NEXT message in this conversation needs in order to continue it: the Claude

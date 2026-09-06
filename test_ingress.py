@@ -2153,6 +2153,207 @@ class SlackBadgeIndependenceTests(unittest.TestCase):
                              f"the bot card must not read the user identity's {other}")
 
 
+class GateNoticeToTheAskerTests(unittest.TestCase):
+    """A write from Slack parks on an approval gate whose only UI is the web app. The asker sees
+    an ack and then nothing — measured at 67 minutes on `slack-b-D0BVD1F856Y-1788669218-110399`,
+    a DM that previewed a plan at 16:36 and ran at 17:43 once it was approved elsewhere.
+
+    `_gate_wait`'s docstring already named this ("it just stops existing as far as the asker is
+    concerned") and answered it with a 24h bound — which only speaks after 24h."""
+
+    def test_the_notice_goes_to_a_conversation_and_never_to_a_report_target(self):
+        """A person in a live exchange has no other window onto the run. A ticket comment or a
+        webhook is a durable record read later by someone who is not waiting, so a progress note
+        there is noise in a permanent place. Reuses `AUDIENCE` rather than re-deciding."""
+        posted = []
+        orig = slack.post
+        try:
+            slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+                posted.append((ch, text, identity)) or True)
+            out = delivery.interim({"kind": "slack_thread", "channel": "C9", "thread_ts": "1.0",
+                                    "identity": "bot"}, "needs approval")
+            self.assertIn("posted", out)
+            self.assertEqual(posted, [("C9", "needs approval", "bot")])
+            posted.clear()
+            for target in ({"kind": "github_issue", "repo": "a/b", "number": 1},
+                           {"kind": "github_pr", "repo": "a/b", "number": 1},
+                           {"kind": "webhook", "url": "https://x"}, None, {}):
+                self.assertIn("no interim channel", delivery.interim(target, "needs approval"))
+            self.assertEqual(posted, [])
+        finally:
+            slack.post = orig
+
+    def test_the_audience_rule_is_what_decides_not_the_sink_list(self):
+        """Today `interim` only knows how to post to Slack, so the behaviour above holds even
+        with the audience check deleted — the other kinds fall through for want of a branch.
+        That makes the RULE untested by outcome, and the rule is the part that matters: the
+        moment someone adds a `github_issue` branch (a reasonable thing to want), the audience
+        check is the only thing standing between a progress note and a permanent ticket comment.
+        So it is pinned structurally."""
+        src = inspect.getsource(delivery.interim)
+        self.assertIn("audience_for(reply_to)", src)
+        self.assertIn("CONVERSATION_AUDIENCE", src)
+        # And the two modules must agree on the value — contracts mirrors delivery BY VALUE
+        # (importing it would be a cycle), so nothing but a test keeps them in step.
+        self.assertEqual(delivery.CONVERSATION_AUDIENCE, contracts.CONVERSATION_AUDIENCE)
+        self.assertEqual(delivery.AUDIENCE["slack_thread"], delivery.CONVERSATION_AUDIENCE)
+
+    def test_it_does_not_mark_the_run_delivered(self):
+        """The trap `deliver_result` would have walked into: it marks the run posted for
+        idempotency, so using it for a progress note makes `_slack` swallow the REAL answer when
+        it finally arrives — the run would complete and say nothing, which is worse than the
+        silence this fixes."""
+        marked = []
+        orig_post, orig_mark, orig_sess = slack.post, slack.mark_posted, \
+            slack.record_conversation_session
+        try:
+            slack.post = lambda *a, **k: True
+            slack.mark_posted = lambda rid: marked.append(rid)
+            slack.record_conversation_session = lambda *a, **k: marked.append("session")
+            delivery.interim({"kind": "slack_thread", "channel": "C9", "identity": "bot"}, "hi")
+            self.assertEqual(marked, [], "an interim notice must not end or bind the run")
+        finally:
+            slack.post, slack.mark_posted, slack.record_conversation_session = \
+                orig_post, orig_mark, orig_sess
+
+    def test_it_is_scrubbed_and_never_raises(self):
+        """It carries no model output today, but it is an egress like any other, and a note that
+        raised would take down a run that has already paid for a plan preview."""
+        seen = []
+        orig = slack.post
+        try:
+            slack.post = lambda ch, text, **k: seen.append(text) or True
+            delivery.interim({"kind": "slack_thread", "channel": "C9"},
+                             "token sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLL")
+            self.assertNotIn("sk-ant-api03-AAAABBBB", seen[0])
+            slack.post = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("slack down"))
+            self.assertIn("failed", delivery.interim({"kind": "slack_thread", "channel": "C9"}, "x"))
+        finally:
+            slack.post = orig
+
+    def test_the_workflow_tells_the_asker_once_and_cannot_die_doing_it(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "workflows.py")).read()
+        gate = src[src.index('self._enter("GATE")'):src.index("if self._decision is not None:")]
+        self.assertIn("interim_notice", gate)
+        # Once per run, not once per revision round: the asker is not the one revising, so a
+        # notice per round is noise from their side.
+        self.assertIn("not self._gate_told_asker", gate)
+        self.assertIn("self._gate_told_asker = True", gate)
+        # And it is wrapped: a courtesy note must never discard a run that has already paid for
+        # a plan preview (measured at $0.82 on the run that prompted this).
+        self.assertIn("except Exception", gate)
+        self.assertIn("interim_notice", open(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "worker.py")).read())
+
+
+class SlackGateApprovalTests(unittest.TestCase):
+    """Clearing an approval gate by replying in Slack. Every test here is a way this becomes a
+    hole in the one control that stands between a colleague's DM and Otto writing in the
+    operator's name."""
+
+    def _cfg(self, **over):
+        base = dict(slack._DEFAULTS)
+        base.update({"bot_enabled": True, "bot_allow_users": ["U5"],
+                     "bot_allow_channels": ["C9"], "bot_approvers": ["U1 #owner"]})
+        base.update(over)
+        return base
+
+    def test_approving_is_a_separate_grant_from_being_allowed_to_talk(self):
+        """`bot_allow_users` means "may ask Otto to do things". Reusing it here would mean every
+        allowlisted colleague can authorise the write their own request triggered — which is the
+        gate approving itself."""
+        cfg = self._cfg()
+        self.assertTrue(slack.may_approve(cfg, "U1", slack.BOT))
+        self.assertFalse(slack.may_approve(cfg, "U5", slack.BOT))    # may talk, may not approve
+        self.assertFalse(slack.may_approve(cfg, "U9", slack.BOT))
+        # Empty list is the default and means NOBODY — the feature is off until opted into.
+        self.assertFalse(slack.may_approve(self._cfg(bot_approvers=[]), "U1", slack.BOT))
+        # Labels are stripped like every other allowlist, and a label is not an identity.
+        self.assertFalse(slack.may_approve(cfg, "#owner", slack.BOT))
+        # The USER identity is excluded outright — Otto posts AS the owner there, and `_clean`
+        # drops the owner's own messages, so a carve-out would be a second path to the grant.
+        self.assertFalse(slack.may_approve(cfg, "U1", slack.USER))
+
+    def test_only_a_whole_message_that_is_a_decision_counts(self):
+        """A false APPROVE runs a write nobody read. Substring matching is the exact mistake
+        `pr_review.verdict_of` exists to prevent — "I would approve this once the leak is fixed"
+        approves nothing."""
+        for yes in ("approve", "Approved", "yes", "  YES!  ", "go ahead", "lgtm", "ship it", "👍"):
+            self.assertIs(slack.parse_decision(yes), True, yes)
+        for no in ("no", "deny", "Declined.", "cancel", "stop", "👎"):
+            self.assertIs(slack.parse_decision(no), False, no)
+        for neither in ("yes, but change the title first",
+                        "I would approve this once the leak is fixed",
+                        "no idea, go ahead and try",
+                        "approve the PR that Dana opened instead",
+                        "ok cool thanks", "create a ticket for this", "", "   ", None,
+                        "yes " * 20):
+            self.assertIsNone(slack.parse_decision(neither), repr(neither))
+
+    def test_a_parked_conversation_is_readable_but_still_one_turn_at_a_time(self):
+        """Two rules meeting. `pending` holds ordinary messages back so turns stay ordered — but
+        it also hid the decision for PENDING_STALE_S (30 min), which would have made this feature
+        look as broken as the silence it fixes. So a gate-armed conversation is READ, and the
+        activity is what refuses to start anything new in it."""
+        now = 1_000_000.0
+        armed = {"channel": "C9", "thread_ts": "5.0", "cursor": "5.000000",
+                 "pending_at": now - 10, "gate_wid": "slack-b-C9-5-0", "gate_at": now - 10}
+        self.assertTrue(slack.is_pending(armed, now))
+        self.assertEqual(slack.awaiting_gate(armed, now), "slack-b-C9-5-0")
+        # Bounded: a workflow that died at the gate must not leave a conversation reading every
+        # later "no" as a verdict on a run that no longer exists.
+        self.assertIsNone(slack.awaiting_gate({**armed, "gate_at": now - slack.GATE_STALE_S - 1},
+                                              now))
+        # ...but the window outlives the gate's own 24h deadline, or it closes first and the
+        # asker's "yes" stops working while the card is still up.
+        self.assertGreater(slack.GATE_STALE_S, 24 * 3600)
+        self.assertIsNone(slack.awaiting_gate({"channel": "C9"}, now))
+        self.assertIsNone(slack.awaiting_gate(None, now))
+
+    def test_the_poller_actually_delivers_the_decision_past_the_pending_guard(self):
+        """The previous test states the rule on the pure helpers; this one runs `_poll_threads`,
+        because the guard that matters is in the poller and a rule nothing executes is a comment.
+        Without this the whole feature is inert in the most ordinary way possible: the "yes" sits
+        unread behind `pending` for 30 minutes and the gate looks as dead as before."""
+        orig = slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.USER_TOKEN
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME = {"bot": "U9", "user": "U0"}
+                slack.BOT_TOKEN, slack.USER_TOKEN = "xoxb-t", "xoxp-t"
+                slack._api = lambda method, identity="user", **k: (
+                    {"ok": True, "messages": [{"user": "U1", "ts": "20.0", "text": "approve"}]}
+                    if method == "conversations.replies" else {"ok": True})
+                # A conversation that is BOTH in flight (a run is parked on it) and armed.
+                slack.watch_conversation("C9", "5.0", seen="5.0", pending=True,
+                                         identity=slack.BOT)
+                slack.mark_awaiting_gate("C9", "5.0", wid="slack-b-C9-5-0", identity=slack.BOT)
+                out = []
+                slack._poll_threads(self._cfg(), out)
+        finally:
+            (slack._api, slack._ME, slack._STATE,
+             slack.BOT_TOKEN, slack.USER_TOKEN) = orig
+        self.assertEqual(len(out), 1, "a parked conversation must still be READ for a decision")
+        self.assertEqual(out[0]["text"], "approve")
+        self.assertEqual(out[0]["gate_wid"], "slack-b-C9-5-0",
+                         "the picked message must carry WHICH run it would decide")
+
+    def test_a_delivered_run_disarms_the_conversation(self):
+        """EVERY exit resolves the gate — approved, declined, expired, crashed — and all of them
+        end in a delivery. A stale marker would make the next plain "no" a verdict on a run that
+        already finished."""
+        src = inspect.getsource(slack.record_conversation_session)
+        self.assertIn("mark_awaiting_gate", src)
+        self.assertIn("wid=None", src)
+
+    def test_the_slack_decision_uses_the_same_signal_as_the_web_gate(self):
+        """A Slack approval is not a second kind of approval — it is the same one arriving by a
+        different door. Two signals would be two definitions of "approved"."""
+        self.assertIn("OttoWorkflow.approve", inspect.getsource(slack.signal_decision))
+        self.assertIn("OttoWorkflow.approve", inspect.getsource(server._wf_signal))
+
+
 class SlackPollHealthTests(unittest.TestCase):
     """A poll that FIRES but fails every time is invisible: the card reads "listening, next run in
     40s" while nothing is answered, no audit row is written, no board card appears and the Reaper

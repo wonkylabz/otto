@@ -33,6 +33,9 @@ Five adapters normalizing into one `OttoWorkflow`: web chat (`web/index.html`+`s
 - **What Otto WATCHES is where its reply GOES** (`activities._watch` ← `reply_target`) — `in_thread` is False for the message STARTING a thread, so deriving it there watched the channel, which `_poll_threads` skips: threads died after one turn (`SlackListenerActivityTests`).
 - **One schedule and one downtime clock serve both** (`any_enabled`) — else switching the owner's listener off silently stops the bot. A conversation whose identity is switched off is abandoned, never handed to the other one (`SlackBotIdentityTests`).
 
+- **Approving from Slack is a SEPARATE grant** (`bot_approvers`, empty=nobody) — `bot_allow_users` means "may ask"; reusing it lets a request approve its own write. Bot only: the user token posts AS the owner, whose messages `_clean` drops (`SlackGateApprovalTests`).
+- **A gate reply must be the WHOLE message** (`parse_decision`, biased to None) — opposite bias to `_parse_clarification`: a false proceed there costs a question, here it runs an unread write. "I'd approve this once the leak is fixed" decides nothing (`SlackGateApprovalTests`).
+- **A gate-armed conversation stays READABLE while pending** (`_poll_threads`) — else `pending` hides the decision for 30min and the feature is inert. Only a decision is exempt from one-turn-at-a-time; anything else waits, cursor unmoved (`SlackGateApprovalTests`).
 
 ## GitHub board
 

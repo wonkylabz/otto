@@ -294,6 +294,9 @@ AUDIENCE = {
     "webhook": "report",          # a machine reads this one; the report shape is the sane default
 }
 DEFAULT_AUDIENCE = "report"
+# This module OWNS the value (contracts.CONVERSATION_AUDIENCE mirrors it by value, deliberately —
+# importing contracts here would be a cycle). Named so `interim` reads as a rule, not a string.
+CONVERSATION_AUDIENCE = "conversation"
 
 
 def audience_for(reply_to):
@@ -301,6 +304,39 @@ def audience_for(reply_to):
     if not isinstance(reply_to, dict):
         return DEFAULT_AUDIENCE
     return AUDIENCE.get(reply_to.get("kind"), DEFAULT_AUDIENCE)
+
+
+def interim(reply_to, text):
+    """Say something to the asker MID-RUN, without ending the run.
+
+    Distinct from `deliver` in the two ways that matter: it does not mark the run delivered (a
+    `deliver` here would make `_slack`'s idempotency swallow the real answer when it arrives) and
+    it does not record a session or clear the conversation's in-flight flag. It is the same shape
+    as the interim ack the poll posts when a run starts.
+
+    Only ever sent to a **conversation** audience — a person in a live exchange who is waiting on
+    a reply and has no other window onto the run. A "report" target (a ticket comment, a webhook)
+    is a durable record read later by someone who is not sitting there, so a progress note is
+    noise in a permanent place. That split is `AUDIENCE`, reused rather than re-decided.
+
+    Never raises, and returns a short status for the trace. A failed interim notice must not
+    disturb the run it is describing.
+    """
+    if not reply_to or audience_for(reply_to) != CONVERSATION_AUDIENCE:
+        return "no interim channel for this target"
+    text = privacy.redact(str(text or ""))
+    if not text.strip():
+        return "nothing to say"
+    try:
+        if (reply_to or {}).get("kind") == "slack_thread":
+            import slack
+            ok = slack.post(reply_to.get("channel"), slack.to_mrkdwn(text),
+                            thread_ts=reply_to.get("thread_ts"),
+                            identity=slack.identity_of(reply_to))
+            return "interim posted to slack" if ok else "interim post failed"
+    except Exception as e:  # noqa: BLE001 - never let a progress note break the run
+        return f"interim failed: {str(e)[:80]}"
+    return "no interim channel for this target"
 
 
 def deliver(reply_to, result, cap=None, run_id=None):
