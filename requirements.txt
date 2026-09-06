@@ -4,3 +4,9 @@
 # bumped independently — never copy one's number onto the other. Bump this to the
 # version the suite actually passed against, and re-run the suite.
 temporalio==1.30.0
+
+# Slack Socket Mode (slack_socket.py) — the bot identity's instant-delivery path. OPTIONAL at
+# runtime: it is soft-imported, so an install that predates it (or skips this line) simply falls
+# back to the 60s poll with a status line saying so, exactly like temporalio's absence in tests.
+# Pinned for the same reason as above.
+websockets==13.1

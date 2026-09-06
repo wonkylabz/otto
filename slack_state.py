@@ -7,12 +7,16 @@ globals at call time — which is also what lets tests keep monkeypatching `slac
 
 The state operated on is the plain dict persisted at data/slack-state.json:
 
-    {"cursors":   {channel: ts},          # per-channel read cursor (top-level messages)
+    {"cursors":   {state_key: ts},        # per-channel read cursor (top-level messages)
      "last_poll": epoch,                  # last COMPLETED poll (the downtime detector)
      "posted":    [run_id, ...],          # delivery idempotency (bounded)
      "posted_ts": [ts, ...],              # message ts WE posted (allow_self loop guard, bounded)
-     "threads":   {conversation_key: {channel, thread_ts, cursor, wid, session, cap,
+     "threads":   {conversation_key: {channel, thread_ts, identity, cursor, wid, session, cap,
                                       last_reply, pending_at, at}}}
+
+Two IDENTITIES share this store — the owner's user token and (optionally) a bot user — so every
+state key is namespaced by `identity` (see `ns`). The "user" namespace is the empty one, which is
+what keeps every pre-existing cursor and conversation record valid byte-for-byte.
 
 Mutators follow storage.mutate_json's contract: mutate `st` in place and return it, or return
 storage.UNCHANGED when nothing moved (so the lock-holding write is skipped).
@@ -26,6 +30,35 @@ def empty():
     in place when the file doesn't exist yet, so a shared constant here would leak state between
     calls (and between tests)."""
     return {"cursors": {}, "posted": []}
+
+
+# --- identities --------------------------------------------------------------
+# Otto can listen on Slack as TWO identities at once: the owner's own account (a user token — it
+# reads their DMs and replies as them) and a bot user (a bot token — it reads channels it has been
+# invited to and replies as itself). They see overlapping surfaces: the same channel can be
+# allowlisted for both, and a message there is two different conversations depending on who is
+# answering it. So a channel id alone is NOT a state key — a shared cursor would let one identity
+# mark a message read that the other never answered, and a shared conversation record would resume
+# the bot's session on the owner's behalf.
+#
+# "user" is the UNNAMESPACED identity, deliberately: its keys are byte-identical to what this
+# module produced before the bot existed, so an installed listener keeps its cursors and its live
+# conversations across the upgrade instead of re-reading (or going deaf to) every channel.
+
+USER = "user"
+BOT = "bot"
+
+
+def ns(key, identity=USER):
+    """Namespace a state key by identity. The ONE place that decides (same rule as
+    `conversation_key` — a second opinion about what a key is, is how state gets crossed). PURE."""
+    return str(key or "") if (identity or USER) == USER else f"{identity}:{key or ''}"
+
+
+def identity_of(rec, default=USER):
+    """Which identity a stored conversation record belongs to. Records written before the bot
+    existed carry no field and are the owner's, which is what `default` says."""
+    return (rec or {}).get("identity") or default
 
 
 # --- timestamps & cursors ----------------------------------------------------
@@ -49,9 +82,11 @@ def past_cursor(ts, cur):
     return float(ts) > float(cur)
 
 
-def advance_cursor(st, channel, ts):
+def advance_cursor(st, channel, ts, identity=USER):
     """Advance a channel's read cursor to `ts` — only ever forward, normalized to `normalize_ts`
-    whatever the caller passes (a real message ts or a `time.time()` first-sight seed)."""
+    whatever the caller passes (a real message ts or a `time.time()` first-sight seed). The cursor
+    is per (identity, channel): see `ns`."""
+    channel = ns(channel, identity)
     st.setdefault("cursors", {})
     cur = st["cursors"].get(channel)
     if cur is None or float(ts) > float(cur):
@@ -143,11 +178,12 @@ def record_posted_ts(st, ts, bound=500):
 # (The store keeps its old name — "threads" — so pre-existing thread records stay valid: for a
 # thread the key is byte-identical to what `thread_key` produced. DM records key on the channel.)
 
-def conversation_key(channel, thread_ts=None):
+def conversation_key(channel, thread_ts=None, identity=USER):
     """The state key for one CONVERSATION. No thread means the channel itself is the conversation
     (a DM). Keep this the ONLY place that decides — a second opinion about what a conversation is,
-    is how the DM case got lost."""
-    return f"{channel}|{thread_ts}" if thread_ts else str(channel or "")
+    is how the DM case got lost. Namespaced by identity (`ns`): the same channel answered by the
+    owner and by the bot is two conversations with two sessions."""
+    return ns(f"{channel}|{thread_ts}" if thread_ts else str(channel or ""), identity)
 
 
 def prune_threads(threads, now, ttl_s, max_threads):
@@ -169,15 +205,19 @@ def is_pending(rec, now, stale_s):
     return now - at < stale_s
 
 
-def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, pending=False):
+def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, pending=False,
+          identity=USER):
     """Start (or refresh) tracking a conversation Otto is answering in. `seen` advances the
     conversation's own read cursor — only ever forward, and only used by thread polling (a DM
     reads through the channel cursor) — so the triggering message isn't re-picked as its own
     follow-up. `pending` marks a run as in flight (cleared by `record_session`)."""
-    key = conversation_key(channel, thread_ts)
+    key = conversation_key(channel, thread_ts, identity)
     threads = prune_threads(st.setdefault("threads", {}), now, ttl_s, max_threads)
     rec = dict(threads.get(key) or {})
-    rec.update({"channel": channel, "thread_ts": thread_ts, "at": now})
+    # `channel` stays the REAL Slack channel (it is what every API call and every reply target is
+    # addressed to); `identity` is the separate field saying who answers there.
+    rec.update({"channel": channel, "thread_ts": thread_ts, "identity": identity or USER,
+                "at": now})
     if wid:
         rec["wid"] = wid
     if seen is not None:
@@ -195,7 +235,7 @@ def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, 
 
 
 def record_session(st, channel, thread_ts, now, ttl_s, max_threads,
-                   session=None, cap=None, last_reply=None):
+                   session=None, cap=None, last_reply=None, identity=USER):
     """Record what the NEXT message in this conversation needs in order to continue it: the Claude
     session id of the run that just answered, its capability, and that reply's text (which the
     handoff classifier reads to tell "answering you" from "here's a new task" — see
@@ -206,10 +246,11 @@ def record_session(st, channel, thread_ts, now, ttl_s, max_threads,
     place rather than wiping it — the conversation stays continuable. Deliberately does NOT touch
     `wid`: that stays the run that OPENED the conversation, because it's the Chat-thread key every
     later turn appends to."""
-    key = conversation_key(channel, thread_ts)
+    key = conversation_key(channel, thread_ts, identity)
     threads = prune_threads(st.setdefault("threads", {}), now, ttl_s, max_threads)
     rec = dict(threads.get(key) or {})
-    rec.update({"channel": channel, "thread_ts": thread_ts, "at": now})
+    rec.update({"channel": channel, "thread_ts": thread_ts, "identity": identity or USER,
+                "at": now})
     if session:
         rec["session"] = session
     if cap:
@@ -227,10 +268,14 @@ def record_session(st, channel, thread_ts, now, ttl_s, max_threads,
 def finalize(msgs, own_posts, max_per_poll):
     """De-dupe (a mention can also appear as a DM), order oldest-first for stable delivery, drop
     anything WE posted (loop guard for allow_self test mode — belt-and-braces on top of our
-    replies being thread replies, which conversations.history doesn't return anyway), and cap."""
+    replies being thread replies, which conversations.history doesn't return anyway), and cap.
+
+    The de-dupe key carries the IDENTITY: one message in a channel both the owner and the bot watch
+    is two pieces of work with two answers, and collapsing them would silently drop whichever the
+    sort happened to put second."""
     seen, uniq = set(), []
     for m in sorted(msgs, key=lambda x: float(x["ts"])):
-        k = (m["channel"], m["ts"])
+        k = (m.get("identity") or USER, m["channel"], m["ts"])
         if k not in seen and m["ts"] not in own_posts:
             seen.add(k)
             uniq.append(m)

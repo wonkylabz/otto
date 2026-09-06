@@ -44,6 +44,7 @@ import repos
 import runbooks
 import scheduler
 import slack
+import slack_socket
 import storage
 import supervisor
 import workspace
@@ -1044,12 +1045,21 @@ class Handler(BaseHTTPRequestHandler):
                 "auto_post": bool(pcfg2.get("auto_post")),
             }))
         elif self.path == "/api/slack-config":
-            # Slack auto-answer listener (a pull ingress; polls Slack as the user).
+            # Slack listener (a pull ingress). TWO identities share one poll schedule: the owner's
+            # own account (user token) and the bot user (bot token) — each separately switchable,
+            # so the UI needs a token/self pair for each.
             self._send(200, json.dumps({
                 "config": slack.load(),
                 "temporal": TEMPORAL_OK,             # the poller needs Temporal
                 "token_set": slack.token_set(),      # OTTO_SLACK_USER_TOKEN present?
                 "self": slack.whoami() if slack.token_set() else None,
+                "bot_token_set": slack.token_set(slack.BOT),   # OTTO_SLACK_BOT_TOKEN present?
+                "bot_self": slack.whoami(slack.BOT) if slack.token_set(slack.BOT) else None,
+                # A token missing a scope polls happily and answers nobody — the one setup
+                # failure with no symptom. Cached per process (one auth.test per identity).
+                "scopes": slack.scope_gaps(slack.USER),
+                "bot_scopes": slack.scope_gaps(slack.BOT),
+                "socket": slack_socket.status(),   # instant delivery for the bot, if configured
                 "poll": slack.poll_status() if TEMPORAL_OK else {"exists": False},
                 "caps": [c.name for c in CAPS if c.enabled],  # for the optional pinned-cap picker
             }))
@@ -1650,6 +1660,10 @@ class Handler(BaseHTTPRequestHandler):
         saved = slack.save(body.get("config", body))
         # Reconcile the Slack poll schedule so the toggle takes effect immediately.
         status = slack.reconcile_schedule() if TEMPORAL_OK else "temporal unavailable"
+        # The socket thread follows the same config, so it reconciles at the same moment the
+        # schedule does — otherwise switching the bot off leaves a live socket waking a poll
+        # that then does nothing, which reads as "I disabled it and it is still busy".
+        slack_socket.reconcile()
         self._send(200, json.dumps({"ok": True, "config": saved, "schedule": status}))
 
     def _post_chats_save(self, body):
@@ -2048,6 +2062,10 @@ def main():
     print(f"Reaper: {board.reconcile_reaper_schedule()}", flush=True)
     # Slack auto-answer poll schedule — same out-of-"otto-*"-namespace reasoning.
     print(f"Slack listener: {slack.reconcile_schedule()}", flush=True)
+    # Socket Mode for the bot identity: a wake-up signal for that same poll, not a second
+    # ingress. Lives in this process because it is a long-lived connection, which is the one
+    # shape a Temporal activity cannot hold (see slack_socket).
+    print(f"Slack socket: {slack_socket.reconcile()}", flush=True)
     # PR-review poll schedule — same out-of-"otto-*"-namespace reasoning.
     print(f"PR reviews: {pr_review.reconcile_schedule()}", flush=True)
     try:

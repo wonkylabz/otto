@@ -353,6 +353,10 @@ def _slack(reply_to, result, run_id=None):
     covered reads far worse than saying nothing (`slack.owner_replied_since`). Short of that, a
     long-delayed reply still says so rather than landing cold as if no time had passed."""
     import slack
+    # WHICH Slack identity answers rides on the reply target (`slack.reply_target`) — the owner's
+    # own account or the bot user. Anything without one is the owner's, which is what an in-flight
+    # run submitted before the bot existed carries.
+    identity = slack.identity_of(reply_to)
     if run_id and slack.was_posted(run_id):
         return "already delivered to slack"
     # The run decided there was nothing to say back (config.NO_REPLY). Staying silent IS the
@@ -369,7 +373,8 @@ def _slack(reply_to, result, run_id=None):
     since_ts = (trigger or {}).get("thread_ts") or thread_ts
     if since_ts:
         superseded, delay_s = slack.owner_replied_since(
-            channel, since_ts, in_thread=bool(thread_ts), thread_root=thread_ts)
+            channel, since_ts, in_thread=bool(thread_ts), thread_root=thread_ts,
+            identity=identity)
         if superseded:
             if run_id:
                 slack.mark_posted(run_id)
@@ -383,11 +388,12 @@ def _slack(reply_to, result, run_id=None):
     raw = result or "(no result)"
     body = slack.to_mrkdwn(raw)
     blocks = slack.to_blocks(raw)
-    ok = slack.post(channel, body, thread_ts=reply_to.get("thread_ts"), blocks=blocks)
+    ok = slack.post(channel, body, thread_ts=reply_to.get("thread_ts"), blocks=blocks,
+                    identity=identity)
     if ok:
         slack.mark_posted(run_id)
-        return f"posted to slack thread ({channel})"
-    return f"could not post to slack ({channel})"
+        return f"posted to slack thread ({channel}, as {identity})"
+    return f"could not post to slack ({channel}, as {identity})"
 
 
 def _webhook(reply_to, result, cap, timeout=15):

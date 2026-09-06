@@ -588,6 +588,8 @@ def secret_reset():
 SECRET_SPECS = {
     "OTTO_EVENT_SECRET":     "event/webhook ingress HMAC key (events.SECRET)",
     "OTTO_SLACK_USER_TOKEN": "Slack user token, xoxp-… (slack.USER_TOKEN)",
+    "OTTO_SLACK_BOT_TOKEN":  "Slack bot token, xoxb-… (slack.BOT_TOKEN)",
+    "OTTO_SLACK_APP_TOKEN":  "Slack app-level token, xapp-… (slack_socket.APP_TOKEN)",
     "OTTO_NTFY_TOPIC":       "ntfy push topic (config.NTFY_TOPIC)",
     "ANTHROPIC_API_KEY":     "cloud model-list discovery only (gateway._discover_claude)",
 }

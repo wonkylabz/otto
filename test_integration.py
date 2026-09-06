@@ -1529,16 +1529,23 @@ class SlackListenerActivityTests(unittest.TestCase):
                       for n in ("load", "enabled", "poll", "post", "start_run", "record_seen",
                                 "watch_conversation", "thread_context", "channel_context")}
         slack.enabled = lambda cfg=None: True
+        slack.any_enabled = lambda cfg=None: True
         slack.load = lambda: {**slack._DEFAULTS, "enabled": True, "cap": "answer-thing",
                               "ack_template": "hold on…"}
         slack.poll = lambda cfg: [{"channel": "C7", "ts": "9.0", "thread_ts": None,
                                    "user": "U2", "text": "deploy?"}]
         self.posts, self.started, self.seen, self.watched = [], [], [], []
-        slack.post = lambda ch, text, thread_ts=None: self.posts.append((ch, text, thread_ts)) or True
+        # The identity kwarg is a pass-through seam: every double takes it, so a caller that
+        # forgets to thread it (answering as the wrong Slack account) fails here rather than in
+        # production. `_identities` is what the bot-vs-owner tests assert on.
+        self.identities = []
+        slack.post = lambda ch, text, thread_ts=None, identity="user", **k: (
+            self.identities.append(identity)
+            or self.posts.append((ch, text, thread_ts)) or True)
         slack.start_run = lambda wid, params: (self.started.append((wid, params)) or "started")
-        slack.record_seen = lambda ch, ts: self.seen.append((ch, ts))
-        slack.watch_conversation = lambda ch, root=None, wid=None, seen=None, pending=False: (
-            self.watched.append((ch, root, wid, seen, pending)))
+        slack.record_seen = lambda ch, ts, identity="user": self.seen.append((ch, ts))
+        slack.watch_conversation = lambda ch, root=None, wid=None, seen=None, pending=False, \
+                identity="user": (self.watched.append((ch, root, wid, seen, pending)))
         slack.thread_context = lambda ch, root, **k: ["U2: earlier ask", "U1: earlier answer"]
         self.ctx_calls = []
         slack.channel_context = lambda ch, before, **k: (
@@ -1560,7 +1567,8 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(params["cap"], {"name": "answer-thing", "kind": "skill", "risk": "read"})
         self.assertEqual(params["approval"], "ask")        # writes gate by default
         self.assertEqual(params["reply_to"],
-                         {"kind": "slack_thread", "channel": "C7", "thread_ts": "9.0"})
+                         {"kind": "slack_thread", "channel": "C7", "thread_ts": "9.0",
+                      "identity": "user"})
         self.assertIn("deploy?", params["request"])
         self.assertEqual(self.posts, [("C7", "hold on…", "9.0")])   # ack posted in-thread
         self.assertEqual(self.seen, [("C7", "9.0")])                 # cursor advanced

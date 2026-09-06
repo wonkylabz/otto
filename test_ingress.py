@@ -976,7 +976,7 @@ class SlackTests(unittest.TestCase):
         self.assertEqual(wid, "slack-D06A9DX6KU7-1785392951-214999")
         self.assertEqual(slack.reply_target_from_wid(wid),
                          {"kind": "slack_thread", "channel": "D06A9DX6KU7",
-                          "thread_ts": "1785392951.214999"})
+                          "thread_ts": "1785392951.214999", "identity": "user"})
 
     def test_reply_target_from_wid_ignores_other_ingresses(self):
         for wid in ("web-cba0ef66", "gh-issue-42", "sched-mosaic-3f7943f2", "slack-onlytwo",
@@ -1001,13 +1001,13 @@ class SlackTests(unittest.TestCase):
         self.assertNotIn("on his behalf", p["request"])
         self.assertEqual(p["approval"], "ask")                          # writes gate by default
         self.assertEqual(p["reply_to"], {"kind": "slack_thread", "channel": "C7",
-                                         "thread_ts": "200.0"})
+                                         "thread_ts": "200.0", "identity": "user"})
         # A message already in a thread replies IN that thread.
         p2 = slack.to_request({"channel": "C7", "ts": "9.0", "thread_ts": "5.0", "text": "hi"}, cfg)
         self.assertEqual(p2["reply_to"]["thread_ts"], "5.0")
 
     def test_clean_skips_self_bot_and_subtype(self):
-        slack._ME = "U1"
+        slack._ME = {"user": "U1"}
         try:
             self.assertIsNone(slack._clean({"user": "U1", "ts": "1", "text": "me"}, "D2"))   # self
             self.assertIsNone(slack._clean({"user": "U2", "ts": "1", "bot_id": "B"}, "D2"))  # bot
@@ -1017,7 +1017,7 @@ class SlackTests(unittest.TestCase):
             self.assertEqual(ok["channel"], "D2")
             self.assertEqual(ok["user"], "U2")
         finally:
-            slack._ME = None
+            slack._ME = {}
 
     def _mock_api(self, history):
         """A slack._api replacement: canned auth.test + IM list + one channel's history."""
@@ -1037,7 +1037,7 @@ class SlackTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 slack._STATE = os.path.join(d, "slack-state.json")
-                slack._ME = "U1"
+                slack._ME = {"user": "U1"}
                 slack.USER_TOKEN = "xoxp-test"          # enabled() requires a token
                 cfg = self._cfg(watch_mentions=False)
                 slack._api = self._mock_api([{"type": "message", "user": "U2", "ts": "200.0",
@@ -1070,7 +1070,7 @@ class SlackTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 slack._STATE = os.path.join(d, "slack-state.json")
-                slack._ME, slack.USER_TOKEN = "U1", "xoxp-test"
+                slack._ME, slack.USER_TOKEN = {"user": "U1"}, "xoxp-test"
                 cfg = self._cfg(watch_mentions=False)
                 now = time.time()
                 stale, live = f"{now - 4 * 3600:.6f}", f"{now - 5:.6f}"
@@ -1112,7 +1112,7 @@ class SlackTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 slack._STATE = os.path.join(d, "slack-state.json")
-                slack._ME, slack.USER_TOKEN = "U1", "xoxp-test"
+                slack._ME, slack.USER_TOKEN = {"user": "U1"}, "xoxp-test"
                 cfg = self._cfg(watch_mentions=False)
                 now = time.time()
                 old, live = f"{now - 4 * 3600:.6f}", f"{now - 5:.6f}"
@@ -1216,7 +1216,7 @@ class SlackTests(unittest.TestCase):
             self.assertFalse(slack.is_pleasantry(t), f"must NOT be a pleasantry: {t!r}")
 
     def test_allow_self_lets_own_messages_through(self):
-        slack._ME = "U1"
+        slack._ME = {"user": "U1"}
         try:
             # Default: own message skipped (loop guard); allow_self: kept + implicitly allowed.
             self.assertIsNone(slack._clean({"user": "U1", "ts": "1", "text": "hi"}, "D1"))
@@ -1232,13 +1232,13 @@ class SlackTests(unittest.TestCase):
             # Someone ELSE never rides in on the owner's carve-out.
             self.assertFalse(slack._allowed({"allow_self": True}, "U2", "D1", self_ok=True))
         finally:
-            slack._ME = None
+            slack._ME = {}
 
     def test_allow_self_is_scoped_to_the_owners_own_dm(self):
         """allow_self means "answer me in MY self-DM so I can test solo". Passing the raw flag made
         Otto answer the owner's own messages inside a THIRD PARTY's DM — on 2026-07-31 it replied to
         4 of the owner's own messages mid-conversation in a colleague's DM."""
-        slack._ME, slack._SELF_DM = "U1", "D-SELF"
+        slack._ME, slack._SELF_DM = {"user": "U1"}, "D-SELF"
         try:
             cfg = {"allow_self": True}
             self.assertTrue(slack._self_test(cfg, "D-SELF"))       # my own self-DM: testing mode
@@ -1250,7 +1250,7 @@ class SlackTests(unittest.TestCase):
             self.assertIsNone(slack._clean(own, "D-DYLAN", slack._self_test(cfg, "D-DYLAN")))
             self.assertIsNotNone(slack._clean(own, "D-SELF", slack._self_test(cfg, "D-SELF")))
         finally:
-            slack._ME, slack._SELF_DM = None, None
+            slack._ME, slack._SELF_DM = {}, None
 
     def test_channel_context_reads_the_conversation_before_the_trigger(self):
         """A top-level DM's context: oldest-first, trigger excluded, and every participant labelled —
@@ -1266,7 +1266,7 @@ class SlackTests(unittest.TestCase):
         ]}
         orig_api, orig_me, orig_own = slack._api, slack._ME, slack._own_posts
         try:
-            slack._ME = "U1"
+            slack._ME = {"user": "U1"}
             slack._own_posts = lambda: {"15.0"}     # Otto posted this one (tracked by slack.post)
             calls = []
             slack._api = lambda m, **kw: (calls.append((m, kw)) or hist)
@@ -1289,7 +1289,7 @@ class SlackTests(unittest.TestCase):
         model READS (`_context_lines`) and never in what may TRIGGER a run (`_clean`)."""
         orig_me, orig_own = slack._ME, slack._own_posts
         try:
-            slack._ME = "U1"
+            slack._ME = {"user": "U1"}
             slack._own_posts = lambda: {"15.0"}
             own = {"user": "U1", "ts": "15.0", "text": "CI is up", "bot_id": "B1"}
             self.assertEqual(slack._context_lines([own], 8, 400),
@@ -1351,7 +1351,7 @@ class SlackTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 slack._STATE = os.path.join(d, "slack-state.json")
-                slack._ME = "U1"
+                slack._ME = {"user": "U1"}
                 slack.USER_TOKEN = "xoxp-test"
                 # Self-DM (channel D1, other party = self); a self-authored message in it.
                 def fake(method, **params):
@@ -1388,7 +1388,8 @@ class SlackTests(unittest.TestCase):
         orig_post, orig_was, orig_mark, orig_owner = (
             slack.post, slack.was_posted, slack.mark_posted, slack.owner_replied_since)
         marked = set()
-        slack.post = lambda ch, text, thread_ts=None, blocks=None: posts.append((ch, text, thread_ts)) or True
+        slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+            posts.append((ch, text, thread_ts)) or True)
         slack.was_posted = lambda rid: rid in marked
         slack.mark_posted = lambda rid: marked.add(rid)
         slack.owner_replied_since = lambda *a, **k: (False, 0)   # not superseded, not stale
@@ -1417,7 +1418,8 @@ class SlackTests(unittest.TestCase):
         orig_post, orig_was, orig_mark, orig_owner = (
             slack.post, slack.was_posted, slack.mark_posted, slack.owner_replied_since)
         marked, calls = set(), []
-        slack.post = lambda ch, text, thread_ts=None, blocks=None: posts.append((ch, text)) or True
+        slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+            posts.append((ch, text)) or True)
         slack.was_posted = lambda rid: rid in marked
         slack.mark_posted = lambda rid: marked.add(rid)
         slack.owner_replied_since = lambda *a, **k: (calls.append((a, k)) or (True, 9999))
@@ -1438,7 +1440,8 @@ class SlackTests(unittest.TestCase):
         posts = []
         orig_post, orig_was, orig_mark, orig_owner = (
             slack.post, slack.was_posted, slack.mark_posted, slack.owner_replied_since)
-        slack.post = lambda ch, text, thread_ts=None, blocks=None: posts.append(text) or True
+        slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+            posts.append(text) or True)
         slack.was_posted, slack.mark_posted = lambda rid: False, lambda rid: None
         slack.owner_replied_since = lambda *a, **k: (False, delivery.STALE_REPLY_S + 1)
         try:
@@ -1456,7 +1459,8 @@ class SlackTests(unittest.TestCase):
         posts = []
         orig_post, orig_was, orig_mark, orig_owner = (
             slack.post, slack.was_posted, slack.mark_posted, slack.owner_replied_since)
-        slack.post = lambda ch, text, thread_ts=None, blocks=None: posts.append(text) or True
+        slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+            posts.append(text) or True)
         slack.was_posted, slack.mark_posted = lambda rid: False, lambda rid: None
         slack.owner_replied_since = lambda *a, **k: (False, 2.0)
         try:
@@ -1474,7 +1478,7 @@ class SlackTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 slack._STATE = os.path.join(d, "slack-state.json")
-                slack._ME = "U_OWNER"
+                slack._ME = {"user": "U_OWNER"}
                 slack._record_posted_ts("150.0")     # Otto's own earlier post in this thread
                 slack._api = lambda method, **params: (
                     {"ok": True, "messages": [
@@ -1494,7 +1498,7 @@ class SlackTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 slack._STATE = os.path.join(d, "slack-state.json")
-                slack._ME = "U_OWNER"
+                slack._ME = {"user": "U_OWNER"}
                 slack._record_posted_ts("150.0")
                 slack._api = lambda method, **params: (
                     {"ok": True, "messages": [
@@ -1514,7 +1518,8 @@ class SlackTests(unittest.TestCase):
         orig_post, orig_was, orig_mark, orig_owner = (
             slack.post, slack.was_posted, slack.mark_posted, slack.owner_replied_since)
         marked = set()
-        slack.post = lambda ch, text, thread_ts=None, blocks=None: posts.append((ch, text)) or True
+        slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+            posts.append((ch, text)) or True)
         slack.was_posted, slack.mark_posted = lambda rid: rid in marked, marked.add
         slack.owner_replied_since = lambda *a, **k: (False, 0)   # not superseded, not stale
         try:
@@ -1593,7 +1598,7 @@ class SlackTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 ch, root = self._thread_state(d)
-                slack._ME, slack.USER_TOKEN = "U1", "xoxp-test"
+                slack._ME, slack.USER_TOKEN = {"user": "U1"}, "xoxp-test"
                 replies = [
                     {"type": "message", "user": "U2", "ts": root, "text": "original ask"},
                     {"type": "message", "user": "U1", "ts": "110.0", "text": "my answer"},
@@ -1672,7 +1677,7 @@ class SlackTests(unittest.TestCase):
         self.assertEqual(p["cap"]["name"], "answer-thing")
         self.assertEqual(p["chat_key"], "slack-C7-100-0")       # same Chat thread, not a new one
         self.assertEqual(p["reply_to"], {"kind": "slack_thread", "channel": "C7",
-                                         "thread_ts": "100.0"})
+                                         "thread_ts": "100.0", "identity": "user"})
         self.assertEqual(p["approval"], "ask")
         self.assertIn("and the other one?", p["request"])
         # Still framed as untrusted DATA — someone else's words can't become instructions.
@@ -1732,7 +1737,8 @@ class SlackTests(unittest.TestCase):
     def test_delivery_slack_thread_converts_markdown(self):
         posts = []
         orig_post, orig_was, orig_mark = slack.post, slack.was_posted, slack.mark_posted
-        slack.post = lambda ch, text, thread_ts=None, blocks=None: posts.append(text) or True
+        slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+            posts.append(text) or True)
         slack.was_posted = lambda rid: False
         slack.mark_posted = lambda rid: None
         try:
@@ -1740,6 +1746,658 @@ class SlackTests(unittest.TestCase):
             self.assertEqual(posts, ["a *bold* answer"])       # converted before posting
         finally:
             slack.post, slack.was_posted, slack.mark_posted = orig_post, orig_was, orig_mark
+
+
+class SlackBotIdentityTests(unittest.TestCase):
+    """The SECOND Slack identity: Otto answering as a bot user alongside (not instead of) Otto
+    answering as the owner. Every test here is one way the two can be crossed — the failure mode
+    throughout is words appearing under the wrong name, in a channel the wrong account can see."""
+
+    def _cfg(self, **over):
+        base = dict(slack._DEFAULTS)
+        base.update({"enabled": True, "allow_users": ["U2"], "allow_channels": ["C7"],
+                     "bot_enabled": True, "bot_allow_users": ["U5"],
+                     "bot_allow_channels": ["C9"]})
+        base.update(over)
+        return base
+
+    # --- switches -----------------------------------------------------------
+    def test_each_identity_needs_its_own_token_and_flag(self):
+        orig = slack.USER_TOKEN, slack.BOT_TOKEN
+        try:
+            slack.USER_TOKEN, slack.BOT_TOKEN = "xoxp-t", "xoxb-t"
+            cfg = self._cfg()
+            self.assertTrue(slack.enabled(cfg))
+            self.assertTrue(slack.bot_enabled(cfg))
+            self.assertEqual(slack.enabled_identities(cfg), ["user", "bot"])
+            # A missing token turns ONLY its own identity off.
+            slack.BOT_TOKEN = None
+            self.assertTrue(slack.enabled(cfg))
+            self.assertFalse(slack.bot_enabled(cfg))
+            self.assertTrue(slack.any_enabled(cfg))
+            # ...and the shared poll schedule survives the OTHER one going off, or turning the
+            # owner's listener off would silently stop the bot too.
+            slack.BOT_TOKEN = "xoxb-t"
+            self.assertTrue(slack.any_enabled({**cfg, "enabled": False}))
+            self.assertFalse(slack.any_enabled({**cfg, "enabled": False, "bot_enabled": False}))
+        finally:
+            slack.USER_TOKEN, slack.BOT_TOKEN = orig
+
+    def test_allowlists_are_separate(self):
+        """Inviting the bot somewhere must not widen what the owner's own account answers."""
+        cfg = self._cfg()
+        self.assertTrue(slack._allowed(cfg, "U2", "Dx"))                       # owner's list
+        self.assertFalse(slack._allowed(cfg, "U2", "Dx", identity=slack.BOT))
+        self.assertTrue(slack._allowed(cfg, "U5", "Dx", identity=slack.BOT))   # bot's list
+        self.assertFalse(slack._allowed(cfg, "U5", "Dx"))
+        self.assertTrue(slack._allowed(cfg, "U9", "C9", identity=slack.BOT))
+        self.assertFalse(slack._allowed(cfg, "U9", "C9"))                      # bot's channel
+
+    # --- state namespacing --------------------------------------------------
+    def test_state_keys_are_namespaced_but_the_user_namespace_is_unchanged(self):
+        """The owner's keys must stay BYTE-IDENTICAL to the pre-bot shape, or an installed
+        listener loses every cursor on upgrade (which reads as "Otto went deaf")."""
+        self.assertEqual(slack_state.ns("C7"), "C7")
+        self.assertEqual(slack_state.conversation_key("C7", "9.0"), "C7|9.0")
+        self.assertEqual(slack_state.conversation_key("D2"), "D2")
+        # The bot's are distinct, so nothing it reads can be crossed with the owner's.
+        self.assertEqual(slack_state.ns("C7", slack.BOT), "bot:C7")
+        self.assertNotEqual(slack_state.conversation_key("C7", "9.0", slack.BOT),
+                            slack_state.conversation_key("C7", "9.0"))
+        # A record written before the bot existed carries no identity and is the owner's.
+        self.assertEqual(slack_state.identity_of({"channel": "C7"}), "user")
+        self.assertEqual(slack_state.identity_of({"identity": "bot"}), "bot")
+
+    def test_one_identitys_cursor_never_marks_a_message_read_for_the_other(self):
+        st = slack_state.empty()
+        slack_state.advance_cursor(st, "C9", "100.0", slack.BOT)
+        self.assertEqual(st["cursors"], {"bot:C9": "100.000000"})
+        self.assertIsNone(st["cursors"].get("C9"))          # the owner has still read nothing
+        slack_state.advance_cursor(st, "C9", "50.0")
+        self.assertEqual(st["cursors"]["C9"], "50.000000")  # and advances independently
+        self.assertEqual(st["cursors"]["bot:C9"], "100.000000")
+
+    def test_the_same_message_answered_by_both_is_two_pieces_of_work(self):
+        """One message in a shared channel is two runs with two answers. A shared workflow id
+        would make the second REJECT_DUPLICATE against the first, silently dropping it; a shared
+        de-dupe key would drop it a step earlier."""
+        msg = {"channel": "C9", "ts": "9.0", "text": "hi"}
+        bot = {**msg, "identity": "bot"}
+        self.assertEqual(slack.wid_for(msg), "slack-C9-9-0")            # unchanged for the owner
+        self.assertEqual(slack.wid_for(bot), "slack-b-C9-9-0")
+        self.assertNotEqual(slack.wid_for(msg), slack.wid_for(bot))
+        kept = slack_state.finalize([msg, bot], set(), 5)
+        self.assertEqual(len(kept), 2)
+
+    def test_a_wid_round_trips_back_to_the_identity_that_must_post(self):
+        """Delivery's LAST-RESORT path (Temporal history aged out) rebuilds the reply target from
+        the run id alone. Losing the identity there posts the bot's answer with the owner's token
+        — words in a real person's mouth, in a channel they may not even be in."""
+        for identity in ("user", "bot"):
+            msg = {"channel": "D06A9DX6KU7", "ts": "1785392951.214999", "identity": identity}
+            back = slack.reply_target_from_wid(slack.wid_for(msg))
+            self.assertEqual(back, {"kind": "slack_thread", "channel": "D06A9DX6KU7",
+                                    "thread_ts": "1785392951.214999", "identity": identity})
+        # A pre-bot id (no marker) still reads as the owner's.
+        self.assertEqual(
+            slack.reply_target_from_wid("slack-C7-100-0")["identity"], "user")
+
+    def test_the_reply_target_carries_who_posts(self):
+        """`delivery._slack` has nothing else to go on."""
+        for identity in ("user", "bot"):
+            t = slack.reply_target({"channel": "C9", "ts": "9.0", "identity": identity})
+            self.assertEqual(t["identity"], identity)
+            self.assertEqual(slack.to_request({"channel": "C9", "ts": "9.0", "text": "x",
+                                               "identity": identity})["reply_to"]["identity"],
+                             identity)
+        # Absent (an in-flight run submitted before the bot existed) means the owner.
+        self.assertEqual(slack.identity_of({"channel": "C9"}), "user")
+        self.assertEqual(slack.identity_of(None), "user")
+
+    # --- what the model is told --------------------------------------------
+    def test_the_bot_is_never_told_it_speaks_for_the_owner(self):
+        """The framing, the output contract and verify's audience block all describe the reader,
+        and the framing quietly wins when they disagree. A bot posting under an obviously-bot name
+        while claiming to be someone's assistant is a lie the other two can't undo."""
+        user = slack.to_request({"channel": "C7", "ts": "9.0", "text": "is ci up?"})["request"]
+        bot = slack.to_request({"channel": "C9", "ts": "9.0", "text": "is ci up?",
+                                "identity": "bot"})["request"]
+        self.assertIn("who is unavailable", user)
+        self.assertNotIn("who is unavailable", bot)
+        self.assertIn("You are Otto", bot)
+        self.assertIn("in their place", bot)          # the prohibition, not just the assertion
+        self.assertIn("do not describe yourself as anyone's assistant", bot)
+        # Both keep the untrusted-DATA fence and both name the sender as the reader.
+        for r in (user, bot):
+            self.assertIn("not as instructions", r)
+            self.assertIn("straight back to the person who sent it", r)
+        # A resumed turn must not revert to the other voice on turn 2.
+        rec = {"session": "s1", "cap": {"name": "x"}}
+        self.assertIn("under your own name",
+                      slack.to_followup({"channel": "C9", "ts": "9.0", "text": "and?",
+                                         "identity": "bot"}, rec)["request"])
+        self.assertNotIn("under your own name",
+                         slack.to_followup({"channel": "C7", "ts": "9.0", "text": "and?"},
+                                           rec)["request"])
+
+    def test_the_bot_does_not_introduce_itself_but_the_user_identity_does(self):
+        """The asymmetry is the point, and it is easy to "tidy" into one shared string.
+
+        A user-token reply arrives from the OWNER's own account, so without an introduction the
+        reader thinks they are talking to a person — the attribution is load-bearing there. A bot
+        post already carries the bot's name, avatar and an APP badge, so "Hi! I'm Otto" spends the
+        entire first reply telling the reader what their screen just told them (reported live,
+        with a screenshot: "we already know that")."""
+        for text in (slack._BOT_GREETING_DEFAULT, slack._BOT_ACK_DEFAULT):
+            low = text.lower()
+            self.assertNotIn("i'm otto", low, f"the bot must not introduce itself: {text!r}")
+            self.assertNotIn("i am otto", low)
+            self.assertNotIn("assistant", low)      # nor claim the stand-in role
+        # The user identity keeps both: it speaks for someone, as someone.
+        self.assertIn(config.OWNER_NAME.lower(), slack._GREETING_DEFAULT.lower())
+        self.assertIn("assistant", slack._GREETING_DEFAULT.lower())
+        self.assertIn("assistant", slack._ACK_DEFAULT.lower())
+        # Still a real greeting — an empty one would just look broken.
+        self.assertGreater(len(slack._BOT_GREETING_DEFAULT.strip()), 5)
+
+    # --- mentions -----------------------------------------------------------
+    def test_a_mention_is_matched_as_slacks_addressing_syntax_not_a_substring(self):
+        self.assertTrue(slack._mentions("<@U9> restart it", "U9"))
+        self.assertTrue(slack._mentions("hey <@U9|otto> restart it", "U9"))
+        self.assertFalse(slack._mentions("no mention here", "U9"))
+        # A bare id pasted in prose is not an address, and neither is a longer id that merely
+        # starts with ours.
+        self.assertFalse(slack._mentions("the bot is U9", "U9"))
+        self.assertFalse(slack._mentions("<@U9XX> hi", "U9"))
+        self.assertFalse(slack._mentions("<@U9> hi", ""))
+
+    def test_the_bots_own_mention_is_stripped_out_of_the_request(self):
+        """Left in, the capability is asked to act on "<@U09ABC> restart the indexer" and has to
+        work out that the opaque id is itself."""
+        self.assertEqual(slack.strip_self_mention("<@U9> restart the indexer", "U9"),
+                         "restart the indexer")
+        self.assertEqual(slack.strip_self_mention("hey <@U9|otto> can you check?", "U9"),
+                         "hey can you check?")
+        # A THIRD party's mention is left alone — it is part of what was said.
+        self.assertEqual(slack.strip_self_mention("<@U9> ask <@U3>", "U9"), "ask <@U3>")
+        self.assertEqual(slack.strip_self_mention("<@U9>", "U9"), "")
+
+    def test_a_bare_summons_is_flagged_rather_than_left_to_is_pleasantry(self):
+        """"@otto" with nothing else is a greeting, but `is_pleasantry` cannot say so: it bails on
+        any `@`/`<>` (a mention of a THIRD party means the message is about someone else) and
+        refuses an empty string (a real request must never be classified away). Unflagged, a bare
+        summons became a full verify ladder over no request at all."""
+        self.assertFalse(slack.is_pleasantry("<@U9>"))
+        self.assertFalse(slack.is_pleasantry(""))          # the predicate stays as it was
+        calls = []
+        orig = slack._api, slack._ME, slack._STATE
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME = {"bot": "U9"}
+
+                def fake(method, identity="user", **k):
+                    calls.append((method, identity))
+                    if method == "users.conversations":
+                        return {"ok": True, "channels": [{"id": "C9"}]}
+                    if method == "conversations.history":
+                        return {"ok": True, "messages": [
+                            {"user": "U5", "ts": "500.0", "text": "<@U9>"},
+                            {"user": "U5", "ts": "501.0", "text": "<@U9> is ci up?"}]}
+                    return {"ok": True}
+                slack._api = fake
+                slack.record_seen("C9", "100.0", slack.BOT)
+                out = []
+                slack._poll_bot_mentions(self._cfg(), out)
+        finally:
+            slack._api, slack._ME, slack._STATE = orig
+        self.assertEqual([m["text"] for m in out], ["", "is ci up?"])
+        self.assertEqual([m.get("summons") for m in out], [True, False])
+        self.assertTrue(all(m["identity"] == "bot" for m in out))
+        # Every call went out on the BOT token — one on the owner's would read a channel as them.
+        self.assertTrue(calls and all(i == "bot" for _, i in calls))
+
+    def test_the_bot_only_reads_channels_it_is_allowlisted_for(self):
+        """`users.conversations` is the set the bot is a MEMBER of, which is wider than the set it
+        may answer in. The channel list is also what bounds the sweep: every channel costs a
+        history call per poll."""
+        read = []
+        orig = slack._api, slack._ME, slack._STATE
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME = {"bot": "U9"}
+
+                def fake(method, identity="user", **k):
+                    if method == "users.conversations":
+                        return {"ok": True, "channels": [{"id": "C9"}, {"id": "C_OTHER"}]}
+                    if method == "conversations.history":
+                        read.append(k.get("channel"))
+                        return {"ok": True, "messages": []}
+                    return {"ok": True}
+                slack._api = fake
+                slack._poll_bot_mentions(self._cfg(), [])
+        finally:
+            slack._api, slack._ME, slack._STATE = orig
+        self.assertEqual(read, ["C9"])
+
+    # --- continuity ---------------------------------------------------------
+    def test_a_watched_thread_is_polled_and_answered_by_its_own_identity(self):
+        """A conversation remembers WHO is answering in it. Resuming the bot's session under the
+        owner's token replies as them, mid-thread, in a voice the thread has never heard."""
+        seen = []
+        orig = slack._api, slack._ME, slack._STATE, slack.USER_TOKEN, slack.BOT_TOKEN
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME = {"user": "U1", "bot": "U9"}
+                slack.USER_TOKEN, slack.BOT_TOKEN = "xoxp-t", "xoxb-t"
+
+                def fake(method, identity="user", **k):
+                    if method == "conversations.replies":
+                        seen.append((k.get("channel"), identity))
+                        return {"ok": True, "messages": [
+                            {"user": "U5" if identity == "bot" else "U2",
+                             "ts": "600.0", "text": "and the other one?"}]}
+                    return {"ok": True}
+                slack._api = fake
+                slack.watch_conversation("C7", "500.0", seen="500.0")
+                slack.watch_conversation("C9", "500.0", seen="500.0", identity=slack.BOT)
+                out = []
+                slack._poll_threads(self._cfg(), out)
+        finally:
+            (slack._api, slack._ME, slack._STATE,
+             slack.USER_TOKEN, slack.BOT_TOKEN) = orig
+        self.assertEqual(sorted(seen), [("C7", "user"), ("C9", "bot")])
+        self.assertEqual({m["channel"]: m["identity"] for m in out},
+                         {"C7": "user", "C9": "bot"})
+
+    def test_a_switched_off_identity_abandons_its_threads_rather_than_handing_them_over(self):
+        """Mid-thread, the other identity picking up reads as a stranger barging in — and it
+        would be replying with a token the thread's participants never addressed."""
+        polled = []
+        orig = slack._api, slack._ME, slack._STATE, slack.USER_TOKEN, slack.BOT_TOKEN
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME = {"user": "U1", "bot": "U9"}
+                slack.USER_TOKEN, slack.BOT_TOKEN = "xoxp-t", "xoxb-t"
+                slack._api = lambda method, identity="user", **k: (
+                    polled.append((k.get("channel"), identity)) or {"ok": True, "messages": []})
+                slack.watch_conversation("C9", "500.0", seen="500.0", identity=slack.BOT)
+                slack._poll_threads(self._cfg(bot_enabled=False), [])
+        finally:
+            (slack._api, slack._ME, slack._STATE,
+             slack.USER_TOKEN, slack.BOT_TOKEN) = orig
+        self.assertEqual(polled, [])
+
+    # --- scopes -------------------------------------------------------------
+    def test_a_short_scope_grant_is_reported_instead_of_polling_silently(self):
+        """The first real install failed exactly here: the bot had `im:read` but not `im:history`
+        (one row in the README, two scopes in Slack) and no `channels:read` at all. Slack refuses
+        each call with `missing_scope`, the poll still completes, the cursor never moves, and the
+        card says "listening". Nothing anywhere says why nobody is being answered."""
+        orig = slack._GRANTED, slack.BOT_TOKEN
+        try:
+            slack.BOT_TOKEN = "xoxb-t"
+            slack._GRANTED = {slack.BOT: {"app_mentions:read", "chat:write", "channels:history",
+                                          "groups:history", "im:read", "users:read"}}
+            gaps = slack.scope_gaps(slack.BOT, self._cfg())
+            self.assertTrue(gaps["known"])
+            self.assertEqual([sc for sc, _why in gaps["missing"]],
+                             ["channels:read", "im:history"])
+            # Every gap says what it costs, or the operator has a scope name and no reason.
+            self.assertTrue(all(why for _sc, why in gaps["missing"]))
+            # Private channels / group DMs are a NOTE, never the reason it is silent.
+            self.assertNotIn("mpim:read", [sc for sc, _ in gaps["missing"]])
+            self.assertIn("mpim:read", [sc for sc, _ in gaps["optional"]])
+            # A feature that is switched off needs no scope — reporting it would be noise the
+            # operator learns to scroll past, which is how the real gap gets missed.
+            off = slack.scope_gaps(slack.BOT, self._cfg(bot_watch_dms=False))
+            self.assertEqual([sc for sc, _ in off["missing"]], ["channels:read"])
+            # A full grant is clean.
+            slack._GRANTED = {slack.BOT: set(slack._SCOPES[slack.BOT])}
+            self.assertEqual(slack.scope_gaps(slack.BOT, self._cfg())["missing"], [])
+        finally:
+            slack._GRANTED, slack.BOT_TOKEN = orig
+
+    def test_an_unreadable_grant_reports_unknown_not_clean(self):
+        """`known: False` is load-bearing. Saying "nothing missing" when the grant could not be
+        read is the same silent lie this check exists to end — the UI shows nothing at all rather
+        than a green all-clear it cannot back up."""
+        orig = slack._GRANTED, slack.BOT_TOKEN
+        try:
+            slack.BOT_TOKEN = None                       # no token -> nothing to check
+            slack._GRANTED = {}
+            self.assertEqual(slack.scope_gaps(slack.BOT), {"missing": [], "optional": [],
+                                                           "known": False})
+        finally:
+            slack._GRANTED, slack.BOT_TOKEN = orig
+
+    def test_every_scope_the_pollers_depend_on_is_declared(self):
+        """The list is only useful if it matches what the code actually calls. Each Web API method
+        the pollers use is mapped to the scope Slack requires for it; a new call added without its
+        scope here is a gap that reports as clean."""
+        needs = {"users.conversations": "channels:read", "conversations.info": "channels:read",
+                 "conversations.history": "channels:history", "conversations.list": "im:read",
+                 "chat.postMessage": "chat:write"}
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "slack.py")).read()
+        bot_scopes = set(slack._SCOPES[slack.BOT])
+        for method, scope in needs.items():
+            if f'"{method}"' in src:
+                self.assertIn(scope, bot_scopes,
+                              f"slack.py calls {method} but {scope} is not in _SCOPES[BOT]")
+        # The :read/:history split is the trap — neither half works alone, so both must be listed.
+        for pair in (("channels:read", "channels:history"), ("im:read", "im:history")):
+            self.assertTrue(set(pair) <= bot_scopes, f"{pair} must both be declared")
+
+    def test_delivery_posts_with_the_identity_on_the_reply_target(self):
+        posted = []
+        orig = slack.post, slack.was_posted, slack.mark_posted, slack.owner_replied_since
+        try:
+            slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
+                posted.append((ch, identity)) or True)
+            slack.was_posted = lambda rid: False
+            slack.mark_posted = lambda rid: None
+            slack.owner_replied_since = lambda *a, **k: (False, 0.0)
+            delivery.deliver({"kind": "slack_thread", "channel": "C9", "identity": "bot"}, "hi")
+            delivery.deliver({"kind": "slack_thread", "channel": "C7"}, "hi")   # pre-bot target
+        finally:
+            (slack.post, slack.was_posted, slack.mark_posted,
+             slack.owner_replied_since) = orig
+        self.assertEqual(posted, [("C9", "bot"), ("C7", "user")])
+
+
+class SlackBadgeIndependenceTests(unittest.TestCase):
+    """Three badges on the Events tab describe three different things: the parent SLACK
+    integration, the Auto-answer identity, and the Bot identity. The parent is a SUMMARY of the
+    other two.
+
+    A summary computed by reassigning its parts is the bug this guards: promoting the parent to
+    "on" because the bot was on overwrote the very variables the Auto-answer badge renders from,
+    so Auto-answer showed ON while its own card read "no token" and its Enabled box was
+    unchecked. A badge that contradicts the form under it is worse than no badge — the operator
+    trusts it and stops reading the card."""
+
+    def _js(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html"),
+                  encoding="utf-8", errors="surrogateescape") as f:
+            return f.read()
+
+    def test_the_parent_badge_never_writes_to_the_subsection_badge(self):
+        js = self._js()
+        start = js.index("function loadSlackConfig")
+        body = js[start:js.index("function slackBotCard")]
+        # The parent badge is set from its OWN variables...
+        self.assertIn('setIntegBadge("slack-badge",intCls,intLabel)', body)
+        # ...and the subsection's are never reassigned after they are computed. Anything of the
+        # form `badgeCls='on'` outside the if/else chain that derives them is the regression.
+        promote = re.findall(r"badge(?:Cls|Label)\s*=\s*'on'\s*;\s*badge(?:Cls|Label)\s*=\s*'on'",
+                             body)
+        self.assertEqual([], promote,
+                         "the parent badge must READ badgeCls/badgeLabel, never write to them")
+
+    def test_each_identity_badge_is_derived_from_its_own_state(self):
+        """The bot card must not consult the user identity's token or scopes, or the two go
+        wrong together — which is how one broken identity hid a working one."""
+        js = self._js()
+        bot = js[js.index("function slackBotCard"):js.index("function wireSlackBotCard")]
+        for own in ("d.bot_token_set", "c.bot_enabled", "d.bot_scopes"):
+            self.assertIn(own, bot)
+        # Property ACCESSES, matched literally: `d.bot_token_set` does not contain `d.token_set`,
+        # so this needs no lookbehind — and an earlier regex version matched the badge LABEL
+        # "no scopes", which is prose, not a read.
+        for other in ("d.token_set", "d.scopes", "c.allow_users", "c.allow_channels",
+                      "c.watch_dms", "c.watch_mentions"):
+            self.assertNotIn(other, bot,
+                             f"the bot card must not read the user identity's {other}")
+
+
+class SlackSocketModeTests(unittest.TestCase):
+    """Socket Mode — instant delivery for the bot identity.
+
+    The design constraint every test here defends: this is a WAKE-UP SIGNAL, not a second
+    ingress. It must never read a message, decide about one, or touch `data/slack-state.json`;
+    it only makes the existing poll run sooner. A second path through the per-message pipeline
+    is the divergence this repo keeps paying for, and events are lossy anyway (Socket Mode
+    delivers only while connected and Slack never replays), so the poll stays authoritative."""
+
+    def test_it_never_reads_slack_or_moves_a_cursor(self):
+        """The whole safety argument in one assertion. A transport that started reading messages
+        would be a second ingress with its own copy of the allowlist and cursor rules — and
+        because events are dropped while disconnected, its copy would be the one with holes.
+
+        Scans CODE only: comments and docstrings are stripped first, because the module explains
+        at length what it must not do and naming a thing is not calling it."""
+        import io
+        import tokenize
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slack_socket.py")
+        with open(path) as fh:
+            src = fh.read()
+        code = []
+        prev = None
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT:
+                continue
+            if tok.type == tokenize.STRING and prev in (None, tokenize.INDENT, tokenize.NEWLINE,
+                                                        tokenize.NL, tokenize.DEDENT):
+                continue                                  # a docstring, not a value
+            code.append(tok.string)
+            if tok.type not in (tokenize.NL, tokenize.COMMENT):
+                prev = tok.type
+        code = " ".join(code)
+        for banned in ("conversations.history", "conversations.replies", "record_seen",
+                       "mark_seen", "watch_conversation", "start_run", "_allowed", "to_request",
+                       "_STATE_FILE", "slack-state.json"):
+            self.assertNotIn(banned, code,
+                             f"slack_socket must not use {banned} — it wakes the poll, it is not one")
+        # It DOES have to be able to say "run the poll now", and that is the only Temporal verb
+        # it is allowed: one workflow type, no per-message work.
+        self.assertIn("SlackPollWorkflow", code)
+
+    def test_it_degrades_to_the_poll_when_anything_is_missing(self):
+        """Three independent ways to be unconfigured (no library, no token, bot off), and none of
+        them may be an error: the poll still answers everything, just later. An install that
+        predates this feature must boot unchanged."""
+        import slack_socket as ss
+        orig = ss.OK, ss.APP_TOKEN
+        try:
+            ss.OK, ss.APP_TOKEN = False, "xapp-t"
+            self.assertFalse(ss.available())
+            self.assertIn("websockets", ss.status()["why"])
+            self.assertIn("skipped", ss.start())
+            ss.OK, ss.APP_TOKEN = True, None
+            self.assertFalse(ss.available())
+            self.assertIn("OTTO_SLACK_APP_TOKEN", ss.status()["why"])
+            self.assertIn("skipped", ss.start())
+            ss.OK, ss.APP_TOKEN = True, "xapp-t"
+            self.assertTrue(ss.available())
+            # Available but the bot identity is off -> still must not run.
+            self.assertFalse(ss.enabled({"bot_enabled": False}))
+            self.assertFalse(ss.enabled({"bot_enabled": True, "bot_socket_mode": False}))
+        finally:
+            ss.OK, ss.APP_TOKEN = orig
+
+    def test_only_a_real_inbound_message_wakes_the_poll(self):
+        """Coarse ON PURPOSE — this is not the allowlist (that lives in `slack._allowed`, once).
+        It drops only what provably cannot produce work, so a busy channel does not start a
+        workflow per event. Otto's OWN posts are the one that matters: the ack and the answer
+        arrive back as events, and waking on them is a poll-per-reply feedback loop."""
+        import slack_socket as ss
+
+        def env(**evt):
+            return {"type": "events_api", "payload": {"event": evt}}
+        self.assertTrue(ss._is_wakeworthy(env(type="message", text="hi")))
+        self.assertTrue(ss._is_wakeworthy(env(type="app_mention", text="<@U1> hi")))
+        self.assertFalse(ss._is_wakeworthy(env(type="message", bot_id="B1", text="On it…")))
+        self.assertFalse(ss._is_wakeworthy(env(type="message", subtype="message_changed")))
+        self.assertFalse(ss._is_wakeworthy(env(type="reaction_added")))
+        self.assertFalse(ss._is_wakeworthy({"type": "events_api", "payload": {}}))
+        self.assertFalse(ss._is_wakeworthy({}))
+
+    def test_extra_polls_are_rate_limited(self):
+        """A burst of messages is ONE poll's worth of work — the poll reads everything past the
+        cursor — so waking per message would start N workflows for an identical result."""
+        import slack_socket as ss
+        orig = ss._last_wake
+        try:
+            ss._last_wake = 0.0
+            now = 10_000.0
+            self.assertTrue(ss._should_wake(now))
+            self.assertFalse(ss._should_wake(now + 0.1))
+            self.assertFalse(ss._should_wake(now + ss.MIN_INTERVAL_S - 0.01))
+            self.assertTrue(ss._should_wake(now + ss.MIN_INTERVAL_S + 0.01))
+        finally:
+            ss._last_wake = orig
+
+    def test_a_wake_is_refused_while_paused_and_never_raises(self):
+        """The global pause has to land before an ingress starts work (ingress.md). And every
+        failure path here costs latency, never a message — so nothing may propagate."""
+        import estop
+        import slack_socket as ss
+        orig_blocked, orig_wake = estop.blocked, ss._last_wake
+        try:
+            ss._last_wake = 0.0
+            estop.blocked = lambda who=None: True
+            self.assertEqual(ss.wake(), "paused")
+            estop.blocked = lambda who=None: False
+            ss._last_wake = 0.0
+            import temporal_client as tc
+            orig_run, orig_ok = tc.run, tc.OK
+            try:
+                tc.OK = True
+                tc.run = lambda coro: (_ for _ in ()).throw(RuntimeError("temporal down"))
+                self.assertIn("failed", ss.wake())      # reported, not raised
+            finally:
+                tc.run, tc.OK = orig_run, orig_ok
+        finally:
+            estop.blocked, ss._last_wake = orig_blocked, orig_wake
+
+    def test_the_pump_acks_everything_wakes_once_per_burst_and_reconnects(self):
+        """The protocol half, against a fake socket — it cannot be exercised live without an
+        app-level token, so the alternative is shipping it unread.
+
+        Three things Slack will punish: an un-acked envelope is REDELIVERED (so every envelope is
+        acked, including ones we ignore); a `disconnect` must end the connection (Slack refreshes
+        roughly hourly and stops delivering on the old socket either way); and a burst must
+        collapse to one wake, because the poll reads everything past the cursor at once."""
+        import asyncio
+        import slack_socket as ss
+
+        def env(eid, **kw):
+            return json.dumps({"envelope_id": eid, **kw})
+
+        def evt(eid, **e):
+            return env(eid, type="events_api", payload={"event": e})
+
+        class FakeWS:
+            def __init__(self, frames):
+                self.frames, self.sent = list(frames), []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def recv(self):
+                if not self.frames:
+                    await asyncio.sleep(3600)      # idle, like a real quiet socket
+                f = self.frames.pop(0)
+                if f is None:                      # a gap: force the debounce window to expire
+                    raise asyncio.TimeoutError
+                return f
+
+            async def send(self, data):
+                self.sent.append(json.loads(data))
+
+        ws = FakeWS([
+            env("e0", type="hello"),                                  # the handshake greeting
+            evt("e1", type="message", text="one"),                    # a burst of three…
+            evt("e2", type="message", text="two"),
+            evt("e3", type="message", text="three"),
+            None,                                                     # …debounce expires -> 1 wake
+            evt("e4", type="message", bot_id="B1", text="On it…"),    # our own post: no wake
+            None,
+            env("e5", type="disconnect", reason="refresh_requested"),  # must end the connection
+            evt("e6", type="message", text="never seen"),
+        ])
+        wakes = []
+        orig_conn, orig_wake = ss._ws_connect, ss.wake
+        try:
+            ss._ws_connect = lambda *a, **k: ws
+            ss.wake = lambda *a, **k: wakes.append(1)
+            asyncio.run(asyncio.wait_for(ss._pump("wss://x"), timeout=5))
+        finally:
+            ss._ws_connect, ss.wake = orig_conn, orig_wake
+        # Every envelope acked, in order, by id — including the ignored ones.
+        self.assertEqual([a["envelope_id"] for a in ws.sent],
+                         ["e0", "e1", "e2", "e3", "e4", "e5"])
+        # One wake for the burst of three; none for our own post.
+        self.assertEqual(len(wakes), 1)
+        # `disconnect` returned, so the frame after it was left UNREAD on the socket — that
+        # leftover is the proof the connection ended there rather than draining to the end.
+        self.assertEqual(len(ws.frames), 1)
+        self.assertIn("never seen", ws.frames[0])
+        self.assertFalse(ss._STATE["connected"])
+        # The counters that make a silent socket diagnosable: the handshake is stamped, and
+        # inbound events are counted separately from everything else Slack sends.
+        self.assertTrue(ss._STATE["hello"])
+        self.assertEqual(ss._STATE["events"], 4)          # 3 in the burst + our own post
+        self.assertEqual(ss._STATE["envelopes"], 6)
+
+    def test_missing_events_are_proved_by_the_poll_not_guessed_from_silence(self):
+        """The socket looks identical whether it is subscribed to nothing or nobody has spoken.
+        The first version of this warning fired on silence and cried wolf within minutes of
+        shipping — on a quiet channel after a restart, which is the most ordinary state there is.
+
+        The provable version compares the two paths: if the POLL found work while the socket was
+        connected and the socket never announced it, events really are missing."""
+        import slack_socket as ss
+        orig = ss._STATE.copy(), ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN, slack.last_pick
+        try:
+            ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN = True, "xapp-t", "xoxb-t"
+            cfg = {"bot_enabled": True, "bot_socket_mode": True}
+            ss._STATE.update({"connected": True, "hello": 1.0, "events": 0, "last_event": None})
+
+            # Quiet: the poll has found nothing either. NOT a warning — this is a normal idle
+            # socket, and the state every restart into a quiet workspace starts in.
+            slack.last_pick = lambda: None
+            self.assertNotIn("idle_warning", ss.status(cfg))
+
+            # The poll found work and the socket never announced it: events ARE missing.
+            slack.last_pick = lambda: 10_000.0
+            self.assertIn("never announced", ss.status(cfg)["idle_warning"])
+
+            # The socket announced it (the pickup trails its own event by seconds): working.
+            ss._STATE["last_event"] = 9_990.0
+            self.assertNotIn("idle_warning", ss.status(cfg))
+
+            # An OLD event and a fresh pickup: the socket announced something once and has since
+            # gone deaf. Still missing.
+            ss._STATE["last_event"] = 10_000.0 - ss._MISS_MARGIN_S - 1
+            self.assertIn("never announced", ss.status(cfg)["idle_warning"])
+
+            # Disconnected is a different problem with a different fix — naming this one would
+            # send the operator to the wrong screen.
+            ss._STATE["connected"] = False
+            ss._STATE["last_event"] = None
+            self.assertNotIn("idle_warning", ss.status(cfg))
+        finally:
+            ss._STATE.clear(); ss._STATE.update(orig[0])
+            ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN, slack.last_pick = orig[1], orig[2], orig[3], orig[4]
+
+    def test_the_app_token_is_a_third_credential_resolved_through_config_secret(self):
+        """`xapp-` is neither of the other two, and pasting the wrong one is the likely mistake.
+        Reading it via os.environ would make it invisible to the secret helper — the feature
+        would then be silently off with the token sitting in the vault."""
+        import slack_socket as ss
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "slack_socket.py")).read()
+        self.assertIn('config.secret("OTTO_SLACK_APP_TOKEN")', src)
+        self.assertNotIn("os.environ.get(\"OTTO_SLACK_APP_TOKEN", src)
+        self.assertIn("OTTO_SLACK_APP_TOKEN", config.SECRET_SPECS)
+        self.assertIsNot(ss.APP_TOKEN, slack.BOT_TOKEN or object())
 
 
 class SlackStateMachineTests(unittest.TestCase):

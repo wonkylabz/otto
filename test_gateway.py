@@ -4616,7 +4616,29 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # from now and a summary of it is a fabrication no judge can catch; and a note appended AFTER
     # the model wrote its reply is downstream of every output contract, so the only thing that can
     # keep it out of a colleague's DM is the audience split at the delivery seam.
-    MAX_RULES_BYTES = 63960   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 66161 for the Slack bot identity: a SECOND account answering on the same ingress makes
+    # every piece of that layer's state two-valued, and each way the two cross is silent and
+    # published — a shared cursor marks a message read that nobody answered, a shared wid drops
+    # the second run to REJECT_DUPLICATE, and a reply target that lost its identity posts the
+    # bot's words under a real person's name in a channel they may not be in. None of that is
+    # visible from `slack.py` alone; the namespace rule in particular reads as an implementation
+    # detail right up until an upgrade silently resets every cursor.
+    # -> 66491 for the two Slack-bot follow-ups. Socket Mode is the first ingress accelerator,
+    # and "wake the poll, never read a message" is the entire reason it is safe to bolt onto a
+    # cursor-based ingress — an editor who does not know that will reach for the events as a
+    # data source and quietly build a second, lossy pipeline. And the watch-target rule is the
+    # bug it sat next to: what Otto watches has to be where its reply GOES, which is not what
+    # `in_thread` says for the message that starts a thread — every channel thread dead-ended
+    # after exactly one turn, in both identities, with no error anywhere.
+    # -> 66927 for the parked-gate notice: WHO gets told a run is waiting is split across the
+    # ntfy push (owner) and the reply target (asker), and nothing in `_gate_wait` reveals that the
+    # second half did not exist — the docstring there names the problem and then bounds the wait
+    # instead of closing it, which reads as solved.
+    # -> 67703 for approve-from-Slack. Three separate ways this becomes a hole in the one
+    # control between a colleague's DM and a write in the operator's name: reusing the talk
+    # allowlist as the approve allowlist, matching a decision as a substring, and the pending
+    # guard silently making the whole feature inert. None is visible from the call site.
+    MAX_RULES_BYTES = 67639   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

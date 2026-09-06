@@ -19,6 +19,21 @@ Five adapters normalizing into one `OttoWorkflow`: web chat (`web/index.html`+`s
 - `allow_self` is scoped to the owner's own self-DM (`slack._self_test`) — raw, it also answers the owner inside a third party's DM.
 - Allowlist entries may be labelled (`U01ABCDE2FG  #alex`); strip via `slack.entry_id`/`allow_ids`, never compare raw.
 
+## Slack bot user (the second identity)
+
+`OTTO_SLACK_BOT_TOKEN` (`xoxb-…`) runs Otto as a bot user ALONGSIDE the user token, not instead of it: separately switchable (`bot_enabled`), separately allowlisted, one shared poll.
+
+- **All Slack state is namespaced by identity** (`slack_state.ns` — cursors, records, `wid_for`'s `slack-b-…`) — both watch the same channels, so a shared key marks read what nobody answered and a shared wid REJECT_DUPLICATEs the second run (`SlackBotIdentityTests`).
+- **`user` is the UNNAMESPACED namespace** — its keys stay byte-identical to the pre-bot shape, or an installed listener loses every cursor on upgrade and reads as gone deaf (`SlackBotIdentityTests`).
+- **WHO posts travels with WHERE** (`reply_target`'s `identity`, recovered from the wid once history ages out) — `delivery._slack` has nothing else to go on, and the bot's answer on the user token is words in a real person's mouth (`SlackBotIdentityTests`).
+- **The bot's framing PROHIBITS the stand-in claim, never just omits it** (`slack._BOT_FRAMING`) — given the user one it calls itself "the operator's assistant … in his place" 4/4, under a name the reader sees is a bot (`SlackBotIdentityTests`, `slack-bot-speaks-for-itself`).
+- **Separate allowlists** (`bot_allow_*`) — inviting the bot somewhere must not widen what the owner's own account answers there. A bot CHANNEL must be listed to be read at all: that list is what bounds the per-poll history sweep (`SlackBotIdentityTests`).
+- **Bot mentions come from membership, not search** (`_poll_bot_mentions`) — `search:read` is user-token-only. A bare `@otto` stripping to nothing is flagged `summons`, never left to `is_pleasantry`, which refuses `@`/`<>` and empty text by design (`SlackBotIdentityTests`).
+- **Socket Mode is a WAKE-UP, not an ingress** (`slack_socket`, bot only) — it starts `SlackPollWorkflow` and reads nothing. Events are never replayed after a disconnect, so the cursor stays authoritative and a lost one costs latency, not a message (`SlackSocketModeTests`).
+- **What Otto WATCHES is where its reply GOES** (`activities._watch` ← `reply_target`) — `in_thread` is False for the message STARTING a thread, so deriving it there watched the channel, which `_poll_threads` skips: threads died after one turn (`SlackListenerActivityTests`).
+- **One schedule and one downtime clock serve both** (`any_enabled`) — else switching the owner's listener off silently stops the bot. A conversation whose identity is switched off is abandoned, never handed to the other one (`SlackBotIdentityTests`).
+
+
 ## GitHub board
 
 `board.py` — Projects v2 as an async queue. Ready→In Progress on pickup, result comment + move to Review/Done. **Moving to Ready is approval** (`hold` flips to `ask`). Config `data/board.json`.
