@@ -4644,7 +4644,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 67920 for the derived-busy rule: a conversation's in-flight flag was cleared on
     # DELIVERY only, so every terminal path that skipped delivery silently deafened a DM for the
     # whole stale window — invisible from the poller, which reads a flag that looks authoritative.
-    MAX_RULES_BYTES = 67920   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 68201 for the finished-board-card rule: the board's list source has a hard expiry
+    # nothing in the code says (Temporal deletes a closed execution at the namespace TTL), and
+    # the two windows sharing one `limit` reads as obviously fine — between them, completed work
+    # silently disappeared off the board and every re-derivation from the code missed both.
+    MAX_RULES_BYTES = 68201   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

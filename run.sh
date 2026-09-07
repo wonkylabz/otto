@@ -53,6 +53,18 @@ else
   sleep 3
 fi
 
+# 1b) Workflow retention. `start-dev` registers `default` with a 24h retention TTL, after which
+# Temporal DELETES the closed execution — visibility stops listing it and the Swarm board's
+# finished cards silently disappeared with it (issue #13). Otto keeps its own durable copy of
+# every finished card in otto.db, so this is a backstop rather than the only record; matching it
+# to OTTO_BOARD_RETENTION_H keeps the live source and the board's window in step, so a card
+# within the window still has a working Temporal history link.
+# Idempotent, and applied whether or not we started the server (an already-running one may still
+# be on the 24h default). Non-fatal: a failure here costs the link, not the board.
+"$TCLI" operator namespace update --namespace default \
+  --retention "${OTTO_TEMPORAL_RETENTION:-168h}" >/dev/null 2>&1 \
+  || echo "temporal retention: could not set (board falls back to its own archive)"
+
 # 2) worker
 echo "worker: starting (log -> /tmp/otto-worker.log)…"
 "$PY" worker.py >/tmp/otto-worker.log 2>&1 &

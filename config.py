@@ -362,6 +362,19 @@ REAPER_SECONDS = int(os.environ.get("OTTO_REAPER_SECONDS", "300"))
 # needs-you at once (their in-workflow finalizer never wrote a terminal row).
 REAP_WINDOW_H = float(os.environ.get("OTTO_REAP_WINDOW_H", "168"))
 
+# How long a FINISHED run keeps its card on the Swarm board (issue #13). The board's live source
+# is Temporal visibility, which DELETES closed executions at the namespace retention TTL — 24h on
+# `temporal server start-dev` — so past that point `list_workflows` simply stops returning them and
+# no amount of paging brings a finished card back. Everything beyond the live window is served from
+# the durable card archive in otto.db (`audit.archive_board_cards`); run.sh raises the namespace
+# TTL to match so the archive is a backstop rather than the only copy. 0 = keep finished cards for
+# as long as the archive holds them.
+BOARD_RETENTION_H = float(os.environ.get("OTTO_BOARD_RETENTION_H", "168"))
+# How many FINISHED cards the board may carry. Its own budget, never shared with the running ones:
+# one `ORDER BY StartTime DESC` window across both meant ~40 newly started runs silently evicted
+# every completed card, which is the bug. Bounds the payload and the Finished column's length.
+BOARD_CLOSED_LIMIT = int(os.environ.get("OTTO_BOARD_CLOSED_LIMIT", "200"))
+
 # Per-run cost/token budget (0 = disabled). Output tokens are the primary meter (the scarce
 # subscription resource); USD is a secondary notional meter. At the SOFT threshold the run
 # downshifts the execution model tier; at the HARD ceiling it stops and surfaces for a human.
@@ -438,6 +451,7 @@ _SETTING_SPECS = {
     "max_review_rounds":  ("OTTO_MAX_REVIEW_ROUNDS", "int", "MAX_REVIEW_ROUNDS"),
     "max_plan_revisions": ("OTTO_MAX_PLAN_REVISIONS", "int", "MAX_PLAN_REVISIONS"),
     "gate_timeout_h":     ("OTTO_GATE_TIMEOUT_H", "float", "GATE_TIMEOUT_H"),
+    "board_retention_h":  ("OTTO_BOARD_RETENTION_H", "float", "BOARD_RETENTION_H"),
     "memory_gc_batch_size": ("OTTO_MEMORY_GC_BATCH_SIZE", "int", "MEMORY_GC_BATCH_SIZE"),
     "memory_gc_max_verify": ("OTTO_MEMORY_GC_MAX_VERIFY", "int", "MEMORY_GC_MAX_VERIFY"),
     "judge_confirmations": ("OTTO_JUDGE_CONFIRMATIONS", "int", "JUDGE_CONFIRMATIONS"),

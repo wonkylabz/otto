@@ -14,6 +14,7 @@ workflow — the browser only watches state and sends signals. Temporal is requi
 
     ./run.sh               # temporal + worker + this server; open http://localhost:8765
 """
+import datetime
 import json
 import os
 import re
@@ -425,39 +426,91 @@ def _outcome_preview(text, limit=220):
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
+def _board_cutoff():
+    """The ISO floor of the finished-card retention window (`board_retention_h`), or None when
+    retention is disabled (0 = keep every archived card). Local time, to match the `start`/`end`
+    stamps the cards themselves carry — comparing those as strings only sorts correctly when both
+    ends of the comparison are in the same zone."""
+    hours = config.setting("board_retention_h")
+    if not hours or hours <= 0:
+        return None
+    cutoff = datetime.datetime.now().astimezone() - datetime.timedelta(hours=float(hours))
+    return cutoff.isoformat(timespec="minutes")
+
+
 async def _board(limit=40):
     """Surface recent OttoWorkflow executions for the swarm board — read-only. Enriches
     each with its capability/risk/outcome by querying the live status (running) or fetching
-    the result (completed). Best-effort: enrichment failures leave those fields null."""
+    the result (completed). Best-effort: enrichment failures leave those fields null.
+
+    Running and FINISHED runs draw on separate budgets (issue #13). One `ORDER BY StartTime DESC`
+    window across both meant every newly started run pushed the oldest card out of the window
+    regardless of what it was, so ~`limit` submissions silently evicted every completed card —
+    finished work "disappearing" from the board with no trace of why. Closed runs now get their
+    own `BOARD_CLOSED_LIMIT` window ordered by CLOSE time (which is what the Finished column
+    sorts on anyway) and are bounded by TIME, not by how busy Otto has been since.
+
+    Temporal is only the live half of the source. Its visibility store DELETES a closed execution
+    at the namespace retention TTL (24h on `temporal server start-dev`), so beyond that window a
+    finished card cannot be recovered from Temporal at all — the durable copy in `board_cards`
+    is what keeps it on the board for `board_retention_h`. That archive doubles as a cache: a
+    closed run's result never changes, so an already-archived card is served straight from the db
+    instead of re-fetching its workflow result on every 3.5s poll."""
     c = await tc.client()
 
-    async def _collect(query):
+    async def _collect(query, cap):
         rows = []
         async for wf in c.list_workflows(query):
             rows.append(wf)
-            if len(rows) >= limit:
+            if len(rows) >= cap:
                 break
         return rows
 
+    closed_limit = config.BOARD_CLOSED_LIMIT
     try:
-        rows = await _collect('WorkflowType = "OttoWorkflow" ORDER BY StartTime DESC')
-    except Exception:  # noqa: BLE001 - visibility may not support ORDER BY; sort client-side
-        rows = await _collect('WorkflowType = "OttoWorkflow"')
-        rows.sort(key=lambda w: w.start_time or 0, reverse=True)
+        rows = await _collect('WorkflowType = "OttoWorkflow" AND ExecutionStatus = "Running" '
+                              'ORDER BY StartTime DESC', limit)
+        rows += await _collect('WorkflowType = "OttoWorkflow" AND ExecutionStatus != "Running" '
+                               'ORDER BY CloseTime DESC', closed_limit)
+    except Exception:  # noqa: BLE001 - visibility may not support the filter/ORDER BY; sort here
+        try:
+            rows = await _collect('WorkflowType = "OttoWorkflow" ORDER BY StartTime DESC',
+                                  limit + closed_limit)
+        except Exception:  # noqa: BLE001 - nor ORDER BY; sort client-side
+            rows = await _collect('WorkflowType = "OttoWorkflow"', limit + closed_limit)
+            rows.sort(key=lambda w: w.start_time.timestamp() if w.start_time else 0, reverse=True)
 
-    out = []
+    cutoff = _board_cutoff()
+    archived = {a["id"]: a for a in engine.archived_board_cards(since=cutoff, limit=closed_limit)}
+    out, fresh, stale = [], [], False
     for wf in rows:
         status = wf.status.name if wf.status else "RUNNING"
+        closed_at = wf.close_time.astimezone().isoformat(timespec="minutes") if wf.close_time else None
+        # A closed run older than the retention window is not shown at all — the operator asked
+        # for a window, and Temporal can hold a run past it (its TTL is raised to be a backstop,
+        # not the policy). Dropped BEFORE enrichment: nothing on screen, nothing paid for.
+        if status != "RUNNING" and cutoff and closed_at and closed_at < cutoff:
+            stale = True
+            continue
+        # A closed workflow's result is FINAL, so the archived card for it is still true — serve
+        # it and skip the `h.result()` round trip. Keyed on run_id as well as id so a re-used
+        # workflow id (a retry reusing the wid) can never be answered with the old run's card.
+        cached = archived.get(wf.id)
+        if status != "RUNNING" and cached and cached.get("run_id") == wf.run_id \
+                and cached.get("status") == status:
+            cached["archived"] = False
+            out.append(cached)
+            continue
         e = {"id": wf.id, "run_id": wf.run_id, "status": status,
              "scheduled": wf.id.startswith("sched-"),
              "start": wf.start_time.astimezone().isoformat(timespec="minutes") if wf.start_time else None,
              # A closed run is filed by WHEN IT FINISHED, not when it started: a long run started
              # first can close last, so ordering Finished by start time buries the newest result
              # mid-column. Null while RUNNING.
-             "end": wf.close_time.astimezone().isoformat(timespec="minutes") if wf.close_time else None,
+             "end": closed_at,
              "cap": None, "risk": None, "phase": None, "outcome": None, "verified": None,
              "repo": None, "in_place": False, "chat_key": None, "question": None, "pr": None,
-             "needs_human": None, "qa": None, "retried_to": None}
+             "needs_human": None, "qa": None, "retried_to": None, "archived": False}
         e["model"], e["local"], e["fallback_from"], e["fallback_reason"] = _run_model(wf.id)
         h = c.get_workflow_handle(wf.id, run_id=wf.run_id)
         try:
@@ -505,18 +558,45 @@ async def _board(limit=40):
                 e["stage"] = open_stages[-1] if open_stages else None
         except Exception:  # noqa: BLE001 - enrichment is best-effort
             pass
+        out.append(e)
+        if status != "RUNNING":
+            fresh.append(e)
+
+    # Archive every card enriched THIS pass (the cache hits above are already stored). This is
+    # what makes a finished card outlive Temporal's retention TTL — and, because it happens on
+    # the same pass that already paid for the enrichment, it costs one upsert per newly closed
+    # run rather than anything per poll.
+    if fresh:
+        engine.archive_board_cards(fresh)
+    # Pruning rides a real trigger rather than the poll — a DELETE on every 3.5s tick is a write
+    # transaction for nothing. `stale` is the one that matters: an out-of-window row is already
+    # invisible (the read is bounded by the same cutoff), so this is hygiene, and the moment the
+    # window is known to have moved past something is exactly when it is worth paying for.
+    if cutoff and (fresh or stale):
+        engine.prune_board_cards(cutoff)
+    # Cards Temporal no longer lists at all — its visibility store has already deleted those
+    # closed executions. Without this merge the board's whole history is capped at the namespace
+    # TTL no matter what retention the operator asked for. Flagged `archived` so the UI doesn't
+    # offer a Temporal history link that would 404.
+    live = {e["id"] for e in out}
+    for wid, card in archived.items():
+        if wid not in live:
+            card["archived"] = True
+            out.append(card)
+
+    dismissed = _dismissed_ids()
+    retries = _retries()
+    for e in out:
+        e["retried_to"] = retries.get(e["id"])
         # A run with no chat_key of its own (an interactive web-* run — the browser owns the
         # conversation — or a workflow-opened chat whose terminal status fell outside the
         # COMPLETED/RUNNING branches above) can still be traced back to its chat via the sticky
         # origin_run_id backstop, so the board's Chat link isn't lost just because the run's own
         # result/status never carried one (user-reported: some finished cards had no Chat button).
-        if not e["chat_key"]:
-            e["chat_key"] = chats.find_by_run_origin(wf.id)
-        out.append(e)
-    dismissed = _dismissed_ids()
-    retries = _retries()
-    for e in out:
-        e["retried_to"] = retries.get(e["id"])
+        # Resolved HERE, over archived cards too, and re-resolved every pass rather than frozen
+        # into the archive — a chat can be reattached to a run long after the card stopped changing.
+        if not e.get("chat_key"):
+            e["chat_key"] = chats.find_by_run_origin(e["id"])
     return [e for e in out if e["id"] not in dismissed]
 
 
@@ -534,10 +614,21 @@ def _run_result(wid):
 async def _board_full_result(wid):
     """The untruncated result text for one board card's detail modal, fetched only on demand
     (not part of the polled /api/board list, which stays truncated so its payload stays light
-    regardless of how large any individual run's result is)."""
+    regardless of how large any individual run's result is).
+
+    Falls back to the AUDIT TRAIL when Temporal no longer holds the run: a card can outlive its
+    workflow by design now (issue #13), and "Read full result" on such a card otherwise answered
+    with a workflow-not-found error on the one screen the operator went to for the result."""
     c = await tc.client()
     h = c.get_workflow_handle(wid)
-    desc = await h.describe()
+    try:
+        desc = await h.describe()
+    except Exception:  # noqa: BLE001 - aged out of Temporal visibility
+        text = _run_result(wid)
+        if not text:
+            raise
+        return {"status": "ARCHIVED",
+                "result": _NEEDS_BANNER_RE.sub("", text, count=1).strip()}
     status = desc.status.name if desc.status else "RUNNING"
     if status == "COMPLETED":
         res = await h.result()

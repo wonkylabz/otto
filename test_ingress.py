@@ -4625,8 +4625,11 @@ class BoardFinishOrderTests(unittest.TestCase):
         src = open("server.py").read()
         i = src.index('"start": wf.start_time')
         block = src[i:i + 700]
-        self.assertIn('"end": wf.close_time', block,
+        self.assertIn('"end": closed_at', block,
                       "the board payload carries no finish time, so the client can't order by it")
+        self.assertIn("closed_at = wf.close_time.astimezone()",
+                      src[src.index("async def _board("):i],
+                      "`end` no longer comes from the workflow's CLOSE time")
 
     def test_the_closed_columns_are_ordered_by_finish_time(self):
         ui = open("web/index.html", "rb").read().decode("utf-8")
@@ -4647,6 +4650,224 @@ class BoardFinishOrderTests(unittest.TestCase):
         ui = open("web/index.html", "rb").read().decode("utf-8")
         self.assertIn("it.start,it.end,", ui)
 
+
+
+
+class BoardRetentionTests(unittest.TestCase):
+    """A finished card must not vanish (issue #13). It vanished two ways, and both are here.
+
+    ONE window: `_board` took a single `limit`-sized `ORDER BY StartTime DESC` slice across
+    running AND closed runs, so ~40 newly started runs pushed every completed card out of it —
+    the board forgot finished work purely because Otto had been busy since.
+
+    ONE source: that window is Temporal visibility, which DELETES a closed execution at the
+    namespace retention TTL (24h on `temporal server start-dev`). Past that, no paging or
+    ordering can bring the card back — only Otto's own durable archive can."""
+
+    def setUp(self):
+        import server
+        self.server = server
+        self.calls = []                       # every workflow whose result was actually fetched
+        engine.prune_board_cards("9999-01-01T00:00")   # a clean archive per test
+
+    def tearDown(self):
+        engine.prune_board_cards("9999-01-01T00:00")
+
+    # ---- fixtures -----------------------------------------------------------------------
+    class _Stub:
+        """`start`/`close` are HOURS AGO, not fixed dates: `_board`'s retention window is measured
+        against the wall clock, so a fixture pinned to a literal date silently drifts out of the
+        default 168h window and the suite starts failing on a date rather than on a change."""
+        def __init__(self, wid, status, start, close):
+            import datetime as _dt
+            now = _dt.datetime.now().astimezone()
+            self.id, self.run_id = wid, "r-" + wid
+            self.status = type("S", (), {"name": status})()
+            self.start_time = now - _dt.timedelta(hours=start)
+            self.close_time = (now - _dt.timedelta(hours=close)) if close is not None else None
+
+    def _client(self, stubs):
+        """A Temporal stand-in that honours the ExecutionStatus filter and CloseTime ordering the
+        real visibility store does — the whole point of the fix is that `_board` asks for the two
+        sets SEPARATELY, so a fake that ignored the filter would pass either way."""
+        calls = self.calls
+        outer = self
+
+        class Handle:
+            def __init__(self, wid):
+                self.wid = wid
+
+            async def result(self):
+                calls.append(self.wid)
+                return {"cap": {"name": "assistant", "risk": "read"}, "verified": True,
+                        "result": f"result of {self.wid}"}
+
+            async def query(self, _q):
+                return {"cap": {"name": "assistant", "risk": "read"}, "times": {}}
+
+        class Client:
+            def list_workflows(self, query):
+                if 'ExecutionStatus = "Running"' in query:
+                    rows = [s for s in stubs if s.status.name == "RUNNING"]
+                    rows.sort(key=lambda s: s.start_time, reverse=True)
+                elif 'ExecutionStatus != "Running"' in query:
+                    rows = [s for s in stubs if s.status.name != "RUNNING"]
+                    rows.sort(key=lambda s: s.close_time, reverse=True)
+                else:
+                    raise AssertionError("_board fell back to the single shared window")
+
+                async def gen():
+                    for r in rows:
+                        yield r
+                return gen()
+
+            def get_workflow_handle(self, wid, run_id=None):
+                return Handle(wid)
+
+        outer._client_obj = Client()
+        return outer._client_obj
+
+    def _board(self, stubs, limit=40):
+        import asyncio
+        import temporal_client as tc
+        client = self._client(stubs)
+
+        async def fake_client():
+            return client
+        orig = tc.client
+        tc.client = fake_client
+        try:
+            return asyncio.run(self.server._board(limit=limit))
+        finally:
+            tc.client = orig
+
+    # ---- the archive itself -------------------------------------------------------------
+    def test_the_archive_round_trips_a_card_and_upserts_it(self):
+        card = {"id": "web-aaa", "run_id": "r1", "status": "COMPLETED",
+                "end": "2026-09-01T10:00", "outcome": "first"}
+        engine.archive_board_cards([card])
+        engine.archive_board_cards([dict(card, outcome="second")])
+        got = engine.archived_board_cards()
+        self.assertEqual([c["id"] for c in got], ["web-aaa"], "the upsert inserted a second row")
+        self.assertEqual(got[0]["outcome"], "second")
+
+    def test_the_archive_is_bounded_by_close_time_not_insertion_order(self):
+        engine.archive_board_cards([
+            {"id": "old", "run_id": "r", "status": "COMPLETED", "end": "2026-08-01T00:00"},
+            {"id": "new", "run_id": "r", "status": "COMPLETED", "end": "2026-09-01T00:00"}])
+        self.assertEqual([c["id"] for c in engine.archived_board_cards(since="2026-08-15T00:00")],
+                         ["new"])
+        engine.prune_board_cards("2026-08-15T00:00")
+        self.assertEqual([c["id"] for c in engine.archived_board_cards()], ["new"],
+                         "pruning left a card outside the retention window on the board")
+
+    # ---- eviction by newer runs (AC 2) --------------------------------------------------
+    def test_a_finished_card_is_not_evicted_by_newer_runs(self):
+        """The reported symptom: start `limit` fresh runs and the completed one is gone. Running
+        and closed draw on separate budgets now, so a busy Otto cannot spend the finished one."""
+        stubs = [self._Stub("done-1", "COMPLETED", 5, 4)]
+        stubs += [self._Stub(f"run-{i}", "RUNNING", i * 0.1, None) for i in range(20)]
+        ids = [c["id"] for c in self._board(stubs, limit=5)]
+        self.assertIn("done-1", ids,
+                      "a completed card was pushed out of the window by newer running runs")
+        self.assertEqual(len([i for i in ids if i.startswith("run-")]), 5,
+                         "the running budget is not the one being bounded by `limit`")
+
+    # ---- outliving Temporal (AC 1 + AC 3) -----------------------------------------------
+    def test_a_card_temporal_has_forgotten_stays_on_the_board(self):
+        """Temporal deleted the closed execution at its retention TTL. Everything the operator
+        cares about — the cap, the verdict, the result — is served from the archive instead, and
+        the card says so, because its Temporal history link would now 404."""
+        stubs = [self._Stub("done-1", "COMPLETED", 5, 4)]
+        first = {c["id"]: c for c in self._board(stubs)}
+        self.assertFalse(first["done-1"]["archived"])
+        later = {c["id"]: c for c in self._board([])}          # aged out of visibility
+        self.assertIn("done-1", later, "the finished card vanished with its Temporal execution")
+        self.assertTrue(later["done-1"]["archived"])
+        self.assertEqual(later["done-1"]["cap"], "assistant")
+        self.assertEqual(later["done-1"]["outcome"], "result of done-1")
+
+    def test_a_card_past_the_retention_window_is_dropped_and_pruned(self):
+        stubs = [self._Stub("done-1", "COMPLETED", 5, 4)]
+        self._board(stubs)
+        self.assertEqual([c["id"] for c in self._board(stubs)], ["done-1"],
+                         "the fixture card is already outside the default window")
+        try:
+            os.environ["OTTO_BOARD_RETENTION_H"] = "0.000001"
+            self.assertEqual(self._board(stubs), [],
+                             "a card older than board_retention_h is still on the board")
+        finally:
+            os.environ.pop("OTTO_BOARD_RETENTION_H", None)
+        self.assertEqual(engine.archived_board_cards(), [],
+                         "the out-of-window card was left in the archive forever")
+
+    def test_retention_zero_keeps_every_archived_card(self):
+        engine.archive_board_cards([{"id": "ancient", "run_id": "r", "status": "COMPLETED",
+                                     "end": "2020-01-01T00:00+00:00"}])
+        try:
+            os.environ["OTTO_BOARD_RETENTION_H"] = "0"
+            self.assertIsNone(self.server._board_cutoff())
+            self.assertIn("ancient", [c["id"] for c in self._board([])])
+        finally:
+            os.environ.pop("OTTO_BOARD_RETENTION_H", None)
+
+    # ---- the archive is also the cache --------------------------------------------------
+    def test_a_closed_run_is_enriched_once_not_on_every_poll(self):
+        """The closed budget is 5x the old whole-board one, and /api/board is polled every 3.5s.
+        A closed run's result is final, so the archived card answers instead — without this the
+        widened window would multiply the per-poll Temporal round trips it makes."""
+        stubs = [self._Stub(f"done-{i}", "COMPLETED", 5, 4) for i in range(4)]
+        self._board(stubs)
+        self.assertEqual(sorted(self.calls), ["done-0", "done-1", "done-2", "done-3"])
+        self.calls.clear()
+        self.assertEqual(len(self._board(stubs)), 4)
+        self.assertEqual(self.calls, [], "a settled result was re-fetched from Temporal")
+
+    def test_a_reused_workflow_id_is_never_answered_with_the_old_card(self):
+        """The cache key is (id, run_id): a wid that comes back under a NEW run must be
+        re-enriched, or the board shows the previous run's result under the new one."""
+        stubs = [self._Stub("done-1", "COMPLETED", 5, 4)]
+        self._board(stubs)
+        self.calls.clear()
+        stubs[0].run_id = "r-second-run"
+        self._board(stubs)
+        self.assertEqual(self.calls, ["done-1"],
+                         "a re-used workflow id was served the previous run's archived card")
+
+    def test_the_run_that_is_still_running_is_never_archived(self):
+        self._board([self._Stub("run-1", "RUNNING", 1, None)])
+        self.assertEqual(engine.archived_board_cards(), [],
+                         "a live run was frozen into the archive and would outlive its own status")
+
+    def test_a_card_temporal_has_forgotten_offers_no_history_link(self):
+        """The card is real, its Temporal history is not. A "Temporal ↗" link on it 404s, which
+        reads as Otto having lost the run — the very thing this whole change is about — so the
+        link is dropped and a chip says where the card came from instead."""
+        ui = open("web/index.html", "rb").read().decode("utf-8")
+        i = ui.index("const link=(data.ui")
+        self.assertIn("!it.archived", ui[i:i + 120],
+                      "an archived card still renders a Temporal history link that 404s")
+        self.assertIn("const archived=it.archived?", ui,
+                      "nothing on the card explains why it has no Temporal link")
+        chips = ui[ui.index("const chips=["):ui.index("const chips=[") + 260]
+        self.assertIn("archived]", chips, "the archived chip is built but never rendered")
+        # The board skips its DOM rebuild on an unchanged signature, so a card that ages out of
+        # Temporal between two polls would keep its now-dead link until something else changed.
+        self.assertIn("it.local,it.archived]", ui,
+                      "`archived` is absent from the render signature — the flip is invisible")
+
+    def test_run_sh_raises_the_namespace_retention(self):
+        """AC 3: Temporal's own 24h TTL is the limiting factor for the LIVE half, so run.sh lifts
+        it on every start — idempotent, and applied even when the server was already up (the
+        branch that skips starting it must not skip this)."""
+        sh = open("run.sh").read()
+        self.assertIn("operator namespace update", sh)
+        self.assertIn("OTTO_TEMPORAL_RETENTION", sh)
+        i, j = sh.index("operator namespace update"), sh.index("# 2) worker")
+        self.assertLess(i, j, "the retention update never runs before the worker starts")
+        self.assertNotIn("fi\n", sh[sh.index("# 1b)"):i],
+                         "the update sits inside the start-the-server branch — an already-running "
+                         "dev server keeps the 24h default")
 
 
 class ChatViewCollapseTests(unittest.TestCase):

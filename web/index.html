@@ -4211,7 +4211,7 @@ let _boardSig=null, _healthSig=null;
 const _boardSignature=d=>JSON.stringify({t:d.temporal,ui:d.ui,items:(d.items||[]).map(it=>[
   it.id,it.run_id,it.status,it.phase,it.stage,it.verified,it.needs_human,it.pr,it.outcome,it.model,
   it.fallback_from,it.fallback_reason,it.retried_to,it.question,it.risk,it.risk_reason,it.cap,
-  it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.local])});
+  it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.local,it.archived])});
 async function loadBoard(silent){
   const el=document.getElementById("boardview");
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
@@ -4256,7 +4256,11 @@ async function loadBoard(silent){
   const card=it=>{
     const failed=it.status!=="COMPLETED" && it.status!=="RUNNING";
     const risk=it.risk?`<span class="badge ${esc(it.risk)}">${esc(it.risk)}</span>`:"";
-    const link=data.ui?`${data.ui}/namespaces/default/workflows/${encodeURIComponent(it.id)}/${encodeURIComponent(it.run_id)}/history`:null;
+    // Temporal deletes a closed execution at the namespace retention TTL; past that the card is
+    // served from Otto's own durable archive (`archived`) and its history link would 404, so the
+    // link is dropped and a chip says where the card is coming from instead of leaving a dead one.
+    const link=(data.ui&&!it.archived)?`${data.ui}/namespaces/default/workflows/${encodeURIComponent(it.id)}/${encodeURIComponent(it.run_id)}/history`:null;
+    const archived=it.archived?`<span class="bchip" title="Temporal no longer holds this run's history \u2014 the card is served from Otto's own board archive, kept for the retention window in Admin \u2192 Runtime settings">archived</span>`:'';
     // verified===false is either a "Needs review" card (it._needs → its own ⚠ badge) or a
     // done-with-PR card (the `advisory` link below) — so `sub` stays a plain "done" here.
     const sub=it.phase || (it.status==="COMPLETED"?(it.verified===true?"done · verified":"done"):it.status.toLowerCase());
@@ -4306,7 +4310,7 @@ async function loadBoard(silent){
     // the full, comfortably-laid-out text in a modal instead of squinting at a cramped 3-line box.
     const truncated=(it.outcome||"").endsWith("…");
     const statusCls=it.verified===true?'ok':(failed?'bad':(it._needs?'warn':''));
-    const chips=[needs,advisory,stage,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',isSub?'<span class="bchip">sub-task</span>':'',inplace].filter(Boolean).join('');
+    const chips=[needs,advisory,stage,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',isSub?'<span class="bchip">sub-task</span>':'',inplace,archived].filter(Boolean).join('');
     return `<div class="bcard ${failed?'failed':''}" data-run="${esc(it.id)}">
       <div class="btop"><span class="bcap">${esc(it.cap||'—')}</span>${risk}</div>
       <div class="bstatus${live?' live':''}"><span class="bdot ${statusCls}"></span>${esc(sub)}${live?'<span class="bell"><i>.</i><i>.</i><i>.</i></span>':''}</div>
@@ -6552,6 +6556,7 @@ const SETTING_HELP={
   memory_gc_max_verify:["Memory GC verify cap","Max real claude -p tool-verification turns one GC run spends on current-state claims; the rest wait for next time."],
   route_confirmations:["Router confirmations","Times the router re-samples a WRITE pick before it stands — a write route arms the approval gate and the Opus plan preview, and claude -p has no temperature, so one sample is a coin flip. The majority wins; a READ pick never re-samples. 1 = old behaviour."],
   judge_confirmations:["Judge confirmations","Times a verify FAIL or supervisor RETRY must repeat before it costs a retry — claude -p has no temperature, so one sample is a coin flip. A PASS never re-samples. 1 = old behaviour."],
+  board_retention_h:["Finished cards on the board — hours","How long a finished run keeps its card in the Swarm board's Finished column. Cards outlive Temporal's own workflow retention: Otto archives each one when it closes and serves it from there afterwards. 0 = keep every archived card forever."],
   gate_timeout_h:["Approval gate deadline — hours","How long a run waits at the approval gate before giving up. Expiry DECLINES and tells whoever asked; it never approves. 0 = wait forever."],
   max_harness_retries:["Harness-death retries","Retries for an attempt that died in the harness (crash, timeout) instead of being judged. These don't spend a verify rung — no judge ever read the attempt."],
   supervise_steer:["Supervisor steering","Let the supervisor CORRECT a live attempt instead of only killing it: the correction is delivered into the running session, which keeps everything done so far and costs no verify attempt. shadow: record the corrections it would have sent, deliver none. off: the option is never offered."],
@@ -6569,6 +6574,7 @@ const SETTING_GROUPS=[
   ["Routing",              ["route_confirmations"]],
   ["Execution & fallback", ["effort","local_fallback","plan_mode","max_attempts","max_harness_retries"]],
   ["Approval gate",        ["gate_timeout_h","max_plan_revisions"]],
+  ["Swarm board",          ["board_retention_h"]],
   ["Supervisor",           ["supervise","supervise_mode","max_supervisor_kills",
                             "supervise_steer","max_supervisor_steers"]],
   ["Cost budgets",         ["budget_soft_tokens","budget_hard_tokens","budget_soft_usd","budget_hard_usd"]],
