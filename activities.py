@@ -633,14 +633,14 @@ def interim_notice(payload: dict) -> dict:
     attempts in the worker log, a silent gate on the asker's side)."""
     import delivery
     reply_to = payload.get("reply_to")
-    status = delivery.interim(reply_to, payload.get("text", ""))
+    delivered, status = delivery.interim(reply_to, payload.get("text", ""))
     # A gate notice also ARMS the conversation: the reply that clears it has to be matchable to
     # this specific run, and the conversation record is the only place both ends can see. Gated on
     # the post SUCCEEDING, which is what makes the sentence above true — a Slack 500 otherwise
     # armed a thread that was never told anything, and a later unrelated "ok" or "no" in it would
     # be consumed as a verdict on a gate nobody saw, for the next 25 hours.
     wid = payload.get("awaiting_wid")
-    if wid and "posted" in status and (reply_to or {}).get("kind") == "slack_thread":
+    if wid and delivered and (reply_to or {}).get("kind") == "slack_thread":
         import slack
         slack.mark_awaiting_gate(reply_to.get("channel"), reply_to.get("thread_ts"),
                                  wid=wid, identity=slack.identity_of(reply_to))

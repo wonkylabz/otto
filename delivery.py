@@ -319,24 +319,26 @@ def interim(reply_to, text):
     is a durable record read later by someone who is not sitting there, so a progress note is
     noise in a permanent place. That split is `AUDIENCE`, reused rather than re-decided.
 
-    Never raises, and returns a short status for the trace. A failed interim notice must not
-    disturb the run it is describing.
+    Never raises. Returns `(delivered, status)` — a BOOLEAN plus a human status for the trace,
+    not just the string. Callers act on this (the gate notice arms a conversation only when the
+    asker was really told), and deciding that by matching a substring against prose means any
+    rewording of a status message silently changes behaviour with no test failing.
     """
     if not reply_to or audience_for(reply_to) != CONVERSATION_AUDIENCE:
-        return "no interim channel for this target"
+        return False, "no interim channel for this target"
     text = privacy.redact(str(text or ""))
     if not text.strip():
-        return "nothing to say"
+        return False, "nothing to say"
     try:
         if (reply_to or {}).get("kind") == "slack_thread":
             import slack
             ok = slack.post(reply_to.get("channel"), slack.to_mrkdwn(text),
                             thread_ts=reply_to.get("thread_ts"),
                             identity=slack.identity_of(reply_to))
-            return "interim posted to slack" if ok else "interim post failed"
+            return bool(ok), ("interim posted to slack" if ok else "interim post failed")
     except Exception as e:  # noqa: BLE001 - never let a progress note break the run
-        return f"interim failed: {str(e)[:80]}"
-    return "no interim channel for this target"
+        return False, f"interim failed: {str(e)[:80]}"
+    return False, "no interim channel for this target"
 
 
 def deliver(reply_to, result, cap=None, run_id=None):

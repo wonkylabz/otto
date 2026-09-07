@@ -2170,15 +2170,19 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         try:
             slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
                 posted.append((ch, text, identity)) or True)
-            out = delivery.interim({"kind": "slack_thread", "channel": "C9", "thread_ts": "1.0",
-                                    "identity": "bot"}, "needs approval")
+            delivered, out = delivery.interim(
+                {"kind": "slack_thread", "channel": "C9", "thread_ts": "1.0", "identity": "bot"},
+                "needs approval")
+            self.assertTrue(delivered)
             self.assertIn("posted", out)
             self.assertEqual(posted, [("C9", "needs approval", "bot")])
             posted.clear()
             for target in ({"kind": "github_issue", "repo": "a/b", "number": 1},
                            {"kind": "github_pr", "repo": "a/b", "number": 1},
                            {"kind": "webhook", "url": "https://x"}, None, {}):
-                self.assertIn("no interim channel", delivery.interim(target, "needs approval"))
+                ok, why = delivery.interim(target, "needs approval")
+                self.assertFalse(ok)
+                self.assertIn("no interim channel", why)
             self.assertEqual(posted, [])
         finally:
             slack.post = orig
@@ -2227,7 +2231,9 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
                              "token sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLL")
             self.assertNotIn("sk-ant-api03-AAAABBBB", seen[0])
             slack.post = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("slack down"))
-            self.assertIn("failed", delivery.interim({"kind": "slack_thread", "channel": "C9"}, "x"))
+            ok, why = delivery.interim({"kind": "slack_thread", "channel": "C9"}, "x")
+            self.assertFalse(ok)
+            self.assertIn("failed", why)
         finally:
             slack.post = orig
 
@@ -2526,34 +2532,80 @@ class SlackReviewFixTests(unittest.TestCase):
         finally:
             slack._GRANTED, slack._FAILED, slack.BOT_TOKEN = orig
 
-    def test_a_listener_that_did_not_stop_is_not_dropped(self):
-        """`_loop` blocks in a 15s urlopen, so a 3s join times out routinely. Nulling the handle
-        there let the next config save clear the stop flag and spawn a SECOND connection while the
-        first was still winding down."""
+    def test_stop_then_start_leaves_exactly_one_live_listener(self):
+        """The whole lifecycle, because each half alone locks in a bug.
+
+        Keeping a stubborn thread stops a SECOND connection being spawned beside it — but the
+        first version of that made `start()` return "already running" without clearing a SHARED
+        stop flag, so the winding-down thread exited on it and an off→on toggle left NOTHING
+        listening while the UI showed the bot enabled. The event is per-listener now: a stopped
+        one can only wind down, and a start always builds a new pair."""
         import slack_socket as ss
 
         class Stubborn:
+            """Blocked in a 15s urlopen, as `_loop` routinely is when a join times out."""
+
+            def __init__(self):
+                self.alive = True
+
             def is_alive(self):
-                return True
+                return self.alive
 
             def join(self, timeout=None):
                 return None
-        orig = ss._THREAD, ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN
+        spawned = []
+        orig = (ss._THREAD, ss._THREAD_STOP, ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN,
+                threading.Thread)
         try:
-            # `start` checks "should it run" before "is it already running", so the bot identity
-            # has to be genuinely on for this to exercise the path a config save takes.
             ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN = True, "xapp-t", "xoxb-t"
-            ss._THREAD = Stubborn()
+            cfg = {"bot_enabled": True, "bot_socket_mode": True}
+            stubborn, its_event = Stubborn(), threading.Event()
+            ss._THREAD, ss._THREAD_STOP = stubborn, its_event
+
             self.assertIn("winding down", ss.stop(timeout=0))
-            self.assertIsNotNone(ss._THREAD, "a live thread must not be dropped")
-            self.assertIn("already running",
-                          ss.start({"bot_enabled": True, "bot_socket_mode": True}))
+            # Its OWN event is set, so it can do nothing but exit — it can never be revived.
+            self.assertTrue(its_event.is_set())
+
+            # Toggled back on before it has finished dying: a new listener must be started.
+            class FakeThread:
+                def __init__(self, target=None, args=(), **k):
+                    self.args = args
+                    spawned.append(self)
+
+                def start(self):
+                    pass
+
+                def is_alive(self):
+                    return True
+            threading.Thread = FakeThread
+            self.assertIn("listening", ss.start(cfg))
+            self.assertEqual(len(spawned), 1, "an off->on toggle must leave a live listener")
+            # ...on a FRESH event, not the dead one's.
+            self.assertIsNot(spawned[0].args[0], its_event)
+            self.assertFalse(spawned[0].args[0].is_set())
+            # And a second start is still refused while that one lives.
+            self.assertIn("already running", ss.start(cfg))
+            self.assertEqual(len(spawned), 1)
         finally:
-            ss._THREAD, ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN = orig
-            # `stop()` deliberately leaves the flag SET (that is what keeps a winding-down thread
-            # from being replaced), so this test has to clear it or every later use of the module
-            # sees a listener that was asked to stop — the pump loop exits on its first iteration.
-            ss._STOP.clear()
+            (ss._THREAD, ss._THREAD_STOP, ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN,
+             threading.Thread) = orig
+
+    def test_every_temporal_lookup_from_the_poll_is_bounded(self):
+        """`run_alive` and `gate_open` both run inside the poll activity, which serves EVERY Slack
+        channel — an unbounded call there turns a hung Temporal frontend into a total ingress
+        stall instead of a fast failure. Bounding one and not the other is exactly what shipped,
+        so this asserts the property rather than one call site, and a third lookup added later
+        has to opt in too."""
+        for fn in (slack.run_alive, slack.gate_open):
+            src = inspect.getsource(fn)
+            self.assertIn("asyncio.wait_for", src, f"{fn.__name__} must bound its Temporal call")
+            self.assertIn("_TEMPORAL_TIMEOUT_S", src,
+                          f"{fn.__name__} must use the shared ceiling, not a literal")
+        # Both map a raise to the safe answer: unknown, which the callers treat as "still busy"
+        # and "gate closed" respectively.
+        self.assertIn("return None", inspect.getsource(slack.run_alive))
+        self.assertIn("return None", inspect.getsource(slack.gate_open))
+        self.assertGreater(slack._TEMPORAL_TIMEOUT_S, 0)
 
     def test_the_gate_bypass_does_not_widen_concurrency_inside_a_DM(self):
         """Arming a DM's gate lets it be READ so a decision can arrive. A reply inside a THREAD of
@@ -2925,7 +2977,8 @@ class SlackSocketModeTests(unittest.TestCase):
         try:
             ss._ws_connect = lambda *a, **k: ws
             ss.wake = lambda *a, **k: wakes.append(1)
-            asyncio.run(asyncio.wait_for(ss._pump("wss://x"), timeout=5))
+            asyncio.run(asyncio.wait_for(ss._pump("wss://x", threading.Event()),
+                                         timeout=5))
         finally:
             ss._ws_connect, ss.wake = orig_conn, orig_wake
         # Every envelope acked, in order, by id — including the ignored ones.

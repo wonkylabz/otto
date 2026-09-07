@@ -770,6 +770,10 @@ def watched_conversations(threads_only=False):
 # only ever make Otto wait, never make it start a second concurrent turn.
 _DEAD_STATUSES = {"COMPLETED", "FAILED", "CANCELED", "CANCELLED", "TERMINATED", "TIMED_OUT",
                   "CONTINUED_AS_NEW"}
+# Ceiling on any Temporal lookup made from inside the poll activity. One constant, because the two
+# call sites are the same risk and a bound on only one of them is the shape that got reviewed:
+# a hung frontend must fail fast rather than stall every Slack channel.
+_TEMPORAL_TIMEOUT_S = 10
 
 
 def alive_from_status(name):
@@ -801,7 +805,8 @@ def run_alive(wid):
         # BOUNDED: this runs inside the poll activity, so a hung Temporal frontend would stall
         # every Slack channel rather than failing fast. A timeout raises, which reads as "unknown"
         # — the safe direction, and the stale window still covers the conversation.
-        d = await asyncio.wait_for(c.get_workflow_handle(wid).describe(), timeout=10)
+        d = await asyncio.wait_for(c.get_workflow_handle(wid).describe(),
+                                   timeout=_TEMPORAL_TIMEOUT_S)
         return alive_from_status(
             getattr(d.status, "name", None) if getattr(d, "status", None) else None)
 
@@ -1681,9 +1686,15 @@ def gate_open(wid):
         return None
 
     async def _go():
+        import asyncio
         from workflows import OttoWorkflow
         c = await tc.client()
-        st = await c.get_workflow_handle(wid).query(OttoWorkflow.status)
+        # BOUNDED for the same reason `run_alive` is: this runs inside the poll activity, so a
+        # hung Temporal frontend would stall every Slack channel rather than failing fast. A
+        # timeout raises, and the handler below maps that to None — treated as "closed", which is
+        # the safe direction for a decision.
+        st = await asyncio.wait_for(
+            c.get_workflow_handle(wid).query(OttoWorkflow.status), timeout=_TEMPORAL_TIMEOUT_S)
         return bool((st or {}).get("awaiting_approval"))
 
     try:

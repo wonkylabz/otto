@@ -154,7 +154,18 @@ _STATE = {"connected": False, "last_event": None, "wakes": 0, "error": None,
 # process could plausibly have seen an event for is evidence of anything.
 _STARTED = time.time()
 _THREAD = None
-_STOP = threading.Event()
+# The stop signal belongs to ONE listener, not to the module. A shared flag has to be cleared by
+# whoever starts the next listener, and that is a promise with a hole in it: `stop()` keeps a
+# thread that did not die within the join (it is usually blocked in a 15s urlopen), so `start()`
+# saw it alive, returned "already running", and never cleared the flag — the winding-down thread
+# then exited on it and NOTHING was listening, with the UI still showing the bot enabled. An
+# off→on toggle is the most ordinary operator action there is.
+#
+# Per-thread events remove the sharing entirely: a stopped listener's event stays set, so it can
+# only ever wind down, and a new listener gets a fresh one. The two can overlap for as long as the
+# old one's current blocking call takes, which is bounded and harmless — Slack supports multiple
+# Socket Mode connections (it is their documented HA shape) and `wake` is rate-limited anyway.
+_THREAD_STOP = None
 
 
 def _open_url():
@@ -240,7 +251,7 @@ def wake(reason="event"):
 
 # --- the connection ----------------------------------------------------------
 
-async def _pump(url):
+async def _pump(url, stop):
     """One connection's lifetime. Returns when Slack asks us to reconnect or the socket drops.
 
     Owns the `connected` flag in a `finally`: leaving the clear to the caller left the status
@@ -253,16 +264,16 @@ async def _pump(url):
         _STATE["connected"] = True
         trace("SLACK", "socket: connected")
         try:
-            await _read(ws)
+            await _read(ws, stop)
         finally:
             _STATE["connected"] = False
 
 
-async def _read(ws):
+async def _read(ws, stop):
     """Receive, ack, and decide whether to wake, until Slack says to reconnect."""
     import asyncio
     pending = False                       # an event arrived; wake once the burst goes quiet
-    while not _STOP.is_set():
+    while not stop.is_set():
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=DEBOUNCE_S)
         except asyncio.TimeoutError:
@@ -324,15 +335,15 @@ def _is_wakeworthy(env):
     return True
 
 
-def _loop():
+def _loop(stop):
     import asyncio
     tries = 0
-    while not _STOP.is_set():
+    while not stop.is_set():
         url = _open_url()
         if url:
             tries = 0
             try:
-                asyncio.run(_pump(url))
+                asyncio.run(_pump(url, stop))
             except Exception as e:  # noqa: BLE001 - any socket error is a reconnect, not a crash
                 _STATE["error"] = f"socket: {str(e)[:80]}"
                 trace("SLACK", f"socket: connection ended ({str(e)[:80]})")
@@ -341,14 +352,14 @@ def _loop():
         else:
             tries += 1
         delay = _BACKOFF_S[min(tries, len(_BACKOFF_S) - 1)]
-        if _STOP.wait(delay if delay else 0.5):
+        if stop.wait(delay if delay else 0.5):
             break
     _STATE["connected"] = False
 
 
 def start(cfg=None):
     """Start the listener thread if it should run. Idempotent; returns a short status string."""
-    global _THREAD
+    global _THREAD, _THREAD_STOP
     if not OK:
         return "skipped (websockets not installed — re-run ./install.sh)"
     if not APP_TOKEN:
@@ -356,11 +367,12 @@ def start(cfg=None):
     if not enabled(cfg):
         return "off (bot identity or socket mode disabled)"
     if _THREAD and _THREAD.is_alive():
-        # Includes one still winding down from a `stop()` whose join timed out: clearing `_STOP`
-        # and spawning now would leave two connections live.
         return "already running"
-    _STOP.clear()
-    _THREAD = threading.Thread(target=_loop, name="slack-socket", daemon=True)
+    # A fresh event per listener. `stop()` has already dropped any previous pairing, and that
+    # thread's own event stays set, so it can only wind down — it can never be revived by this.
+    _THREAD_STOP = threading.Event()
+    _THREAD = threading.Thread(target=_loop, args=(_THREAD_STOP,),
+                               name="slack-socket", daemon=True)
     _THREAD.start()
     return "listening (instant delivery for the bot)"
 
@@ -368,22 +380,22 @@ def start(cfg=None):
 def stop(timeout=3):
     """Stop the listener. Used when the bot identity is switched off from the UI.
 
-    A thread that did NOT stop within the timeout is kept, not dropped. `_loop` can be blocked in
-    `apps.connections.open`'s 15s urlopen, so a 3s join times out routinely; nulling `_THREAD`
-    there let the next `reconcile` (any Slack config save) clear `_STOP` and spawn a SECOND
-    listener while the first was still coming back — two Socket Mode connections, doubled wakes,
-    and no way to tell from the outside."""
-    global _THREAD
-    _STOP.set()
+    The pairing is dropped whether or not the thread died within the timeout — it is usually
+    blocked in a 15s urlopen, so a 3s join times out routinely. That is safe here only because the
+    event is per-listener: this one's stays SET, so the thread can do nothing but wind down, and
+    a later `start()` builds a new pair rather than reviving it. Keeping the reference instead
+    (to avoid a second connection) was worse: `start()` then refused to spawn AND left the flag
+    set, so the bot ended up with no listener at all after an off→on toggle."""
+    global _THREAD, _THREAD_STOP
+    if _THREAD_STOP:
+        _THREAD_STOP.set()
     t = _THREAD
     if t and t.is_alive():
         t.join(timeout)
-    if t and t.is_alive():
-        _STATE["connected"] = False
-        return "stopping (the listener is still winding down)"
-    _THREAD = None
+    winding = bool(t and t.is_alive())
+    _THREAD, _THREAD_STOP = None, None
     _STATE["connected"] = False
-    return "stopped"
+    return "stopping (the old listener is winding down)" if winding else "stopped"
 
 
 def reconcile(cfg=None):
