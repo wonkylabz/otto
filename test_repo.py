@@ -948,8 +948,13 @@ class ChatGitIdentityForwardingTests(unittest.TestCase):
             return f.read()
 
     def _record_chat_payload(self):
+        """The payload dict at the `record_chat` activity CALL — anchored on
+        `execute_activity(` rather than on an indented `record_chat,`, which also matches the
+        import list at the top of the module and silently extracted that instead the moment an
+        activity name was added to it (a passing test reading the wrong bytes is worse than a
+        failing one)."""
         src = self._src("workflows.py")
-        i = src.index("            record_chat,")
+        i = src.index("execute_activity(\n            record_chat,")
         return src[i:src.index("start_to_close_timeout", i)]
 
     def test_the_workflow_sends_the_git_identity(self):

@@ -294,6 +294,9 @@ AUDIENCE = {
     "webhook": "report",          # a machine reads this one; the report shape is the sane default
 }
 DEFAULT_AUDIENCE = "report"
+# This module OWNS the value (contracts.CONVERSATION_AUDIENCE mirrors it by value, deliberately —
+# importing contracts here would be a cycle). Named so `interim` reads as a rule, not a string.
+CONVERSATION_AUDIENCE = "conversation"
 
 
 def audience_for(reply_to):
@@ -301,6 +304,41 @@ def audience_for(reply_to):
     if not isinstance(reply_to, dict):
         return DEFAULT_AUDIENCE
     return AUDIENCE.get(reply_to.get("kind"), DEFAULT_AUDIENCE)
+
+
+def interim(reply_to, text):
+    """Say something to the asker MID-RUN, without ending the run.
+
+    Distinct from `deliver` in the two ways that matter: it does not mark the run delivered (a
+    `deliver` here would make `_slack`'s idempotency swallow the real answer when it arrives) and
+    it does not record a session or clear the conversation's in-flight flag. It is the same shape
+    as the interim ack the poll posts when a run starts.
+
+    Only ever sent to a **conversation** audience — a person in a live exchange who is waiting on
+    a reply and has no other window onto the run. A "report" target (a ticket comment, a webhook)
+    is a durable record read later by someone who is not sitting there, so a progress note is
+    noise in a permanent place. That split is `AUDIENCE`, reused rather than re-decided.
+
+    Never raises. Returns `(delivered, status)` — a BOOLEAN plus a human status for the trace,
+    not just the string. Callers act on this (the gate notice arms a conversation only when the
+    asker was really told), and deciding that by matching a substring against prose means any
+    rewording of a status message silently changes behaviour with no test failing.
+    """
+    if not reply_to or audience_for(reply_to) != CONVERSATION_AUDIENCE:
+        return False, "no interim channel for this target"
+    text = privacy.redact(str(text or ""))
+    if not text.strip():
+        return False, "nothing to say"
+    try:
+        if (reply_to or {}).get("kind") == "slack_thread":
+            import slack
+            ok = slack.post(reply_to.get("channel"), slack.to_mrkdwn(text),
+                            thread_ts=reply_to.get("thread_ts"),
+                            identity=slack.identity_of(reply_to))
+            return bool(ok), ("interim posted to slack" if ok else "interim post failed")
+    except Exception as e:  # noqa: BLE001 - never let a progress note break the run
+        return False, f"interim failed: {str(e)[:80]}"
+    return False, "no interim channel for this target"
 
 
 def deliver(reply_to, result, cap=None, run_id=None):
@@ -353,6 +391,10 @@ def _slack(reply_to, result, run_id=None):
     covered reads far worse than saying nothing (`slack.owner_replied_since`). Short of that, a
     long-delayed reply still says so rather than landing cold as if no time had passed."""
     import slack
+    # WHICH Slack identity answers rides on the reply target (`slack.reply_target`) — the owner's
+    # own account or the bot user. Anything without one is the owner's, which is what an in-flight
+    # run submitted before the bot existed carries.
+    identity = slack.identity_of(reply_to)
     if run_id and slack.was_posted(run_id):
         return "already delivered to slack"
     # The run decided there was nothing to say back (config.NO_REPLY). Staying silent IS the
@@ -369,7 +411,8 @@ def _slack(reply_to, result, run_id=None):
     since_ts = (trigger or {}).get("thread_ts") or thread_ts
     if since_ts:
         superseded, delay_s = slack.owner_replied_since(
-            channel, since_ts, in_thread=bool(thread_ts), thread_root=thread_ts)
+            channel, since_ts, in_thread=bool(thread_ts), thread_root=thread_ts,
+            identity=identity)
         if superseded:
             if run_id:
                 slack.mark_posted(run_id)
@@ -383,11 +426,12 @@ def _slack(reply_to, result, run_id=None):
     raw = result or "(no result)"
     body = slack.to_mrkdwn(raw)
     blocks = slack.to_blocks(raw)
-    ok = slack.post(channel, body, thread_ts=reply_to.get("thread_ts"), blocks=blocks)
+    ok = slack.post(channel, body, thread_ts=reply_to.get("thread_ts"), blocks=blocks,
+                    identity=identity)
     if ok:
         slack.mark_posted(run_id)
-        return f"posted to slack thread ({channel})"
-    return f"could not post to slack ({channel})"
+        return f"posted to slack thread ({channel}, as {identity})"
+    return f"could not post to slack ({channel}, as {identity})"
 
 
 def _webhook(reply_to, result, cap, timeout=15):

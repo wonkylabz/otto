@@ -28,7 +28,8 @@ with workflow.unsafe.imports_passed_through():
                             merge_results, notify_human, plan_capability, plan_swarm, open_chat,
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack, pr_head_branch,
                             provision_workspace, resolve_pr_target, check_grounding,
-                            qa_capability, reap_stuck, record_attempt, record_chat, record_skip,
+                            interim_notice, qa_capability, reap_stuck,
+                            record_attempt, record_chat, record_skip,
                             recover_pr_branch, review_capability, judge_review, route_request,
                             run_capability, snapshot_repos, snapshot_settings, suggest_repo,
                             verify_capability)
@@ -231,6 +232,7 @@ class OttoWorkflow:
         self._replanning = False       # True only while a revision round's re-preview is in flight
         self._awaiting_clarification = False
         self._awaiting_approval = False
+        self._gate_told_asker = False
         self._risk_reason = None       # WHY the approval gate fired — shown on the gate card
         # True when a write-bound session's follow-up was re-read as a DISCUSSION turn (a
         # question / brainstorm that mutates nothing), so this turn drops to read tools and
@@ -643,6 +645,41 @@ class OttoWorkflow:
                                        tags=["warning"],
                                        priority="max", kind="approval",   # a run is parked
                                        wid=workflow.info().workflow_id)
+                    # The ntfy push above goes to the OWNER. Nobody has told the person who
+                    # ASKED — and from their side the conversation simply stopped: an ack, then
+                    # silence, for as long as the gate stands (measured: 67 minutes on a Slack DM
+                    # that eventually ran). `_gate_wait`'s own docstring predicted this and
+                    # bounded the wait instead of closing it; the bound only speaks after 24h.
+                    #
+                    # Conversation audiences only (delivery.interim), and once per run however
+                    # many revision rounds the gate goes through — the asker is not the one
+                    # revising, so a notice per round is noise from their side.
+                    if reply_to and not self._gate_told_asker:
+                        self._gate_told_asker = True
+                        try:
+                            await workflow.execute_activity(
+                                interim_notice,
+                                {"reply_to": reply_to,
+                                 "text": (f"That needs {config.OWNER_NAME}'s approval before I "
+                                          f"can do it — I've put it in front of them. I'll reply "
+                                          f"here as soon as it's cleared."),
+                                 # Arms the conversation so a reply CAN clear it. Who may
+                                 # actually do so is decided at the other end, against
+                                 # `bot_approvers` — this only says which run a decision
+                                 # would belong to.
+                                 "awaiting_wid": workflow.info().workflow_id},
+                                start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                        except Exception as e:  # noqa: BLE001 - a courtesy note, never the run
+                            # A progress note is worth strictly less than the run it describes:
+                            # this one arrives AFTER a plan preview has already been paid for
+                            # (measured at $0.82), so letting a failed post discard an approved
+                            # write would be the expensive half failing for the cheap half.
+                            #
+                            # LOGGED, not silent. Swallowing it is right for the run and wrong for
+                            # diagnosis: a NameError in the activity shipped precisely because the
+                            # only symptom was a gate that said nothing, and nothing here said why.
+                            workflow.logger.warning(
+                                f"gate notice to the asker failed: {_failure_detail(e)}")
                     if not await self._gate_wait(
                             lambda: self._decision is not None
                             or self._plan_feedback is not None):
@@ -688,28 +725,39 @@ class OttoWorkflow:
                             cleanup_workspace, {"run_id": git_run_id},
                             start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                     msg = "Declined — nothing was run."
+                    # What the ASKER is told. A conversation audience never saw the approval card,
+                    # so neither wording may mention one (see `_shape_result`).
+                    said = msg
+                    if self._audience == contracts.CONVERSATION_AUDIENCE:
+                        said = (f"{config.OWNER_NAME} didn't approve that, so I haven't done "
+                                f"anything. Let me know if you'd like me to try something else.")
                     if gate_expired:
                         self._terminal = {"reason": "gate_timeout"}
                         msg = _NEEDS_HUMAN_BANNER["gate_timeout"]
+                        said = msg
+                        if self._audience == contracts.CONVERSATION_AUDIENCE:
+                            said = (f"Sorry — I couldn't get this cleared in time, so I "
+                                    f"haven't done anything. {config.OWNER_NAME} will need "
+                                    f"to pick it up.")
                         await workflow.execute_activity(
                             finalize_terminal,
                             {"wid": workflow.info().workflow_id, "request": request, "cap": cap,
                              "reason": "gate_timeout", "reply_to": reply_to, "repo": repo,
                              "unattended": unattended},
                             start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
-                        if reply_to:
-                            # A person waiting in Slack gets a person's answer: the banner names
-                            # an approval window they never saw (see `_shape_result`).
-                            said = msg
-                            if self._audience == contracts.CONVERSATION_AUDIENCE:
-                                said = (f"Sorry — I couldn't get this cleared in time, so I "
-                                        f"haven't done anything. {config.OWNER_NAME} will need "
-                                        f"to pick it up.")
-                            await workflow.execute_activity(
-                                deliver_result,
-                                {"reply_to": reply_to, "result": said, "cap": cap,
-                                 "run_id": workflow.info().workflow_id, "session_id": None},
-                                start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                    # BOTH endings deliver, not just the expiry. A plain decline used to return
+                    # here in silence: the asker got an ack, then nothing, ever — the same gap the
+                    # gate notice closed, on the other side of the gate. And because delivery is
+                    # what calls `record_conversation_session`, skipping it also left the Slack
+                    # conversation's in-flight flag set, so that DM answered NOTHING for the full
+                    # PENDING_STALE_S (30min) afterwards, and would leave the gate-armed marker
+                    # standing for 25h. One missing delivery, three symptoms.
+                    if reply_to:
+                        await workflow.execute_activity(
+                            deliver_result,
+                            {"reply_to": reply_to, "result": said, "cap": cap,
+                             "run_id": workflow.info().workflow_id, "session_id": None},
+                            start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                     await self._record_chat(params, request, msg, resume, cap)
                     return ({"result": msg, "session_id": resume, "cap": cap,
                              "needs_human": self._terminal, "times": self._times}, request)

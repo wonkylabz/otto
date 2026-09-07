@@ -192,6 +192,8 @@ def step_slack_token():
     print(f"      ({_BOLD}xoxp-…{_OFF}, not a bot token) with these user scopes:")
     print(f"      {_DIM}im:history im:read mpim:history channels:history groups:history{_OFF}")
     print(f"      {_DIM}chat:write users:read search:read{_OFF}")
+    print(f"      {_DIM}(Otto answering as a BOT under its own name is a separate, optional{_OFF}")
+    print(f"      {_DIM} identity — OTTO_SLACK_BOT_TOKEN; see the README.){_OFF}")
     if not confirm("Paste a Slack user token now?", default=False):
         _say("skipped — the Events tab explains the setup when you want it",
              _DIM + "·" + _OFF)
@@ -200,10 +202,14 @@ def step_slack_token():
     if not tok:
         return title, "skipped"
     if not tok.startswith("xoxp-"):
-        # A bot token authenticates fine and then answers as a BOT, silently defeating the
-        # whole point of the feature — worth catching at paste time, not at first reply.
-        if not confirm(f"That does not look like a user token (expected xoxp-…). Use it anyway?",
-                       default=False):
+        # A bot token authenticates fine here and then can't see a single one of your DMs —
+        # this variable is the identity that reads YOUR conversations. A bot token is a real
+        # thing to have, in OTTO_SLACK_BOT_TOKEN; pasted here it is silently the wrong slot,
+        # and the symptom (a listener that never picks anything up) reads as a broken feature.
+        hint = ("That looks like a BOT token — it belongs in OTTO_SLACK_BOT_TOKEN. Use it here "
+                "anyway?" if tok.startswith("xoxb-") else
+                "That does not look like a user token (expected xoxp-…). Use it anyway?")
+        if not confirm(hint, default=False):
             return title, "skipped"
     set_env("OTTO_SLACK_USER_TOKEN", tok)
     _say("wrote OTTO_SLACK_USER_TOKEN — still OFF until you enable it and set an "

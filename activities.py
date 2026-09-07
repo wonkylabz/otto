@@ -101,6 +101,13 @@ def _capabilities():
 
 
 def _cap(name):
+    # Total on purpose: callers pass whatever a stored record happened to hold, and a missing
+    # name means "no capability" — the same answer as an unknown one. Returning None here rather
+    # than raising is what keeps one malformed record from taking down a whole poll (see
+    # SlackListenerActivityTests: a greeted-but-never-run conversation has no cap, and the crash
+    # that caused killed every channel's delivery for hours with no symptom but silence).
+    if not name:
+        return None
     caps = _capabilities()
     c = next((c for c in caps if c.name == name), None)
     # Tolerate a "kind:name" form (e.g. a config default like "agent:sre-qa"): catalogue cap
@@ -611,6 +618,37 @@ def record_attempt(payload: dict) -> None:
 
 
 @activity.defn
+def interim_notice(payload: dict) -> dict:
+    """Tell the asker something WHILE the run is still going — currently: that it has parked on
+    an approval gate they cannot see.
+
+    Deliberately not `deliver_result`: that one marks the run delivered (so the real answer would
+    later be swallowed by `_slack`'s idempotency check), records the Claude session, and clears
+    the conversation's in-flight flag. This posts and nothing else.
+
+    `delivery` is imported HERE, like every other activity in this module — the module-level name
+    does not exist, and the workflow wraps this call so a failed note cannot kill the run, which
+    means a NameError here is invisible from the outside: the run parks correctly and simply says
+    nothing. That is exactly what happened (`slack-b-D0BVD1F856Y-1788736699-386419`, three failed
+    attempts in the worker log, a silent gate on the asker's side)."""
+    import delivery
+    reply_to = payload.get("reply_to")
+    delivered, status = delivery.interim(reply_to, payload.get("text", ""))
+    # A gate notice also ARMS the conversation: the reply that clears it has to be matchable to
+    # this specific run, and the conversation record is the only place both ends can see. Gated on
+    # the post SUCCEEDING, which is what makes the sentence above true — a Slack 500 otherwise
+    # armed a thread that was never told anything, and a later unrelated "ok" or "no" in it would
+    # be consumed as a verdict on a gate nobody saw, for the next 25 hours.
+    wid = payload.get("awaiting_wid")
+    if wid and delivered and (reply_to or {}).get("kind") == "slack_thread":
+        import slack
+        slack.mark_awaiting_gate(reply_to.get("channel"), reply_to.get("thread_ts"),
+                                 wid=wid, identity=slack.identity_of(reply_to))
+    activity.logger.info(f"interim notice -> {status}")
+    return {"status": status}
+
+
+@activity.defn
 def deliver_result(payload: dict) -> dict:
     """Send a finished unattended run's result to its reply target (webhook, etc.)."""
     import delivery
@@ -631,7 +669,10 @@ def deliver_result(payload: dict) -> dict:
         slack.record_conversation_session(
             reply_to.get("channel"), reply_to.get("thread_ts"),
             session=payload.get("session_id"), cap=payload.get("cap"),
-            last_reply="" if config.is_no_reply(result) else result)
+            last_reply="" if config.is_no_reply(result) else result,
+            # The session belongs to the identity that ran it: resuming the bot's session under the
+            # owner's token would answer as them, in a thread they were never part of.
+            identity=slack.identity_of(reply_to))
     # A failed/partial delivery is reported here (not raised — delivery never fails the run) so the
     # workflow can record a terminal audit row instead of the result silently vanishing.
     failed = ("failed" in status.lower()) or ("could not" in status.lower())
@@ -816,11 +857,17 @@ def poll_board(payload: dict) -> dict:
 @_heartbeats("slack")
 def poll_slack(payload: dict) -> dict:
     """Poll Slack for new DMs / @-mentions from allowlisted people, start one unattended
-    OttoWorkflow per message (deterministic `slack-<ch>-<ts>` id → REJECT_DUPLICATE makes a
-    re-poll idempotent), and post the interim ack in-thread. The result is delivered back to the
-    thread by delivery._slack. Advances a channel's read cursor only for a message it actually
-    handled (started, duplicate, or answered as a pleasantry) so a transient start failure — or a
-    failed greeting post — is retried next poll. Never raises.
+    OttoWorkflow per message (deterministic `slack-[b-]<ch>-<ts>` id → REJECT_DUPLICATE makes a
+    re-poll idempotent), and post the interim ack in-thread.
+
+    The result is delivered back to the thread by delivery._slack. Advances a channel's read cursor
+    only for a message it actually handled (started, duplicate, or answered as a pleasantry) so a
+    transient start failure — or a failed greeting post — is retried next poll. Never raises.
+
+    One pass serves BOTH Slack identities (the owner's account and the bot user — see slack.py).
+    Each picked message carries its own `identity`, and everything this activity does with it —
+    which token acks, which cursor advances, which conversation record is refreshed, which ack text
+    is used — follows that field rather than the config, because the two are interleaved.
 
     Continuity is per CONVERSATION, not per message (slack.conversation_key): a DM is one
     conversation and a channel thread is one, so a message arriving in either RESUMES the session
@@ -844,17 +891,25 @@ def poll_slack(payload: dict) -> dict:
     if estop.blocked("slack"):
         return {"picked": [], "paused": True}
     cfg = slack.load()
-    if not slack.enabled(cfg):
+    if not slack.any_enabled(cfg):
         return {"picked": [], "disabled": True}
-    ack = cfg.get("ack_template") or slack._ACK_DEFAULT
-    hello = cfg.get("greeting_template") or slack._GREETING_DEFAULT
-    picked, skipped, greeted, resumed, handed_off = [], [], [], [], []
+
+    def _ack_text(identity):
+        return ((cfg.get("bot_ack_template") or slack._BOT_ACK_DEFAULT) if identity == slack.BOT
+                else (cfg.get("ack_template") or slack._ACK_DEFAULT))
+
+    def _hello_text(identity):
+        return ((cfg.get("bot_greeting_template") or slack._BOT_GREETING_DEFAULT)
+                if identity == slack.BOT
+                else (cfg.get("greeting_template") or slack._GREETING_DEFAULT))
+    picked, skipped, greeted, resumed, handed_off, decided = [], [], [], [], [], []
     # A backlog catch-up (or just several fast messages) can return multiple picks for the SAME
     # thread/DM in one poll() call — one ack per pick then reads as "On it… On it… On it…" stuttering
     # ahead of the actual replies. One ack per conversation per poll pass is enough to say "I'm on it".
     acked_ts = set()
     for msg in slack.poll(cfg):
         rec = msg.get("conversation")                   # the conversation's record, or None
+        identity = slack.identity_of(msg)
         in_thread = bool(msg.get("in_thread"))
         root = msg.get("thread_ts") or msg["ts"]
         # Where Otto's own reply goes (channel level in a DM, in-thread in a channel) — the ack has
@@ -864,23 +919,95 @@ def poll_slack(payload: dict) -> dict:
         def _seen(msg=msg):
             slack.mark_seen(msg)
 
+        def _watch(msg, ack_ts, wid=None, pending=False, identity=identity, run_wid=None):
+            """Watch the conversation Otto is answering IN — which is wherever its reply goes, so
+            this is derived from `slack.reply_target` (via `ack_ts`) and never re-decided here.
+
+            The distinction that was wrong: `in_thread` is True only for a message ALREADY in a
+            watched thread, so deriving the target from it watched the CHANNEL for the message
+            that STARTS a thread — and a channel record is skipped by `_poll_threads`
+            (`threads_only`), so the thread Otto had just replied in was never polled. `seen` is
+            set whenever there is a thread, because a record with no cursor is skipped too."""
+            slack.watch_conversation(msg["channel"], ack_ts, wid=wid,
+                                     seen=msg["ts"] if ack_ts else None,
+                                     pending=pending, identity=identity,
+                                     # WHICH run holds it, so the poller can ask Temporal whether
+                                     # it is still alive instead of trusting the flag. A SEPARATE
+                                     # argument from `wid`, which is the conversation's OPENING
+                                     # run and is deliberately None once a record exists — reusing
+                                     # it recorded a holding id on turn 1 and nothing after, so
+                                     # `is_busy` fell back to the stored flag for every follow-up
+                                     # and the derived check was inert exactly where a jam lasts
+                                     # longest (a mid-conversation run that dies without
+                                     # delivering).
+                                     pending_wid=run_wid if pending else None)
+
         # A pleasantry with no request never becomes a run — answering it costs one post instead
         # of a verify ladder that dead-ends in a needs-human banner (see slack.is_pleasantry).
         # Mid-conversation ("thanks!") it gets no reply at all: greeting_template introduces Otto
         # to a stranger, and re-introducing itself as a conversation's last word is noise.
-        if slack.is_pleasantry(msg.get("text")):
+        # A conversation parked at an approval gate: this reply may be the decision that clears
+        # it. Handled BEFORE everything else — a parked run is holding the conversation, so
+        # nothing else may be started here, and the message must not be read as a new task.
+        gate_wid = msg.get("gate_wid")
+        if gate_wid:
+            decision = slack.parse_decision(msg.get("text"))
+            allowed = slack.may_approve(cfg, msg.get("user"), identity)
+            if decision is None or not allowed:
+                # Not a decision, or not from someone who may make one. The cursor deliberately
+                # does NOT advance: the conversation is still one-turn-at-a-time, so this message
+                # is handled after the gate resolves, in order. An unauthorised "yes" is simply
+                # not a decision — saying "you may not approve" would tell a colleague a gate
+                # exists and invite them to push at it.
+                if decision is not None and not allowed:
+                    activity.logger.info(
+                        f"slack: ignoring a gate decision from {msg.get('user')} "
+                        f"(not in bot_approvers)")
+                continue
+            ok = slack.signal_decision(gate_wid, decision)
+            if not ok:
+                # The run is gone (finished, expired, terminated). Clear the marker so the
+                # conversation stops interpreting replies as verdicts on a run that no longer
+                # exists, and leave the message to be handled normally next poll.
+                slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity)
+                continue
+            slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity)
+            _seen()
+            slack.post(msg["channel"],
+                       "Approved — running it now." if decision
+                       else "OK, I won't do it. Nothing was run.",
+                       thread_ts=ack_ts, identity=identity)
+            decided.append(gate_wid)
+            continue
+
+        # `summons` is a bare "@otto" that stripped to nothing (slack.strip_self_mention) — the
+        # bot equivalent of a greeting, and the poller is the only thing that can tell.
+        if msg.get("summons") or slack.is_pleasantry(msg.get("text")):
             mid_conversation = bool(rec and rec.get("session"))
             if mid_conversation:
                 _seen()
                 greeted.append(slack.wid_for(msg))
-            elif slack.post(msg["channel"], hello, thread_ts=ack_ts):
+            elif slack.post(msg["channel"], _hello_text(identity), thread_ts=ack_ts,
+                            identity=identity):
                 _seen()
+                # Otto has now SPOKEN here, so the conversation is live and its next message must
+                # reach it — the whole point of a greeting is to invite one. Without this the
+                # thread is unwatched and the reply lands nowhere any poller reads (observed live:
+                # "@Otto are you there" -> greeting -> the actual question, never answered).
+                # No run happened, so no `wid` (nothing to key a chat thread on) and no `pending`
+                # (nothing in flight — a stale flag here would deafen the thread for 30 minutes).
+                _watch(msg, ack_ts, wid=None, pending=False)
                 greeted.append(slack.wid_for(msg))
             continue
 
         params, resume, handoff = None, False, None
-        bound = _cap((rec or {}).get("cap", {}).get("name")) if rec else None
-        if rec and rec.get("session") and bound:
+        # Resolve the bound capability ONLY when there is a session to continue. A watched
+        # conversation need not have either: a greeting starts watching before any run exists,
+        # and a run that dies before delivering never records one. `cap` may be absent, None or
+        # {}, so this walks it defensively rather than assuming the shape a happy path leaves.
+        session = (rec or {}).get("session")
+        bound = _cap(((rec or {}).get("cap") or {}).get("name")) if session else None
+        if session and bound:
             # A NEW task inside an existing conversation must not run inside the bound session (see
             # the docstring). Classified against the last reply Otto sent here, exactly as
             # /api/continue does; anything unclear stays a continuation.
@@ -900,9 +1027,9 @@ def poll_slack(payload: dict) -> dict:
             if handoff:
                 earlier = []        # the classifier already resolved the references it needed
             elif in_thread or (msg.get("thread_ts") and msg["thread_ts"] != msg["ts"]):
-                earlier = slack.thread_context(msg["channel"], msg["thread_ts"])
+                earlier = slack.thread_context(msg["channel"], msg["thread_ts"], identity=identity)
             else:
-                earlier = slack.channel_context(msg["channel"], msg["ts"])
+                earlier = slack.channel_context(msg["channel"], msg["ts"], identity=identity)
             msg = {**msg, "thread": [ln for ln in earlier if msg["text"] not in ln]}
             params = slack.to_request(msg, cfg)
             if handoff:
@@ -917,19 +1044,21 @@ def poll_slack(payload: dict) -> dict:
         wid = slack.wid_for(msg)
         status = slack.start_run(wid, params)
         if status == "started":
-            # Keyed on (channel, ack_ts) — a bare DM's ack_ts is always None, so keying on ack_ts
-            # alone would wrongly suppress the ack for a SECOND person's DM in the same poll pass.
-            ack_key = (msg["channel"], ack_ts)
+            # A bare DM's ack_ts is always None, so keying on ack_ts alone would wrongly
+            # suppress the ack for a SECOND person's DM in the same poll pass — hence the channel.
+            # Keyed on the identity too: both may have work in the same channel in one pass, and
+            # they are two different speakers — suppressing one's ack because the other already
+            # spoke leaves a message looking unseen.
+            ack_key = (identity, msg["channel"], ack_ts)
             if ack_key not in acked_ts:
-                slack.post(msg["channel"], slack._FOLLOWUP_ACK if resume else ack, thread_ts=ack_ts)
+                slack.post(msg["channel"], slack._FOLLOWUP_ACK if resume else _ack_text(identity),
+                           thread_ts=ack_ts, identity=identity)
                 acked_ts.add(ack_key)
             # Track this conversation from now on (or refresh it), marking the run in flight so the
             # next message waits for it to deliver instead of racing its session.
-            slack.watch_conversation(msg["channel"], msg["thread_ts"] if in_thread else None,
-                                     wid=None if rec else wid,
-                                     seen=msg["ts"] if in_thread else None, pending=True)
+            _watch(msg, ack_ts, wid=None if rec else wid, pending=True, run_wid=wid)
             if not in_thread:
-                slack.record_seen(msg["channel"], msg["ts"])
+                slack.record_seen(msg["channel"], msg["ts"], identity)
             picked.append(wid)
             if resume:
                 resumed.append(wid)
@@ -940,11 +1069,13 @@ def poll_slack(payload: dict) -> dict:
             skipped.append(wid)
         # status == "failed": leave the cursor so it's retried next poll.
     if picked or greeted:
+        # Evidence for the socket-health check: real inbound work, with a time on it.
+        slack.record_pick()
         activity.logger.info(
             f"slack: picked up {len(picked)} message(s) ({len(resumed)} continuing a conversation, "
             f"{len(handed_off)} handed off as a new task), greeted {len(greeted)}")
     return {"picked": picked, "skipped": skipped, "greeted": greeted, "resumed": resumed,
-            "handed_off": handed_off}
+            "handed_off": handed_off, "decided": decided}
 
 
 def _reap_state(wid):
