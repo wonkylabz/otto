@@ -283,6 +283,12 @@ def _normalize(cfg):
         if assign.get(t) in removed:
             assign[t] = default
         assign.setdefault(t, default)
+    # `auto` (issue #11) is the ONE non-pool value an assignment may hold, and only on execution:
+    # it is the Admin-wide default for the composer's per-run Auto pick. On any other tier it
+    # names nothing (`complete()` would land on pool[0]), so it is repointed like a removed model.
+    for t in TASKS:
+        if t != "execution" and is_auto(assign.get(t)):
+            assign[t] = default
     # A LOCAL model on "preview" is not a setting, it is a silent substitution: `claude -p
     # --permission-mode plan` cannot run on one, so `preview_model_id` degrades to
     # `_default_claude` and the store, the API and the Admin radio all keep naming a model that
@@ -336,6 +342,11 @@ def _model_for(task, cfg=None):
     cfg = cfg or load()
     pool = cfg.get("pool") or _default_cfg()["pool"]
     name = cfg.get("assign", {}).get(task)
+    if task == "execution" and is_auto(name):
+        # Admin-wide auto: every reader of the execution assignment (backend choice, the
+        # escalation/downshift fallbacks, the Admin matrix) sees a REAL Claude model — the
+        # per-request tier pick happens in engine.run_attempt, attempt 1 only.
+        return _default_claude_entry(cfg)
     return next((m for m in pool if m["name"] == name), None) or pool[0]
 
 
@@ -351,13 +362,20 @@ def _default_claude(cfg=None):
     where the output is what a human reads and approves. Sonnet is the tier that is neither
     surprise-expensive nor quietly too weak, and an operator who wants either end can assign it
     explicitly per phase."""
+    m = _default_claude_entry(cfg)
+    return m["model"] if m else config.ROUTER_MODEL
+
+
+def _default_claude_entry(cfg=None):
+    """`_default_claude` as a POOL ENTRY (sonnet, then opus, then haiku); None with no Claude
+    model in the pool at all."""
     cfg = cfg or load()
     claude = [m for m in cfg.get("pool", []) if m.get("provider") == "claude"]
     for tier in ("sonnet", "opus", "haiku"):
         m = next((m for m in claude if tier in m["model"]), None)
         if m:
-            return m["model"]
-    return claude[0]["model"] if claude else config.ROUTER_MODEL
+            return m
+    return claude[0] if claude else None
 
 
 def _claude_model(name, cfg):
@@ -656,6 +674,14 @@ def auto_model_id(tier=None, cfg=None):
         if m:
             return m["model"]
     return None
+
+
+def exec_is_auto(cfg=None):
+    """True when Admin → Models assigns `auto` to the execution phase: every run whose composer
+    left the model on "Admin default" then behaves as if it had picked Auto. A specific composer
+    pick still wins (engine.run_attempt only consults this when `model_override` is empty)."""
+    cfg = cfg or load()
+    return is_auto((cfg.get("assign") or {}).get("execution"))
 
 
 def cap_exec_pinned(cap_name, cfg=None):

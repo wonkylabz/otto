@@ -3334,14 +3334,15 @@ function selectedEffort(){ const s=document.getElementById("effortpick"); return
 // Lives in the "Run mode" bar alongside Memory — both always visible, unlike the plan-mode
 // toggle in that same bar which only shows when the backend has plan_mode enabled.
 async function loadModelPicker(){
-  let pool=[];
-  try { pool=(await (await fetch("/api/models")).json()).pool||[]; } catch(e){ return; }
+  let pool=[], assign={};
+  try { const m=await (await fetch("/api/models")).json(); pool=m.pool||[]; assign=m.assign||{}; } catch(e){ return; }
   const sel=document.getElementById("modelpick");
   if(!sel) return;
   const cur=sel.value;
   // "Auto" is not a pool entry (the server admits it as a sentinel, gateway.is_auto) — it has
   // to be re-rendered here or repopulating the picker from /api/models silently drops it.
-  sel.innerHTML=`<option value="">Admin default</option><option value="auto">Auto (pick a tier per task)</option>`+
+  // Admin → Models may already make auto the default; say so, or the two picks look different.
+  sel.innerHTML=`<option value="">Admin default${assign.execution==="auto"?" (auto)":""}</option><option value="auto">Auto (pick a tier per task)</option>`+
     pool.map(m=>`<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
   sel.value=cur;   // preserve selection across reloads
 }
@@ -6773,14 +6774,25 @@ function modelsSection(m){
     ["Ver","Verify — judges whether an attempt actually satisfied the request; a fail drives retry/escalate"],
     ["Sup","Supervise — watches a run live mid-attempt and can kill & steer one going off-course"],
     ["GC","Memory GC — the on-demand memory scan (Memory tab): classifies every stored fact/solution/rule KEEP/STALE/VERIFY, then re-checks the VERIFY ones live with read-only tools. This is the model that decides which memories are proposed for deletion; the live check needs Claude, so a local pick there falls back to sonnet"],
-    ["Exec","Execution — runs the capability itself. Claude runs claude -p (full skills/agents/MCP); a local model runs Otto's own runtime instead — no Claude, no MCP, no escalation"],
+    ["Exec","Execution — runs the capability itself. Claude runs claude -p (full skills/agents/MCP); a local model runs Otto's own runtime instead — no Claude, no MCP, no escalation. The Auto row lets Otto pick the starting Claude tier per task instead"],
   ];
   const head=`<thead><tr><th>Model</th><th class="c-tag">Type</th>
     <th class="c-health">Health</th>
     <th class="c-phases"><span class="mradios">${PHASE_HELP.map(([l,t])=>`<span class="rc h" title="${esc(t)}">${l}</span>`).join("")}</span></th>
     <th class="c-turns" title="local agent runtime's per-run turn budget (model call + tool round = one turn) — blank uses the global default (60), raise for a stronger model that needs more room">Turns</th>
     <th class="c-test">Check</th><th class="c-rm"></th></tr></thead>`;
-  const rows=m.pool.map(p=>`<tr class="mrow">
+  // "Auto" is not a pool entry (gateway.AUTO_MODEL) — an Admin-wide default for the composer's
+  // per-run Auto pick, execution-only, so it is a fixed row rather than a pool model: no
+  // health, no test, no remove, and every phase but Exec is an empty cell.
+  const autoRow=`<tr class="mrow autorow">
+      <td><span class="minfo"><span class="mn">auto · pick a tier per task</span>
+        <small>a cheap classifier picks the starting Claude tier per request; retries escalate as usual</small></span></td>
+      <td class="c-tag"><span class="srctag">auto</span></td>
+      <td class="c-health"></td>
+      <td class="c-phases"><span class="mradios">${PHASE_HELP.slice(0,-1).map(()=>`<span class="rc"></span>`).join("")}<span class="rc"><input type="radio" name="as-execution" value="auto" ${m.assign.execution==="auto"?'checked':''} title="every run whose composer is on Admin default picks its own starting Claude tier (haiku / sonnet / opus) from the request. A per-capability Exec pin still wins, and a failed attempt still escalates."></span></span></td>
+      <td class="c-turns"></td><td class="c-test"></td><td class="c-rm"></td>
+    </tr>`;
+  const rows=autoRow+m.pool.map(p=>`<tr class="mrow">
       <td><span class="minfo"><span class="mn">${plabel(p)} · ${esc(pname(p))}</span>
         <small>${p.provider==='claude'?esc(p.model):esc(p.endpoint||p.base_url||'')+' · '+esc(p.model||'')}</small></span></td>
       <td class="c-tag"><span class="srctag">${p.provider==='claude'?'cloud':'local'}</span></td>

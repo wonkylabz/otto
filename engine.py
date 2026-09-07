@@ -210,7 +210,9 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # it asks Otto to choose the starting tier itself. Recognised here so it doesn't read as an
     # unknown override, and left out of `exec_entry` so the BACKEND decision below is unchanged —
     # auto never moves a run onto or off the local runtime, it only names a Claude tier.
-    auto_exec = gateway.is_auto(model_override)
+    # Admin → Models can make auto the DEFAULT (`assign.execution = "auto"`); it applies only
+    # when the composer made no pick of its own, so a specific per-chat model still wins.
+    auto_exec = gateway.is_auto(model_override) or (not model_override and gateway.exec_is_auto())
     override_entry = (gateway.resolve_model(model_override)
                       if model_override and not auto_exec else None)
     if model_override and not auto_exec and override_entry is None:

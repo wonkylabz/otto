@@ -3043,6 +3043,44 @@ class AutoExecTierTests(unittest.TestCase):
                          "/api/submit and /api/continue must each handle the auto sentinel")
 
 
+class AdminAutoExecTests(unittest.TestCase):
+    """Auto as an ADMIN default: Admin -> Models' Auto row stores `assign.execution = "auto"`,
+    the one non-pool value an assignment may hold. Every other reader of that assignment must
+    still see a real Claude model, or the backend decision lands on pool[0] (opus) and the Admin
+    matrix names a model that never ran."""
+
+    POOL = AutoExecTierTests.POOL
+
+    def _cfg(self, **assign):
+        a = {t: "claude-sonnet" for t in gateway.TASKS}
+        a.update(assign)
+        return {"pool": [dict(m) for m in self.POOL], "assign": a}
+
+    def test_auto_survives_normalize_on_execution_only(self):
+        cfg = gateway._normalize(self._cfg(execution="auto", preview="auto", verify="auto"))
+        self.assertEqual(cfg["assign"]["execution"], "auto")
+        # On any other tier it names nothing: repointed like a removed model, never left lying.
+        self.assertEqual(cfg["assign"]["preview"], "claude-sonnet")
+        self.assertEqual(cfg["assign"]["verify"], "claude-sonnet")
+
+    def test_the_execution_entry_under_auto_is_the_default_claude_not_pool_zero(self):
+        cfg = self._cfg(execution="auto")
+        self.assertEqual(gateway._model_for("execution", cfg)["name"], "claude-sonnet")
+        self.assertEqual(gateway.exec_model_entry(None, cfg)["provider"], "claude")
+
+    def test_exec_is_auto_reads_the_assignment(self):
+        self.assertTrue(gateway.exec_is_auto(self._cfg(execution="auto")))
+        self.assertFalse(gateway.exec_is_auto(self._cfg()))
+        self.assertFalse(gateway.exec_is_auto(self._cfg(preview="auto")))
+
+    def test_the_admin_matrix_offers_auto_for_execution_alone(self):
+        src = AutoExecTierTests._src(self, "web/index.html")
+        self.assertIn('name="as-execution" value="auto"', src,
+                      "Admin -> Models has no Auto row for the execution phase")
+        # Same radio group as the pool rows, so ticking Auto unticks the model and vice versa.
+        self.assertEqual(src.count('name="as-execution" value="auto"'), 1)
+
+
 class AutoExecTierLadderTests(unittest.TestCase):
     """Auto's placement in `engine.run_attempt`'s precedence chain: below model_override /
     escalation / downshift and below `cap_exec`, above the phase default — and never at all on
@@ -3051,7 +3089,7 @@ class AutoExecTierLadderTests(unittest.TestCase):
     def setUp(self):
         self._saved = {n: getattr(gateway, n) for n in
                        ("exec_model_entry", "escalation_model_id", "downshift_model_id",
-                        "exec_model_id", "auto_model_id", "cap_exec_pinned")}
+                        "exec_model_id", "auto_model_id", "cap_exec_pinned", "exec_is_auto")}
         self._claude, self._runjson = engine._claude, local_runtime.run_json
         self._tier, self._unservable = engine.auto_exec_tier, mcp_client.unservable
         self._sup = config.SUPERVISE
@@ -3063,6 +3101,7 @@ class AutoExecTierLadderTests(unittest.TestCase):
         gateway.escalation_model_id = lambda cfg=None: "claude-opus-4-8"
         gateway.downshift_model_id = lambda cfg=None: "claude-haiku-4-5-20251001"
         gateway.cap_exec_pinned = lambda cap_name, cfg=None: False
+        gateway.exec_is_auto = lambda cfg=None: False
         gateway.auto_model_id = lambda tier=None, cfg=None: {
             "haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-5",
             "opus": "claude-opus-4-8"}.get(tier)
@@ -3102,6 +3141,24 @@ class AutoExecTierLadderTests(unittest.TestCase):
         att = self._run(model_override="auto")
         self.assertEqual(att["model"], "claude-haiku-4-5-20251001")
         self.assertEqual(self.tiers_asked, ["write the changelog"])
+
+    # --- the Admin-wide default (Admin -> Models, the Auto row) -----------------------
+    def test_admin_auto_applies_when_the_composer_made_no_pick(self):
+        gateway.exec_is_auto = lambda cfg=None: True
+        att = self._run(model_override="")
+        self.assertEqual(att["model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(self.tiers_asked, ["write the changelog"])
+
+    def test_a_composer_model_pick_beats_admin_auto(self):
+        gateway.exec_is_auto = lambda cfg=None: True
+        att = self._run(model_override="claude-opus")
+        self.assertEqual(att["model"], "claude-opus-4-8")
+        self.assertEqual(self.tiers_asked, [], "an explicit pick asks no classifier")
+
+    def test_without_admin_auto_the_default_run_is_untouched(self):
+        att = self._run(model_override="")
+        self.assertEqual(att["model"], "claude-sonnet-5")
+        self.assertEqual(self.tiers_asked, [])
 
     def test_auto_is_not_treated_as_an_unknown_pool_entry(self):
         # Without the sentinel check it falls through resolve_model as an unknown name and the
