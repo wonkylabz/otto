@@ -1545,8 +1545,14 @@ class SlackListenerActivityTests(unittest.TestCase):
             or self.posts.append((ch, text, thread_ts)) or True)
         slack.start_run = lambda wid, params: (self.started.append((wid, params)) or "started")
         slack.record_seen = lambda ch, ts, identity="user": self.seen.append((ch, ts))
-        slack.watch_conversation = lambda ch, root=None, wid=None, seen=None, pending=False, \
-                identity="user": (self.watched.append((ch, root, wid, seen, pending)))
+        # `**k` on purpose: this seam gains pass-through arguments (identity, pending_wid,
+        # clear_pending) and a double that pins the exact signature fails every test in the class
+        # for a change none of them are about. `_pending_wids` is what the ones that ARE about it
+        # assert on.
+        self.pending_wids = []
+        slack.watch_conversation = lambda ch, root=None, wid=None, seen=None, pending=False, **k: (
+            self.pending_wids.append(k.get("pending_wid"))
+            or self.watched.append((ch, root, wid, seen, pending)))
         slack.thread_context = lambda ch, root, **k: ["U2: earlier ask", "U1: earlier answer"]
         self.ctx_calls = []
         slack.channel_context = lambda ch, before, **k: (
@@ -1835,6 +1841,9 @@ class SlackListenerActivityTests(unittest.TestCase):
         # run is marked in flight so the next message waits for it.
         self.assertEqual(self.watched, [("D2", None, "slack-D2-9-0", None, True)])
         self.assertEqual(self.seen, [("D2", "9.0")])
+        # WHICH run holds the conversation is recorded, or the poller has nothing to ask Temporal
+        # about and one-turn-at-a-time silently falls back to the 30-minute stale flag.
+        self.assertEqual(self.pending_wids, ["slack-D2-9-0"])
 
     def _followup(self, **rec):
         base = {"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000",

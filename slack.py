@@ -702,16 +702,28 @@ def _prune(threads, now):
 
 
 def watch_conversation(channel, thread_ts=None, wid=None, seen=None, pending=False,
-                       identity=USER):
-    """Start (or refresh) tracking a conversation Otto is answering in (slack_state.watch)."""
+                       identity=USER, pending_wid=None, clear_pending=False):
+    """Start (or refresh) tracking a conversation Otto is answering in (slack_state.watch).
+
+    `clear_pending` drops a stale in-flight marker — used by `is_busy` when the run that set it
+    turns out to be gone."""
     if not channel:
         return
     now = time.time()
-    storage.mutate_json(
-        _STATE,
-        lambda st: slack_state.watch(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
-                                     wid=wid, seen=seen, pending=pending, identity=identity),
-        slack_state.empty())
+
+    def _mutate(st):
+        st = slack_state.watch(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
+                               wid=wid, seen=seen, pending=pending, identity=identity,
+                               pending_wid=pending_wid)
+        if clear_pending:
+            rec = (st.get("threads") or {}).get(
+                slack_state.conversation_key(channel, thread_ts, identity))
+            if rec:
+                rec.pop("pending_at", None)
+                rec.pop("pending_wid", None)
+        return st
+
+    storage.mutate_json(_STATE, _mutate, slack_state.empty())
 
 
 def conversation_record(channel, thread_ts=None, identity=USER):
@@ -726,6 +738,73 @@ def watched_conversations(threads_only=False):
     threads = _prune(_state().get("threads") or {}, time.time())
     recs = sorted(threads.values(), key=lambda r: float(r.get("at") or 0))
     return [r for r in recs if r.get("thread_ts")] if threads_only else recs
+
+
+# Workflow statuses that mean "this run is over". Anything else — RUNNING, or a status this
+# Temporal version reports that we do not recognise — counts as alive, so an unfamiliar state can
+# only ever make Otto wait, never make it start a second concurrent turn.
+_DEAD_STATUSES = {"COMPLETED", "FAILED", "CANCELED", "CANCELLED", "TERMINATED", "TIMED_OUT",
+                  "CONTINUED_AS_NEW"}
+
+
+def alive_from_status(name):
+    """A Temporal status name -> alive / not alive / unknown. PURE.
+
+    Only a RECOGNISED terminal status is False. An unreadable status, or one this Temporal version
+    reports that `_DEAD_STATUSES` has never heard of, is None — which the caller treats as still
+    running. Inverting that (`name == "RUNNING"`) is the tempting simplification and it is the
+    dangerous direction: an unfamiliar state would then free a conversation whose run is very much
+    alive, and two turns would run at once."""
+    if not name:
+        return None
+    return name.upper() not in _DEAD_STATUSES
+
+
+def run_alive(wid):
+    """Is this workflow still in flight? True / False / None when it cannot be determined.
+
+    None on any doubt — no id, no temporalio, an unreachable server, an unreadable status — and
+    the caller treats None as "still running". A wrong False starts a second turn alongside a
+    live one; a wrong None costs a wait that already happens today."""
+    import temporal_client as tc
+    if not (wid and tc.OK):
+        return None
+
+    async def _go():
+        c = await tc.client()
+        d = await c.get_workflow_handle(wid).describe()
+        return alive_from_status(
+            getattr(d.status, "name", None) if getattr(d, "status", None) else None)
+
+    try:
+        return tc.run(_go())
+    except Exception:  # noqa: BLE001 - gone from visibility, or Temporal down: unknown, not dead
+        return None
+
+
+def is_busy(rec, now=None):
+    """Whether this conversation's previous run still holds it — the poller's one-turn-at-a-time
+    check, and the ONLY thing the pollers should ask.
+
+    The stored `pending_at` flag is cleared by `record_conversation_session`, which runs on
+    DELIVERY, so every path that ends a run without delivering used to leave a conversation deaf
+    for the full stale window. Rather than add the clear to each such path (and to every future
+    one), this asks Temporal whether the run is actually alive and lets the flag be a hint.
+
+    Self-healing: on a definite "gone", the stale flag is cleared here, so the next poll needs no
+    lookup at all and the cost stays one describe per JAMMED conversation, once."""
+    rec = rec or {}
+    now = now if now is not None else time.time()
+    if not slack_state.is_pending(rec, now, PENDING_STALE_S):
+        return False
+    wid = rec.get("pending_wid")
+    alive = run_alive(wid) if wid else None
+    if slack_state.is_busy(rec, now, PENDING_STALE_S, alive):
+        return True
+    trace("SLACK", f"conversation freed — the run holding it ({wid}) is gone")
+    watch_conversation(rec.get("channel"), rec.get("thread_ts"), pending=False,
+                       identity=slack_state.identity_of(rec), clear_pending=True)
+    return False
 
 
 def is_pending(rec, now=None):
@@ -1289,7 +1368,7 @@ def _poll_dms(cfg, out, identity=USER):
         # cursor doesn't advance, so these messages are picked up on a later poll, in order.
         rec = conversation_record(cid, identity=identity)
         gate_wid = awaiting_gate(rec)
-        if is_pending(rec) and not gate_wid:
+        if is_busy(rec) and not gate_wid:
             continue
         hist = _api("conversations.history", identity=identity, channel=cid, oldest=cur,
                     limit=50).get("messages") or []
@@ -1374,7 +1453,7 @@ def _poll_bot_mentions(cfg, out):
         if cur is None:
             cur = _first_sight_cursor(cid, BOT)
         rec = conversation_record(cid, identity=BOT)
-        if is_pending(rec):
+        if is_busy(rec):
             continue
         hist = _api("conversations.history", identity=BOT, channel=cid, oldest=cur,
                     limit=50).get("messages") or []
@@ -1420,7 +1499,7 @@ def _poll_threads(cfg, out):
         # exempt from it. Without this the "yes" sat unread for PENDING_STALE_S (30min) and the
         # feature would have looked broken in exactly the way the gate already did.
         gate_wid = awaiting_gate(rec, now)
-        if is_pending(rec, now) and not gate_wid:
+        if is_busy(rec, now) and not gate_wid:
             continue
         self_ok = _self_test(cfg, cid) if identity == USER else False
         msgs = _api("conversations.replies", identity=identity, channel=cid, ts=root, oldest=cur,

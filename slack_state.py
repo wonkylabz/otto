@@ -205,8 +205,35 @@ def is_pending(rec, now, stale_s):
     return now - at < stale_s
 
 
+def is_busy(rec, now, stale_s, alive=None):
+    """Whether this conversation's previous run still holds it. PURE.
+
+    `is_pending` reads a STORED flag, which is only correct if every path that ends a run
+    remembers to clear it. That is a promise the codebase could not keep: the flag is cleared by
+    `record_conversation_session`, which runs only on delivery, so a declined gate, a terminated
+    run, a crashed worker or any future path that ends without delivering left the conversation
+    deaf for the whole stale window. One of those shipped (a decline: 30 minutes of a DM
+    answering nothing), and the shape guarantees more.
+
+    So the caller resolves whether that run is still ALIVE and passes it in, making the answer
+    derived from Temporal — the actual source of truth — rather than from a bookkeeping write:
+
+        alive=True   the run really is in flight  -> busy, as before
+        alive=False  the run is gone              -> NOT busy, whatever the flag says
+        alive=None   unknown (no wid recorded, Temporal unreachable, an older record)
+                     -> fall back to the stored flag
+
+    `None` failing back to "busy" is deliberate and is the safe direction: wrongly deciding a
+    conversation is free starts a second turn alongside a live one, which is the race the flag
+    exists to prevent. Wrongly deciding it is busy costs at most `stale_s` of waiting, which is
+    what today already does."""
+    if not is_pending(rec, now, stale_s):
+        return False
+    return True if alive is None else bool(alive)
+
+
 def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, pending=False,
-          identity=USER):
+          identity=USER, pending_wid=None):
     """Start (or refresh) tracking a conversation Otto is answering in. `seen` advances the
     conversation's own read cursor — only ever forward, and only used by thread polling (a DM
     reads through the channel cursor) — so the triggering message isn't re-picked as its own
@@ -226,6 +253,13 @@ def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, 
             rec["cursor"] = normalize_ts(seen)
     if pending:
         rec["pending_at"] = now
+        # WHICH run holds the conversation. `wid` above is the run that OPENED it and is sticky
+        # for the chat thread's life, so it cannot answer "is the thing I am waiting on still
+        # alive?" — see `is_busy`.
+        if pending_wid:
+            rec["pending_wid"] = pending_wid
+        else:
+            rec.pop("pending_wid", None)
     threads[key] = rec
     # Re-prune AFTER inserting so the store never rests over max_threads (the just-inserted
     # record is the newest, so it is never the one evicted). The prune before the read above is

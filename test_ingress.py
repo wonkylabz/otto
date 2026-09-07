@@ -2431,6 +2431,115 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertIn("OttoWorkflow.approve", inspect.getsource(server._wf_signal))
 
 
+class SlackConversationBusyTests(unittest.TestCase):
+    """One-turn-at-a-time is DERIVED from whether the holding run is alive, not from a stored flag.
+
+    The flag (`pending_at`) is cleared by `record_conversation_session`, which runs only on
+    DELIVERY — so every path that ends a run without delivering left the conversation deaf for the
+    full 30-minute stale window. That is not a bug in one path, it is a promise the codebase
+    cannot keep: a declined gate shipped it (a DM answered nothing for 30 minutes after a
+    Decline), and a terminate, a crashed worker or any future terminal path has the same shape.
+    Temporal knows whether the run is alive; asking it makes the flag a hint instead of a
+    contract."""
+
+    def _rec(self, **over):
+        base = {"channel": "D1", "thread_ts": None, "identity": "bot",
+                "pending_at": 1_000_000.0 - 5, "pending_wid": "slack-b-D1-9-0"}
+        base.update(over)
+        return base
+
+    def test_a_dead_run_frees_the_conversation_whatever_the_flag_says(self):
+        now = 1_000_000.0
+        st = slack_state
+        self.assertTrue(st.is_busy(self._rec(), now, 1800, True))      # really running
+        self.assertFalse(st.is_busy(self._rec(), now, 1800, False))    # gone -> freed early
+        # Unknown must NOT free it: wrongly deciding a conversation is free starts a second turn
+        # alongside a live one, which is the race the flag exists to prevent. Wrongly deciding it
+        # is busy costs a wait that already happens today.
+        self.assertTrue(st.is_busy(self._rec(), now, 1800, None))
+        # The stale window still applies on top — a run nothing can tell us about still expires.
+        self.assertFalse(st.is_busy(self._rec(pending_at=now - 1801), now, 1800, None))
+        self.assertFalse(st.is_busy({}, now, 1800, True))
+
+    def test_an_unknown_status_counts_as_alive(self):
+        """`run_alive` returns None on every doubt — no id, no temporalio, an unreachable server,
+        an unreadable status — and only a recognised terminal status is False. A Temporal version
+        reporting a state this list has never heard of may make Otto wait; it may not make it
+        start a second turn."""
+        import temporal_client as tc
+        orig = tc.OK, tc.run
+        try:
+            tc.OK = False
+            self.assertIsNone(slack.run_alive("w1"))
+            tc.OK = True
+            self.assertIsNone(slack.run_alive(""))          # nothing to ask about
+            tc.run = lambda coro: (_ for _ in ()).throw(RuntimeError("temporal down"))
+            self.assertIsNone(slack.run_alive("w1"))
+        finally:
+            tc.OK, tc.run = orig
+        # The status -> alive decision itself, which is where the dangerous simplification lives.
+        for dead in ("COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT", "CANCELED",
+                     "CONTINUED_AS_NEW", "completed"):
+            self.assertIs(slack.alive_from_status(dead), False, dead)
+        self.assertIs(slack.alive_from_status("RUNNING"), True)
+        # An unrecognised status is ALIVE, not dead: `name == "RUNNING"` is the tempting form and
+        # it frees a conversation whose run is still going the moment Temporal reports a state
+        # this list has not heard of.
+        self.assertIs(slack.alive_from_status("SOME_FUTURE_STATE"), True)
+        self.assertIsNone(slack.alive_from_status(None))
+        self.assertIsNone(slack.alive_from_status(""))
+
+    def test_the_shell_clears_a_stale_flag_so_the_lookup_happens_once(self):
+        """Self-healing, and bounded: the describe costs one call per JAMMED conversation, once —
+        not one per conversation per poll."""
+        calls = []
+        orig = slack.run_alive, slack._STATE
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack.watch_conversation("D1", None, wid="w0", pending=True,
+                                         identity=slack.BOT, pending_wid="slack-b-D1-9-0")
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+                self.assertEqual(rec["pending_wid"], "slack-b-D1-9-0")
+                slack.run_alive = lambda wid: calls.append(wid) or False   # the run is gone
+                self.assertFalse(slack.is_busy(rec))
+                # The flag is gone from the STORE, so the next poll asks Temporal nothing.
+                rec2 = slack.conversation_record("D1", identity=slack.BOT)
+                self.assertNotIn("pending_at", rec2)
+                self.assertNotIn("pending_wid", rec2)
+                self.assertFalse(slack.is_busy(rec2))
+                self.assertEqual(calls, ["slack-b-D1-9-0"])
+        finally:
+            slack.run_alive, slack._STATE = orig
+
+    def test_a_live_run_still_holds_the_conversation(self):
+        orig = slack.run_alive, slack._STATE
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack.watch_conversation("D1", None, pending=True, identity=slack.BOT,
+                                         pending_wid="w1")
+                slack.run_alive = lambda wid: True
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+                self.assertTrue(slack.is_busy(rec))
+                # ...and the flag is left alone, so the next message still waits its turn.
+                self.assertIn("pending_at",
+                              slack.conversation_record("D1", identity=slack.BOT))
+        finally:
+            slack.run_alive, slack._STATE = orig
+
+    def test_the_pollers_ask_the_derived_question_not_the_stored_one(self):
+        """`is_pending` reads the flag; `is_busy` derives the answer. A poller calling the former
+        is the bug this class exists to prevent, and it reads as correct."""
+        src = inspect.getsource(slack)
+        for poller in ("_poll_dms", "_poll_threads", "_poll_bot_mentions"):
+            body = src[src.index(f"def {poller}("):]
+            body = body[:body.index("\ndef ", 1)]
+            self.assertNotIn("is_pending(", body,
+                             f"{poller} must ask is_busy(), not the stored flag")
+            self.assertIn("is_busy(", body)
+
+
 class SlackPollHealthTests(unittest.TestCase):
     """A poll that FIRES but fails every time is invisible: the card reads "listening, next run in
     40s" while nothing is answered, no audit row is written, no board card appears and the Reaper

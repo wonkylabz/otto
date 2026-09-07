@@ -929,7 +929,12 @@ def poll_slack(payload: dict) -> dict:
             set whenever there is a thread, because a record with no cursor is skipped too."""
             slack.watch_conversation(msg["channel"], ack_ts, wid=wid,
                                      seen=msg["ts"] if ack_ts else None,
-                                     pending=pending, identity=identity)
+                                     pending=pending, identity=identity,
+                                     # WHICH run holds it, so the poller can ask Temporal whether
+                                     # it is still alive instead of trusting the flag. `wid` above
+                                     # is the conversation's OPENING run and stays put for the
+                                     # chat thread's life, so it cannot answer that.
+                                     pending_wid=wid if pending else None)
 
         # A pleasantry with no request never becomes a run — answering it costs one post instead
         # of a verify ladder that dead-ends in a needs-human banner (see slack.is_pleasantry).

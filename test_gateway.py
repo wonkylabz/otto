@@ -4638,7 +4638,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # control between a colleague's DM and a write in the operator's name: reusing the talk
     # allowlist as the approve allowlist, matching a decision as a substring, and the pending
     # guard silently making the whole feature inert. None is visible from the call site.
-    MAX_RULES_BYTES = 67639   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 67920 for the derived-busy rule: a conversation's in-flight flag was cleared on
+    # DELIVERY only, so every terminal path that skipped delivery silently deafened a DM for the
+    # whole stale window — invisible from the poller, which reads a flag that looks authoritative.
+    MAX_RULES_BYTES = 67920   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
