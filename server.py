@@ -1237,7 +1237,9 @@ class Handler(BaseHTTPRequestHandler):
             params["approval"] = "auto"
         model_override = (body.get("model_override") or "").strip()
         if model_override:
-            if not gateway.resolve_model(model_override):
+            # `auto` is not a pool entry — it asks the run to pick its own starting tier
+            # (issue #11) — so it has to be admitted explicitly or it 400s as an unknown model.
+            if not gateway.is_auto(model_override) and not gateway.resolve_model(model_override):
                 self._send(400, json.dumps({"error": f"unknown model '{model_override}'"})); return
             params["model_override"] = model_override
         # How hard the model thinks (config.EFFORT_LEVELS). Validated here rather than passed
@@ -1303,6 +1305,11 @@ class Handler(BaseHTTPRequestHandler):
         # The composer's model picker applies to a follow-up too — same validation as
         # /api/submit.
         model_override = (body.get("model_override") or "").strip()
+        # `auto` decides attempt 1 of a FRESH run; a resume is bound to its session's own model
+        # (local_runtime.resume_entry). Dropped, not forwarded — left standing it reads as a
+        # cross-backend pick below and rebinds a perfectly resumable conversation.
+        if gateway.is_auto(model_override):
+            model_override = ""
         if model_override:
             entry = gateway.resolve_model(model_override)
             if not entry:

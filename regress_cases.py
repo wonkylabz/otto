@@ -645,6 +645,51 @@ def _followup_check(out):
                    "is the friction this classifier exists to remove")
 
 
+# --- Auto execution tier (issue #11) -----------------------------------------------------------
+# `_parse_exec_tier` is pure and unit-tested; what is unpinned is whether the model still SPREADS
+# its answers across the tiers at all. The failure this catches is a prompt edit that collapses
+# the classifier onto one tier — which is silent, because a run on the wrong tier still succeeds:
+# always-opus just quietly costs what auto was added to save, and always-haiku burns a ladder rung
+# on work that never needed to start cheap.
+#
+# Asserted as a SET, not an exact tier. Where "big refactor" lands between opus and sonnet is a
+# judgement call two competent readers disagree on, so pinning one answer would make the corpus
+# report normal model drift as a regression. What is not a judgement call is the direction: a
+# one-line lookup must not reach for the most expensive model, and an ambiguous multi-system
+# migration must not start on the cheapest.
+_AUTO_TIER_CASES = [
+    ("auto-tier-trivial-lookup",
+     "what version of python is pinned in pyproject.toml?", {"haiku", "sonnet"},
+     "a single-file lookup must not reach for opus"),
+    ("auto-tier-mechanical-edit",
+     "bump the copyright year in the LICENSE header from 2025 to 2026", {"haiku", "sonnet"},
+     "a mechanical one-token edit must not reach for opus"),
+    ("auto-tier-ambiguous-migration",
+     "our scheduler and our webhook ingress both mint run ids their own way and the audit trail "
+     "cannot join them; work out what the right shared scheme is, what it breaks, and migrate "
+     "both without losing historical rows", {"opus", "sonnet"},
+     "an ambiguous multi-system migration must not start on the cheapest tier"),
+]
+
+
+def _auto_tier_case(request, want):
+    cap = _cap("sre-minion", "write",
+               "takes a GitHub issue, implements it, commits, opens a PR, self-reviews")
+
+    def run():
+        return {"got": engine.auto_exec_tier(request, cap), "want": sorted(want)}
+    return run
+
+
+def _auto_tier_check(out):
+    want, got = set(out["want"]), out["got"]
+    if got in want:
+        return True, f"picked {got}, within {sorted(want)}"
+    return False, (f"picked {got} — outside {sorted(want)}. Auto only decides the STARTING tier, "
+                   f"so this costs money or one ladder rung, never correctness; but a classifier "
+                   f"that no longer spreads its answers is auto doing nothing at all")
+
+
 def _intent_check(out):
     want, got = out["want"], out["got"]
     if got == want:
@@ -940,4 +985,8 @@ CASES = [
     {"id": _id, "tier": "cheap", "incident": "PR #304 (the resident/fetched split)", "what": _what,
      "run": _rules_nav_case(_task, _want), "check": _rules_nav_check}
     for _id, _task, _want, _what in _RULES_NAV
+] + [
+    {"id": _id, "tier": "cheap", "incident": "issue #11 (auto execution tier)", "what": _what,
+     "run": _auto_tier_case(_req, _want), "check": _auto_tier_check}
+    for _id, _req, _want, _what in _AUTO_TIER_CASES
 ]

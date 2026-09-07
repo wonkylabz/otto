@@ -605,6 +605,73 @@ def downshift_model_id(cfg=None):
     return exec_model_id()
 
 
+# --- auto execution tier (issue #11) ---------------------------------------------------
+# "Auto" is a per-run pick in the composer's model dropdown, not a fourth store: it rides the
+# existing `model_override` field as the sentinel below. It means "decide the STARTING tier for
+# me" — a cheap classifier (intents.auto_exec_tier) names a tier and this resolves it to a real
+# pool entry. Everything above it in engine.run_attempt's precedence chain is unchanged, and so
+# is everything the ladder does afterwards: a verify failure still escalates via
+# `escalation_model_id`, a soft-budget overrun still downshifts via `downshift_model_id`.
+AUTO_MODEL = "auto"
+# Where an ambiguous or unparseable classifier answer lands. Same reasoning as `_default_claude`:
+# haiku is quietly too weak to be a silent default and opus is surprise-expensive, so the tier
+# that is neither is the one to land on when nothing decided.
+AUTO_DEFAULT_TIER = "sonnet"
+
+
+def is_auto(model_override):
+    """True when a per-run model pick is the `auto` sentinel rather than a pool entry name.
+    `resolve_model` deliberately does NOT resolve it — auto is not a model, and every caller
+    that validates an override (server's /api/submit, /api/continue) has to admit it explicitly
+    rather than 400 on an unknown pool entry."""
+    return isinstance(model_override, str) and model_override.strip().lower() == AUTO_MODEL
+
+
+def auto_model_id(tier=None, cfg=None):
+    """The Claude model id for an auto-picked TIER, or None when auto can make no pick.
+
+    Two rules, both load-bearing:
+
+    A model whose LAST outcome was a failure is never the auto pick (`unhealthy_models`). Auto
+    exists to spend less without being asked which model to spend it on, so it is the one picker
+    that must not put a run on a model something already knows is broken — a manual pin at least
+    has a human behind it who will see the failure and change it.
+
+    An unavailable tier resolves UPWARD, never down. The classifier said "haiku is enough"; if
+    haiku is absent or unhealthy the honest substitute is a STRONGER model, since a weaker one
+    was already judged insufficient. When nothing at or above the asked tier is healthy, this
+    returns None and the caller falls through to the normal cap_exec/phase pick — auto declining
+    is correct, silently landing on a model it was told to avoid is not."""
+    cfg = cfg or load()
+    bad = {m["name"] for m in unhealthy_models(cfg)}
+    claude = [m for m in cfg.get("pool", []) if m.get("provider") == "claude"
+              and m["name"] not in bad]
+    want = (tier or AUTO_DEFAULT_TIER).strip().lower()
+    if want not in _TIER_ORDER:
+        want = AUTO_DEFAULT_TIER
+    # _TIER_ORDER is strongest-first, so everything up to and including `want` is
+    # equal-or-stronger; walk it from `want` back toward the strongest.
+    for t in reversed(_TIER_ORDER[:_TIER_ORDER.index(want) + 1]):
+        m = next((m for m in claude if t in m["model"]), None)
+        if m:
+            return m["model"]
+    return None
+
+
+def cap_exec_pinned(cap_name, cfg=None):
+    """True when this capability has a USABLE per-cap execution override (`cap_exec`).
+
+    Auto sits BELOW cap_exec on purpose: pinning a capability's model is an explicit statement
+    about that capability, and a per-run "decide for me" must not overrule it. An override
+    naming a model no longer in the pool is not a pin — `exec_model_entry` already ignores it,
+    so auto has to as well or a stale row silently disables auto for that cap forever."""
+    if not cap_name:
+        return False
+    cfg = cfg or load()
+    ovr = (cfg.get("cap_exec") or {}).get(cap_name)
+    return bool(ovr) and any(m["name"] == ovr for m in cfg.get("pool", []))
+
+
 def last(task):
     return _LAST.get(task)
 

@@ -365,3 +365,64 @@ def auto_engage_repo(request, repo_names, cap_name=None):
         trace("REPO", f"worker run names '{repo}' -> engaging repo-mode (no classifier needed)")
         return repo
     return repo if _eng().repo_edit_intent(request, repo) else None
+
+
+# --- auto execution tier (issue #11) ---------------------------------------------------
+# The tiers this classifier may name, strongest first — deliberately the same three names as
+# gateway._TIER_ORDER, which is what resolves the answer to a real pool entry.
+_AUTO_TIER_NAMES = ("opus", "sonnet", "haiku")
+
+
+def _parse_exec_tier(text):
+    """Pure parse of the auto-tier verdict -> one of _AUTO_TIER_NAMES, or None for "no opinion".
+
+    The LAST tier word wins, for the same reason Router #1 parses the LAST integer of its reply:
+    a model that reasons out loud names the tiers it rejected before the one it picks ("opus
+    would be overkill, sonnet is enough"), and a first-match parse reads that as opus — the
+    exact inversion of what auto is for.
+
+    None (nothing recognisable) is not a guess: the caller falls back to
+    gateway.AUTO_DEFAULT_TIER rather than letting a garbled reply choose a tier. That bias is the
+    cheap one — a wrong tier costs money or one ladder rung, never correctness, because the
+    verify->retry ladder still sits above every pick this makes."""
+    low = (text or "").lower()
+    hits = [(low.rfind(t), t) for t in _AUTO_TIER_NAMES]
+    pos, tier = max(hits)
+    return tier if pos >= 0 else None
+
+
+def auto_exec_tier(request, cap):
+    """Pick the cheapest Claude tier likely to be SUFFICIENT for this request (issue #11).
+
+    Runs once, before attempt 1, only when the composer's model picker is on "Auto" and the
+    capability has no `cap_exec` pin. It decides a STARTING tier and nothing else: a verify
+    failure still escalates and a soft-budget overrun still downshifts, both unchanged, so the
+    worst case of a too-cheap pick is one extra rung rather than a bad answer.
+
+    Rides the cheap `routing` tier — this is Router #2 making a routing decision, and paying an
+    execution-tier call to decide which execution tier to use would defeat the point. Any failure
+    is swallowed: auto is a cost optimisation, and it must never be the reason a run doesn't
+    start."""
+    name = cap.name if cap else "a capability"
+    desc = cap.description[:160] if cap else ""
+    risk = getattr(cap, "risk", "") or "unknown"
+    try:
+        text = gateway.complete(
+            "routing",
+            f"You are choosing which Claude model tier should run a task. The tiers, strongest "
+            f"and most expensive first: opus (deep multi-step reasoning, subtle trade-offs, "
+            f"large refactors, ambiguous problems), sonnet (the capable default — most real "
+            f"work), haiku (fast and cheap; short lookups, simple summaries, mechanical "
+            f"single-step edits).\n"
+            f"The task will be run by the capability '{name}' ({desc}), classified as "
+            f"{risk}-risk.\n"
+            + _DATA_FENCE_PREAMBLE + "\n"
+            f"The request is:\n{_fenced(request)}\n\n"
+            "Pick the CHEAPEST tier that is likely to be sufficient. Reply with exactly one "
+            "word: opus, sonnet, or haiku.")
+    except Exception as e:  # noqa: BLE001 - never block a run on the tier classifier
+        trace("GATEWAY", f"auto tier classifier failed ({e}); using {gateway.AUTO_DEFAULT_TIER}")
+        return gateway.AUTO_DEFAULT_TIER
+    tier = _parse_exec_tier(text) or gateway.AUTO_DEFAULT_TIER
+    trace("GATEWAY", f"auto execution tier for '{name}' -> {tier}")
+    return tier

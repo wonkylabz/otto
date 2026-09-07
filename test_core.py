@@ -1728,7 +1728,7 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
         # of /api/continue can't be driven from a unit test.
         src = self._src("server.py")
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
-        branch = src[i:i + 2400]
+        branch = src[i:i + 2700]   # 2400 -> 2700: the auto sentinel's drop-branch precedes this
         self.assertIn('params["effort"] = effort', branch,
                       "/api/continue accepts an effort pick but never forwards it")
         self.assertIn("config.effort_level(body.get(\"effort\"))", branch,
@@ -1739,7 +1739,9 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
         # /api/continue can't be driven from a unit test.
         src = self._src("server.py")
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
-        branch = src[i:i + 1200]
+        # Widened 1200 -> 1400 when the auto sentinel (issue #11) added its own drop-branch
+        # ahead of this one. Still a PROXIMITY guard: it must not reach the next handler.
+        branch = src[i:i + 1400]
         self.assertIn('params["model_override"] = model_override', branch,
                       "/api/continue accepts the override but never forwards it")
         self.assertIn("gateway.resolve_model(model_override)", branch,
@@ -1841,7 +1843,7 @@ class ResumeModelRebindTests(unittest.TestCase):
     def test_api_continue_rebinds_a_cross_backend_pick(self):
         src = self._src("server.py")
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
-        branch = src[i:i + 2000]
+        branch = src[i:i + 2200]   # 2000 -> 2200: the auto sentinel's drop-branch precedes this
         self.assertIn("local_runtime.is_local_session(", branch,
                       "/api/continue resumes without checking the session's backend")
         self.assertIn('"rebind"', branch,

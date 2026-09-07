@@ -2475,8 +2475,8 @@ window.paintFavicon();
             <label class="opt" id="autoapprovetoggle" title="Otto normally pauses before a write to show you the plan it is about to run and wait for your approval. Turn this on to pre-authorize this chat's writes: no gate, no plan preview — it just executes. Applies to this chat only.">
               <input type="checkbox" id="autoapprove"><span class="pill" aria-hidden="true"></span> Auto approve
             </label>
-            <span class="optlabel inline" title="Override which model executes this chat's run instead of the Admin-configured model. Applies to this chat only — leave on Admin default to follow whatever Admin → Models has set.">Model</span>
-            <select id="modelpick"><option value="">Admin default</option></select>
+            <span class="optlabel inline" title="Override which model executes this chat's run instead of the Admin-configured model. Applies to this chat only — leave on Admin default to follow whatever Admin → Models has set. Auto lets Otto pick the cheapest Claude tier likely to be enough for the task; a per-capability Exec pin in Admin still wins, and a failed attempt still escalates as usual.">Model</span>
+            <select id="modelpick"><option value="">Admin default</option><option value="auto">Auto (pick a tier per task)</option></select>
             <span class="optlabel inline" title="How hard the model thinks before answering: higher reasons longer and costs more. Applies to this chat only — leave on Admin default to follow Admin → Runtime settings. Advisory on local models, whose endpoint may accept the value and ignore it.">Effort</span>
             <select id="effortpick" title="How hard the model thinks before answering. Advisory on local models.">
               <option value="">Admin default</option>
@@ -3339,7 +3339,9 @@ async function loadModelPicker(){
   const sel=document.getElementById("modelpick");
   if(!sel) return;
   const cur=sel.value;
-  sel.innerHTML=`<option value="">Admin default</option>`+
+  // "Auto" is not a pool entry (the server admits it as a sentinel, gateway.is_auto) — it has
+  // to be re-rendered here or repopulating the picker from /api/models silently drops it.
+  sel.innerHTML=`<option value="">Admin default</option><option value="auto">Auto (pick a tier per task)</option>`+
     pool.map(m=>`<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
   sel.value=cur;   // preserve selection across reloads
 }

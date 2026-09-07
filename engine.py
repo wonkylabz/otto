@@ -52,7 +52,8 @@ from intents import (_parse_clarification, clarify, _parse_write_intent,
                      followup_write_intent, _parse_handoff, followup_handoff,
                      request_write_intent, assistant_write_redirect, candidate_repo,
                      repo_edit_intent, _parse_pr_title, _OPERATIONAL_SENTINEL_PREFIXES,
-                     _is_operational_sentinel, pr_copy, auto_engage_repo)
+                     _is_operational_sentinel, pr_copy, auto_engage_repo,
+                     _parse_exec_tier, auto_exec_tier)
 from judging import (_parse_verdict, _parse_qa_verdict, _APPROVED_PLAN_CHARS,
                      _approved_plan_note, _grounding_note, _JUDGE_REASONING_RULE,
                      verify, qa_review_request,
@@ -180,7 +181,9 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     `memory_enabled=False` (a per-chat opt-out) skips memory recall the same way a swarm
     sub-task's `recall=False` does. `model_override` (a per-chat model pick) wins over
     cap_exec/escalate/downshift entirely for this run — resolved once against the pool;
-    an unknown name is ignored (falls back to the admin-configured model).
+    an unknown name is ignored (falls back to the admin-configured model). Its `auto` sentinel
+    (gateway.AUTO_MODEL) is the opposite of a pick: it asks for a classifier-chosen STARTING
+    tier, which sits below cap_exec rather than above it.
 
     `effort` is how hard the model thinks (config.EFFORT_LEVELS) — the per-chat pick if there is
     one, else the Admin default. Resolved from the settings store ONLY for callers outside
@@ -203,8 +206,14 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # no MCP client — such caps stay on Claude). A resumed session is bound to whichever
     # backend minted its id: "local-…" ids route back to the local runtime regardless of
     # current model assignments.
-    override_entry = gateway.resolve_model(model_override) if model_override else None
-    if model_override and override_entry is None:
+    # "Auto" (issue #11) rides the same per-run field as a model pick but is NOT a pool entry:
+    # it asks Otto to choose the starting tier itself. Recognised here so it doesn't read as an
+    # unknown override, and left out of `exec_entry` so the BACKEND decision below is unchanged —
+    # auto never moves a run onto or off the local runtime, it only names a Claude tier.
+    auto_exec = gateway.is_auto(model_override)
+    override_entry = (gateway.resolve_model(model_override)
+                      if model_override and not auto_exec else None)
+    if model_override and not auto_exec and override_entry is None:
         trace("RUN", f"{wid} model override '{model_override}' isn't a known pool entry — "
                      f"ignoring it, using the admin-configured model")
     exec_entry = override_entry or gateway.exec_model_entry(cap.name)
@@ -388,10 +397,30 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             fb_meta = {"fallback_from": tf,
                        "fallback_reason": "tool-free local completion failed or the model is marked down"}
 
+    # AUTO tier (issue #11): the composer asked Otto to pick the starting tier itself. One cheap
+    # classifier call decides it, and only under conditions where the answer can actually matter:
+    #  - attempt 1 only, and never on escalate/downshift/resume — the ladder owns every later
+    #    rung, and re-classifying mid-ladder would fight the escalation it exists to allow;
+    #  - never on the LOCAL backend, whose runs are local-ONLY by design (the branch below) —
+    #    an auto pick there would be the one thing that silently moves a cost opt-out to Claude;
+    #  - never when the capability carries a `cap_exec` pin, which is an explicit statement about
+    #    THAT capability and outranks a per-run "decide for me".
+    # A tier nothing healthy can serve yields None, and the chain falls through to the normal
+    # pick — auto declining is a valid outcome, landing on a known-broken model is not.
+    auto_model = None
+    if (auto_exec and not use_local and not resume_session and attempt == 1
+            and not escalate and not downshift and not gateway.cap_exec_pinned(cap.name)):
+        auto_model = gateway.auto_model_id(auto_exec_tier(request, cap))
+        if not auto_model:
+            trace("RUN", f"{wid} auto tier found no healthy Claude model — using the "
+                         f"admin-configured one")
+
     # Precedence: a per-chat model override beats EVERYTHING below (escalation, downshift,
     # cap_exec) — it's the user's explicit choice for this run. Absent that: a final-attempt
     # escalation (strongest model) beats a soft-budget downshift (cheapest model), which beats
-    # the normal per-cap execution model. A LOCAL-backend run is deliberately local-ONLY:
+    # the normal per-cap execution model, which in turn beats an AUTO tier pick (issue #11) —
+    # a `cap_exec` pin is a statement about that capability, "decide for me" is not.
+    # A LOCAL-backend run is deliberately local-ONLY:
     # escalation/downshift are Claude-tier moves, so retries stay on the same local model and a
     # still-failing run surfaces to a human instead of silently spending Claude tokens the user
     # opted out of — UNLESS the local backend proved tool-incapable this run (local_disabled
@@ -411,6 +440,9 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     elif downshift:
         model = gateway.downshift_model_id()
         trace("DOWNSHIFT", f"{wid} over soft budget -> cheaper model {model}")
+    elif auto_model:
+        model = auto_model
+        trace("RUN", f"{wid} auto tier -> {model}")
     else:
         model = gateway.exec_model_id(cap.name)
     # Record the local→Claude move so the audit trail + UI show the "<local> ⇢ <claude>" badge
