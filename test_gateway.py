@@ -4417,7 +4417,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # "how to run install.sh" is not a convention anything should be enforcing.
     # 7_886 -> 7_936 rebasing onto the heartbeat change, whose restart rule and estop reason
     # both landed in the resident tier while this branch was open.
-    MAX_BYTES = 8_072          # resident tier — the per-session tax. +135 in the
+    # -> 8079 for one index entry: `slack_socket.py` shipped as a new ingress module with
+    # nothing in the layer table pointing at it, and that table IS how a session finds a layer's
+    # file at all. 19 bytes to stop a module being invisible is the trade this ratchet is for.
+    MAX_BYTES = 8079          # resident tier — the per-session tax. +135 in the
                                # commit that cited ResidentRuleGuardTests on five rules:
                                # prose enforcement fits ~8 rules in a judging prompt, a
                                # test always runs, so bytes buying a guard are a good trade.

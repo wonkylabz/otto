@@ -33,7 +33,7 @@ Read the layer's rules file before editing it — each carries the invariants th
 
 | Layer | Files | Rules |
 | --- | --- | --- |
-| Ingress — web, schedules, webhooks, board, Slack | `server.py`, `scheduler.py`, `runbooks.py`, `events.py`, `board.py`, `slack.py`, `slack_state.py` | `.claude/rules/ingress.md` |
+| Ingress — web, schedules, webhooks, board, Slack | `server.py`, `scheduler.py`, `runbooks.py`, `events.py`, `board.py`, `slack.py`, `slack_state.py`, `slack_socket.py` | `.claude/rules/ingress.md` |
 | Run pipeline — plan gate, ladder, verify, supervisor | `workflows.py`, `worker.py`, `activities.py`, `judging.py`, `plans.py`, `conventions.py`, `supervisor.py` | `.claude/rules/run-pipeline.md` |
 | Routing & capabilities | `routing.py`, `registry.py`, `intents.py`, `capabilities/` | `.claude/rules/routing-capabilities.md` |
 | Repo work — clones, PRs, review/QA, resuming a repo run, terminal state | `workspace.py`, `chats.py`, `audit.py` | `.claude/rules/repo-work.md` |
