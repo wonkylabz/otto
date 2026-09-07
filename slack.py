@@ -245,8 +245,15 @@ def whoami(identity=USER):
     """This identity's Slack user id (cached per identity — the bot user and the owner are two
     different ids and conflating them is a self-answer loop). None if its token is missing or
     invalid."""
-    if identity not in _ME:
-        _ME[identity] = _api("auth.test", identity=identity).get("user_id")
+    # Only a TRUTHY id is cached. Storing the None from a transient `auth.test` failure pinned it
+    # for the life of the worker: `_poll_bot_mentions` returns immediately without an id, so the
+    # bot goes silently deaf until a restart — the same "polls happily and answers nobody" shape
+    # the scope check exists to catch. The pre-bot code retried for exactly this reason.
+    if not _ME.get(identity):
+        got = _api("auth.test", identity=identity).get("user_id")
+        if got:
+            _ME[identity] = got
+        return got
     return _ME[identity]
 
 
@@ -295,6 +302,11 @@ _OPTIONAL_SCOPES = {
 }
 
 _GRANTED = {}
+# How long a FAILED scope probe is remembered, so an unreachable Slack cannot make the Events tab
+# pay two 15s timeouts per load. A successful probe is cached for the process's life (the token
+# cannot change without a restart); a failure only until it is worth retrying.
+_SCOPE_RETRY_S = int(os.environ.get("OTTO_SLACK_SCOPE_RETRY_S") or 120)
+_FAILED = {}
 
 
 def granted_scopes(identity=USER, refresh=False):
@@ -305,6 +317,8 @@ def granted_scopes(identity=USER, refresh=False):
         _GRANTED.pop(identity, None)
     if identity in _GRANTED:
         return _GRANTED[identity]
+    if time.time() - _FAILED.get(identity, 0) < _SCOPE_RETRY_S:
+        return set()                          # a recent probe failed; do not re-block the caller
     token = _token(identity)
     out = set()
     if token:
@@ -317,7 +331,12 @@ def granted_scopes(identity=USER, refresh=False):
                 out = {s.strip() for s in (r.headers.get("x-oauth-scopes") or "").split(",")
                        if s.strip()}
         except Exception as e:  # noqa: BLE001 - transient; an unknown grant reports as unknown
+            # Remember the FAILURE too, briefly. Without this every `/api/slack-config` re-paid a
+            # 15s urlopen per identity, so an offline box spun the Events tab for ~30s on every
+            # load — and that panel reloads on every toggle and save (the same trap as `claude mcp
+            # list` in `loadAdmin`). Short, because the fix for a real outage is a retry soon.
             trace("SLACK", f"scope check failed ({str(e)[:80]})")
+            _FAILED[identity] = time.time()
             return set()
     _GRANTED[identity] = out
     return out
@@ -343,7 +362,13 @@ def scope_gaps(identity=USER, cfg=None):
         (optional if scope in _OPTIONAL_SCOPES.get(identity, set()) else missing).append(
             (scope, why))
     for scope in sorted(_OPTIONAL_SCOPES.get(identity, set()) - granted):
-        why = (_SCOPES.get(identity, {}).get(scope) or ("private channels / group DMs",))[0]
+        spec = _SCOPES.get(identity, {}).get(scope)
+        # A scope whose feature is switched off is not worth a note either — the same reason the
+        # required loop skips it. Reported anyway, it is a line about a feature the operator has
+        # already decided against, sitting next to the ones that matter.
+        if spec and spec[1] is not True and cfg.get(spec[1]) is False:
+            continue
+        why = (spec or ("private channels / group DMs",))[0]
         if (scope, why) not in optional and scope not in dict(missing):
             optional.append((scope, why))
     return {"missing": missing, "optional": optional, "known": True}
@@ -771,8 +796,12 @@ def run_alive(wid):
         return None
 
     async def _go():
+        import asyncio
         c = await tc.client()
-        d = await c.get_workflow_handle(wid).describe()
+        # BOUNDED: this runs inside the poll activity, so a hung Temporal frontend would stall
+        # every Slack channel rather than failing fast. A timeout raises, which reads as "unknown"
+        # — the safe direction, and the stale window still covers the conversation.
+        d = await asyncio.wait_for(c.get_workflow_handle(wid).describe(), timeout=10)
         return alive_from_status(
             getattr(d.status, "name", None) if getattr(d, "status", None) else None)
 
@@ -1377,10 +1406,16 @@ def _poll_dms(cfg, out, identity=USER):
             if c:
                 # A DM's own threads still behave like threads; only its top level is the
                 # conversation, and `_poll_threads` handles the rest.
+                if gate_wid and c.get("thread_ts"):
+                    # The bypass above let this DM be READ while its run is parked, so that a
+                    # decision can arrive. That is a licence for the top level only: a reply
+                    # inside a thread of this DM carries no `gate_wid`, so it would flow on and
+                    # start a SECOND run alongside the parked one — the concurrency the busy
+                    # check exists to stop, silently widened by the gate arming.
+                    continue
                 out.append({**c, "is_dm": True,
                             "conversation": (None if c.get("thread_ts") else rec),
-                            **({"gate_wid": gate_wid} if gate_wid and not c.get("thread_ts")
-                               else {})})
+                            **({"gate_wid": gate_wid} if gate_wid else {})})
 
 
 def _poll_mentions(cfg, out):
@@ -1452,9 +1487,10 @@ def _poll_bot_mentions(cfg, out):
         cur = cursor(cid, BOT)
         if cur is None:
             cur = _first_sight_cursor(cid, BOT)
-        rec = conversation_record(cid, identity=BOT)
-        if is_busy(rec):
-            continue
+        # No busy check here, deliberately: a channel conversation is keyed on `channel|thread_ts`
+        # (Otto answers a mention IN a thread), so a channel-level record is never written and the
+        # lookup was always None — a guard that reads as protection and provides none. Ordering in
+        # a channel thread is enforced where those records actually live, in `_poll_threads`.
         hist = _api("conversations.history", identity=BOT, channel=cid, oldest=cur,
                     limit=50).get("messages") or []
         for m in hist:
@@ -1630,6 +1666,33 @@ def start_run(wid, params):
         return "failed"
 
 
+def gate_open(wid):
+    """Is this run STILL waiting at its approval gate? True / False / None when unknown.
+
+    A decision arriving after the gate closed is worse than a late no-op. The armed marker is
+    cleared on delivery, so between an owner approving on the web board and the run finishing
+    (minutes) it still stands — and `approve(False)` on a workflow that has already passed the
+    gate merely sets a field nothing re-reads. The signal SUCCEEDS, so the poller happily told the
+    thread "OK, I won't do it. Nothing was run." while the approved write ran and delivered into
+    that same thread. None on any doubt, and the caller treats None as closed: refusing a genuine
+    decision costs one board click, acting on a stale one lies to the asker."""
+    import temporal_client as tc
+    if not (tc.OK and wid):
+        return None
+
+    async def _go():
+        from workflows import OttoWorkflow
+        c = await tc.client()
+        st = await c.get_workflow_handle(wid).query(OttoWorkflow.status)
+        return bool((st or {}).get("awaiting_approval"))
+
+    try:
+        return tc.run(_go())
+    except Exception as e:  # noqa: BLE001 - finished, terminated, or unreachable: unknown
+        trace("SLACK", f"gate state for {wid} unreadable ({str(e)[:100]})")
+        return None
+
+
 def signal_decision(wid, approved):
     """Send an approve/deny decision to a parked workflow. Returns True on success.
 
@@ -1638,6 +1701,12 @@ def signal_decision(wid, approved):
     so it must land on the same signal or the two can diverge in what "approved" means."""
     import temporal_client as tc
     if not (tc.OK and wid):
+        return False
+
+    # The gate must still be OPEN. Checked here rather than at the call site so no future caller
+    # can signal a run that has moved on.
+    if gate_open(wid) is not True:
+        trace("SLACK", f"ignoring a decision for {wid} — it is no longer at its gate")
         return False
 
     async def _go():

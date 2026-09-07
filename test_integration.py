@@ -1845,6 +1845,27 @@ class SlackListenerActivityTests(unittest.TestCase):
         # about and one-turn-at-a-time silently falls back to the 30-minute stale flag.
         self.assertEqual(self.pending_wids, ["slack-D2-9-0"])
 
+    def test_a_FOLLOW_UP_also_records_which_run_holds_the_conversation(self):
+        """The holding id must be recorded on EVERY turn, not just the first.
+
+        `wid` is deliberately None once a conversation record exists (it is the sticky OPENING run
+        that keys the chat thread), so deriving the holding id from it recorded one on turn 1 and
+        nothing after — `is_busy` then fell back to the stored flag for every follow-up, which is
+        where a jam hurts most: a mid-conversation run that dies without delivering leaves the
+        thread deaf for the full stale window with no self-heal."""
+        self.slack.poll = lambda cfg: [{
+            "channel": "C7", "ts": "20.0", "thread_ts": "9.0", "user": "U2",
+            "text": "and the other one?", "in_thread": True,
+            "conversation": {"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000",
+                             "wid": "slack-C7-9-0", "session": "sess-1",
+                             "cap": {"name": "answer-thing", "kind": "skill", "risk": "read"}}}]
+        self.activities.poll_slack({})
+        self.assertEqual(len(self.started), 1)
+        wid = self.started[0][0]
+        self.assertEqual(self.pending_wids, [wid], "the FOLLOW-UP's own run id must be recorded")
+        # ...while the conversation's opening run stays put, so the chat thread is unchanged.
+        self.assertEqual([w for _c, _r, w, _s, _p in self.watched], [None])
+
     def _followup(self, **rec):
         base = {"channel": "C7", "thread_ts": "9.0", "cursor": "9.000000",
                 "wid": "slack-C7-9-0", "session": "sess-1",

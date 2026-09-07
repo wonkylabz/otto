@@ -116,6 +116,8 @@ def status(cfg=None):
     # ARE missing — and that is the only shape that says so without guessing.
     if st["enabled"] and st["connected"]:
         pick = slack.last_pick()
+        if pick and pick < _STARTED:
+            pick = None                       # older than this connection: proves nothing
         missed = pick and (not st["last_event"] or pick > st["last_event"] + _MISS_MARGIN_S)
         if missed:
             st["idle_warning"] = (
@@ -145,6 +147,12 @@ def status(cfg=None):
 # we are filtering them.
 _STATE = {"connected": False, "last_event": None, "wakes": 0, "error": None,
           "envelopes": 0, "events": 0, "hello": None}
+# When this process started. `last_event` lives in memory and resets on every restart, while the
+# poll's `last_pick` is PERSISTED — so comparing the two across a restart always reports "the
+# poll found work the socket never announced", on any install that has ever answered anything.
+# That is the same cry-wolf this check was rewritten to remove, one layer down: only a pick this
+# process could plausibly have seen an event for is evidence of anything.
+_STARTED = time.time()
 _THREAD = None
 _STOP = threading.Event()
 
@@ -348,6 +356,8 @@ def start(cfg=None):
     if not enabled(cfg):
         return "off (bot identity or socket mode disabled)"
     if _THREAD and _THREAD.is_alive():
+        # Includes one still winding down from a `stop()` whose join timed out: clearing `_STOP`
+        # and spawning now would leave two connections live.
         return "already running"
     _STOP.clear()
     _THREAD = threading.Thread(target=_loop, name="slack-socket", daemon=True)
@@ -356,12 +366,21 @@ def start(cfg=None):
 
 
 def stop(timeout=3):
-    """Stop the listener. Used when the bot identity is switched off from the UI."""
+    """Stop the listener. Used when the bot identity is switched off from the UI.
+
+    A thread that did NOT stop within the timeout is kept, not dropped. `_loop` can be blocked in
+    `apps.connections.open`'s 15s urlopen, so a 3s join times out routinely; nulling `_THREAD`
+    there let the next `reconcile` (any Slack config save) clear `_STOP` and spawn a SECOND
+    listener while the first was still coming back — two Socket Mode connections, doubled wakes,
+    and no way to tell from the outside."""
     global _THREAD
     _STOP.set()
     t = _THREAD
     if t and t.is_alive():
         t.join(timeout)
+    if t and t.is_alive():
+        _STATE["connected"] = False
+        return "stopping (the listener is still winding down)"
     _THREAD = None
     _STATE["connected"] = False
     return "stopped"

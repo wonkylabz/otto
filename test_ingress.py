@@ -2431,6 +2431,160 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertIn("OttoWorkflow.approve", inspect.getsource(server._wf_signal))
 
 
+class SlackReviewFixTests(unittest.TestCase):
+    """Defects found reviewing PR #12. Each is a case where the code reads as correct and the
+    failure is silent."""
+
+    def test_a_failed_identity_lookup_is_never_cached(self):
+        """`auth.test` failing once must not pin `whoami` to None for the worker's life. It would
+        make `_poll_bot_mentions` return immediately on every poll — the bot silently deaf until
+        a restart, which is the "polls happily and answers nobody" shape the scope check exists to
+        catch, arriving by a different door."""
+        calls = []
+        orig_api, orig_me = slack._api, slack._ME
+        try:
+            slack._ME = {}
+            slack._api = lambda method, identity="user", **k: (
+                calls.append(identity) or ({"ok": False, "error": "fatal_error"}
+                                           if len(calls) == 1 else
+                                           {"ok": True, "user_id": "U9"}))
+            self.assertIsNone(slack.whoami(slack.BOT))     # transient failure
+            self.assertEqual(slack.whoami(slack.BOT), "U9")  # retried, and now works
+            self.assertEqual(len(calls), 2)
+            slack.whoami(slack.BOT)                        # ...and the success IS cached
+            self.assertEqual(len(calls), 2)
+        finally:
+            slack._api, slack._ME = orig_api, orig_me
+
+    def test_a_decision_is_refused_once_the_run_has_left_its_gate(self):
+        """The armed marker is cleared on DELIVERY, so between an owner approving on the board and
+        the run finishing it still stands. `approve(False)` on a workflow past its gate only sets
+        a field nothing re-reads — the signal SUCCEEDS — so the poller told the thread "OK, I
+        won't do it. Nothing was run." while the approved write ran and delivered into it."""
+        seen = []
+        orig_open, orig_tc = slack.gate_open, None
+        import temporal_client as tc
+        orig_tc = tc.OK, tc.run
+        try:
+            tc.OK = True
+            tc.run = lambda coro: seen.append("signalled") or True
+            slack.gate_open = lambda wid: False            # already past the gate
+            self.assertFalse(slack.signal_decision("w1", False))
+            self.assertEqual(seen, [], "no signal may be sent to a run that has moved on")
+            slack.gate_open = lambda wid: None             # unknown -> treated as closed
+            self.assertFalse(slack.signal_decision("w1", True))
+            self.assertEqual(seen, [])
+            slack.gate_open = lambda wid: True             # genuinely parked
+            self.assertTrue(slack.signal_decision("w1", True))
+            self.assertEqual(seen, ["signalled"])
+        finally:
+            slack.gate_open = orig_open
+            tc.OK, tc.run = orig_tc
+
+    def test_a_conversation_is_armed_only_when_the_notice_actually_posted(self):
+        """Arming a thread that was never told anything leaves a later unrelated "ok" or "no" to
+        be consumed as a verdict on a gate nobody saw, for GATE_STALE_S."""
+        import activities
+        armed = []
+        orig = slack.post, slack.mark_awaiting_gate
+        try:
+            slack.mark_awaiting_gate = lambda *a, **k: armed.append(a)
+            slack.post = lambda *a, **k: False             # Slack refused the post
+            activities.interim_notice({"reply_to": {"kind": "slack_thread", "channel": "D1"},
+                                       "text": "needs approval", "awaiting_wid": "w1"})
+            self.assertEqual(armed, [], "a failed notice must not arm the conversation")
+            slack.post = lambda *a, **k: True
+            activities.interim_notice({"reply_to": {"kind": "slack_thread", "channel": "D1"},
+                                       "text": "needs approval", "awaiting_wid": "w1"})
+            self.assertEqual(len(armed), 1)
+        finally:
+            slack.post, slack.mark_awaiting_gate = orig
+
+    def test_a_failed_scope_probe_is_not_re_paid_on_every_request(self):
+        """`/api/slack-config` probes BOTH identities, each a 15s urlopen, and the Events tab
+        reloads on every toggle and save. An unreachable Slack made that ~30s per load."""
+        calls = []
+        orig = slack._GRANTED, slack._FAILED, slack.BOT_TOKEN
+        try:
+            slack._GRANTED, slack._FAILED = {}, {}
+            slack.BOT_TOKEN = "xoxb-t"
+            import urllib.request
+            orig_open = urllib.request.urlopen
+            urllib.request.urlopen = lambda *a, **k: (
+                calls.append(1) or (_ for _ in ()).throw(OSError("unreachable")))
+            try:
+                self.assertEqual(slack.granted_scopes(slack.BOT), set())
+                self.assertEqual(slack.granted_scopes(slack.BOT), set())
+                self.assertEqual(slack.granted_scopes(slack.BOT), set())
+            finally:
+                urllib.request.urlopen = orig_open
+            self.assertEqual(len(calls), 1, "the failure must be remembered, briefly")
+            # ...and it is only brief: the fix for a real outage is a retry soon.
+            self.assertLessEqual(slack._SCOPE_RETRY_S, 600)
+            # An unknown grant still reports as unknown, never as a clean bill of health.
+            self.assertFalse(slack.scope_gaps(slack.BOT, {"bot_enabled": True})["known"])
+        finally:
+            slack._GRANTED, slack._FAILED, slack.BOT_TOKEN = orig
+
+    def test_a_listener_that_did_not_stop_is_not_dropped(self):
+        """`_loop` blocks in a 15s urlopen, so a 3s join times out routinely. Nulling the handle
+        there let the next config save clear the stop flag and spawn a SECOND connection while the
+        first was still winding down."""
+        import slack_socket as ss
+
+        class Stubborn:
+            def is_alive(self):
+                return True
+
+            def join(self, timeout=None):
+                return None
+        orig = ss._THREAD, ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN
+        try:
+            # `start` checks "should it run" before "is it already running", so the bot identity
+            # has to be genuinely on for this to exercise the path a config save takes.
+            ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN = True, "xapp-t", "xoxb-t"
+            ss._THREAD = Stubborn()
+            self.assertIn("winding down", ss.stop(timeout=0))
+            self.assertIsNotNone(ss._THREAD, "a live thread must not be dropped")
+            self.assertIn("already running",
+                          ss.start({"bot_enabled": True, "bot_socket_mode": True}))
+        finally:
+            ss._THREAD, ss.OK, ss.APP_TOKEN, slack.BOT_TOKEN = orig
+            # `stop()` deliberately leaves the flag SET (that is what keeps a winding-down thread
+            # from being replaced), so this test has to clear it or every later use of the module
+            # sees a listener that was asked to stop — the pump loop exits on its first iteration.
+            ss._STOP.clear()
+
+    def test_the_gate_bypass_does_not_widen_concurrency_inside_a_DM(self):
+        """Arming a DM's gate lets it be READ so a decision can arrive. A reply inside a THREAD of
+        that DM carries no `gate_wid`, so before this it flowed on and started a second run
+        alongside the parked one — the concurrency the busy check exists to stop."""
+        orig = slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME, slack.BOT_TOKEN = {"bot": "U9"}, "xoxb-t"
+                slack._api = lambda method, identity="user", **k: (
+                    {"ok": True, "channels": [{"id": "D1", "user": "U5"}]}
+                    if method == "conversations.list" else
+                    {"ok": True, "messages": [
+                        {"user": "U5", "ts": "20.0", "text": "approve"},
+                        {"user": "U5", "ts": "21.0", "text": "unrelated", "thread_ts": "5.0"}]}
+                    if method == "conversations.history" else {"ok": True})
+                slack.record_seen("D1", "1.0", slack.BOT)
+                slack.watch_conversation("D1", None, pending=True, identity=slack.BOT,
+                                         pending_wid="w1")
+                slack.mark_awaiting_gate("D1", None, wid="w1", identity=slack.BOT)
+                out = []
+                slack._poll_dms({**slack._DEFAULTS, "bot_enabled": True,
+                                 "bot_allow_users": ["U5"]}, out, slack.BOT)
+        finally:
+            slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN = orig
+        self.assertEqual([m["text"] for m in out], ["approve"],
+                         "only the top level may pass while the DM's run is parked")
+        self.assertEqual(out[0]["gate_wid"], "w1")
+
+
 class SlackConversationBusyTests(unittest.TestCase):
     """One-turn-at-a-time is DERIVED from whether the holding run is alive, not from a stored flag.
 
@@ -2532,12 +2686,22 @@ class SlackConversationBusyTests(unittest.TestCase):
         """`is_pending` reads the flag; `is_busy` derives the answer. A poller calling the former
         is the bug this class exists to prevent, and it reads as correct."""
         src = inspect.getsource(slack)
+
+        def body_of(name):
+            b = src[src.index(f"def {name}("):]
+            return b[:b.index("\ndef ", 1)]
+
+        # NO poller may read the stored flag.
         for poller in ("_poll_dms", "_poll_threads", "_poll_bot_mentions"):
-            body = src[src.index(f"def {poller}("):]
-            body = body[:body.index("\ndef ", 1)]
-            self.assertNotIn("is_pending(", body,
+            self.assertNotIn("is_pending(", body_of(poller),
                              f"{poller} must ask is_busy(), not the stored flag")
-            self.assertIn("is_busy(", body)
+        # The two that hold conversation records ask the derived question. `_poll_bot_mentions`
+        # deliberately asks nothing: a channel conversation is keyed on `channel|thread_ts`, so
+        # the channel-level record it used to look up never existed and the guard was dead —
+        # ordering for those threads is enforced in `_poll_threads`, where the records live.
+        for poller in ("_poll_dms", "_poll_threads"):
+            self.assertIn("is_busy(", body_of(poller))
+        self.assertNotIn("conversation_record(cid, identity=BOT)", body_of("_poll_bot_mentions"))
 
 
 class SlackPollHealthTests(unittest.TestCase):
@@ -2794,23 +2958,35 @@ class SlackSocketModeTests(unittest.TestCase):
             cfg = {"bot_enabled": True, "bot_socket_mode": True}
             ss._STATE.update({"connected": True, "hello": 1.0, "events": 0, "last_event": None})
 
+            # Timestamps must be AFTER this process started — see the restart case below.
+            now = ss._STARTED + 60
+
             # Quiet: the poll has found nothing either. NOT a warning — this is a normal idle
             # socket, and the state every restart into a quiet workspace starts in.
             slack.last_pick = lambda: None
             self.assertNotIn("idle_warning", ss.status(cfg))
 
             # The poll found work and the socket never announced it: events ARE missing.
-            slack.last_pick = lambda: 10_000.0
+            slack.last_pick = lambda: now
             self.assertIn("never announced", ss.status(cfg)["idle_warning"])
 
             # The socket announced it (the pickup trails its own event by seconds): working.
-            ss._STATE["last_event"] = 9_990.0
+            ss._STATE["last_event"] = now - 10
             self.assertNotIn("idle_warning", ss.status(cfg))
 
             # An OLD event and a fresh pickup: the socket announced something once and has since
             # gone deaf. Still missing.
-            ss._STATE["last_event"] = 10_000.0 - ss._MISS_MARGIN_S - 1
+            ss._STATE["last_event"] = now - ss._MISS_MARGIN_S - 1
             self.assertIn("never announced", ss.status(cfg)["idle_warning"])
+
+            # A pick from BEFORE this process started proves nothing, and warning on it fired on
+            # every restart of any install that had ever answered a message: `last_pick` is
+            # persisted in data/slack-state.json while `last_event` is in memory and resets to
+            # None, so the comparison was guaranteed to look like a missed event. Same cry-wolf
+            # this check was rewritten to remove, one layer down.
+            ss._STATE["last_event"] = None
+            slack.last_pick = lambda: ss._STARTED - 1
+            self.assertNotIn("idle_warning", ss.status(cfg))
 
             # Disconnected is a different problem with a different fix — naming this one would
             # send the operator to the wrong screen.

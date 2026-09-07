@@ -635,11 +635,12 @@ def interim_notice(payload: dict) -> dict:
     reply_to = payload.get("reply_to")
     status = delivery.interim(reply_to, payload.get("text", ""))
     # A gate notice also ARMS the conversation: the reply that clears it has to be matchable to
-    # this specific run, and the conversation record is the only place both ends can see. Done
-    # here, next to the notice, so a conversation can never be armed without the asker having
-    # been told what for.
+    # this specific run, and the conversation record is the only place both ends can see. Gated on
+    # the post SUCCEEDING, which is what makes the sentence above true — a Slack 500 otherwise
+    # armed a thread that was never told anything, and a later unrelated "ok" or "no" in it would
+    # be consumed as a verdict on a gate nobody saw, for the next 25 hours.
     wid = payload.get("awaiting_wid")
-    if wid and (reply_to or {}).get("kind") == "slack_thread":
+    if wid and "posted" in status and (reply_to or {}).get("kind") == "slack_thread":
         import slack
         slack.mark_awaiting_gate(reply_to.get("channel"), reply_to.get("thread_ts"),
                                  wid=wid, identity=slack.identity_of(reply_to))
@@ -918,7 +919,7 @@ def poll_slack(payload: dict) -> dict:
         def _seen(msg=msg):
             slack.mark_seen(msg)
 
-        def _watch(msg, ack_ts, wid=None, pending=False, identity=identity):
+        def _watch(msg, ack_ts, wid=None, pending=False, identity=identity, run_wid=None):
             """Watch the conversation Otto is answering IN — which is wherever its reply goes, so
             this is derived from `slack.reply_target` (via `ack_ts`) and never re-decided here.
 
@@ -931,10 +932,15 @@ def poll_slack(payload: dict) -> dict:
                                      seen=msg["ts"] if ack_ts else None,
                                      pending=pending, identity=identity,
                                      # WHICH run holds it, so the poller can ask Temporal whether
-                                     # it is still alive instead of trusting the flag. `wid` above
-                                     # is the conversation's OPENING run and stays put for the
-                                     # chat thread's life, so it cannot answer that.
-                                     pending_wid=wid if pending else None)
+                                     # it is still alive instead of trusting the flag. A SEPARATE
+                                     # argument from `wid`, which is the conversation's OPENING
+                                     # run and is deliberately None once a record exists — reusing
+                                     # it recorded a holding id on turn 1 and nothing after, so
+                                     # `is_busy` fell back to the stored flag for every follow-up
+                                     # and the derived check was inert exactly where a jam lasts
+                                     # longest (a mid-conversation run that dies without
+                                     # delivering).
+                                     pending_wid=run_wid if pending else None)
 
         # A pleasantry with no request never becomes a run — answering it costs one post instead
         # of a verify ladder that dead-ends in a needs-human banner (see slack.is_pleasantry).
@@ -1050,7 +1056,7 @@ def poll_slack(payload: dict) -> dict:
                 acked_ts.add(ack_key)
             # Track this conversation from now on (or refresh it), marking the run in flight so the
             # next message waits for it to deliver instead of racing its session.
-            _watch(msg, ack_ts, wid=None if rec else wid, pending=True)
+            _watch(msg, ack_ts, wid=None if rec else wid, pending=True, run_wid=wid)
             if not in_thread:
                 slack.record_seen(msg["channel"], msg["ts"], identity)
             picked.append(wid)
