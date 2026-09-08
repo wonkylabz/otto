@@ -33,6 +33,8 @@ import glob as globmod
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -128,50 +130,130 @@ def _abspath(p, cwd):
     return p if os.path.isabs(p) else os.path.join(cwd or os.getcwd(), p)
 
 
-# Everything a shell can do that argv cannot. A command containing ANY of these is refused
-# outright under scoped rules rather than reasoned about: that turns "is this command safe?"
-# (undecidable) into "is this a bare argv line?" (a character test). `~` is in the set because
-# `bash -lc` expands it; the prefix match would then be comparing a different string to the one
-# that runs.
-_SHELL_META = set(";|&<>$`\\\n\r()!*?[]{}'\"~")
+# --- the read-only PLAN pass -------------------------------------------------
+# `claude -p --permission-mode plan` is what makes the approval preview read-only on the Claude
+# backend, and it has no local equivalent. Two layers reproduce it, best first:
+#
+#   1. SANDBOX (`bwrap`): the whole filesystem is bind-mounted read-only with a throwaway tmpfs
+#      on /tmp, so the shell runs UNRESTRICTED and the kernel refuses every write. This is the
+#      only version that reaches parity — measured on this box's plan transcripts, 78% of the
+#      Bash a Claude planner runs is pipes/redirection/chaining, so any argv-only guard makes the
+#      local planner structurally poorer, not slightly poorer.
+#   2. ALLOWLIST (`bash_refusal`): no sandbox available (no bwrap, or userns disabled — macOS
+#      installs), so fall back to argv-only prefix matching over `config.PLAN_BASH_FALLBACK`.
+#
+# Neither layer bounds the NETWORK, and that is deliberate: reading the ticket is the point of
+# giving the planner Bash at all, and `claude -p`'s plan mode permits read-only network commands
+# for the same reason. `gh api -X POST` is refused by the allowlist and NOT by the sandbox; the
+# approval gate is what stands between a plan pass and a remote mutation, as it always was.
+_SANDBOX = None
+_SANDBOX_PROBE = "/var/tmp/.otto-sandbox-probe"
+
+
+def _bwrap_argv(command, cwd=None):
+    """Read-only root, a throwaway tmpfs on /tmp, network left alone. `--chdir` is the trap: the
+    tmpfs MASKS anything under /tmp, so a run whose cwd lives there (tests, a scratch clone) died
+    with "Can't chdir" before it ran a thing. Re-bind such a cwd read-only AFTER the tmpfs —
+    later mounts win — so the tree is still visible and still unwritable."""
+    argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", "--unshare-pid", "--die-with-parent"]
+    if cwd and os.path.realpath(cwd).startswith("/tmp/"):
+        real = os.path.realpath(cwd)
+        argv += ["--ro-bind", real, real]
+        cwd = real
+    if cwd:
+        argv += ["--chdir", cwd]
+    return argv + ["bash", "-lc", command]
+
+
+def sandbox_available():
+    """True when a read-only `bwrap` shell actually works here — PROBED, never assumed from the
+    binary being on PATH. `bwrap` installs fine on a host with unprivileged user namespaces
+    disabled, where every invocation fails at runtime; believing PATH there would turn the whole
+    plan pass into an error loop instead of falling back. Cached for the process."""
+    global _SANDBOX
+    if _SANDBOX is None:
+        _SANDBOX = False
+        if shutil.which("bwrap"):
+            try:
+                # Must do BOTH: run the command, and refuse the write. A sandbox that fails open
+                # is worse than none, so a probe that cannot prove the refusal is a no.
+                # Outside /tmp on purpose: /tmp is a writable scratch tmpfs INSIDE the
+                # sandbox, so a probe there succeeds under a perfectly good sandbox.
+                r = subprocess.run(_bwrap_argv(f"echo ok; touch {_SANDBOX_PROBE}"),
+                                   capture_output=True, text=True, timeout=30)
+                _SANDBOX = r.returncode != 0 and "ok" in (r.stdout or "")
+            except Exception:  # noqa: BLE001 - an unusable sandbox is a fallback, not a crash
+                _SANDBOX = False
+            # A confinement broken enough to let the probe through leaves the file behind; a
+            # working one never creates it, so FileNotFoundError here is the GOOD case and must
+            # not touch the verdict.
+            try:
+                os.unlink(_SANDBOX_PROBE)
+            except OSError:
+                pass
+    return _SANDBOX
+
+
+# Shell composition. Rejected under the ALLOWLIST layer only: without a sandbox the command must
+# be argv, or the prefix match is comparing a different string to the one that runs. Quotes are
+# NOT here — the fallback execs argv directly with no shell, so quoting composes nothing.
+_SHELL_META = set(";|&<>$`\\\n\r(){}!")
 
 
 def bash_refusal(command, rules):
-    """None when `command` is permitted under scoped `rules`, else the refusal text handed back
-    to the model as the tool result.
+    """None when `command` is permitted under `rules`, else the refusal text handed back to the
+    model as the tool result. The ALLOWLIST layer only — under the sandbox nothing is parsed.
 
-    The plan preview's read-only guarantee rests on this function alone on the LOCAL backend --
-    `claude -p` gets the same guarantee from `--permission-mode plan`. Two gates, both closed by
-    default:
+    Three gates, all closed by default:
 
-      1. no shell metacharacter, so the string is argv and nothing composes onto it. This is what
-         stops `gh pr view 1; rm -rf x` and every redirection/substitution form at once, without
-         anyone having to enumerate them.
-      2. the argv prefix must match a rule TOKEN-WISE. Token-wise, or `gh pr view` would admit
-         `gh pr viewers`; and prefix, because a rule names a command, not a whole invocation --
-         `gh pr view 12 --json title` is the point of granting it.
+      1. no shell metacharacter, so the string is argv and nothing composes onto it. One
+         character test replaces enumerating redirection/substitution/chaining forms.
+      2. the argv prefix matches a rule TOKEN-WISE. Token-wise, or `gh pr view` admits
+         `gh pr viewers`; prefix, because a rule names a command, not a whole invocation.
+      3. none of that rule's write flags appear. Per-rule, since `-i` writes for `sed` and means
+         ignore-case for `grep`.
 
-    An empty `rules` refuses everything: a caller that offered Bash while granting no rule has a
-    bug, and falling open there would silently hand an unscoped shell to a pre-approval pass."""
+    Empty `rules` refuses everything: a caller that offered Bash while granting no rule has a
+    bug, and falling open there hands an unscoped shell to a pre-approval pass."""
     cmd = (command or "").strip()
     if not cmd:
         return "Error: Bash called with no command."
     bad = sorted(set(cmd) & _SHELL_META)
     if bad:
-        return ("Error: refused. In this pass Bash takes a plain command with no shell syntax; "
-                f"found {' '.join(bad)}. Permitted: {_rule_text(rules)}.")
-    toks = cmd.split()
-    if any(toks[:len(r)] == r for r in rules):
-        return None
-    return f"Error: refused. '{' '.join(toks[:3])}' is not permitted. Permitted: {_rule_text(rules)}."
+        return ("Error: refused. This pass takes a plain command with no shell syntax (no pipes, "
+                f"redirection, substitution or chaining); found {' '.join(bad)}.")
+    try:
+        toks = shlex.split(cmd)
+    except ValueError as e:
+        return f"Error: refused. Could not parse the command ({e})."
+    for prefix, denied in rules:
+        if tuple(toks[:len(prefix)]) == tuple(prefix):
+            hit = [t for t in toks if t in denied]
+            if hit:
+                return (f"Error: refused. `{' '.join(prefix)} {' '.join(hit)}` writes; this pass "
+                        "is read-only.")
+            return None
+    return (f"Error: refused. '{' '.join(toks[:3])}' is not permitted in a read-only plan pass. "
+            f"Permitted: {_rule_text(rules)}.")
 
 
 def _rule_text(rules):
-    return ", ".join(" ".join(r) for r in rules) or "(nothing)"
+    return ", ".join(" ".join(p) for p, _ in rules) or "(nothing)"
 
 
-def _t_bash(args, cwd):
-    res = subprocess.run(["bash", "-lc", args["command"]], cwd=cwd or None,
+def _t_bash(args, cwd, mode=None):
+    """`mode` is None for the unrestricted execution shell, "sandbox" for a bwrap read-only one,
+    "allowlist" for the argv-only fallback (already vetted by `bash_refusal`, so it execs the
+    tokens directly — no shell to compose onto)."""
+    cmd = args["command"]
+    if mode == "sandbox":
+        argv, use_shell_cwd = _bwrap_argv(cmd, cwd), False
+    elif mode == "allowlist":
+        argv, use_shell_cwd = shlex.split(cmd), True
+    else:
+        argv, use_shell_cwd = ["bash", "-lc", cmd], True
+    res = subprocess.run(argv, cwd=(cwd or None) if use_shell_cwd else None,
                          capture_output=True, text=True,
                          timeout=config.LOCAL_TOOL_TIMEOUT_S)
     out = (res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")
@@ -276,7 +358,7 @@ _TOOL_IMPL = {"Bash": _t_bash, "Read": _t_read, "Grep": _t_grep, "Glob": _t_glob
               "WebFetch": _t_webfetch, "Edit": _t_edit, "Write": _t_write}
 
 
-def _offered_tools(allowed_tools, mcp_specs=()):
+def _offered_tools(allowed_tools, mcp_specs=(), bash_mode=None):
     """The tools handed to the model: the caller's per-risk allowlist ∩ what this runtime can
     serve — the built-ins below, plus whatever `mcp_client` resolved for the run's servers
     (already allowlist-filtered by the pool). Anything else unknown is silently dropped; the
@@ -284,42 +366,58 @@ def _offered_tools(allowed_tools, mcp_specs=()):
 
     A SCOPED Bash grant (`Bash(gh pr view:*)`, i.e. `config.PLAN_TOOLS`) offers Bash too — the
     match is on rules, not on the literal name. Dropping those entries is what made the local
-    plan preview unable to read the ticket it was planning from. The permitted commands go in the
-    DESCRIPTION: a model that has to discover the boundary by being refused spends turns on it,
-    and a small one may just give up on the ticket instead."""
+    plan preview unable to read the ticket it was planning from.
+
+    `bash_mode` shapes the DESCRIPTION, which is the model's only map of the boundary: one that
+    has to discover it by being refused spends turns on it, and a small one gives up on the
+    ticket instead. The two modes are genuinely different instruments and must not read alike —
+    under the sandbox the shell is whole, under the fallback it is argv."""
     allowed = set(allowed_tools or [])
-    bare_bash, rules = config.scoped_bash_rules(allowed_tools)
-    names = [n for n in _TOOL_IMPL if n in allowed or (n == "Bash" and rules)]
+    _bare, scoped = config.scoped_bash_rules(allowed_tools)
+    names = [n for n in _TOOL_IMPL if n in allowed or (n == "Bash" and scoped)]
     out = []
     for n in names:
         schema = _TOOL_SCHEMAS[n]
-        if n == "Bash" and rules and not bare_bash:
+        if n == "Bash" and bash_mode == "sandbox":
+            schema = dict(schema, description=(
+                schema["description"] + " READ-ONLY PASS: the full shell is available (pipes, "
+                "redirection, chaining) and the network is up, but the filesystem is mounted "
+                "read-only — every write fails, /tmp is a scratch tmpfs. Read whatever you need."))
+        elif n == "Bash" and bash_mode == "allowlist":
             schema = dict(schema, description=(
                 schema["description"] + " READ-ONLY PASS: only these commands are permitted — "
-                + _rule_text(rules) + " — with no shell syntax (no pipes, redirection, "
-                "substitution or chaining). Anything else is refused."))
+                + _rule_text(config.plan_bash_rules()) + " — each as a plain command with no "
+                "shell syntax (no pipes, redirection, substitution or chaining). Run them one "
+                "at a time; anything else is refused."))
         out.append({"type": "function", "function": {"name": n, **schema}})
     return out + list(mcp_specs)
 
 
-def _run_tool(name, args, cwd, offered_names, mcp=None, bash_rules=None):
+def _run_tool(name, args, cwd, offered_names, mcp=None, bash_mode=None, bash_rules=None):
     """Execute one tool call, always returning TEXT for the model (errors included — the
     model gets to read the failure and adapt, mirroring how Claude Code surfaces tool
     errors). A call outside the offered set mutates nothing.
 
-    `bash_rules` is None for an unrestricted shell (every normal execution run — unchanged) and a
-    list of argv prefixes for a scoped one. It is enforced HERE rather than in `_t_bash` so the
-    refusal is a tool RESULT the model reads and adapts to, not an exception folded into
-    `Error: ...` by the handler below — and so the choke point sits next to `offered_names`,
-    which is the other thing standing between a tool call and the machine."""
+    `bash_mode` is None for the unrestricted execution shell (every normal run — unchanged),
+    "sandbox" when the kernel enforces read-only and NOTHING is parsed, "allowlist" when it
+    falls to `bash_refusal`. The check sits HERE rather than in `_t_bash` so a refusal is a tool
+    RESULT the model reads and adapts to, and so it sits next to `offered_names`, the other thing
+    standing between a tool call and the machine."""
     if name not in offered_names:
         return f"Error: tool '{name}' is not available in this run."
-    if name == "Bash" and bash_rules is not None:
-        refusal = bash_refusal((args or {}).get("command"), bash_rules)
-        if refusal:
-            # No trace: the refusal is returned as the tool RESULT, so it is already in the
-            # transcript the same way every other tool outcome is.
-            return refusal
+    if name == "Bash" and bash_mode:
+        if bash_mode == "allowlist":
+            refusal = bash_refusal((args or {}).get("command"), bash_rules or [])
+            if refusal:
+                # No trace: the refusal is returned as the tool RESULT, so it is already in the
+                # transcript the same way every other tool outcome is.
+                return refusal
+        try:
+            return _clip(_t_bash(args or {}, cwd, mode=bash_mode))
+        except subprocess.TimeoutExpired:
+            return f"Error: Bash timed out after {config.LOCAL_TOOL_TIMEOUT_S:.0f}s"
+        except Exception as e:  # noqa: BLE001 - tool failures are data for the model
+            return _clip(f"Error: {e}")
     if mcp is not None and name in mcp:
         return _clip(mcp.call(name, args or {}))
     try:
@@ -874,11 +972,17 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         messages = ([{"role": "system", "content": system_context}] if system_context else [])
     messages.append({"role": "user", "content": prompt})
 
-    tools = _offered_tools(allowed_tools, mcp.specs if mcp else ())
+    # A scoped Bash grant marks this as the READ-ONLY PLAN PASS. Sandbox if the kernel will do
+    # it, else the argv allowlist. A bare "Bash" (every execution grant) stays unrestricted.
+    _bare_bash, _scoped = config.scoped_bash_rules(allowed_tools)
+    bash_mode, bash_rules = None, None
+    if _scoped and not _bare_bash:
+        bash_mode = "sandbox" if sandbox_available() else "allowlist"
+        bash_rules = config.plan_bash_rules(_scoped)
+    tools = _offered_tools(allowed_tools, mcp.specs if mcp else (), bash_mode=bash_mode)
     offered_names = {t["function"]["name"] for t in tools}
-    # None = unrestricted shell (the normal execution grant); a list = scoped, enforced per call.
-    _bare_bash, _rules = config.scoped_bash_rules(allowed_tools)
-    bash_rules = None if _bare_bash else (_rules if "Bash" in offered_names else None)
+    if "Bash" not in offered_names:
+        bash_mode, bash_rules = None, None
 
     sink = None
     if transcript:
@@ -888,7 +992,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         sink = open(transcript, "a")
         _emit(sink, None, {"type": "otto-meta", "prompt": prompt, "model": m.get("model"),
                            "cwd": cwd, "at": time.time(), "runtime": "local",
-                           "tools": sorted(offered_names),
+                           "tools": sorted(offered_names), "bash_mode": bash_mode,
                            "mcp": sorted(mcp_servers or []) if mcp else [],
                            "mcp_errors": (mcp.errors if mcp else {}),
                            "mcp_trimmed": (mcp.trimmed if mcp else 0),
@@ -1050,7 +1154,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                     out = "Error: run timed out before this tool call"
                 else:
                     out = _run_tool(fn.get("name"), args, cwd, offered_names, mcp,
-                                    bash_rules=bash_rules)
+                                    bash_mode=bash_mode, bash_rules=bash_rules)
                 messages.append({"role": "tool", "tool_call_id": tc.get("id"),
                                  "content": out})
                 _emit(sink, on_event, {"type": "user", "message": {"content": [

@@ -90,6 +90,40 @@ PLAN_TOOLS = ["Read", "Grep", "Glob",
 _BASH_RULE = re.compile(r"^Bash\((?P<cmd>.+?)(?P<wild>:\*)?\)$")
 
 
+# The read-only command set the local PLAN pass falls back to when the kernel sandbox is not
+# available (`local_runtime.sandbox_available`). It is deliberately WIDER than the three
+# `Bash(gh … view:*)` rules in PLAN_TOOLS, because on the Claude backend those rules are close to
+# advisory: `--permission-mode plan` runs its own read-only classifier, and measured across this
+# box's plan transcripts the planner used `git log`, `ls`, `sed -n`, `find`, `cat` and `gh api`
+# freely — 84% of its Bash calls would have been refused by the PLAN_TOOLS rules alone. Enforcing
+# the literal allowlist locally did not reproduce plan mode, it reproduced a much poorer thing.
+#   Each entry is prefix -> flags that make that command WRITE. Flag denial is per-command on
+#   purpose: a global `-i` deny would break `grep -i`, and `sed -i` is only reachable because
+#   `sed` is granted as `sed -n` and nothing else. Verbs whose own language can write (awk, perl,
+#   python, xargs) are simply absent — that is the line between a bounded list and theatre.
+PLAN_BASH_FALLBACK = {
+    "gh issue view": (), "gh issue list": (), "gh pr view": (), "gh pr diff": (),
+    "gh pr list": (), "gh pr checks": (), "gh repo view": (), "gh search": (),
+    "gh api": ("-X", "--method", "-f", "-F", "--input"),
+    "git log": (), "git show": (), "git diff": (), "git status": (), "git rev-parse": (),
+    "git ls-files": (), "git blame": (), "git describe": (), "git cat-file": (),
+    "ls": (), "cat": (), "head": (), "tail": (), "wc": (), "file": (), "stat": (),
+    "grep": (), "rg": (), "jq": (), "tree": (), "basename": (), "dirname": (),
+    "realpath": (), "pwd": (), "date": (), "which": (), "du": (), "sed -n": (),
+    "find": ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fls", "-fprint"),
+}
+
+
+def plan_bash_rules(extra=()):
+    """The fallback ruleset as `bash_refusal` wants it: [(prefix_tokens, denied_flags)].
+
+    `extra` folds in whatever scoped rules the caller's own allowlist carried, so a future
+    `Bash(...)` grant is never silently narrower than what its allowlist asked for."""
+    rules = [(tuple(k.split()), tuple(v)) for k, v in PLAN_BASH_FALLBACK.items()]
+    have = {r[0] for r in rules}
+    return rules + [(tuple(t), ()) for t in extra if tuple(t) not in have]
+
+
 def scoped_bash_rules(allowed_tools):
     """Split an allowlist into (bare_bash, rules).
 

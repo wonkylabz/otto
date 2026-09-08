@@ -1454,9 +1454,9 @@ class PlanPreviewLocalSessionTests(unittest.TestCase):
 
     def test_the_local_preview_can_mutate_nothing(self):
         """`--permission-mode plan` has no local equivalent, so read-only is the tool set plus
-        `bash_refusal`. The FULL PLAN_TOOLS goes through — narrowing to Read/Grep/Glob (what this
-        did before the refusal guard existed) is what left a ticket-driven request planned by a
-        model that could not read its ticket."""
+        one of the two layers in `local_runtime`. The FULL PLAN_TOOLS goes through — narrowing to
+        Read/Grep/Glob (what this did before those layers existed) is what left a ticket-driven
+        request planned by a model that could not read its ticket."""
         engine.plan_preview("apply the review comments", self.cap, resume_session=self.sid)
         self.assertEqual(self.local_calls[0]["allowed_tools"], config.PLAN_TOOLS)
         offered = {t["function"]["name"]
@@ -1466,10 +1466,9 @@ class PlanPreviewLocalSessionTests(unittest.TestCase):
                          "the local plan preview can act before the human approves anything")
         self.assertIn("Bash", offered,
                       "the scoped gh reads were dropped — a ticket-driven task plans blind")
-        # …and the Bash it gets is the scoped one, refusing anything the rules don't name.
-        _, rules = config.scoped_bash_rules(config.PLAN_TOOLS)
-        for cmd in ("gh pr create -t x", "rm -rf /tmp/x", "gh pr view 1 > /tmp/x",
-                    "gh pr view 1; touch /tmp/x"):
+        # …and whichever layer serves it refuses a write.
+        rules = config.plan_bash_rules()
+        for cmd in ("gh pr create -t x", "rm -rf /tmp/x", "sed -i s/a/b/ f.py"):
             self.assertIsNotNone(local_runtime.bash_refusal(cmd, rules), cmd)
         self.assertIsNone(local_runtime.bash_refusal("gh issue view 12 --json body", rules))
 
