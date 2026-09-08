@@ -32,6 +32,18 @@ session and no convention judge pays for it.
   runs as the user. Their PATH excludes `~/.local/bin` where `claude` lives, so the unit must
   set `PATH`; Linux needs `loginctl enable-linger`, macOS a login session.
 - **Temporal**: `server.py` is just a client; `worker.py` must run or workflows don't progress.
+- **Workflow retention is 24h out of the box, and it is what the Swarm board's Finished column
+  is made of.** `temporal server start-dev` registers the `default` namespace with a 24-hour
+  `WorkflowExecutionRetentionTtl`; past it Temporal DELETES the closed execution, `list_workflows`
+  stops returning it, and a finished card would simply vanish (issue #13). `run.sh` raises the
+  TTL to `OTTO_TEMPORAL_RETENTION` (168h) on every start — idempotent, and applied even when the
+  server was already up. Otto also keeps its OWN durable copy of every finished card
+  (`board_cards` in `data/otto.db`), so the board survives a shorter TTL, a wiped
+  `data/temporal.db`, or a Temporal that never got the update; what a card loses when Temporal
+  has forgotten it is only its "Temporal ↗" history link, and it says so with an `archived` chip.
+  The window the board actually shows is `board_retention_h` (Admin → Runtime settings, 7 days).
+  Check the live value with
+  `~/.temporalio/bin/temporal operator namespace describe -n default | grep Retention`.
 
 ## Restarting safely
 

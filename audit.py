@@ -99,6 +99,21 @@ def _schema(conn):
         scope TEXT,
         rule TEXT
     )""")
+    # Swarm-board cards for CLOSED runs (issue #13). The board's live source is Temporal
+    # visibility, which DELETES a closed execution at the namespace retention TTL (24h on the dev
+    # server) — so a finished card had a hard expiry no board-side paging could reach past. This
+    # is the durable copy: the exact enriched card `server._board()` already built, keyed on the
+    # workflow id, filed by CLOSE time (what the Finished column orders on) and pruned to
+    # config.BOARD_RETENTION_H. Doubles as a CACHE — a closed run's result never changes, so a
+    # card already archived under the same run_id is served from here instead of re-fetching the
+    # workflow result on every 3.5s poll.
+    conn.execute("""CREATE TABLE IF NOT EXISTS board_cards (
+        wid TEXT PRIMARY KEY,
+        run_id TEXT,
+        closed_at TEXT NOT NULL,
+        data TEXT NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_board_cards_closed ON board_cards(closed_at)")
 
 
 @contextlib.contextmanager
@@ -138,6 +153,67 @@ def iter_content_entries():
         conn.close()
     for row in rows:
         yield json.loads(row["data"])
+
+
+def archive_board_cards(cards):
+    """Persist the Swarm-board cards of CLOSED runs so they outlive Temporal (issue #13).
+
+    The board's live list comes from Temporal visibility, which deletes a closed execution once
+    the namespace retention TTL expires — 24h on `temporal server start-dev`. Before this, that
+    was a hard wall: a finished card simply stopped being returned and the completed work vanished
+    from the board with nothing recording that it had ever been there. Each card is stored exactly
+    as `server._board()` enriched it, so a card served from here is indistinguishable from a live
+    one; `closed_at` is the run's own close time, which is what the Finished column orders on.
+
+    Upsert per card (read-modify-write of one row), hence `storage.tx`: server.py polls this from
+    several threads and a `BEGIN DEFERRED` writer can lose the race silently."""
+    rows = [(c.get("id"), c.get("run_id"), c.get("end") or c.get("start") or "", json.dumps(c))
+            for c in cards if c.get("id")]
+    if not rows:
+        return 0
+    with _conn() as conn, storage.tx(conn):
+        conn.executemany(
+            "INSERT INTO board_cards (wid, run_id, closed_at, data) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(wid) DO UPDATE SET run_id=excluded.run_id, "
+            "closed_at=excluded.closed_at, data=excluded.data", rows)
+    return len(rows)
+
+
+def archived_board_cards(since=None, limit=None):
+    """Archived cards, newest close first. `since` is an ISO timestamp floor (the retention
+    window); `limit` bounds the payload. Returns the card dicts as they were archived — a row
+    whose JSON is unreadable is skipped rather than taking the whole board down with it."""
+    sql = "SELECT wid, run_id, data FROM board_cards"
+    args = []
+    if since:
+        sql += " WHERE closed_at >= ?"
+        args.append(since)
+    sql += " ORDER BY closed_at DESC"
+    if limit:
+        sql += " LIMIT ?"
+        args.append(int(limit))
+    with _conn() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    out = []
+    for row in rows:
+        try:
+            card = json.loads(row["data"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(card, dict) and card.get("id"):
+            out.append(card)
+    return out
+
+
+def prune_board_cards(before):
+    """Drop archived cards that closed before `before` (ISO). The archive is a VIEW cache, not
+    the audit trail — the immutable record of those runs is untouched, and a card past the
+    retention window is exactly what the operator asked not to see any more."""
+    if not before:
+        return 0
+    with _conn() as conn, storage.tx(conn):
+        cur = conn.execute("DELETE FROM board_cards WHERE closed_at < ?", (before,))
+        return cur.rowcount or 0
 
 
 # A post-PR ROUND's own workflow id (`workflows._run_review_loop` / `_run_qa_loop` mint

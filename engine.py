@@ -33,7 +33,8 @@ from ui import say, trace
 # see audit._eng / memory._eng).
 from audit import (_schema, _conn, _audit_conn, _append_audit, _append_content, _audit,
                    iter_audit_entries, iter_content_entries, scorecard, pr_url_from_run,
-                   accept_run, record_terminal, record_skip, run_origin, audit_repo_changes)
+                   accept_run, record_terminal, record_skip, run_origin, audit_repo_changes,
+                   archive_board_cards, archived_board_cards, prune_board_cards)
 from contracts import (_TLDR_SHAPE, _SINGLE_TURN_CONTRACT, _RESUME_CONTRACT, _REPORT_FORMAT,
                        _DIRECT_REPLY_FORMAT, CONVERSATION_AUDIENCE, _output_contract,
                        _invocation, _local_invocation, _LOCAL_CAP_CHARS, _CRITIQUE_FOLD,

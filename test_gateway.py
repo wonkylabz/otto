@@ -4884,10 +4884,14 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 68444 for the monotone-adaptation rule: obeying an endpoint's OWN suggested remedy made
     # the rewrite two-directional, so two mutually-rejected bodies alternated until the round
     # budget died — under a message naming a cause ("context overflow") that never happened.
-    MAX_RULES_BYTES = 68722   # fetched tier — bounded, but looser; it is not always loaded
     # -> 68722 for the transport/class rule (issue #18): one predicate, `provider != "claude"`,
     # answered two different questions in six layers, and which sites mean WHICH is a decision
     # with no single home in the code.
+    # -> 69003 for the finished-board-card rule (issue #13): the board's list source has a hard
+    # expiry nothing in the code says (Temporal deletes a closed execution at the namespace TTL),
+    # and the two windows sharing one `limit` reads as obviously fine — between them, completed
+    # work silently disappeared off the board and every re-derivation from the code missed both.
+    MAX_RULES_BYTES = 69003   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
