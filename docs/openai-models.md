@@ -3,9 +3,10 @@
 Otto talks to any OpenAI-compatible endpoint: configure it once under Admin → LLM models, and
 every model on it inherits the URL and key. `api.openai.com/v1` is just another endpoint.
 
-Three things differ **between models on the same endpoint**, and each one bit in production
-(issue #10). Two of them Otto now handles by itself. The third decides which models you can
-actually use for execution, and no amount of code can work around it.
+Four things differ **between models on the same endpoint**, and every one of them bit in
+production (issue #10). Three Otto now handles by itself, learned from the server's own 400. The
+fourth decides which models you can use for execution at all, and no amount of code can work
+around it — so check before you assign.
 
 ## Check before you assign
 
