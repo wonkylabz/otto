@@ -1019,6 +1019,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "endpoints": gateway.endpoints(cfg),
                                         "cap_exec": cfg.get("cap_exec", {}),
                                         "cap_local_exec": cfg.get("cap_local_exec", {}),
+                                        "kinds": list(gateway.KINDS),
+                                        "hosted_hosts": list(gateway.HOSTED_HOSTS),
                                         "health": gateway.probe_models(cfg=cfg),
                                         "tasks": gateway.TASKS}))
         elif self.path == "/api/settings":

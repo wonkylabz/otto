@@ -18,11 +18,13 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 import claude_cli
 import config
+import error_classifier
 import storage
 from ui import trace
 
@@ -69,24 +71,30 @@ class LocalFallbackDisabled(RuntimeError):
     error) shows the same actionable text. Never raised in the default mode, and never for the
     exempt `verify` tier."""
 
-    def __init__(self, model, what, task=None):
-        self.model, self.what, self.task = model, what, task
-        self.message = config.strict_stop_message(model, what, task=task)
+    def __init__(self, model, what, task=None, entry=None):
+        # `model` may be the pool ENTRY (preferred — the copy then names its kind and endpoint)
+        # or just its name.
+        if isinstance(model, dict):
+            entry, model = model, model.get("name", "")
+        self.model, self.what, self.task, self.entry = model, what, task, entry
+        self.message = config.strict_stop_message(model, what, task=task, entry=entry)
         # The SHORT str() is what a Temporal ActivityError / HTTP 500 shows, so it has to name the
         # flag too — `.message` (the full body) doesn't survive those layers.
         super().__init__(f"OTTO_LOCAL_FALLBACK=0 stopped this run: {task or 'execution'} on "
-                         f"local model '{model}' — {what}")
+                         f"{model_kind(entry) if entry else 'local'} model '{model}' — {what}")
 
 
-def _strict_stop(task, model, what):
+def _strict_stop(task, m, what):
     """Record + raise a strict-mode stop. Traced under its own STRICT tag and counted separately
-    from fallbacks (a stop is the opposite of a fallback — nothing continued on Claude)."""
-    trace("STRICT", f"{task or 'execution'}: {model} failed ({what}) and OTTO_LOCAL_FALLBACK=0 "
+    from fallbacks (a stop is the opposite of a fallback — nothing continued on Claude).
+    `m` is the pool entry, so the operator copy can name the endpoint and its kind."""
+    name = m["name"] if isinstance(m, dict) else m
+    trace("STRICT", f"{task or 'execution'}: {name} failed ({what}) and OTTO_LOCAL_FALLBACK=0 "
                     f"— stopping instead of falling back to Claude")
-    _LAST[task or "execution"] = {"model": model + " ⛔ (strict stop)", "fell_back": False,
+    _LAST[task or "execution"] = {"model": name + " ⛔ (strict stop)", "fell_back": False,
                                   "strict_stop": True}
     _bump(task or "execution", fell_back=False, strict=True)
-    raise LocalFallbackDisabled(model, what, task=task)
+    raise LocalFallbackDisabled(m, what, task=task)
 
 
 def _discover_claude():
@@ -126,6 +134,34 @@ def _default_cfg():
 # endpoint moves every model on it — without touching a single reader.
 _EP_FIELDS = ("base_url", "api_key_env", "headers")
 
+# An endpoint's KIND is what the model behind it is — a weak model on a box we run (`local`),
+# or a frontier model behind a vendor's API (`hosted`). It is a stored fact the operator can set,
+# NOT derived from `provider`: `provider` says how the request travels (OpenAI-compatible HTTP
+# vs `claude -p`) and every model on any such endpoint used to be classed local by that alone.
+# `guess_kind` is only the default for an endpoint that never stated one — well-known vendor
+# hosts and nothing else, so a proxy or a home server can never be guessed hosted.
+KINDS = ("local", "hosted")
+HOSTED_HOSTS = ("api.openai.com", "openrouter.ai", "api.together.xyz", "api.groq.com",
+                "api.mistral.ai", "api.deepseek.com", "api.x.ai", "api.fireworks.ai",
+                "api.perplexity.ai", "generativelanguage.googleapis.com", "api.cohere.com",
+                "api.cerebras.ai", "api.sambanova.ai", "api.moonshot.ai")
+
+
+def guess_kind(base_url):
+    """`hosted` for a well-known vendor API host, else `local`. PURE. A hint only — the
+    stored `kind` on the endpoint is the authority once set."""
+    host = (urllib.parse.urlsplit(base_url or "").hostname or "").lower()
+    return "hosted" if any(host == h or host.endswith("." + h) for h in HOSTED_HOSTS) else "local"
+
+
+def model_kind(m):
+    """`claude` | `hosted` | `local` for a pool entry. The CLASS question — is this a weak
+    model the write latch, the cross-run cap latch and the operator copy were written for?
+    Transport questions (which runtime dispatches it) keep reading `provider`."""
+    if not m or m.get("provider") == "claude":
+        return "claude"
+    return "hosted" if m.get("kind") == "hosted" else "local"
+
 
 def _norm_headers(h):
     """An endpoint's optional headers as a clean {name: value} dict. Names/values carrying a
@@ -163,6 +199,9 @@ def _hydrate(cfg):
     a 4B and a frontier one. An entry whose endpoint no longer exists keeps its own fields if it
     still has them, so a profile import or a hand-edited file self-heals instead of breaking."""
     eps = [dict(e) for e in (cfg.get("endpoints") or []) if e.get("name")]
+    for e in eps:
+        if e.get("kind") not in KINDS:
+            e["kind"] = guess_kind(e.get("base_url"))
     by_name = {e["name"]: e for e in eps}
     by_key = {_ep_key(e): e for e in eps}
     for m in cfg.get("pool", []):
@@ -174,7 +213,9 @@ def _hydrate(cfg):
             if ep is None:
                 ep = {"name": _ep_name(m["base_url"], by_name), "base_url": m["base_url"],
                       "api_key_env": m.get("api_key_env", ""),
-                      "headers": _norm_headers(m.get("headers"))}
+                      "headers": _norm_headers(m.get("headers")),
+                      "kind": m.get("kind") if m.get("kind") in KINDS
+                      else guess_kind(m["base_url"])}
                 eps.append(ep)
                 by_name[ep["name"]] = ep
                 by_key[_ep_key(ep)] = ep
@@ -184,6 +225,7 @@ def _hydrate(cfg):
         m["base_url"] = ep.get("base_url", "")
         m["api_key_env"] = ep.get("api_key_env", "")
         m["headers"] = _norm_headers(ep.get("headers"))
+        m["kind"] = ep["kind"]
     cfg["endpoints"] = eps
     return cfg
 
@@ -197,7 +239,7 @@ def _dehydrate(cfg):
     # riding on each (gateway.endpoints), and the Admin tab posts that decorated shape straight
     # back, so a derived `models` list would otherwise be written to disk and go stale.
     cfg["endpoints"] = [{k: (_norm_headers(v) if k == "headers" else v)
-                         for k, v in e.items() if k in ("name",) + _EP_FIELDS}
+                         for k, v in e.items() if k in ("name", "kind") + _EP_FIELDS}
                         for e in (cfg.get("endpoints") or []) if e.get("name")]
     by_name = {e["name"]: e for e in cfg["endpoints"]}
     for m in cfg.get("pool", []):
@@ -207,6 +249,7 @@ def _dehydrate(cfg):
         m.pop("base_url", None)
         m.pop("api_key_env", None)
         m.pop("headers", None)
+        m.pop("kind", None)
     return cfg
 
 
@@ -283,7 +326,8 @@ def _normalize(cfg):
         if assign.get(t) in removed:
             assign[t] = default
         assign.setdefault(t, default)
-    # A LOCAL model on "preview" is not a setting, it is a silent substitution: `claude -p
+    # A non-Claude model on "preview" — local OR hosted, the preview is Claude-only by transport
+    # — is not a setting, it is a silent substitution: `claude -p
     # --permission-mode plan` cannot run on one, so `preview_model_id` degrades to
     # `_default_claude` and the store, the API and the Admin radio all keep naming a model that
     # never wrote a single plan (user-observed: preview pinned to qwen, every plan written by
@@ -409,10 +453,12 @@ def memory_gc_model_id(cfg=None):
 
 
 def exec_model_entry(cap_name=None, cfg=None):
-    """The FULL pool entry resolved for capability execution — Claude or local. This is
-    the backend dispatch source: provider "claude" → `claude -p` (claude_cli.run_json),
-    anything else → the local agent runtime (local_runtime.run_json). Per-cap cap_exec
-    override wins over the phase-level execution assignment."""
+    """The FULL pool entry resolved for capability execution. This is the backend dispatch
+    source — a TRANSPORT question: provider "claude" → `claude -p` (claude_cli.run_json),
+    anything else → Otto's own agent runtime over OpenAI-compatible HTTP
+    (local_runtime.run_json), whether the endpoint is a laptop vLLM or a vendor API. What KIND
+    of model it is (`model_kind`) is a separate, stored fact. Per-cap cap_exec override wins
+    over the phase-level execution assignment."""
     cfg = cfg or load()
     if cap_name:
         ovr = (cfg.get("cap_exec") or {}).get(cap_name)
@@ -511,7 +557,7 @@ def local_exec_model(cap_name, cfg=None):
     m = _local_model(name, cfg) if name else None
     if m and _local_down_until.get(m["name"], 0) > time.time():
         if not config.local_fallback_allowed():
-            _strict_stop(None, m["name"], "the model is marked down after an earlier failure "
+            _strict_stop(None, m, "the model is marked down after an earlier failure "
                                           f"(skipped for {config.LOCAL_SKIP_S:.0f}s)")
         trace("GATEWAY", f"local exec: {m['name']} marked down; using Claude this attempt")
         return None
@@ -563,7 +609,7 @@ def local_execute(cap_name, prompt, system_context=None):
         if not config.local_fallback_allowed():
             _bump("execution", fell_back=False, down_model=m["name"], down_until=down_until,
                   health=bad)
-            _strict_stop(None, m["name"], f"the tool-free local completion failed: {str(e)[:200]}")
+            _strict_stop(None, m, f"the tool-free local completion failed: {str(e)[:200]}")
         trace("GATEWAY", f"local exec {m['name']} failed ({e}); this attempt runs on Claude")
         _LAST["execution"] = {"model": m["name"] + " → claude (fallback)", "fell_back": True}
         _bump("execution", fell_back=True, down_model=m["name"], down_until=down_until, health=bad)
@@ -951,7 +997,7 @@ def complete(task, prompt):
     # straight to the Claude fallback — so a dead endpoint costs one timeout, not one per call.
     if m.get("provider") != "claude" and _local_down_until.get(m["name"], 0) > time.time():
         if not config.local_fallback_allowed(task):
-            _strict_stop(task, m["name"], "the model is marked down after an earlier failure "
+            _strict_stop(task, m, "the model is marked down after an earlier failure "
                                           f"(skipped for {config.LOCAL_SKIP_S:.0f}s)")
         trace("GATEWAY", f"{task}: {m['name']} marked down; going straight to Claude")
         _LAST[task] = {"model": m["name"] + " → claude (down, skipped)", "fell_back": True}
@@ -971,7 +1017,7 @@ def complete(task, prompt):
                 # verdict — but don't mark the model down: the endpoint is healthy, the
                 # answer just flopped, and a down-mark would exile it for LOCAL_SKIP_S.
                 if not config.local_fallback_allowed(task):
-                    _strict_stop(task, m["name"], "the model returned no usable answer "
+                    _strict_stop(task, m, "the model returned no usable answer "
                                                   "(reasoning-only even after the nudge)")
                 trace("GATEWAY", f"{m['name']} gave no usable answer; falling back to Claude")
                 _LAST[task] = {"model": m["name"] + " → claude (empty reply)", "fell_back": True}
@@ -1004,7 +1050,7 @@ def complete(task, prompt):
             # no opinion on Claude-to-Claude recovery). Mark-down still applies (it's about not
             # re-hitting a dead endpoint), but nothing substitutes for the call.
             _bump(task, fell_back=False, down_model=down_model, down_until=down_until, health=bad)
-            _strict_stop(task, m["name"], f"the call failed: {str(e)[:200]}")
+            _strict_stop(task, m, f"the call failed: {str(e)[:200]}")
         trace("GATEWAY", f"{m['name']} failed ({e}); falling back to Claude")
         _LAST[task] = {"model": m["name"] + " → claude (fallback)", "fell_back": True}
         _bump(task, fell_back=True, down_model=down_model, down_until=down_until, health=bad)
@@ -1053,17 +1099,172 @@ def request_headers(m, content_json=True):
     return headers
 
 
+# --- per-model parameter dialects (issue #10) ------------------------------------------
+# A pool entry may carry `quirks: [...]` — the parameter dialect its endpoint speaks. Otto's
+# bodies have always sent `max_tokens` and `temperature: 0`; OpenAI's newer models reject both
+# (see error_classifier's QUIRK_* notes), and every one of Otto's four body-building sites had
+# the names hardcoded, so an OpenAI endpoint 400'd on the first call from any of them.
+#
+# The quirk is LEARNED from the server's own 400 rather than set by hand: the operator would
+# otherwise have to know the flag exists, and the reported model ("chatgpt 6 astra") is not a
+# name any lookup table here could have anticipated. `quirks` on the entry is the override for
+# an operator who does know — it is merged with, never replaced by, what the endpoint teaches.
+#
+# Learned quirks are memoised per (endpoint, model) AND persisted onto the entry, because the
+# alternative is re-paying a wasted round trip on the first call of every worker lifetime, and
+# because a fact discovered about a model belongs where the operator can see it (Admin → LLM
+# models writes the same file).
+#
+# Which models actually work, and the one thing this mechanism CANNOT fix (the newest
+# OpenAI generation refuses function tools on /chat/completions outright):
+# docs/openai-models.md, refreshed by probe_endpoint.py.
+_LEARNED_QUIRKS = {}
+
+
+def _quirk_key(m):
+    return ((m.get("base_url") or "").rstrip("/"), m.get("model") or "")
+
+
+def quirks(m):
+    """Every parameter quirk known for this entry: the operator's own list plus everything an
+    endpoint has taught us. A set, so callers test membership and never index."""
+    known = set(error_classifier.QUIRKS)
+    return ((set(m.get("quirks") or []) | _LEARNED_QUIRKS.get(_quirk_key(m), set()))
+            & known)
+
+
+def token_key(m):
+    """The name THIS model's endpoint wants its output-token budget under. The one reader —
+    `local_runtime`'s overflow recovery halves that budget in place, and reading a hardcoded
+    `max_tokens` off a body that carries `max_completion_tokens` would both lose the halving
+    and re-add the rejected parameter."""
+    return (error_classifier.QUIRK_MAX_COMPLETION_TOKENS
+            if error_classifier.QUIRK_MAX_COMPLETION_TOKENS in quirks(m) else "max_tokens")
+
+
+def chat_body(m, messages, max_tokens, **extra):
+    """The /chat/completions body for this model, in its endpoint's dialect. THE ONE builder —
+    `_chat`, the local runtime's per-turn body and doctor's tool-call probe all go through it,
+    or a dialect learned on one path leaves the others 400-ing.
+
+    `extra` keys whose value is None are dropped, so a caller can pass an optional parameter
+    unconditionally (`tools=tools or None`) instead of building the dict conditionally."""
+    q = quirks(m)
+    body = {"model": m["model"], "messages": messages}
+    # temperature 0 is Otto's determinism setting, not a requirement — a model that only
+    # accepts its default gets no temperature at all rather than a rejected one.
+    if error_classifier.QUIRK_DEFAULT_TEMPERATURE not in q:
+        body["temperature"] = 0
+    if max_tokens is not None:
+        body[token_key(m)] = max_tokens
+    body.update({k: v for k, v in extra.items() if v is not None})
+    # Dropped, never downgraded to a literal: gpt-6-astra rejects the `'none'` its own error
+    # message recommends. Two quirks because there are two facts — a model that has no such
+    # parameter at all (gpt-4o: "Unrecognized request argument") loses it always, while one that
+    # refuses it only ALONGSIDE tools (gpt-5.5) keeps the operator's effort on tool-free calls,
+    # rather than being downgraded endpoint-wide to the cheapest reasoning it has.
+    if (error_classifier.QUIRK_NO_REASONING_EFFORT in q
+            or (error_classifier.QUIRK_NO_TOOL_REASONING in q and body.get("tools"))):
+        body.pop("reasoning_effort", None)
+    return body
+
+
+def adapt_body(body, quirk):
+    """Rewrite a body for a quirk the server just named, or None when it changes nothing.
+
+    None is what BOUNDS the retry: a server that keeps returning the same complaint against an
+    already-adapted body would otherwise loop until its caller's round budget ran out, and the
+    real error would never reach the ladder.
+
+    Which is why every adaptation here must be MONOTONE — each only ever renames or removes,
+    never restores what an earlier round took out. A two-directional one cannot be bounded by
+    this function at all: `reasoning_effort` first obeyed the server's own advice ("set
+    reasoning_effort to 'none'"), which gpt-6-astra then rejects too ("Supported values are:
+    'low', 'medium', 'high', and 'xhigh'"), so the body oscillated none -> absent -> none until
+    the rounds ran out and the run died reporting a context overflow that never happened."""
+    out = dict(body)
+    if quirk == error_classifier.QUIRK_MAX_COMPLETION_TOKENS:
+        if "max_tokens" in out:
+            out[error_classifier.QUIRK_MAX_COMPLETION_TOKENS] = out.pop("max_tokens")
+    elif quirk == error_classifier.QUIRK_DEFAULT_TEMPERATURE:
+        out.pop("temperature", None)
+    elif quirk in (error_classifier.QUIRK_NO_REASONING_EFFORT,
+                   error_classifier.QUIRK_NO_TOOL_REASONING):
+        out.pop("reasoning_effort", None)
+    else:
+        return None
+    return out if out != body else None
+
+
+def learn_quirk(m, quirk):
+    """Remember that this model's endpoint speaks `quirk`. Best-effort on the persistence half:
+    the in-process memo is what makes the current run correct, and a read-only data dir must
+    never turn a recovered call into a failed one."""
+    if quirk not in error_classifier.QUIRKS:
+        return
+    if quirk in quirks(m):
+        return
+    _LEARNED_QUIRKS.setdefault(_quirk_key(m), set()).add(quirk)
+    trace("GATEWAY", f"{m.get('name') or m.get('model')}: endpoint wants '{quirk}' — adapting")
+    try:
+        def _set(cfg):
+            for e in cfg.get("pool", []):
+                if e.get("name") == m.get("name"):
+                    e["quirks"] = sorted(set(e.get("quirks") or []) | {quirk})
+        _mutate(_set)
+    except Exception:  # noqa: BLE001 - the memo above already fixed this process
+        pass
+
+
 def _chat(m, messages, max_tokens, timeout):
     """One raw /chat/completions call against a local model's endpoint; returns the parsed
     response dict. The single HTTP seam shared by the cheap-tier _openai_complete and the
-    execution-grade local_execute (and the one tests patch)."""
-    body = {"model": m["model"], "temperature": 0, "max_tokens": max_tokens,
-            "messages": messages}
-    req = urllib.request.Request(
-        m["base_url"].rstrip("/") + "/chat/completions",
-        method="POST", headers=request_headers(m), data=json.dumps(body).encode())
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    execution-grade local_execute (and the one tests patch).
+
+    A 400 naming an unsupported parameter is not surfaced: it is the endpoint declaring its
+    dialect, so the body is rewritten and re-sent (bounded — `adapt_body` returns None once it
+    has nothing left to change, which ends the loop). Anything else is raised carrying the
+    SERVER'S own words: `str(HTTPError)` is the fixed "HTTP Error 400: Bad Request", which is
+    exactly how issue #10's real message ("use 'max_completion_tokens' instead") stayed
+    invisible on this path."""
+    body = chat_body(m, messages, max_tokens)
+    url = m["base_url"].rstrip("/") + "/chat/completions"
+    for _ in range(len(error_classifier.QUIRKS) + 1):
+        req = urllib.request.Request(url, method="POST", headers=request_headers(m),
+                                     data=json.dumps(body).encode())
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            detail = _http_detail(e)
+            adapted = adapt_for(m, e.code, detail, body)
+            if adapted is None:
+                raise RuntimeError(f"HTTP {e.code}: {detail or e.reason}") from None
+            body = adapted
+    raise RuntimeError("the endpoint rejected every request-parameter dialect we know")
+
+
+def _http_detail(err):
+    """The response BODY of a failed request, or ''. Readable exactly once, so every caller
+    that wants both the detail and a classification must read it here first."""
+    try:
+        return err.read().decode("utf-8", errors="replace")[:400]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def adapt_for(m, status, detail, body):
+    """A 400 in, the rewritten body out — or None when this failure is not a dialect mismatch.
+    The shared step for every caller that owns its own HTTP loop (`_chat`, the local runtime's
+    `_chat_step`, doctor's probe), so a quirk learned on one path is known to all three."""
+    v = error_classifier.classify(status, detail)
+    if v.action is not error_classifier.Action.adapt:
+        return None
+    adapted = adapt_body(body, v.quirk)
+    if adapted is None:
+        return None
+    learn_quirk(m, v.quirk)
+    return adapted
 
 
 def message_text(msg):
@@ -1242,8 +1443,9 @@ def test_model(name, cfg=None, timeout=None):
         return done(False, f"server up but '{m['model']}' not found — pull it or fix the id "
                            f"({len(ids)} available)")
     except Exception as e:  # noqa: BLE001
-        # Name the endpoint: a bare "<urlopen error timed out>" in the Admin banner says nothing
-        # about WHICH host to go and start.
+        # Name the endpoint, never its class: a bare "<urlopen error timed out>" in the Admin
+        # banner says nothing about WHICH host to go and start, and "local" is wrong for a
+        # vendor API.
         where = (f"cannot reach {m.get('base_url')}: "
                  if m.get("provider") != "claude" and m.get("base_url") else "")
         return done(False, (where + str(e))[:180])

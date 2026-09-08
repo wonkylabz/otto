@@ -227,7 +227,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                  "backend can reach them")
         if not config.setting("local_fallback"):
             return _strict_stop_attempt(
-                wid, attempt, gateway.LocalFallbackDisabled(exec_entry["name"], why),
+                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why),
                 time.monotonic())
         use_local = False
         fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
@@ -245,14 +245,18 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # THIS model for THIS run, right now. Accumulated evidence outranks stored config (the phase
     # default and the Admin cap pin), never a live instruction — and without the exemption there
     # is no way to re-test a latched pairing on purpose.
+    # CLASS, not transport: the latch is evidence about a WEAK model, so a hosted frontier entry
+    # (gateway.model_kind == "hosted") is never consulted against it — a stale latch left from
+    # before the endpoint was re-classed must not exile it either.
     if (use_local and not resume_session and not override_entry
+            and gateway.model_kind(exec_entry) == "local"
             and gateway.cap_local_latched(cap.name, exec_entry["name"])):
         why = (f"{cap.name} has failed verification on {exec_entry['name']} "
                f"{config.setting('cap_local_latch_fails')} times in a row — latched off the "
                f"local backend until it is re-tested")
         if not config.setting("local_fallback"):
             return _strict_stop_attempt(
-                wid, attempt, gateway.LocalFallbackDisabled(exec_entry["name"], why),
+                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why),
                 time.monotonic())
         use_local = False
         fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
@@ -419,8 +423,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     if local_disabled and not use_local and exec_entry.get("provider") != "claude":
         fb_meta = {"fallback_from": exec_entry["name"],
                    "fallback_reason": local_disabled_reason or
-                   ("the local backend could not serve this run (tool calls rejected, or the "
-                    "endpoint unreachable) — proven earlier this run; ladder stays on Claude")}
+                   ("the model endpoint could not serve this run (tool calls rejected, or "
+                    "unreachable) — proven earlier this run; ladder stays on Claude")}
     trace("RUN", f"{wid} {verb} [{cap.kind}] {cap.name}  model={model}"
                  f"{' (local runtime)' if use_local else ''}"
                  f"{f'  effort={effort}' if effort else ''}  tools={allowed}")
@@ -484,12 +488,12 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         # just not finishing, and a retry folding in the critique can legitimately do better.
         local_wall = None
         if not resume_session:
+            # The two legacy flags share error_classifier's wording, so the endpoint is named
+            # the same way whichever path reported the wall.
             if out.get("tools_unsupported"):
-                local_wall = ("the local server rejects tool calls — vLLM is missing "
-                              "--enable-auto-tool-choice / --tool-call-parser")
+                local_wall = error_classifier.wall_message("tools_unsupported")
             elif out.get("unavailable"):
-                local_wall = ("the local model endpoint is unreachable (it stayed down through "
-                              "every retry/backoff)")
+                local_wall = error_classifier.wall_message("overloaded")
             elif out.get("wall_reason"):
                 # Any OTHER deterministic wall the classifier named — bad credentials, no credit,
                 # a 429 or 500 that outlived every backoff. These used to arrive as an anonymous
@@ -505,7 +509,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 sup.finish()
             return _strict_stop_attempt(
                 wid, attempt,
-                gateway.LocalFallbackDisabled(exec_entry["name"], local_wall), started)
+                gateway.LocalFallbackDisabled(exec_entry, local_wall), started)
         if local_wall:
             local_incapable = True
             # Run THIS attempt on Claude instead of burning the verify ladder on it. (A resumed
@@ -598,7 +602,10 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             "local_incapable": local_incapable or bool(local_disabled and fb_meta),
             # A WRITE cap actually executed on the local backend this attempt (issue #172): the
             # loop uses this + a failed verdict to latch local_disabled and escalate to Claude.
-            "write_local": cap.risk == "write" and backend == "local"}
+            # CLASS: only a weak (`local`-kind) model earns the write latch; a hosted frontier
+            # model on the same runtime keeps the ordinary retry ladder (issue #18).
+            "write_local": (cap.risk == "write" and backend == "local"
+                            and gateway.model_kind(exec_entry) == "local")}
 
 
 def _strict_stop_attempt(wid, attempt, exc, started):

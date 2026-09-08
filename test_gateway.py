@@ -2719,6 +2719,240 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class ModelKindTests(unittest.TestCase):
+    """Issue #18: every model added through an endpoint was classed LOCAL by the one predicate
+    `provider != "claude"`, so gpt on api.openai.com got the write latch, the cross-run cap latch
+    and "fix the local endpoint" copy tuned for a 4B on a laptop. `kind` is a STORED fact on the
+    endpoint (its models share it); `provider` keeps answering only the TRANSPORT question."""
+
+    HOSTED = {"name": "gpt", "provider": "openai", "endpoint": "openai", "kind": "hosted",
+              "base_url": "https://api.openai.com/v1", "model": "gpt-6"}
+    LOCAL = {"name": "qwen", "provider": "openai", "endpoint": "gpu-box", "kind": "local",
+             "base_url": "http://gpu:8000/v1", "model": "qwen"}
+
+    def setUp(self):
+        self._orig = gateway._PATH
+        self._dir = tempfile.mkdtemp(prefix="otto-kind-")
+        gateway._PATH = os.path.join(self._dir, "models.json")
+
+    def tearDown(self):
+        shutil.rmtree(self._dir, ignore_errors=True)
+        gateway._PATH = self._orig
+
+    def _write(self, cfg):
+        with open(gateway._PATH, "w") as f:
+            json.dump(cfg, f)
+
+    def _disk(self):
+        with open(gateway._PATH) as f:
+            return json.load(f)
+
+    def _legacy(self, url):
+        return {"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "claude-sonnet-5"},
+                         {"name": "m", "provider": "openai", "base_url": url, "model": "x"}],
+                "assign": {"execution": "claude-sonnet"}}
+
+    # --- the store ---------------------------------------------------------------------
+
+    def test_a_legacy_config_without_the_field_still_loads_as_local(self):
+        self._write(self._legacy("https://vllm.x/v1"))
+        cfg = gateway.load()
+        self.assertEqual(cfg["endpoints"][0]["kind"], "local")
+        self.assertEqual(gateway.model_kind(next(m for m in cfg["pool"] if m["name"] == "m")), "local")
+
+    def test_a_well_known_vendor_host_is_guessed_hosted_when_nothing_was_stated(self):
+        # The reporting operator's config: api.openai.com stored with `provider: openai` and
+        # nothing else. The guess is a DEFAULT for an endpoint that never stated a kind.
+        self._write(self._legacy("https://api.openai.com/v1"))
+        cfg = gateway.load()
+        self.assertEqual(cfg["endpoints"][0]["kind"], "hosted")
+        self.assertEqual(gateway.model_kind(cfg["pool"][1]), "hosted")
+
+    def test_the_guess_is_pure_and_never_hosted_for_an_unknown_host(self):
+        self.assertEqual(gateway.guess_kind("https://api.openai.com/v1"), "hosted")
+        self.assertEqual(gateway.guess_kind("https://eu.api.openai.com/v1"), "hosted")
+        self.assertEqual(gateway.guess_kind("http://localhost:11434/v1"), "local")
+        self.assertEqual(gateway.guess_kind("https://openai-proxy.corp/v1"), "local")
+        self.assertEqual(gateway.guess_kind(""), "local")
+        self.assertEqual(gateway.guess_kind(None), "local")
+
+    def test_the_operators_pick_outranks_the_guess_and_survives_a_round_trip(self):
+        # A hosted-shaped URL the operator says is local (a proxy in front of a home box), and a
+        # vendor API the guess doesn't know. The stored field is the authority both ways.
+        self._write({"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "s"},
+                              {"name": "a", "provider": "openai", "endpoint": "p", "model": "x"},
+                              {"name": "b", "provider": "openai", "endpoint": "v", "model": "y"}],
+                     "endpoints": [{"name": "p", "base_url": "https://api.openai.com/v1", "kind": "local"},
+                                   {"name": "v", "base_url": "https://api.newvendor.ai/v1", "kind": "hosted"}],
+                     "assign": {"execution": "claude-sonnet"}})
+        cfg = gateway.load()
+        by = {m["name"]: m for m in cfg["pool"]}
+        self.assertEqual(gateway.model_kind(by["a"]), "local")
+        self.assertEqual(gateway.model_kind(by["b"]), "hosted")
+        gateway.save(cfg)
+        self.assertEqual({e["name"]: e["kind"] for e in self._disk()["endpoints"]},
+                         {"p": "local", "v": "hosted"})
+        by = {m["name"]: m for m in gateway.load()["pool"]}
+        self.assertEqual(gateway.model_kind(by["a"]), "local")
+        self.assertEqual(gateway.model_kind(by["b"]), "hosted")
+
+    def test_kind_is_hydrated_onto_the_entry_and_stripped_on_disk(self):
+        # Consumers read the ENTRY (engine has `exec_entry`, never the endpoint list), so `kind`
+        # rides on it like base_url — and like base_url it must not persist there, or a re-classed
+        # endpoint leaves stale copies behind.
+        self._write(self._legacy("https://api.openai.com/v1"))
+        cfg = gateway.load()
+        self.assertEqual(cfg["pool"][1]["kind"], "hosted")
+        cfg["pool"][1]["kind"] = "local"                 # a stale hand-edit on the entry
+        gateway.save(cfg)
+        self.assertNotIn("kind", self._disk()["pool"][1])
+        self.assertEqual(gateway.load()["pool"][1]["kind"], "hosted")   # the endpoint won
+
+    def test_an_invalid_stored_kind_falls_back_to_the_guess(self):
+        self._write({"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "s"}],
+                     "endpoints": [{"name": "e", "base_url": "http://gpu/v1", "kind": "frontier"}],
+                     "assign": {"execution": "claude-sonnet"}})
+        self.assertEqual(gateway.load()["endpoints"][0]["kind"], "local")
+
+    def test_model_kind_answers_the_class_question_for_every_entry_shape(self):
+        self.assertEqual(gateway.model_kind({"provider": "claude", "name": "c"}), "claude")
+        self.assertEqual(gateway.model_kind(self.HOSTED), "hosted")
+        self.assertEqual(gateway.model_kind(self.LOCAL), "local")
+        self.assertEqual(gateway.model_kind({"provider": "openai", "name": "bare"}), "local")
+        self.assertEqual(gateway.model_kind(None), "claude")   # no entry: nothing to latch
+
+    def test_the_api_hands_the_ui_the_kinds_and_the_host_list_it_pre_selects_from(self):
+        # The UI guesses from the SERVER's list, so the two sides cannot disagree.
+        src = open("server.py").read()
+        self.assertIn('"kinds": list(gateway.KINDS)', src)
+        self.assertIn('"hosted_hosts": list(gateway.HOSTED_HOSTS)', src)
+        ui = open("web/index.html", "rb").read().decode("utf-8")
+        self.assertIn("MODEL_STATE.hosted_hosts", ui)
+        self.assertIn("hosted_hosts:models.hosted_hosts", ui)
+        for h in gateway.HOSTED_HOSTS:
+            self.assertFalse(h in ui, f"{h} is a server-side fact; the UI must not carry its own list")
+
+    # --- the class sites ----------------------------------------------------------------
+
+    def test_a_hosted_write_cap_keeps_the_ordinary_ladder(self):
+        # `write_local` arms the one-judged-fail latch to Claude, tuned for a weak model. A
+        # hosted frontier model on the same runtime is a strong model: it retries like one.
+        saved = (gateway.exec_model_entry, engine._claude, local_runtime.run_json, config.SUPERVISE,
+                 mcp_client.unservable)
+        config.SUPERVISE = False
+        mcp_client.unservable = lambda cap: []
+        engine.trace = engine.say = lambda *a, **k: None
+        local_runtime.run_json = lambda *a, **k: {
+            "result": "did it", "is_error": False, "total_cost_usd": 0, "session_id": "local-1",
+            "usage": {"output_tokens": 9}}
+        engine._claude = lambda *a, **k: self.fail("a hosted write cap must not leave its runtime")
+        cap = registry.Capability("custom", "editor", "edits things")
+        cap.risk = "write"
+        try:
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.HOSTED)
+            att = engine.run_attempt("edit it", cap, attempt=1, wid="w1")
+            self.assertEqual(att["backend"], "local")     # TRANSPORT: still Otto's runtime
+            self.assertFalse(att["write_local"])          # CLASS: no weak-model latch
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.LOCAL)
+            att = engine.run_attempt("edit it", cap, attempt=1, wid="w2")
+            self.assertTrue(att["write_local"])           # the local case is unchanged
+        finally:
+            (gateway.exec_model_entry, engine._claude, local_runtime.run_json, config.SUPERVISE,
+             mcp_client.unservable) = saved
+
+    def test_a_hosted_model_is_never_consulted_against_the_cross_run_latch(self):
+        # A latch left in the store from before the endpoint was re-classed must not exile it.
+        saved = (gateway.exec_model_entry, gateway.cap_local_latched, engine._claude,
+                 local_runtime.run_json, config.SUPERVISE, mcp_client.unservable)
+        config.SUPERVISE = False
+        mcp_client.unservable = lambda cap: []
+        engine.trace = engine.say = lambda *a, **k: None
+        asked = []
+        gateway.cap_local_latched = lambda cap, model, now=None: asked.append(model) or True
+        local_runtime.run_json = lambda *a, **k: {
+            "result": "did it", "is_error": False, "total_cost_usd": 0, "session_id": "local-1",
+            "usage": {"output_tokens": 9}}
+        engine._claude = lambda *a, **k: {"result": "claude", "total_cost_usd": 0.01,
+                                          "session_id": "s", "usage": {"output_tokens": 1}}
+        cap = registry.Capability("skill", "github-pr-review", "reviews PRs")
+        cap.risk = "read"
+        try:
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.HOSTED)
+            att = engine.run_attempt("review", cap, attempt=1, wid="w1")
+            self.assertEqual(att["backend"], "local")
+            self.assertEqual(asked, [])                   # never even read for a hosted entry
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.LOCAL)
+            att = engine.run_attempt("review", cap, attempt=1, wid="w2")
+            self.assertEqual(asked, ["qwen"])
+            self.assertEqual(att["backend"], "claude")    # the local latch still bites
+            self.assertEqual(att["fallback_from"], "qwen")
+        finally:
+            (gateway.exec_model_entry, gateway.cap_local_latched, engine._claude,
+             local_runtime.run_json, config.SUPERVISE, mcp_client.unservable) = saved
+
+    def test_a_hosted_verdict_never_feeds_the_latch_store(self):
+        import memory
+        saved = (memory._audit, gateway.record_cap_local, gateway.resolve_model)
+        fed, entry = [], {}
+        memory._audit = lambda *a, **k: None
+        gateway.record_cap_local = lambda cap, model, passed: fed.append((model, passed))
+        gateway.resolve_model = lambda name, cfg=None: entry.get(name)
+        cap = registry.Capability("skill", "github-pr-review", "reviews PRs")
+        verdict = {"passed": False, "source": "judge", "critique": "meh"}
+        try:
+            entry.update(gpt=dict(self.HOSTED), qwen=dict(self.LOCAL))
+            memory.record_attempt("w", "r", cap, "out", 0, 1, verdict, model="gpt", backend="local")
+            self.assertEqual(fed, [])
+            memory.record_attempt("w", "r", cap, "out", 0, 1, verdict, model="qwen", backend="local")
+            self.assertEqual(fed, [("qwen", False)])
+        finally:
+            memory._audit, gateway.record_cap_local, gateway.resolve_model = saved
+
+    # --- the copy -----------------------------------------------------------------------
+
+    def test_the_strict_stop_names_the_endpoint_and_its_kind_never_local_for_a_hosted_model(self):
+        msg = config.strict_stop_message("gpt", "HTTP 401", entry=self.HOSTED)
+        self.assertIn("hosted model failed", msg)
+        self.assertIn("`openai`", msg)                    # the endpoint to go and fix
+        self.assertNotIn("local", msg.split("OTTO_LOCAL_FALLBACK")[0])
+        self.assertNotIn("local model", msg)
+        self.assertNotIn("local endpoint", msg)
+        loc = config.strict_stop_message("qwen", "timed out", entry=self.LOCAL)
+        self.assertIn("local model failed", loc)
+        self.assertIn("`gpu-box`", loc)
+        bare = config.strict_stop_message("m", "x")        # no entry: the old shape, still local
+        self.assertIn("local model failed", bare)
+
+    def test_the_exception_carries_the_entry_so_every_surface_gets_the_same_copy(self):
+        e = gateway.LocalFallbackDisabled(self.HOSTED, "HTTP 401")
+        self.assertEqual(e.model, "gpt")
+        self.assertIn("hosted model 'gpt'", str(e))
+        self.assertIn("hosted model failed", e.message)
+        e = gateway.LocalFallbackDisabled("qwen", "timed out")      # a bare name still works
+        self.assertIn("local model 'qwen'", str(e))
+
+    def test_no_wall_message_calls_the_endpoint_local(self):
+        import error_classifier
+        for reason in error_classifier.Reason:
+            self.assertNotIn("local", error_classifier.wall_message(reason.value), reason)
+        self.assertNotIn("local", error_classifier.wall_message("something-new"))
+        # engine's two legacy flags now share that wording rather than carrying their own
+        src = open("engine.py").read()
+        self.assertIn('error_classifier.wall_message("tools_unsupported")', src)
+        self.assertIn('error_classifier.wall_message("overloaded")', src)
+
+    def test_the_ui_tags_and_labels_from_kind_not_provider(self):
+        ui = open("web/index.html", "rb").read().decode("utf-8")
+        self.assertIn('const plabel=p=>kindOf(p);', ui)
+        self.assertIn('<span class="srctag" title="${p.provider===\'claude\'?', ui)
+        self.assertNotIn("p.provider==='claude'?'cloud':'local'", ui)
+        self.assertIn("${esc(kindOf(p))}${blockers.length", ui)   # the Execution dropdown
+        self.assertIn('kind:val("ep-kind")', ui)                  # the endpoint form stores it
+        self.assertIn('kind:val("lm-kind")', ui)                  # so does the inline new-endpoint
+        self.assertNotIn('local_fallback_disabled:"local failed', ui)
+        self.assertNotIn("Fix the local endpoint", ui)
+
+
 class JsonStoreConcurrencyTests(unittest.TestCase):
     """`data/models.json` + `data/policy.json` must go through storage's lock+atomic replace.
 
@@ -4644,11 +4878,20 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 67920 for the derived-busy rule: a conversation's in-flight flag was cleared on
     # DELIVERY only, so every terminal path that skipped delivery silently deafened a DM for the
     # whole stale window — invisible from the poller, which reads a flag that looks authoritative.
-    # -> 68201 for the finished-board-card rule: the board's list source has a hard expiry
-    # nothing in the code says (Temporal deletes a closed execution at the namespace TTL), and
-    # the two windows sharing one `limit` reads as obviously fine — between them, completed work
-    # silently disappeared off the board and every re-derivation from the code missed both.
-    MAX_RULES_BYTES = 68201   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 68173 for the one-body-builder rule: four call sites each hardcoded the OpenAI
+    # parameter NAMES, and the fifth would fail the same way — only against an endpoint no test
+    # here can reach, so the rule is the only thing that can stop it being written again.
+    # -> 68444 for the monotone-adaptation rule: obeying an endpoint's OWN suggested remedy made
+    # the rewrite two-directional, so two mutually-rejected bodies alternated until the round
+    # budget died — under a message naming a cause ("context overflow") that never happened.
+    # -> 68722 for the transport/class rule (issue #18): one predicate, `provider != "claude"`,
+    # answered two different questions in six layers, and which sites mean WHICH is a decision
+    # with no single home in the code.
+    # -> 69003 for the finished-board-card rule (issue #13): the board's list source has a hard
+    # expiry nothing in the code says (Temporal deletes a closed execution at the namespace TTL),
+    # and the two windows sharing one `limit` reads as obviously fine — between them, completed
+    # work silently disappeared off the board and every re-derivation from the code missed both.
+    MAX_RULES_BYTES = 69003   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -5332,6 +5575,488 @@ class ErrorClassifierTests(unittest.TestCase):
     def test_every_reason_has_a_message(self):
         for r in self.ec.Reason:
             self.assertIn(r, self.ec._MESSAGE, f"{r} has no operator-facing message")
+
+
+class OpenAiParamDialectTests(unittest.TestCase):
+    """Issue #10: OpenAI's newer models reject BOTH parameters every OpenAI-compatible body Otto
+    sends has carried since day one — `max_tokens` (renamed `max_completion_tokens`) and
+    `temperature: 0` (only the default is accepted). Four call sites hardcoded those names, so an
+    OpenAI endpoint 400'd on the first call from any of them and nothing recovered.
+
+    The dialect is read off the SERVER'S OWN 400 rather than a model-name table: the reported
+    model was called "chatgpt 6 astra", and a table would need editing for every future OpenAI
+    generation while still being wrong the day one ships."""
+
+    # The two bodies OpenAI actually returns, verbatim — a fixture shaped to match the matcher
+    # proves nothing (the lesson privacy.redact's patterns are tested under).
+    MAX_TOKENS_400 = (
+        b'{"error":{"message":"Unsupported parameter: \'max_tokens\' is not supported with '
+        b'this model. Use \'max_completion_tokens\' instead.","type":"invalid_request_error",'
+        b'"param":"max_tokens","code":"unsupported_parameter"}}')
+    TEMPERATURE_400 = (
+        b'{"error":{"message":"Unsupported value: \'temperature\' does not support 0 with this '
+        b'model. Only the default (1) is supported.","type":"invalid_request_error",'
+        b'"param":"temperature","code":"unsupported_value"}}')
+    # Reported live on run web-43486ee8 after the first two were fixed. Note the shape: it is
+    # not "we don't take reasoning_effort" — it is "not that PAIR", and it names the fix.
+    REASONING_400 = (
+        b'{"error":{"message":"Function tools with reasoning_effort are not supported for '
+        b'gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set '
+        b'reasoning_effort to \'none\'.","type":"invalid_request_error",'
+        b'"param":"reasoning_effort","code":null}}')
+
+    class _Resp:
+        """Just enough of an http response for `with urlopen(...) as r: r.read()`."""
+
+        def __init__(self, payload):
+            self._payload = json.dumps(payload).encode()
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def setUp(self):
+        self.ec = error_classifier
+        gateway._LEARNED_QUIRKS.clear()
+        self.addCleanup(gateway._LEARNED_QUIRKS.clear)
+        self.m = {"name": "gpt", "provider": "openai", "base_url": "http://api/v1", "model": "g6"}
+
+    def _400(self, payload):
+        import urllib.error
+        return urllib.error.HTTPError("http://api/v1", 400, "Bad Request", {},
+                                      io.BytesIO(payload))
+
+    def _patch_urlopen(self, fn):
+        import urllib.request
+        prev = urllib.request.urlopen
+        urllib.request.urlopen = fn
+        self.addCleanup(setattr, urllib.request, "urlopen", prev)
+
+    def _patch_post(self, fn):
+        prev = local_runtime._post
+        local_runtime._post = fn
+        self.addCleanup(setattr, local_runtime, "_post", prev)
+
+    # --- the pure half -----------------------------------------------------------------
+
+    def test_each_real_400_names_its_own_quirk(self):
+        self.assertEqual(self.ec.param_quirk(self.MAX_TOKENS_400.decode()),
+                         self.ec.QUIRK_MAX_COMPLETION_TOKENS)
+        self.assertEqual(self.ec.param_quirk(self.TEMPERATURE_400.decode()),
+                         self.ec.QUIRK_DEFAULT_TEMPERATURE)
+
+    def test_a_dialect_400_is_adapt_not_fail_and_never_a_wall(self):
+        """It used to land in the anonymous `unknown/fail` bucket, which the verify ladder reads
+        as a model-quality failure and retries with the identical rejected body. It must not
+        become a wall either: unlike a bad key, the caller can fix this one itself."""
+        v = self.ec.classify(400, self.MAX_TOKENS_400.decode())
+        self.assertIs(v.action, self.ec.Action.adapt)
+        self.assertEqual(v.quirk, self.ec.QUIRK_MAX_COMPLETION_TOKENS)
+        self.assertFalse(v.is_wall)
+        self.assertFalse(v.counts_as_unhealthy)
+
+    def test_the_other_400s_keep_their_verdicts(self):
+        """The new branch sits between two existing ones. A context overflow must still prune
+        (vLLM's message is all about tokens), and a tool-call rejection must still wall."""
+        ctx = "This model's maximum context length is 16384 tokens. Reduce the length."
+        self.assertIs(self.ec.classify(400, ctx).action, self.ec.Action.prune)
+        self.assertIs(self.ec.classify(400, "use --enable-auto-tool-choice").action,
+                      self.ec.Action.wall)
+        self.assertIsNone(self.ec.param_quirk(ctx))
+        # Prose that merely discusses the word, with no quoted parameter and no refusal.
+        self.assertIsNone(self.ec.param_quirk("the temperature outside does not support life"))
+
+    def test_the_tools_plus_reasoning_400_is_recognised(self):
+        """The PAIR-only quirk, not the parameter-does-not-exist one — the two messages ask for
+        different adaptations and mapping both onto one loses a real distinction."""
+        v = self.ec.classify(400, self.REASONING_400.decode())
+        self.assertIs(v.action, self.ec.Action.adapt)
+        self.assertEqual(v.quirk, self.ec.QUIRK_NO_TOOL_REASONING)
+
+    def test_a_model_with_no_such_parameter_loses_it_ALWAYS(self):
+        """gpt-4o/gpt-4.1 answer "Unrecognized request argument supplied: reasoning_effort" —
+        different wording from the pair refusal, and true with or without tools. Folded into the
+        pair-only quirk, a tool-free turn re-sent it and re-paid the 400 every single turn."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_NO_REASONING_EFFORT])
+        for tools in ([{"type": "function"}], None):
+            with self.subTest(tools=bool(tools)):
+                body = gateway.chat_body(m, [], 8, reasoning_effort="high", tools=tools)
+                self.assertNotIn("reasoning_effort", body)
+
+    def test_the_unrecognised_argument_wording_is_recognised(self):
+        """The gap that survived the first three commits: every non-reasoning OpenAI model
+        phrases it this way, so an effort level made gpt-4o fail on an anonymous 400 the ladder
+        then retried with the identical body."""
+        v = self.ec.classify(400, "Unrecognized request argument supplied: reasoning_effort")
+        self.assertIs(v.action, self.ec.Action.adapt)
+        self.assertEqual(v.quirk, self.ec.QUIRK_NO_REASONING_EFFORT)
+
+    def test_the_reasoning_quirk_drops_with_tools_and_is_inert_without(self):
+        """It does NOT take the server's own advice. gpt-6-astra says "set reasoning_effort to
+        \'none\'" and then rejects that literal ("Supported values are: \'low\', \'medium\',
+        \'high\', and \'xhigh\'"), so obeying it oscillates. Dropping is the only move that
+        can\'t. Tool-free calls keep the operator\'s effort — the model reasons fine there, and
+        an endpoint-wide downgrade would silently spend every one of them at the cheapest
+        reasoning the model has."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_NO_TOOL_REASONING])
+        with_tools = gateway.chat_body(m, [], 8, reasoning_effort="high",
+                                       tools=[{"type": "function"}])
+        self.assertNotIn("reasoning_effort", with_tools)
+        self.assertTrue(with_tools["tools"])            # the tools are what we came for
+        tool_free = gateway.chat_body(m, [], 8, reasoning_effort="high")
+        self.assertEqual(tool_free["reasoning_effort"], "high")
+
+    def test_every_adaptation_is_monotone(self):
+        """The property `adapt_body`\'s None bound actually rests on, asserted directly. An
+        adaptation that can restore what an earlier round removed cannot be bounded at all: the
+        first `reasoning_effort` fix set \'none\', the endpoint refused \'none\', the next round
+        dropped it, the round after that set it back — ten rounds, then a run that died
+        reporting a context overflow that never happened (run web-43486ee8)."""
+        for q in self.ec.QUIRKS:
+            with self.subTest(quirk=q):
+                body = {"model": "g6", "messages": [], "max_tokens": 8, "temperature": 0,
+                        "reasoning_effort": "high", "tools": [{"type": "function"}]}
+                seen, steps = [dict(body)], 0
+                while (nxt := gateway.adapt_body(body, q)) is not None:
+                    steps += 1
+                    self.assertNotIn(nxt, seen, f"{q} re-created an earlier body")
+                    self.assertLess(steps, 4, f"{q} never settles")
+                    seen.append(dict(nxt))
+                    body = nxt
+                self.assertGreaterEqual(steps, 1, f"{q} changed nothing at all")
+
+    def test_a_rename_needs_both_names_present(self):
+        """Anchored on the server naming the problem AND the replacement. An overflow message
+        that happened to mention max_completion_tokens would otherwise rename a parameter that
+        was never the complaint, and the real (prunable) failure would be lost."""
+        self.assertIsNone(self.ec.param_quirk("max_completion_tokens must be positive"))
+
+    def test_every_quirk_is_something_adapt_body_can_apply(self):
+        """The two lists are one contract: a name in QUIRKS that adapt_body ignores is a quirk
+        that classifies, learns, changes nothing, and dead-ends the retry.
+
+        The fixture is a FULL body — every parameter a real agentic turn sends — because that
+        is what the server is complaining about; a minimal one would let a quirk pass by having
+        nothing to act on."""
+        body = {"model": "g6", "messages": [], "max_tokens": 8, "temperature": 0,
+                "reasoning_effort": "high", "tools": [{"type": "function"}]}
+        for q in self.ec.QUIRKS:
+            with self.subTest(quirk=q):
+                self.assertIsNotNone(gateway.adapt_body(body, q))
+        # ...and tool-free, where the reasoning quirk's only move is to stop sending it.
+        tool_free = {k: v for k, v in body.items() if k != "tools"}
+        self.assertIsNotNone(gateway.adapt_body(tool_free, self.ec.QUIRK_NO_TOOL_REASONING))
+
+    # --- the body builder --------------------------------------------------------------
+
+    def test_the_default_dialect_is_unchanged(self):
+        body = gateway.chat_body(self.m, [{"role": "user", "content": "hi"}], 128)
+        self.assertEqual(body["max_tokens"], 128)
+        self.assertEqual(body["temperature"], 0)
+        self.assertNotIn("max_completion_tokens", body)
+
+    def test_a_quirked_entry_sends_the_other_names_and_never_the_rejected_ones(self):
+        m = dict(self.m, quirks=[self.ec.QUIRK_MAX_COMPLETION_TOKENS,
+                                 self.ec.QUIRK_DEFAULT_TEMPERATURE])
+        body = gateway.chat_body(m, [{"role": "user", "content": "hi"}], 128)
+        self.assertEqual(body["max_completion_tokens"], 128)
+        self.assertNotIn("max_tokens", body)
+        self.assertNotIn("temperature", body)      # absent, not "temperature: 1"
+        self.assertEqual(gateway.token_key(m), "max_completion_tokens")
+
+    def test_optional_extras_are_dropped_when_unset(self):
+        """So a caller passes `tools=tools or None` instead of building the dict conditionally —
+        which is how the runtime grew its own body literal in the first place."""
+        body = gateway.chat_body(self.m, [], 8, tools=None, reasoning_effort="low")
+        self.assertNotIn("tools", body)
+        self.assertEqual(body["reasoning_effort"], "low")
+
+    def test_an_unknown_quirk_string_is_ignored(self):
+        """`quirks` is operator-editable and rides a profile import; an unrecognised entry must
+        degrade to the default dialect, never change the body in a way nothing here defines."""
+        body = gateway.chat_body(dict(self.m, quirks=["banana"]), [], 8)
+        self.assertEqual(body["max_tokens"], 8)
+        self.assertEqual(body["temperature"], 0)
+
+    def test_adapt_body_returns_none_when_it_changes_nothing(self):
+        """This is what BOUNDS every retry loop. A server that keeps complaining about an
+        already-adapted body must surface its error, not spin until the round budget is out."""
+        self.assertIsNone(gateway.adapt_body({"model": "g6", "max_completion_tokens": 8},
+                                             self.ec.QUIRK_MAX_COMPLETION_TOKENS))
+        self.assertIsNone(gateway.adapt_body({"model": "g6"}, "banana"))
+
+    # --- the four call sites -----------------------------------------------------------
+
+    def test_the_cheap_tier_seam_adapts_and_retries(self):
+        """gateway._chat — the shared HTTP seam behind _openai_complete and local_execute. Both
+        quirks in one exchange: fixing only the first still leaves the call 400-ing."""
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data))
+            if len(sent) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            if len(sent) == 2:
+                raise self._400(self.TEMPERATURE_400)
+            return self._Resp({"choices": [{"message": {"content": "answered"}}]})
+        self._patch_urlopen(fake_urlopen)
+        data = gateway._chat(self.m, [{"role": "user", "content": "hi"}], 64, 5)
+        self.assertEqual(data["choices"][0]["message"]["content"], "answered")
+        self.assertEqual(len(sent), 3)
+        self.assertEqual(sent[-1]["max_completion_tokens"], 64)
+        self.assertNotIn("max_tokens", sent[-1])
+        self.assertNotIn("temperature", sent[-1])
+
+    def test_a_learned_dialect_is_spoken_first_next_time(self):
+        """The point of learning it: the wasted round trip is paid once, not per call. And it
+        lands on the pool entry, so data/models.json and Admin show what was discovered."""
+        gateway.save({"pool": [dict(self.m)], "assign": {}, "endpoints": []})
+        entry = next(x for x in gateway.load()["pool"] if x["name"] == "gpt")
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(json.loads(req.data))
+            if len(calls) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            return self._Resp({"choices": [{"message": {"content": "ok"}}]})
+        self._patch_urlopen(fake_urlopen)
+        gateway._chat(entry, [{"role": "user", "content": "hi"}], 64, 5)
+        gateway._chat(entry, [{"role": "user", "content": "again"}], 64, 5)
+        self.assertEqual(len(calls), 3)          # 400 + retry, then ONE call the second time
+        self.assertNotIn("max_tokens", calls[2])
+        self.assertEqual(calls[2]["max_completion_tokens"], 64)
+        persisted = next(x for x in gateway.load()["pool"] if x["name"] == "gpt")
+        self.assertIn(self.ec.QUIRK_MAX_COMPLETION_TOKENS, persisted.get("quirks") or [])
+
+    def test_a_non_dialect_400_still_raises_and_now_carries_the_server_words(self):
+        """`str(HTTPError)` is the fixed 'HTTP Error 400: Bad Request' — which is exactly how
+        the real message stayed invisible on this path while the operator debugged it."""
+        def fake_urlopen(req, timeout=None):
+            raise self._400(b'{"error":{"message":"tokenizer exploded"}}')
+        self._patch_urlopen(fake_urlopen)
+        with self.assertRaises(Exception) as cm:
+            gateway._chat(self.m, [], 64, 5)
+        self.assertIn("tokenizer exploded", str(cm.exception))
+
+    def test_the_agentic_runtime_adapts_mid_turn(self):
+        """local_runtime's per-turn body. `tools` must survive the rewrite, or the adapted
+        retry silently becomes a tool-free turn against a tool-capable model."""
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=["Read"], model_entry=self.m)
+        self.assertFalse(out["is_error"], out.get("result"))
+        self.assertEqual(out["result"], "done")
+        self.assertNotIn("max_tokens", sent[1])
+        self.assertEqual(sent[1]["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS)
+        self.assertTrue(sent[1]["tools"])
+
+    def test_the_agentic_runtime_survives_all_three_refusals_in_one_run(self):
+        """The reported sequence, in order: the model rejects max_tokens, then temperature, then
+        the tools+reasoning_effort pair. Fixing any two still leaves the run dead — which is how
+        this one was reported twice (issue #10, then run web-43486ee8)."""
+        sent = []
+        rejects = [self.MAX_TOKENS_400, self.TEMPERATURE_400, self.REASONING_400]
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) <= len(rejects):
+                raise self._400(rejects[len(sent) - 1])
+            return {"choices": [{"message": {"role": "assistant", "content": "hello"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("hi", allowed_tools=["Read"], model_entry=self.m,
+                                     effort="high")
+        self.assertFalse(out["is_error"], out.get("result"))
+        self.assertEqual(out["result"], "hello")
+        final = sent[-1]
+        self.assertEqual(final["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS)
+        self.assertNotIn("max_tokens", final)
+        self.assertNotIn("temperature", final)
+        self.assertNotIn("reasoning_effort", final)
+        self.assertTrue(final["tools"])
+
+    def test_a_refusal_no_rewrite_can_fix_walls_to_claude_instead_of_spinning(self):
+        """gpt-6-astra cannot run function tools on /chat/completions at all — it points at
+        /v1/responses, which Otto does not speak. That is the EXISTING tool-call wall, and it
+        must be reached: walling re-dispatches the run to Claude, where spinning burned ten
+        rounds and surfaced the wrong diagnosis entirely."""
+        pair = (b'{"error":{"message":"Function tools with reasoning_effort are not supported '
+                b'for gpt-6-astra in /v1/chat/completions. To use function tools, use '
+                b'/v1/responses.","param":"reasoning_effort","code":null}}')
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            raise self._400(pair)          # refuses with AND without reasoning_effort
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=["Read"], model_entry=self.m,
+                                     effort="high")
+        self.assertTrue(out["is_error"])
+        self.assertTrue(out["tools_unsupported"])      # -> local_incapable -> Claude
+        self.assertEqual(out["wall_reason"], self.ec.Reason.tools_unsupported.value)
+        self.assertLess(len(sent), 5, "spun instead of walling")
+        # And the remedy fits the endpoint that refused: "start vLLM with --enable-auto-tool-
+        # choice" is useless to someone whose endpoint is api.openai.com.
+        self.assertNotIn("vLLM", out["result"])
+        self.assertIn("different execution model", out["result"])
+
+    def test_doctors_day_one_warning_carries_the_same_remedy(self):
+        """`otto doctor` is where this is supposed to be caught before a run pays for it, so it
+        must not hand an OpenAI operator "start vLLM with --enable-auto-tool-choice" — the check
+        would be loud, correct, and unactionable."""
+        import doctor
+        refusal = (b'{"error":{"message":"Function tools with reasoning_effort are not supported '
+                   b'for gpt-6-astra in /v1/chat/completions. To use function tools, use '
+                   b'/v1/responses."}}')
+
+        def fake_urlopen(req, timeout=None):
+            raise self._400(refusal)
+        self._patch_urlopen(fake_urlopen)
+
+        class _Gw:
+            request_headers = staticmethod(gateway.request_headers)
+            adapt_for = staticmethod(gateway.adapt_for)
+            chat_body = staticmethod(gateway.chat_body)
+            load = staticmethod(lambda: {"pool": [dict(self.m)]})
+            exec_model_entry = staticmethod(lambda cfg=None: dict(self.m))
+        out = doctor.check_exec_tool_calls(_Gw)
+        self.assertEqual(out["status"], "warn")
+        self.assertNotIn("vLLM", out["hint"])
+        self.assertIn("different execution model", out["hint"])
+
+    def test_the_probe_budget_does_not_fail_a_reasoning_model(self):
+        """The probe asked for 1 token, which a reasoning model spends thinking — so it 400s on
+        OUR ceiling and doctor reported "tool support unverified" for a model that takes tools
+        fine (measured on gpt-5.5). A budget-exhausted reply IS acceptance: the server took the
+        tools and started work, which is the whole question."""
+        import doctor
+        budget = (b'{"error":{"message":"Could not finish the message because max_tokens or '
+                  b'model output limit was reached. Please try again with higher max_tokens."}}')
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data))
+            raise self._400(budget)
+        self._patch_urlopen(fake_urlopen)
+        ok, _ = doctor._probe_tool_calls(self.m, gateway)
+        self.assertIs(ok, True)
+        self.assertGreater(sent[0]["max_tokens"], 1, "a 1-token probe fails on its own budget")
+
+    def test_the_vllm_tool_refusal_keeps_its_own_remedy(self):
+        """The other server saying the other thing. One wall, two remedies — a wall naming the
+        wrong one is worse than a generic one, because the operator acts on it."""
+        self.assertIn("--enable-auto-tool-choice",
+                      self.ec.tools_refused_message("must start with --enable-auto-tool-choice"))
+        self.assertIn("--enable-auto-tool-choice", self.ec.tools_refused_message(""))
+
+    def test_giving_up_names_the_reason_it_actually_gave_up_on(self):
+        """The message that cost a debugging round: a loop that exhausted its budget adapting
+        the body announced a context overflow, and the server's real complaint read as noise
+        trailing behind a wrong headline."""
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            raise self._400(b'{"error":{"message":"some 400 nothing here recognises"}}')
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.m)
+        self.assertTrue(out["is_error"])
+        self.assertNotIn("context overflow", out["result"])
+        self.assertIn("some 400 nothing here recognises", out["result"])
+
+    def test_a_named_output_cap_is_clamped_to_not_discovered_by_halving(self):
+        """`LOCAL_EXEC_MAX_TOKENS` is one number for every model, so any model with a smaller
+        output ceiling — gpt-4o, gpt-4, gpt-3.5-turbo — rejected every call. Not a context
+        overflow (the prompt fits fine), and the server names the ceiling, so halving toward it
+        pays round trips for a number we were already handed."""
+        # 10000, NOT the real 16384: halving 32768 lands on 16384 by arithmetic accident, so a
+        # test written around the real number passes with the clamp deleted (it did — caught by
+        # mutation). A cap that is not a clean half separates clamping from halving.
+        cap = (b'{"error":{"message":"max_tokens is too large: 32768. This model supports at '
+               b'most 10000 completion tokens, whereas you provided 32768.","param":'
+               b'"max_tokens","code":"invalid_value"}}')
+        self.assertEqual(self.ec.output_cap(cap.decode()), 10000)
+        self.assertIsNone(self.ec.output_cap("some other 400"))
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(cap)
+            return {"choices": [{"message": {"role": "assistant", "content": "fits"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.m)
+        self.assertEqual(out["result"], "fits")
+        self.assertEqual(len(sent), 2, "clamped in one round trip, not halved toward it")
+        self.assertEqual(sent[1]["max_tokens"], 10000)
+
+    def test_the_overflow_halving_uses_the_endpoints_own_key(self):
+        """The 4th site the ticket did not list. `_chat_step` halves the output budget BY NAME;
+        reading `max_tokens` off a body carrying `max_completion_tokens` both loses the halving
+        and writes back the very parameter this endpoint rejects."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_MAX_COMPLETION_TOKENS])
+        overflow = (b'{"error":{"message":"This model\'s maximum context length is 16384 '
+                    b'tokens. However, you requested 8192 output tokens."}}')
+        sent = []
+
+        def fake_post(mm, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(overflow)
+            return {"choices": [{"message": {"role": "assistant", "content": "fits"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=m)
+        self.assertEqual(out["result"], "fits")
+        self.assertEqual(sent[1]["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS // 2)
+        self.assertNotIn("max_tokens", sent[1])
+
+    def test_the_doctor_probe_adapts_instead_of_reporting_unverified(self):
+        """A dialect 400 says nothing about tool support, so without adapting, `otto doctor`
+        reports 'tool support unverified' for a model that accepts tools perfectly well."""
+        import doctor
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data))
+            if len(sent) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            return self._Resp({"choices": []})
+        self._patch_urlopen(fake_urlopen)
+        ok, detail = doctor._probe_tool_calls(self.m, gateway)
+        self.assertIs(ok, True, detail)
+        self.assertNotIn("max_tokens", sent[1])
+        self.assertTrue(sent[1]["tools"])
+
+    def test_no_other_module_builds_a_chat_body_of_its_own(self):
+        """The one-builder invariant. Four sites hardcoded these names and each had to be found
+        separately; a fifth would 400 identically, and only against an OpenAI endpoint nobody in
+        CI has. Grep-based on purpose — it is the property, not a behaviour."""
+        offenders = []
+        for mod in ("local_runtime.py", "doctor.py", "server.py", "engine.py", "supervisor.py"):
+            with open(mod, encoding="utf-8") as fh:
+                for n, line in enumerate(fh, 1):
+                    # Dict-KEY syntax only (`"max_tokens": …` or `body["max_tokens"]`), not any
+                    # mention of the string: matching the bare literal flagged doctor's own
+                    # error-text check, which reads a server message and builds no body at all.
+                    if ('"max_tokens":' in line or '["max_tokens"]' in line) \
+                            and not line.lstrip().startswith("#"):
+                        offenders.append(f"{mod}:{n}: {line.strip()}")
+        self.assertEqual([], offenders,
+                         "build the body through gateway.chat_body, not a literal dict")
 
 
 class LocalWallPlumbingTests(unittest.TestCase):

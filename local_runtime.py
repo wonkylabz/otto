@@ -484,6 +484,7 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
     the wire body meant every later turn rebuilt the full history and re-paid the same 400,
     and the session saved to disk kept growing, so every future resume re-paid it too."""
     detail, max_len, prompt_tokens = "", 0, 0
+    v = None          # the last verdict, so the give-up message names what actually happened
     transient = 0
     compacted = None   # the history as it had to be shrunk to fit — handed back to the caller
     for _ in range(max(1, _rounds)):
@@ -495,10 +496,25 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
             except Exception:  # noqa: BLE001
                 detail = ""
             v = error_classifier.classify(e.code, detail)
+            # The endpoint naming a parameter it will not accept is a fact about its dialect,
+            # not a failed turn: rewrite the body, remember it for every later turn and run,
+            # and re-send. Bounded by `adapt_for` returning None once nothing changes.
+            if v.action is error_classifier.Action.adapt:
+                adapted = gateway.adapt_for(m, e.code, detail, body)
+                if adapted is not None:
+                    body = adapted
+                    continue
+                # Every rewrite we know is already in this body and the server said the same
+                # thing again — so `adapt` was never the real verdict. Re-read it with the
+                # dialect path closed, or the complaint falls through as an anonymous 400 and
+                # the run spends the ladder on a body that cannot be fixed.
+                v = error_classifier.classify(e.code, detail, adaptable=False)
             if v.reason is error_classifier.Reason.tools_unsupported:
+                # The remedy comes from the server's own words: "start vLLM with
+                # --enable-auto-tool-choice" is useless advice to someone whose endpoint is
+                # api.openai.com and whose model simply cannot take tools here.
                 raise ToolsUnsupported(
-                    "the local model server rejects tool calls — start vLLM with "
-                    "--enable-auto-tool-choice and --tool-call-parser <parser>") from None
+                    error_classifier.tools_refused_message(detail)) from None
             # A deterministic rejection — bad credentials, no credit. Retrying reaches the same
             # answer, so it becomes a wall immediately rather than after the backoffs.
             if v.is_wall:
@@ -530,6 +546,16 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
             # retries with the identical over-long prompt twice more.
             if v.action is not error_classifier.Action.prune:
                 raise RuntimeError(f"HTTP {e.code}: {detail or e.reason}") from None
+            # The server named the model's own output ceiling, so clamp to it rather than
+            # discovering it by halving: this is not a full context, it is one number
+            # (LOCAL_EXEC_MAX_TOKENS) applied to every model regardless of what it can emit.
+            cap = error_classifier.output_cap(detail)
+            if cap:
+                key = gateway.token_key(m)
+                cur = int(body.get(key) or config.LOCAL_EXEC_MAX_TOKENS)
+                if cur > cap:
+                    body = {**body, key: cap}
+                    continue
             fit = _context_fit(detail)          # numbers for the final message, when offered
             if fit:
                 max_len, prompt_tokens = fit
@@ -538,9 +564,13 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
                 body = {**body, "messages": pruned}
                 compacted = pruned
                 continue
-            cur = int(body.get("max_tokens") or config.LOCAL_EXEC_MAX_TOKENS)
+            # The budget's KEY is the endpoint's, not a literal: reading `max_tokens` off a
+            # body carrying `max_completion_tokens` both loses the halving and writes back the
+            # very parameter this endpoint rejects.
+            key = gateway.token_key(m)
+            cur = int(body.get(key) or config.LOCAL_EXEC_MAX_TOKENS)
             if cur > 256:
-                body = {**body, "max_tokens": max(256, cur // 2)}
+                body = {**body, key: max(256, cur // 2)}
                 continue
             raise RuntimeError(
                 "context window full "
@@ -567,7 +597,11 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
             raise Unavailable(
                 f"cannot reach the local model server after {transient + 1} attempts "
                 f"({reason}) — start/restart the local server, then Retry") from None
-    raise RuntimeError(f"context overflow persisted after {_rounds} rounds: {detail}")
+    # Named from the LAST verdict, not from the branch that usually spends the rounds: a loop
+    # that ran out adapting the body reported a context overflow that never happened, and the
+    # server's real complaint (which was right there in `detail`) read as noise after it.
+    raise RuntimeError(f"the endpoint refused every attempt after {_rounds} rounds "
+                       f"({(v.reason.value if v else 'unknown')}): {detail}")
 
 
 def _emit(sink, on_event, event):
@@ -822,12 +856,12 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                                      "content": config.STEER_MESSAGE.format(instruction=instruction)})
                     _emit(sink, on_event, {"type": "otto-steer", "text": instruction,
                                            "delivered": True})
-            body = {"model": m["model"], "temperature": 0,
-                    "max_tokens": config.LOCAL_EXEC_MAX_TOKENS, "messages": _wire(messages)}
-            if effort_level:
-                body["reasoning_effort"] = effort_level
-            if tools:
-                body["tools"] = tools
+            # gateway.chat_body, never a literal dict: the parameter NAMES are per-endpoint
+            # (issue #10 — OpenAI's newer models reject `max_tokens` and a non-default
+            # `temperature`), and a body built here would speak a dialect the other three
+            # call sites had already learned was wrong.
+            body = gateway.chat_body(m, _wire(messages), config.LOCAL_EXEC_MAX_TOKENS,
+                                     reasoning_effort=effort_level or None, tools=tools or None)
             data, compacted = _chat_step(m, body,
                                          min(config.LOCAL_EXEC_TIMEOUT_S,
                                              max(1, deadline - time.time())), deadline=deadline)
