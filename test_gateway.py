@@ -4647,7 +4647,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 68173 for the one-body-builder rule: four call sites each hardcoded the OpenAI
     # parameter NAMES, and the fifth would fail the same way — only against an endpoint no test
     # here can reach, so the rule is the only thing that can stop it being written again.
-    MAX_RULES_BYTES = 68173   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 68444 for the monotone-adaptation rule: obeying an endpoint's OWN suggested remedy made
+    # the rewrite two-directional, so two mutually-rejected bodies alternated until the round
+    # budget died — under a message naming a cause ("context overflow") that never happened.
+    MAX_RULES_BYTES = 68444   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -5432,21 +5435,39 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertIs(v.action, self.ec.Action.adapt)
         self.assertEqual(v.quirk, self.ec.QUIRK_NO_REASONING_EFFORT)
 
-    def test_the_reasoning_quirk_is_none_WITH_tools_and_absent_without(self):
-        """The asymmetry is the whole point, and it is not a style choice either way.
-
-        With tools, `'none'` is the literal the server named: dropping the parameter leaves the
-        model's OWN default effort in play and reaches the identical 400 — and every agentic
-        turn sends tools, so a drop would make the quirk inert exactly where it fires. Without
-        tools the model reasons fine, so the operator's picked effort is kept rather than
-        silently downgraded endpoint-wide to the cheapest reasoning the model has."""
+    def test_the_reasoning_quirk_drops_with_tools_and_is_inert_without(self):
+        """It does NOT take the server's own advice. gpt-6-astra says "set reasoning_effort to
+        \'none\'" and then rejects that literal ("Supported values are: \'low\', \'medium\',
+        \'high\', and \'xhigh\'"), so obeying it oscillates. Dropping is the only move that
+        can\'t. Tool-free calls keep the operator\'s effort — the model reasons fine there, and
+        an endpoint-wide downgrade would silently spend every one of them at the cheapest
+        reasoning the model has."""
         m = dict(self.m, quirks=[self.ec.QUIRK_NO_REASONING_EFFORT])
         with_tools = gateway.chat_body(m, [], 8, reasoning_effort="high",
                                        tools=[{"type": "function"}])
-        self.assertEqual(with_tools["reasoning_effort"], "none")
+        self.assertNotIn("reasoning_effort", with_tools)
         self.assertTrue(with_tools["tools"])            # the tools are what we came for
         tool_free = gateway.chat_body(m, [], 8, reasoning_effort="high")
         self.assertEqual(tool_free["reasoning_effort"], "high")
+
+    def test_every_adaptation_is_monotone(self):
+        """The property `adapt_body`\'s None bound actually rests on, asserted directly. An
+        adaptation that can restore what an earlier round removed cannot be bounded at all: the
+        first `reasoning_effort` fix set \'none\', the endpoint refused \'none\', the next round
+        dropped it, the round after that set it back — ten rounds, then a run that died
+        reporting a context overflow that never happened (run web-43486ee8)."""
+        for q in self.ec.QUIRKS:
+            with self.subTest(quirk=q):
+                body = {"model": "g6", "messages": [], "max_tokens": 8, "temperature": 0,
+                        "reasoning_effort": "high", "tools": [{"type": "function"}]}
+                seen, steps = [dict(body)], 0
+                while (nxt := gateway.adapt_body(body, q)) is not None:
+                    steps += 1
+                    self.assertNotIn(nxt, seen, f"{q} re-created an earlier body")
+                    self.assertLess(steps, 4, f"{q} never settles")
+                    seen.append(dict(nxt))
+                    body = nxt
+                self.assertGreaterEqual(steps, 1, f"{q} changed nothing at all")
 
     def test_a_rename_needs_both_names_present(self):
         """Anchored on the server naming the problem AND the replacement. An overflow message
@@ -5602,8 +5623,55 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertEqual(final["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS)
         self.assertNotIn("max_tokens", final)
         self.assertNotIn("temperature", final)
-        self.assertEqual(final["reasoning_effort"], "none")
+        self.assertNotIn("reasoning_effort", final)
         self.assertTrue(final["tools"])
+
+    def test_a_refusal_no_rewrite_can_fix_walls_to_claude_instead_of_spinning(self):
+        """gpt-6-astra cannot run function tools on /chat/completions at all — it points at
+        /v1/responses, which Otto does not speak. That is the EXISTING tool-call wall, and it
+        must be reached: walling re-dispatches the run to Claude, where spinning burned ten
+        rounds and surfaced the wrong diagnosis entirely."""
+        pair = (b'{"error":{"message":"Function tools with reasoning_effort are not supported '
+                b'for gpt-6-astra in /v1/chat/completions. To use function tools, use '
+                b'/v1/responses.","param":"reasoning_effort","code":null}}')
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            raise self._400(pair)          # refuses with AND without reasoning_effort
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=["Read"], model_entry=self.m,
+                                     effort="high")
+        self.assertTrue(out["is_error"])
+        self.assertTrue(out["tools_unsupported"])      # -> local_incapable -> Claude
+        self.assertEqual(out["wall_reason"], self.ec.Reason.tools_unsupported.value)
+        self.assertLess(len(sent), 5, "spun instead of walling")
+        # And the remedy fits the endpoint that refused: "start vLLM with --enable-auto-tool-
+        # choice" is useless to someone whose endpoint is api.openai.com.
+        self.assertNotIn("vLLM", out["result"])
+        self.assertIn("different execution model", out["result"])
+
+    def test_the_vllm_tool_refusal_keeps_its_own_remedy(self):
+        """The other server saying the other thing. One wall, two remedies — a wall naming the
+        wrong one is worse than a generic one, because the operator acts on it."""
+        self.assertIn("--enable-auto-tool-choice",
+                      self.ec.tools_refused_message("must start with --enable-auto-tool-choice"))
+        self.assertIn("--enable-auto-tool-choice", self.ec.tools_refused_message(""))
+
+    def test_giving_up_names_the_reason_it_actually_gave_up_on(self):
+        """The message that cost a debugging round: a loop that exhausted its budget adapting
+        the body announced a context overflow, and the server's real complaint read as noise
+        trailing behind a wrong headline."""
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            raise self._400(b'{"error":{"message":"some 400 nothing here recognises"}}')
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.m)
+        self.assertTrue(out["is_error"])
+        self.assertNotIn("context overflow", out["result"])
+        self.assertIn("some 400 nothing here recognises", out["result"])
 
     def test_the_overflow_halving_uses_the_endpoints_own_key(self):
         """The 4th site the ticket did not list. `_chat_step` halves the output budget BY NAME;

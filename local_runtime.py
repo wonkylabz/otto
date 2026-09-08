@@ -484,6 +484,7 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
     the wire body meant every later turn rebuilt the full history and re-paid the same 400,
     and the session saved to disk kept growing, so every future resume re-paid it too."""
     detail, max_len, prompt_tokens = "", 0, 0
+    v = None          # the last verdict, so the give-up message names what actually happened
     transient = 0
     compacted = None   # the history as it had to be shrunk to fit — handed back to the caller
     for _ in range(max(1, _rounds)):
@@ -503,10 +504,17 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
                 if adapted is not None:
                     body = adapted
                     continue
+                # Every rewrite we know is already in this body and the server said the same
+                # thing again — so `adapt` was never the real verdict. Re-read it with the
+                # dialect path closed, or the complaint falls through as an anonymous 400 and
+                # the run spends the ladder on a body that cannot be fixed.
+                v = error_classifier.classify(e.code, detail, adaptable=False)
             if v.reason is error_classifier.Reason.tools_unsupported:
+                # The remedy comes from the server's own words: "start vLLM with
+                # --enable-auto-tool-choice" is useless advice to someone whose endpoint is
+                # api.openai.com and whose model simply cannot take tools here.
                 raise ToolsUnsupported(
-                    "the local model server rejects tool calls — start vLLM with "
-                    "--enable-auto-tool-choice and --tool-call-parser <parser>") from None
+                    error_classifier.tools_refused_message(detail)) from None
             # A deterministic rejection — bad credentials, no credit. Retrying reaches the same
             # answer, so it becomes a wall immediately rather than after the backoffs.
             if v.is_wall:
@@ -579,7 +587,11 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
             raise Unavailable(
                 f"cannot reach the local model server after {transient + 1} attempts "
                 f"({reason}) — start/restart the local server, then Retry") from None
-    raise RuntimeError(f"context overflow persisted after {_rounds} rounds: {detail}")
+    # Named from the LAST verdict, not from the branch that usually spends the rounds: a loop
+    # that ran out adapting the body reported a context overflow that never happened, and the
+    # server's real complaint (which was right there in `detail`) read as noise after it.
+    raise RuntimeError(f"the endpoint refused every attempt after {_rounds} rounds "
+                       f"({(v.reason.value if v else 'unknown')}): {detail}")
 
 
 def _emit(sink, on_event, event):
