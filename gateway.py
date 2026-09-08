@@ -1182,6 +1182,20 @@ def chat_body(m, messages, max_tokens, **extra):
     return body
 
 
+def effective_effort(m, effort, tools=None):
+    """The `reasoning_effort` this endpoint will ACTUALLY be sent — which is not always the one
+    the operator picked, and used to be the difference nothing reported.
+
+    gpt-5.6-terra refuses tools alongside any effort, so `QUIRK_TOOL_REASONING_NONE` pins
+    "none" on every tool-carrying turn: an operator who chose a reasoning model at `high` gets
+    all of its agentic work, the approval plan included, at the model's weakest setting with no
+    tell anywhere. Same failure shape as `--effort`'s unvalidated level, which ran at the default
+    while every layer reported the pick honoured.
+
+    Built by asking `chat_body` rather than restating its rules, so the two cannot drift."""
+    return chat_body(m, [], None, reasoning_effort=effort, tools=tools).get("reasoning_effort")
+
+
 def adapt_body(body, quirk):
     """Rewrite a body for a quirk the server just named, or None when it changes nothing.
 

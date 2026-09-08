@@ -8,6 +8,7 @@ decomposition (`plan_steps`/`replan_steps`), the approval gate's read-only plan 
 """
 import concurrent.futures
 import json
+import os
 import re
 import time
 
@@ -359,6 +360,24 @@ def _pr_branch_note(pr):
         f"will execute on branch `{pr.get('branch')}`, so write the plan as it applies there.\n")
 
 
+def _keep_walled_transcript(transcript, wall):
+    """Move the walled local pass's transcript aside before the Claude re-preview truncates it.
+
+    Both writers open the SAME path `w` (`local_runtime.run_json`, `claude_cli.py`'s
+    `plan_transcript_path`), so the recovery erased its own evidence: `/api/run/detail` showed a
+    clean sonnet-written plan and nothing anywhere said the tier pick had failed. The wall itself
+    only ever reached a trace line in a worker log under /tmp.
+
+    A sibling name, not the canonical one — the board resolves a run's model BY reading the
+    canonical transcript, and that must stay the pass whose plan the human is approving."""
+    if not transcript or not os.path.exists(transcript):
+        return
+    try:
+        os.replace(transcript, transcript.replace(".jsonl", f"-walled-{wall}.jsonl"))
+    except OSError:  # noqa: BLE001 - keeping evidence must never break the gate
+        pass
+
+
 def _local_wall_reason(out):
     """The name of the deterministic wall a local pass hit, or None. Same three signals
     `engine.run_attempt` reads, so which layer noticed a dead endpoint cannot change what it is
@@ -447,6 +466,7 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
         if wall and not resume_session:
             if config.local_fallback_allowed("preview"):
                 trace("PLAN", f"local preview walled ({wall}) — re-previewing on Claude")
+                _keep_walled_transcript(transcript, wall)
                 model, backend, out = _on_claude()
             else:
                 trace("PLAN", f"local preview walled ({wall}); strict mode — no Claude fallback")

@@ -4891,6 +4891,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # expiry nothing in the code says (Temporal deletes a closed execution at the namespace TTL),
     # and the two windows sharing one `limit` reads as obviously fine — between them, completed
     # work silently disappeared off the board and every re-derivation from the code missed both.
+    # -> 70919 for the pre-mortem's three: the sandbox read-deny (it confines WRITES by
+    # construction, so "read-only" read as safe while `cat` handed Otto's API keys to a
+    # third-party endpoint), the recovery that erased its own evidence, and a quirk that
+    # DOWNGRADES rather than drops. All three are cases where the system reported success while
+    # quietly doing something worse — the class no re-derivation from the code ever surfaces.
     # -> 70096: the preview's missing Claude re-dispatch (an approval card with no plan on it,
     # which the ladder's own wall rule would have prevented) and the THIRD `reasoning_effort`
     # spelling — one message, two endpoints, opposite fixes, so the old "only removes or renames"
@@ -4901,7 +4906,7 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # WHY there are two layers is a measurement (78% of a Claude planner's Bash is composed),
     # and without it the sandbox reads as over-engineering next to a working allowlist; and the
     # network bound is what the two layers do NOT do, which no amount of reading them reveals.
-    MAX_RULES_BYTES = 70096   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 70919   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -5798,6 +5803,20 @@ class OpenAiParamDialectTests(unittest.TestCase):
         body = gateway.chat_body(m, [], 8, reasoning_effort="high", tools=[{"type": "function"}])
         self.assertEqual(body["reasoning_effort"], "none")
 
+    def test_the_effort_a_quirk_DOWNGRADES_is_reportable(self):
+        """A learned `tool_reasoning_none` pins the weakest reasoning on every tool-carrying turn
+        — the approval plan included — while the operator's pick still reads as honoured
+        everywhere. `effective_effort` is what lets the transcript and the trace say otherwise;
+        it asks `chat_body` rather than restating its rules, so the two cannot drift."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_TOOL_REASONING_NONE])
+        self.assertEqual(gateway.effective_effort(m, "high", tools=[{"type": "function"}]),
+                         "none")
+        self.assertEqual(gateway.effective_effort(m, "high"), "high")
+        self.assertEqual(gateway.effective_effort(dict(self.m), "high", tools=[1]), "high")
+        src = open("local_runtime.py").read()
+        self.assertIn('"effort_sent": effort_sent', src,
+                      "the transcript cannot say which effort actually served the run")
+
     def test_a_rename_needs_both_names_present(self):
         """Anchored on the server naming the problem AND the replacement. An overflow message
         that happened to mention max_completion_tokens would otherwise rename a parameter that
@@ -6552,6 +6571,37 @@ class LocalPlanModeTests(unittest.TestCase):
             local_runtime._bwrap_argv, local_runtime._SANDBOX = saved_probe, saved_cache
         self.assertFalse(os.path.exists(local_runtime._SANDBOX_PROBE),
                          "the probe leaves its file on the host when confinement is broken")
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_sandbox_also_enforces_the_READ_deny_set(self):
+        """The sandbox is a WRITE guard by construction, and "read-only" reads as safe when it is
+        not: `_read_guard` covers the Read tool, so `Read data/models.json` was refused while
+        `cat data/models.json` returned the endpoint API keys — into the context of what is, on
+        this path, a THIRD-PARTY model endpoint. The local plan pass had no shell at all before
+        the sandbox, so this is exposure the sandbox itself introduced."""
+        state = os.path.join(config.DATA_DIR, "models.json")
+        if not os.path.exists(state):
+            self.skipTest("no models.json in this data dir")
+        out = local_runtime._run_tool("Bash", {"command": f"cat {state}"}, None, {"Bash"}, None,
+                                      bash_mode="sandbox")
+        self.assertNotIn("base_url", out, "the sandbox handed Otto's state to the model")
+        self.assertNotIn("api_key", out)
+        # ...and the repo around it is still readable, or the planner has nothing to plan from.
+        readme = local_runtime._run_tool("Bash", {"command": "cat CLAUDE.md"},
+                                         os.path.dirname(config.DATA_DIR.rstrip("/")),
+                                         {"Bash"}, None, bash_mode="sandbox")
+        self.assertIn("Otto", readme)
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_read_deny_masks_honour_the_cwd_EXEMPTION(self):
+        """`file_safety` exempts a run whose cwd IS Otto's own checkout — otherwise Otto working
+        on itself cannot read its own tree. The mask must not be stricter than the rule it
+        enforces, or repo-mode on this repo dies inside the sandbox."""
+        root = os.path.dirname(config.DATA_DIR.rstrip("/"))
+        self.assertEqual(file_safety.read_denied_globs(allow_cwd=root), [])
+        self.assertEqual(local_runtime._read_deny_mounts(cwd=root), [])
+        self.assertTrue(local_runtime._read_deny_mounts(cwd=None),
+                        "an unanchored run got no masks at all")
 
     # --- layer 2: the allowlist fallback -----------------------------------------------
 

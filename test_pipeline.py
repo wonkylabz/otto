@@ -1546,6 +1546,32 @@ class PlanPreviewLocalSessionTests(unittest.TestCase):
         self.assertEqual(self.claude_calls[0].get("permission_mode"), "plan")
         self.assertEqual(out["plan"], "1. do the thing")
 
+    def test_the_walled_transcript_is_KEPT_not_overwritten(self):
+        """Both writers open the same path `w`, so the recovery erased its own evidence: run
+        detail showed a clean sonnet-written plan and nothing said the tier pick had failed."""
+        import claude_cli
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        canonical = claude_cli.plan_transcript_path("web-walled")
+        os.makedirs(os.path.dirname(canonical), exist_ok=True)
+        with open(canonical, "w") as f:
+            f.write('{"type": "otto-meta", "runtime": "local"}\n')
+        try:
+            self._walling_local(tools_unsupported=True)
+            engine.plan_preview("add a retry", self.cap, wid="web-walled")
+            kept = canonical.replace(".jsonl", "-walled-tools_unsupported.jsonl")
+            self.assertTrue(os.path.exists(kept), "the local wall's transcript was erased")
+            self.assertIn("local", open(kept).read())
+            self.assertEqual(len(self.claude_calls), 1)
+            # The CANONICAL path stays the pass whose plan the human approves — the board
+            # resolves a run's model by reading it.
+            self.assertEqual(self.claude_calls[0]["transcript"], canonical)
+        finally:
+            for p in (canonical, canonical.replace(".jsonl",
+                                                   "-walled-tools_unsupported.jsonl")):
+                if os.path.exists(p):
+                    os.unlink(p)
+
     def test_every_wall_signal_the_ladder_reads_is_read_here_too(self):
         """Which layer noticed a dead endpoint must not change what it is called, or the preview
         recovers from one shape of wall and silently not from another."""

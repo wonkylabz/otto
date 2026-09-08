@@ -46,6 +46,7 @@ import error_classifier
 import file_safety
 import gateway
 import mcp_client
+from ui import trace
 
 SESSIONS = os.path.join(config.DATA_DIR, "local-sessions")
 
@@ -150,13 +151,43 @@ _SANDBOX = None
 _SANDBOX_PROBE = "/var/tmp/.otto-sandbox-probe"
 
 
+def _read_deny_mounts(cwd=None):
+    """bwrap mounts that make `file_safety`'s READ deny-set unreadable inside the sandbox.
+
+    Without these the sandbox is a WRITE guard only, and "read-only" reads as safe when it is
+    not: `_read_guard` covers the Read tool, so `Read data/models.json` is refused while
+    `cat data/models.json` returns the endpoint API keys in plaintext — into the context of a
+    model that is, on this path, a THIRD-PARTY endpoint. The local plan pass had no shell before
+    the sandbox existed, so this is exposure the sandbox itself introduced.
+
+    A directory glob is masked with an empty tmpfs; a file is bound over /dev/null (measured:
+    the read comes back "Permission denied", which is the honest answer — the file exists and
+    this pass may not have it). `read_denied_globs` already returns [] when
+    the run is entitled to Otto's state (cwd IS Otto's checkout), so that case needs nothing
+    here."""
+    mounts = []
+    for pattern in file_safety.read_denied_globs(allow_cwd=cwd):
+        if pattern.endswith("/**"):
+            targets = [pattern[:-3]]
+        else:
+            targets = sorted(globmod.glob(pattern))
+        for path in targets:
+            if os.path.isdir(path):
+                mounts += ["--tmpfs", path]
+            elif os.path.isfile(path):
+                mounts += ["--ro-bind", "/dev/null", path]
+    return mounts
+
+
 def _bwrap_argv(command, cwd=None):
-    """Read-only root, a throwaway tmpfs on /tmp, network left alone. `--chdir` is the trap: the
-    tmpfs MASKS anything under /tmp, so a run whose cwd lives there (tests, a scratch clone) died
-    with "Can't chdir" before it ran a thing. Re-bind such a cwd read-only AFTER the tmpfs —
-    later mounts win — so the tree is still visible and still unwritable."""
+    """Read-only root, a throwaway tmpfs on /tmp, Otto's own state masked, network left alone.
+
+    `--chdir` is the trap: the tmpfs MASKS anything under /tmp, so a run whose cwd lives there
+    (tests, a scratch clone) died with "Can't chdir" before it ran a thing. Re-bind such a cwd
+    read-only AFTER the tmpfs — later mounts win — so the tree is still visible and unwritable."""
     argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
             "--tmpfs", "/tmp", "--unshare-pid", "--die-with-parent"]
+    argv += _read_deny_mounts(cwd)
     if cwd and os.path.realpath(cwd).startswith("/tmp/"):
         real = os.path.realpath(cwd)
         argv += ["--ro-bind", real, real]
@@ -170,7 +201,13 @@ def sandbox_available():
     """True when a read-only `bwrap` shell actually works here — PROBED, never assumed from the
     binary being on PATH. `bwrap` installs fine on a host with unprivileged user namespaces
     disabled, where every invocation fails at runtime; believing PATH there would turn the whole
-    plan pass into an error loop instead of falling back. Cached for the process."""
+    plan pass into an error loop instead of falling back.
+
+    Cached for the process, so a worker that starts during a transient userns failure serves the
+    allowlist for its whole life and never re-probes. Accepted: the two modes are recorded per
+    run (`bash_mode` in the transcript meta), so the degradation is visible where it matters
+    rather than silent — and a restart is the existing remedy for every other worker-scoped
+    latch."""
     global _SANDBOX
     if _SANDBOX is None:
         _SANDBOX = False
@@ -996,6 +1033,10 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
 
     # A scoped Bash grant marks this as the READ-ONLY PLAN PASS. Sandbox if the kernel will do
     # it, else the argv allowlist. A bare "Bash" (every execution grant) stays unrestricted.
+    #   KNOWN, and fine only while PLAN_TOOLS is the sole caller: the grant enforced is the plan
+    # ruleset (or, sandboxed, a whole shell), NOT the specific rules the allowlist named. A
+    # future caller passing only `Bash(gh pr view:*)` would be handed more than it asked for —
+    # widen this into a per-caller grant before adding one, rather than after.
     _bare_bash, _scoped = config.scoped_bash_rules(allowed_tools)
     bash_mode, bash_rules = None, None
     if _scoped and not _bare_bash:
@@ -1006,6 +1047,16 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     if "Bash" not in offered_names:
         bash_mode, bash_rules = None, None
 
+    # What the endpoint will actually be sent, which a learned quirk can differ from what was
+    # asked for. Recorded in the meta line beside `effort`, and traced ONCE per run when they
+    # disagree — the alternative is a reasoning model quietly doing every tool-using turn, the
+    # approval plan included, at its weakest setting with nothing saying so.
+    effort_sent = gateway.effective_effort(m, effort_level, tools=tools or None)
+    if effort_sent != effort_level:
+        trace("LOCAL", f"{m.get('name') or m.get('model')}: effort "
+                       f"{effort_level or 'default'} -> {effort_sent or 'unset'} "
+                       f"(endpoint quirk on tool-carrying turns)")
+
     sink = None
     if transcript:
         gc_sessions()
@@ -1015,6 +1066,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         _emit(sink, None, {"type": "otto-meta", "prompt": prompt, "model": m.get("model"),
                            "cwd": cwd, "at": time.time(), "runtime": "local",
                            "tools": sorted(offered_names), "bash_mode": bash_mode,
+                           "effort": effort_level, "effort_sent": effort_sent,
                            "mcp": sorted(mcp_servers or []) if mcp else [],
                            "mcp_errors": (mcp.errors if mcp else {}),
                            "mcp_trimmed": (mcp.trimmed if mcp else 0),
