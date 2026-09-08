@@ -4644,10 +4644,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 67920 for the derived-busy rule: a conversation's in-flight flag was cleared on
     # DELIVERY only, so every terminal path that skipped delivery silently deafened a DM for the
     # whole stale window — invisible from the poller, which reads a flag that looks authoritative.
-    # -> 68199 for the one-body-builder rule: four call sites each hardcoded the OpenAI
+    # -> 68173 for the one-body-builder rule: four call sites each hardcoded the OpenAI
     # parameter NAMES, and the fifth would fail the same way — only against an endpoint no test
     # here can reach, so the rule is the only thing that can stop it being written again.
-    MAX_RULES_BYTES = 68199   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 68173   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -5353,6 +5353,13 @@ class OpenAiParamDialectTests(unittest.TestCase):
         b'{"error":{"message":"Unsupported value: \'temperature\' does not support 0 with this '
         b'model. Only the default (1) is supported.","type":"invalid_request_error",'
         b'"param":"temperature","code":"unsupported_value"}}')
+    # Reported live on run web-43486ee8 after the first two were fixed. Note the shape: it is
+    # not "we don't take reasoning_effort" — it is "not that PAIR", and it names the fix.
+    REASONING_400 = (
+        b'{"error":{"message":"Function tools with reasoning_effort are not supported for '
+        b'gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set '
+        b'reasoning_effort to \'none\'.","type":"invalid_request_error",'
+        b'"param":"reasoning_effort","code":null}}')
 
     class _Resp:
         """Just enough of an http response for `with urlopen(...) as r: r.read()`."""
@@ -5420,6 +5427,27 @@ class OpenAiParamDialectTests(unittest.TestCase):
         # Prose that merely discusses the word, with no quoted parameter and no refusal.
         self.assertIsNone(self.ec.param_quirk("the temperature outside does not support life"))
 
+    def test_the_tools_plus_reasoning_400_is_recognised(self):
+        v = self.ec.classify(400, self.REASONING_400.decode())
+        self.assertIs(v.action, self.ec.Action.adapt)
+        self.assertEqual(v.quirk, self.ec.QUIRK_NO_REASONING_EFFORT)
+
+    def test_the_reasoning_quirk_is_none_WITH_tools_and_absent_without(self):
+        """The asymmetry is the whole point, and it is not a style choice either way.
+
+        With tools, `'none'` is the literal the server named: dropping the parameter leaves the
+        model's OWN default effort in play and reaches the identical 400 — and every agentic
+        turn sends tools, so a drop would make the quirk inert exactly where it fires. Without
+        tools the model reasons fine, so the operator's picked effort is kept rather than
+        silently downgraded endpoint-wide to the cheapest reasoning the model has."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_NO_REASONING_EFFORT])
+        with_tools = gateway.chat_body(m, [], 8, reasoning_effort="high",
+                                       tools=[{"type": "function"}])
+        self.assertEqual(with_tools["reasoning_effort"], "none")
+        self.assertTrue(with_tools["tools"])            # the tools are what we came for
+        tool_free = gateway.chat_body(m, [], 8, reasoning_effort="high")
+        self.assertEqual(tool_free["reasoning_effort"], "high")
+
     def test_a_rename_needs_both_names_present(self):
         """Anchored on the server naming the problem AND the replacement. An overflow message
         that happened to mention max_completion_tokens would otherwise rename a parameter that
@@ -5428,11 +5456,19 @@ class OpenAiParamDialectTests(unittest.TestCase):
 
     def test_every_quirk_is_something_adapt_body_can_apply(self):
         """The two lists are one contract: a name in QUIRKS that adapt_body ignores is a quirk
-        that classifies, learns, changes nothing, and dead-ends the retry."""
-        body = {"model": "g6", "max_tokens": 8, "temperature": 0}
+        that classifies, learns, changes nothing, and dead-ends the retry.
+
+        The fixture is a FULL body — every parameter a real agentic turn sends — because that
+        is what the server is complaining about; a minimal one would let a quirk pass by having
+        nothing to act on."""
+        body = {"model": "g6", "messages": [], "max_tokens": 8, "temperature": 0,
+                "reasoning_effort": "high", "tools": [{"type": "function"}]}
         for q in self.ec.QUIRKS:
             with self.subTest(quirk=q):
                 self.assertIsNotNone(gateway.adapt_body(body, q))
+        # ...and tool-free, where the reasoning quirk's only move is to stop sending it.
+        tool_free = {k: v for k, v in body.items() if k != "tools"}
+        self.assertIsNotNone(gateway.adapt_body(tool_free, self.ec.QUIRK_NO_REASONING_EFFORT))
 
     # --- the body builder --------------------------------------------------------------
 
@@ -5543,6 +5579,31 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertNotIn("max_tokens", sent[1])
         self.assertEqual(sent[1]["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS)
         self.assertTrue(sent[1]["tools"])
+
+    def test_the_agentic_runtime_survives_all_three_refusals_in_one_run(self):
+        """The reported sequence, in order: the model rejects max_tokens, then temperature, then
+        the tools+reasoning_effort pair. Fixing any two still leaves the run dead — which is how
+        this one was reported twice (issue #10, then run web-43486ee8)."""
+        sent = []
+        rejects = [self.MAX_TOKENS_400, self.TEMPERATURE_400, self.REASONING_400]
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) <= len(rejects):
+                raise self._400(rejects[len(sent) - 1])
+            return {"choices": [{"message": {"role": "assistant", "content": "hello"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("hi", allowed_tools=["Read"], model_entry=self.m,
+                                     effort="high")
+        self.assertFalse(out["is_error"], out.get("result"))
+        self.assertEqual(out["result"], "hello")
+        final = sent[-1]
+        self.assertEqual(final["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS)
+        self.assertNotIn("max_tokens", final)
+        self.assertNotIn("temperature", final)
+        self.assertEqual(final["reasoning_effort"], "none")
+        self.assertTrue(final["tools"])
 
     def test_the_overflow_halving_uses_the_endpoints_own_key(self):
         """The 4th site the ticket did not list. `_chat_step` halves the output budget BY NAME;

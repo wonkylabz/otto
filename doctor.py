@@ -151,6 +151,8 @@ def _probe_tool_calls(m, gateway):
     import json
     import urllib.error
     import urllib.request
+
+    import error_classifier
     tool = {"type": "function", "function": {
         "name": "noop", "description": "capability probe",
         "parameters": {"type": "object", "properties": {}}}}
@@ -159,7 +161,7 @@ def _probe_tool_calls(m, gateway):
     # this check would report "unverified" for a model that accepts tools perfectly well. The
     # retry below adapts to whatever dialect the server names, exactly like the run paths.
     body = gateway.chat_body(m, [{"role": "user", "content": "hi"}], 1, tools=[tool])
-    for _ in range(3):
+    for _ in range(len(error_classifier.QUIRKS) + 1):
         req = urllib.request.Request(m["base_url"].rstrip("/") + "/chat/completions",
                                      data=json.dumps(body).encode(),
                                      headers=gateway.request_headers(m))

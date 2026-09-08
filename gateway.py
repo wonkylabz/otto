@@ -1110,7 +1110,26 @@ def chat_body(m, messages, max_tokens, **extra):
     if max_tokens is not None:
         body[token_key(m)] = max_tokens
     body.update({k: v for k, v in extra.items() if v is not None})
+    if error_classifier.QUIRK_NO_REASONING_EFFORT in q:
+        _no_reasoning_effort(body)
     return body
+
+
+def _no_reasoning_effort(body):
+    """Apply the reasoning-effort quirk in place, and True when it changed anything.
+
+    Deliberately asymmetric, because the refusal is: this endpoint will not take `tools` and a
+    reasoning effort TOGETHER, and it names `'none'` as the fix. With tools that literal is the
+    only thing that satisfies it — dropping the parameter leaves the model's own default effort
+    in play and reaches the same 400. Without tools the model reasons perfectly well, so the
+    effort the operator picked is kept: an endpoint-wide downgrade to 'none' would silently
+    spend every tool-free call at the cheapest reasoning the model has."""
+    if not body.get("tools"):
+        return False
+    if body.get("reasoning_effort") == "none":
+        return False
+    body["reasoning_effort"] = "none"
+    return True
 
 
 def adapt_body(body, quirk):
@@ -1125,6 +1144,11 @@ def adapt_body(body, quirk):
             out[error_classifier.QUIRK_MAX_COMPLETION_TOKENS] = out.pop("max_tokens")
     elif quirk == error_classifier.QUIRK_DEFAULT_TEMPERATURE:
         out.pop("temperature", None)
+    elif quirk == error_classifier.QUIRK_NO_REASONING_EFFORT:
+        # No tools in this body, so the pair the server refused isn't what we sent — the only
+        # move left is to stop sending the parameter at all.
+        if not _no_reasoning_effort(out):
+            out.pop("reasoning_effort", None)
     else:
         return None
     return out if out != body else None

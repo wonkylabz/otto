@@ -185,8 +185,9 @@ def wall_message(reason_value):
 # by itself, so it must not latch the ladder off local or light the health badge.
 QUIRK_MAX_COMPLETION_TOKENS = "max_completion_tokens"
 QUIRK_DEFAULT_TEMPERATURE = "default_temperature"
+QUIRK_NO_REASONING_EFFORT = "no_reasoning_effort"
 
-QUIRKS = (QUIRK_MAX_COMPLETION_TOKENS, QUIRK_DEFAULT_TEMPERATURE)
+QUIRKS = (QUIRK_MAX_COMPLETION_TOKENS, QUIRK_DEFAULT_TEMPERATURE, QUIRK_NO_REASONING_EFFORT)
 
 
 def param_quirk(detail):
@@ -205,6 +206,15 @@ def param_quirk(detail):
     # positive is silently sampling at temperature 1 for the rest of the process.
     if "'temperature'" in d and ("does not support" in d or "unsupported" in d):
         return QUIRK_DEFAULT_TEMPERATURE
+    # "Function tools with reasoning_effort are not supported for gpt-6-astra in
+    # /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to
+    # 'none'." Note what this one is NOT: reasoning_effort is fine on this model, and tools are
+    # fine on this model — only the PAIR is refused, and the server names the fix. So the
+    # adaptation is not a drop (see gateway.adapt_body); every agentic turn sends tools, so a
+    # drop would leave the model's own default effort in play and reach the same 400.
+    if "reasoning_effort" in d and ("not supported" in d or "unsupported" in d
+                                    or "does not support" in d):
+        return QUIRK_NO_REASONING_EFFORT
     return None
 
 
