@@ -6755,20 +6755,20 @@ function modelsSection(m){
   const pname=p=>p.provider==="claude"?(p.name.replace(/^claude[-\s]?/i,"")||p.name):p.name;
   const radio=(p,phase)=>{
     const nonClaude=p.provider!=="claude";   // TRANSPORT: dispatched over OpenAI-compatible HTTP
-    // A non-Claude pick on PREVIEW is a silent substitution: only `claude -p --permission-mode
-    // plan` can write one, so gateway.preview_model_id degrades to sonnet while the radio keeps
-    // showing a model that never ran. A TRANSPORT limit, not a class one — hosted is refused
-    // like local, and the copy says "Claude only", never "local". memory_gc is HALF servable
-    // (batch classifier yes, live tool-check no), so that one is warned, not disabled.
-    let title='', dis='';
+    // PREVIEW used to be DISABLED for a non-Claude model: only `claude -p --permission-mode
+    // plan` could write a plan, so a pick there was a silent substitution — sonnet ran, the
+    // radio kept showing the model that never did. Otto now has plan mode of its own on the
+    // local backend (plans._local_preview), so the pick is real and only needs a warning: this
+    // is the one phase with no verify rung above it, and its output is what a human approves.
+    // memory_gc is HALF servable (batch classifier yes, live tool-check no), so it warns too.
+    let title='';
     if(nonClaude && phase==="execution")
       title=' title="runs execution on Otto&#39;s own agent runtime (OpenAI tool-calling) instead of claude -p — no Claude escalation: retries stay on this model. Caps needing a repo .mcp.json stay on Claude."';
-    else if(nonClaude && phase==="preview"){
-      dis=' disabled';
-      title=' title="unavailable: the approval preview runs claude -p --permission-mode plan, so it runs on Claude only — no OpenAI-compatible model, local or hosted, can serve it. Picking one here would silently run sonnet instead and still show this model."';
-    } else if(nonClaude && phase==="memory_gc")
+    else if(nonClaude && phase==="preview")
+      title=' title="writes the approval plan on Otto&#39;s own read-only tool loop instead of claude -p --permission-mode plan (same Read/Grep/Glob + scoped gh reads, enforced by Otto). This phase has NO retry ladder above it and its output is what you approve — a weak model here is signed, not caught."';
+    else if(nonClaude && phase==="memory_gc")
       title=' title="the batch classifier runs on this model; the live tool-verification turn cannot (it needs claude -p with read-only tools) and falls back to sonnet."';
-    return `<span class="rc"><input type="radio" name="as-${phase}" value="${esc(p.name)}" ${m.assign[phase]===p.name?'checked':''}${dis}${title}></span>`;
+    return `<span class="rc"><input type="radio" name="as-${phase}" value="${esc(p.name)}" ${m.assign[phase]===p.name?'checked':''}${title}></span>`;
   };
   const PHASE_HELP=[
     ["Route","Router #1 — picks which capability handles the request (LLM choice over the catalogue)"],

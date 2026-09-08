@@ -1453,17 +1453,79 @@ class PlanPreviewLocalSessionTests(unittest.TestCase):
                          "every gated follow-up leaks a session file")
 
     def test_the_local_preview_can_mutate_nothing(self):
-        # `--permission-mode plan` has no local equivalent, so read-only rests entirely on the
-        # tool set. `_offered_tools` matches literal names, so PLAN_TOOLS' three scoped
-        # `Bash(gh … view:*)` rules are never offered — and unscoped Bash must not appear either,
-        # since this runtime does not permission-scope Bash at all.
+        """`--permission-mode plan` has no local equivalent, so read-only is the tool set plus
+        `bash_refusal`. The FULL PLAN_TOOLS goes through — narrowing to Read/Grep/Glob (what this
+        did before the refusal guard existed) is what left a ticket-driven request planned by a
+        model that could not read its ticket."""
         engine.plan_preview("apply the review comments", self.cap, resume_session=self.sid)
         self.assertEqual(self.local_calls[0]["allowed_tools"], config.PLAN_TOOLS)
         offered = {t["function"]["name"]
                    for t in local_runtime._offered_tools(config.PLAN_TOOLS)}
         self.assertTrue(offered, "the local preview was handed no tools at all")
-        self.assertEqual(offered - {"Read", "Grep", "Glob"}, set(),
+        self.assertEqual(offered - {"Read", "Grep", "Glob", "Bash"}, set(),
                          "the local plan preview can act before the human approves anything")
+        self.assertIn("Bash", offered,
+                      "the scoped gh reads were dropped — a ticket-driven task plans blind")
+        # …and the Bash it gets is the scoped one, refusing anything the rules don't name.
+        _, rules = config.scoped_bash_rules(config.PLAN_TOOLS)
+        for cmd in ("gh pr create -t x", "rm -rf /tmp/x", "gh pr view 1 > /tmp/x",
+                    "gh pr view 1; touch /tmp/x"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, rules), cmd)
+        self.assertIsNone(local_runtime.bash_refusal("gh issue view 12 --json body", rules))
+
+    def test_a_FRESH_preview_follows_the_TIER_not_the_session(self):
+        """The other half of the same seam: with no session to inherit, the preview dispatches on
+        the `preview` tier's TRANSPORT, exactly as execution dispatches on `exec_model_entry`.
+        This is what makes the Admin PLAN radio a real setting rather than a label — it used to
+        be repointed to sonnet in the store and disabled in the UI."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        out = engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertEqual(self.claude_calls, [], "the tier pick was ignored and sonnet ran")
+        self.assertEqual(len(self.local_calls), 1)
+        self.assertEqual(self.local_calls[0]["model_entry"]["name"], "local-flash")
+        self.assertIsNone(self.local_calls[0]["resume_session"],
+                          "a fresh preview must not resume anything")
+        self.assertEqual(out["plan"], "1. do the thing locally")
+
+    def test_a_CLAUDE_tier_pick_still_runs_plan_mode(self):
+        """The control: opening the radio must not divert the path that was always correct."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "claude-tier"}}
+        engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertEqual(self.local_calls, [])
+        self.assertEqual(self.claude_calls[0].get("permission_mode"), "plan")
+        self.assertEqual(self.claude_calls[0].get("allowed_tools"), config.PLAN_TOOLS)
+
+    def test_a_fresh_local_preview_leaves_no_session_behind(self):
+        """Nothing resumes a plan, and the runtime saves every turn it takes. A preview that
+        keeps its session leaks one file per gated run — and worse, invites a later resume of a
+        history whose only content is the plan instruction."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        real_save = local_runtime._save_session
+
+        def fake_local(prompt, **kw):
+            sid = kw.get("resume_session") or "local-freshpreview1"
+            self.local_calls.append({**kw, "fork_history": None, "fork_existed": False})
+            real_save(sid, [{"role": "user", "content": "plan pass"}])
+            return {"result": "1. plan", "is_error": False, "total_cost_usd": 0,
+                    "session_id": sid, "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+        local_runtime.run_json = fake_local
+        engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertFalse(os.path.exists(local_runtime.session_path("local-freshpreview1")),
+                         "the fresh local preview leaked its session")
+
+    def test_the_local_preview_writes_a_transcript_too(self):
+        """The board resolves a run's model chip BY reading the transcript, so a preview that
+        writes none leaves the chip blank for the whole (up to 15-minute) phase — and which
+        backend served it must not decide whether the board works."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        engine.plan_preview("add a retry", self.cap, wid="web-planlocal")
+        self.assertEqual(self.local_calls[0]["transcript"],
+                         claude_cli.plan_transcript_path("web-planlocal"))
 
     def test_no_local_model_left_yields_no_plan_rather_than_a_doomed_claude_resume(self):
         gateway.load = lambda: {"pool": [{"name": "claude-tier", "provider": "claude",

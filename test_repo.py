@@ -1887,10 +1887,13 @@ class PreviewModelTierTests(unittest.TestCase):
             gateway.preview_model_id(self._cfg("claude-haiku", preview="claude-opus")),
             "claude-opus-4-8")
 
-    def test_a_local_preview_model_degrades_to_sonnet(self):
-        """Plan mode cannot run a local model at all, so it must fall back."""
+    def test_preview_model_id_is_the_CLAUDE_half_and_still_degrades(self):
+        """`preview_model_id` feeds the `claude -p` dispatch only, exactly like `exec_model_id`:
+        a non-Claude assignment does not resolve there. Which BACKEND runs is
+        `preview_model_entry`'s answer, and it hands back the real pick."""
         self.assertEqual(gateway.preview_model_id(self._cfg("ds", preview="ds")),
                          "claude-sonnet-5")
+        self.assertEqual(gateway.preview_model_entry(self._cfg("ds", preview="ds"))["name"], "ds")
 
     def test_no_fallback_ever_lands_on_haiku(self):
         """Two mistakes bracket this: 'first pool entry' meant OPUS by default (every run on a
@@ -1914,24 +1917,25 @@ class PreviewModelTierTests(unittest.TestCase):
     def test_plan_preview_reads_the_preview_tier(self):
         src = open("plans.py").read()
         self.assertIn("gateway.preview_model_id()", src)
+        self.assertIn("gateway.preview_model_entry()", src)
         self.assertNotIn("gateway.exec_model_id(cap.name), None", src)
 
-    def test_the_store_never_keeps_a_local_preview_assignment(self):
-        """The degradation was correct but INVISIBLE: `preview_model_id` substituted sonnet while
-        the store, `/api/models` and the Admin radio all went on naming the local model, so an
-        operator watched every plan come back sonnet-shaped with qwen ticked (user-observed).
-        `_normalize` repoints it, so the recorded setting matches what actually runs."""
+    def test_the_store_now_KEEPS_a_local_preview_assignment(self):
+        """`_normalize` used to repoint this, because the substitution was invisible: sonnet ran
+        while the store, `/api/models` and the Admin radio all went on naming the local model
+        (user-observed — every plan sonnet-shaped with qwen ticked). The repoint was the right
+        answer to a preview that could not run locally; with `plans._local_preview` it would now
+        silently overwrite a working setting. The pick is kept and dispatched on transport."""
         cfg = gateway._normalize({"pool": self._cfg("ds")["pool"],
                                   "assign": {**{t: "claude-sonnet" for t in gateway.TASKS},
                                              "preview": "ds"}})
-        self.assertEqual(cfg["assign"]["preview"], "claude-sonnet")
-        self.assertEqual(gateway.preview_model_id(cfg), "claude-sonnet-5")
+        self.assertEqual(cfg["assign"]["preview"], "ds")
+        self.assertEqual(gateway.preview_model_entry(cfg)["provider"], "openai")
 
-    def test_a_HOSTED_pick_is_refused_for_the_same_reason_and_the_copy_says_claude_only(self):
-        """Issue #18's open question, answered: the preview is Claude-only by TRANSPORT
-        (`claude -p --permission-mode plan` is the only thing that can write one), so a hosted
-        frontier model is repointed exactly like a local one — but the refusal must say so,
-        never call the model local."""
+    def test_a_HOSTED_pick_is_kept_too_and_is_not_called_local(self):
+        """Issue #18's open question was answered "Claude-only by transport" and both classes
+        were repointed. Plan mode is Otto's now, so both are KEPT — and the class distinction
+        still matters in the copy: a hosted frontier model must never be described as local."""
         pool = self._cfg("ds")["pool"] + [{"name": "gpt", "provider": "openai", "model": "gpt-6",
                                            "endpoint": "openai"}]
         cfg = gateway._normalize({"pool": pool,
@@ -1941,31 +1945,34 @@ class PreviewModelTierTests(unittest.TestCase):
                                              "preview": "gpt"}})
         self.assertEqual(gateway.model_kind(next(m for m in cfg["pool"] if m["name"] == "gpt")),
                          "hosted")
-        self.assertEqual(cfg["assign"]["preview"], "claude-sonnet")
+        self.assertEqual(cfg["assign"]["preview"], "gpt")
         ui = open("web/index.html", "rb").read().decode("utf-8")
         i = ui.index("const radio=(p,phase)=>")
         block = ui[i:i + 2400]
         j = block.index('phase==="preview"')
         title = block[j:block.index("}", j)]
-        self.assertIn("Claude only", title)
         self.assertNotIn("no local model", title)
 
     def test_an_explicit_claude_preview_pick_is_left_alone(self):
-        """The repoint must only touch an assignment that could never have run."""
+        """Normalization must not touch an assignment that runs."""
         cfg = gateway._normalize({"pool": self._cfg("ds")["pool"],
                                   "assign": {**{t: "claude-sonnet" for t in gateway.TASKS},
                                              "preview": "claude-opus"}})
         self.assertEqual(cfg["assign"]["preview"], "claude-opus")
 
-    def test_the_admin_radio_refuses_a_local_preview_pick(self):
-        """The store repoint is the authority, but a tickable control that silently does nothing
-        is its own bug — the operator ticks qwen, the radio moves, and sonnet writes the plan."""
+    def test_the_admin_radio_is_tickable_but_WARNS(self):
+        """The radio was disabled while a pick could not run. It runs now, so the control opens —
+        but the phase still has no verify rung above it and its output is what a human approves,
+        which the tooltip has to say or the pick reads as free."""
         ui = open("web/index.html", "rb").read().decode("utf-8")
         i = ui.index("const radio=(p,phase)=>")
-        block = ui[i:i + 1600]
+        block = ui[i:i + 2400]
         self.assertIn('phase==="preview"', block)
-        self.assertIn("dis=' disabled'", block)
-        self.assertIn("${dis}", block)
+        self.assertNotIn("disabled'", block)
+        j = block.index('phase==="preview"')
+        title = block[j:block.index("memory_gc", j)].lower()
+        self.assertIn("no retry ladder", title)
+        self.assertIn("approve", title)
 
     def test_the_gate_is_told_who_wrote_the_plan(self):
         """Approving a plan without being told its author is how the downgrade went unnoticed."""

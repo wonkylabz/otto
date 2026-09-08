@@ -77,6 +77,41 @@ WRITE_TOOLS = READ_TOOLS + ["Edit", "Write"]
 PLAN_TOOLS = ["Read", "Grep", "Glob",
               "Bash(gh issue view:*)", "Bash(gh pr view:*)", "Bash(gh pr diff:*)"]
 
+# A scoped Bash rule -- `Bash(gh pr view:*)` -- is Claude Code's spelling, and `claude -p`
+# enforces it for us. The LOCAL backend drives its own tool loop, so it has to parse the same
+# rules and enforce them itself (`local_runtime.bash_refusal`), or the plan preview is either
+# blind (no Bash at all: it cannot read the ticket it is planning from) or unguarded (an
+# UNSCOPED shell running before the human has approved anything). Neither is acceptable on the
+# one pass whose whole job is to be read-only.
+#   This is an ALLOWLIST, and that is why it is tractable where `_deny_guard`'s Bash coverage is
+#   not: that one has to find a write hiding anywhere inside an arbitrary shell command
+#   (`tee`, `sed -i`, `python -c`) -- unbounded. This one refuses everything that is not an
+#   exact argv prefix match, so anything it fails to understand is denied rather than allowed.
+_BASH_RULE = re.compile(r"^Bash\((?P<cmd>.+?)(?P<wild>:\*)?\)$")
+
+
+def scoped_bash_rules(allowed_tools):
+    """Split an allowlist into (bare_bash, rules).
+
+    `bare_bash` is True when plain "Bash" is granted -- an unrestricted shell, today's execution
+    behaviour, and the rules are then irrelevant. `rules` is the list of argv prefixes parsed out
+    of the scoped entries, each already tokenized: "Bash(gh pr view:*)" -> ["gh", "pr", "view"].
+
+    Returns ([], ...) rather than None when there are no scoped entries, so a caller can tell
+    "no restriction asked for" (bare_bash) from "restricted to nothing" (no rules) -- the second
+    must refuse every command, not fall open."""
+    bare, rules = False, []
+    for entry in allowed_tools or []:
+        if entry == "Bash":
+            bare = True
+            continue
+        m = _BASH_RULE.match(str(entry).strip())
+        if m:
+            toks = m.group("cmd").split()
+            if toks:
+                rules.append(toks)
+    return bare, rules
+
 # Every built-in Claude Code tool Otto may ever need. `--allowedTools` grants PERMISSION but
 # unloads nothing — the full built-in set plus every skill/agent listing sits in the system
 # prompt of every turn, re-read on each one. `--disallowedTools` on the complement of this

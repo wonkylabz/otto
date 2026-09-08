@@ -287,41 +287,51 @@ _PLAN_INSTRUCTION = (
     "The reply is the plan. Nothing before the first step and nothing after the risks.")
 
 
-def _local_preview(invocation, resume_session, cwd, effort=None):
-    """The plan preview for a session the LOCAL backend minted. Returns (out, model, backend) in
-    `_claude`'s shape, so the caller's accounting, audit row and empty-plan fallback are unchanged.
+def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None):
+    """The plan preview on the LOCAL backend. Returns (out, model, backend) in `_claude`'s shape,
+    so the caller's accounting, audit row and empty-plan fallback are unchanged.
 
-    Two things the Claude path gets for free and this one has to build:
+    Two callers, one body: a follow-up resuming a session this runtime minted (`resume_session`),
+    and the `preview` TIER assigned to a non-Claude model (`entry`).
 
-    * `--permission-mode plan` has no local equivalent, so read-only rests on the tool set alone.
-      config.PLAN_TOOLS narrows to Read/Grep/Glob here — `_offered_tools` matches literal tool
-      names, so the three scoped `Bash(gh … view:*)` rules are simply never offered, which is the
-      right way round: this runtime's Bash is NOT permission-scoped (`_deny_guard` covers
-      Write/Edit only), so an unscoped one before approval would be worse than none.
+    What `--permission-mode plan` gives the Claude path for free, and how this one earns it:
+
+    * Read-only is the TOOL SET plus `local_runtime.bash_refusal`, which enforces the scoped
+      `Bash(gh … view:*)` rules in `config.PLAN_TOOLS` itself. The full PLAN_TOOLS goes through:
+      narrowing to Read/Grep/Glob (what this did before the refusal guard existed) left a
+      ticket-driven request planned by a model that could not read its ticket.
     * print-mode `--resume` COPIES a session forward; this runtime resumes in place and saves the
-      turn back. So preview against a throwaway fork — otherwise the plan instruction and the
-      plan itself land in the history the approved run resumes next.
+      turn back. So a resume previews against a throwaway fork, and a FRESH preview drops the
+      session it mints — either way the plan instruction and the plan never land in a history the
+      approved run would resume next.
 
     No fork (a swept or empty session file) means there is no conversation to inherit, and a
     context-free preview of a raw follow-up is the nonsense plan the gate must not show — return
     no plan and let the caller fall back to displaying the invocation."""
-    entry = local_runtime.resume_entry(resume_session)
-    if not entry:
-        # The pool has no local model left. NEVER fall through to `claude -p --resume` with a
-        # `local-` id: that is the failure this whole branch exists to stop.
-        trace("PLAN", "no local model in the pool for this session — no preview")
-        return {"result": "", "is_error": True}, None, None
-    fork = local_runtime.fork_session(resume_session)
-    if not fork:
-        trace("PLAN", f"local session {resume_session} has no history to preview against")
-        return {"result": "", "is_error": True}, entry.get("name"), "local"
-    trace("PLAN", f"preview on the local backend ({entry.get('name')}) — session fork {fork}")
+    fork = None
+    if resume_session:
+        entry = local_runtime.resume_entry(resume_session)
+        if not entry:
+            # The pool has no local model left. NEVER fall through to `claude -p --resume` with a
+            # `local-` id: that is the failure this whole branch exists to stop.
+            trace("PLAN", "no local model in the pool for this session — no preview")
+            return {"result": "", "is_error": True}, None, None
+        fork = local_runtime.fork_session(resume_session)
+        if not fork:
+            trace("PLAN", f"local session {resume_session} has no history to preview against")
+            return {"result": "", "is_error": True}, entry.get("name"), "local"
+    trace("PLAN", f"preview on the local backend ({entry.get('name')})"
+                  + (f" — session fork {fork}" if fork else ""))
     try:
         out = local_runtime.run_json(invocation, allowed_tools=config.PLAN_TOOLS,
                                      model_entry=entry, timeout=900, resume_session=fork,
-                                     cwd=cwd, effort=effort)
+                                     cwd=cwd, effort=effort, transcript=transcript)
     finally:
-        local_runtime.drop_session(fork)
+        if fork:
+            local_runtime.drop_session(fork)
+    if not fork:
+        # A fresh preview mints a session it must not leave behind: nothing resumes a plan.
+        local_runtime.drop_session(out.get("session_id"))
     return out, entry.get("name"), "local"
 
 
@@ -386,21 +396,28 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     # 900s (15min): raised from 600s after a real ticket (ci#66) timed out at the old
     # ceiling with nothing to show for it — `plan_capability`'s activity timeout must stay above
     # this (workflows.py) or the activity kills the preview before it ever gets to return "".
-    if local_runtime.is_local_session(resume_session):
-        out, model, backend = _local_preview(invocation, resume_session, cwd, effort=effort)
+    # The preview is a real agentic pass; capture it like an attempt. Without a transcript the
+    # board's model chip has nothing to read and stays blank for the entire (up to 15-minute)
+    # phase, and the tool calls it makes to reach a plan cannot be reviewed afterwards at all.
+    # Both backends write it, or which backend served the preview decides whether the board
+    # works.
+    transcript = claude_cli.plan_transcript_path(wid) if wid else None
+    # A resume follows its SESSION's backend; a fresh preview follows the PREVIEW TIER's
+    # transport, the same way execution follows `exec_model_entry`. Reading the execution
+    # assignment here made the phase's model a side effect of a different setting — and, when
+    # that setting was a local model, silently the cheapest Claude in the pool (see
+    # gateway.TASKS).
+    entry = None if resume_session else gateway.preview_model_entry()
+    if local_runtime.is_local_session(resume_session) or (
+            entry is not None and entry.get("provider") != "claude"):
+        out, model, backend = _local_preview(invocation, resume_session, cwd, effort=effort,
+                                             entry=entry, transcript=transcript)
     else:
-        # The PREVIEW tier, not the execution model. Reading the execution assignment here made
-        # the phase's model a side effect of a different setting — and, when that setting was a
-        # local model, silently the cheapest Claude in the pool (see gateway.TASKS).
         model, backend = gateway.preview_model_id(), None
         out = _eng()._claude(invocation, allowed_tools=config.PLAN_TOOLS, model=model, cwd=cwd,
                   timeout=900, permission_mode="plan", resume_session=resume_session,
                   setting_sources=_setting_sources(cwd), effort=effort,
-                  # The preview is a real agentic pass; capture it like an attempt. Without a
-                  # transcript the board's model chip has nothing to read and stays blank for
-                  # the entire (up to 15-minute) phase, and the tool calls it makes to reach a
-                  # plan cannot be reviewed afterwards at all.
-                  transcript=claude_cli.plan_transcript_path(wid) if wid else None)
+                  transcript=transcript)
     cost = out.get("total_cost_usd", 0) or 0
     tokens = _eng()._usage(out)
     # The preview is a full agentic pass, so its spend must hit the audit trail / /api/costs

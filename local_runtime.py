@@ -128,6 +128,48 @@ def _abspath(p, cwd):
     return p if os.path.isabs(p) else os.path.join(cwd or os.getcwd(), p)
 
 
+# Everything a shell can do that argv cannot. A command containing ANY of these is refused
+# outright under scoped rules rather than reasoned about: that turns "is this command safe?"
+# (undecidable) into "is this a bare argv line?" (a character test). `~` is in the set because
+# `bash -lc` expands it; the prefix match would then be comparing a different string to the one
+# that runs.
+_SHELL_META = set(";|&<>$`\\\n\r()!*?[]{}'\"~")
+
+
+def bash_refusal(command, rules):
+    """None when `command` is permitted under scoped `rules`, else the refusal text handed back
+    to the model as the tool result.
+
+    The plan preview's read-only guarantee rests on this function alone on the LOCAL backend --
+    `claude -p` gets the same guarantee from `--permission-mode plan`. Two gates, both closed by
+    default:
+
+      1. no shell metacharacter, so the string is argv and nothing composes onto it. This is what
+         stops `gh pr view 1; rm -rf x` and every redirection/substitution form at once, without
+         anyone having to enumerate them.
+      2. the argv prefix must match a rule TOKEN-WISE. Token-wise, or `gh pr view` would admit
+         `gh pr viewers`; and prefix, because a rule names a command, not a whole invocation --
+         `gh pr view 12 --json title` is the point of granting it.
+
+    An empty `rules` refuses everything: a caller that offered Bash while granting no rule has a
+    bug, and falling open there would silently hand an unscoped shell to a pre-approval pass."""
+    cmd = (command or "").strip()
+    if not cmd:
+        return "Error: Bash called with no command."
+    bad = sorted(set(cmd) & _SHELL_META)
+    if bad:
+        return ("Error: refused. In this pass Bash takes a plain command with no shell syntax; "
+                f"found {' '.join(bad)}. Permitted: {_rule_text(rules)}.")
+    toks = cmd.split()
+    if any(toks[:len(r)] == r for r in rules):
+        return None
+    return f"Error: refused. '{' '.join(toks[:3])}' is not permitted. Permitted: {_rule_text(rules)}."
+
+
+def _rule_text(rules):
+    return ", ".join(" ".join(r) for r in rules) or "(nothing)"
+
+
 def _t_bash(args, cwd):
     res = subprocess.run(["bash", "-lc", args["command"]], cwd=cwd or None,
                          capture_output=True, text=True,
@@ -238,19 +280,46 @@ def _offered_tools(allowed_tools, mcp_specs=()):
     """The tools handed to the model: the caller's per-risk allowlist ∩ what this runtime can
     serve — the built-ins below, plus whatever `mcp_client` resolved for the run's servers
     (already allowlist-filtered by the pool). Anything else unknown is silently dropped; the
-    risk-based guardrail (a read cap never sees Edit/Write) rides in on the allowlist."""
+    risk-based guardrail (a read cap never sees Edit/Write) rides in on the allowlist.
+
+    A SCOPED Bash grant (`Bash(gh pr view:*)`, i.e. `config.PLAN_TOOLS`) offers Bash too — the
+    match is on rules, not on the literal name. Dropping those entries is what made the local
+    plan preview unable to read the ticket it was planning from. The permitted commands go in the
+    DESCRIPTION: a model that has to discover the boundary by being refused spends turns on it,
+    and a small one may just give up on the ticket instead."""
     allowed = set(allowed_tools or [])
-    names = [n for n in _TOOL_IMPL if n in allowed]
-    return [{"type": "function",
-             "function": {"name": n, **_TOOL_SCHEMAS[n]}} for n in names] + list(mcp_specs)
+    bare_bash, rules = config.scoped_bash_rules(allowed_tools)
+    names = [n for n in _TOOL_IMPL if n in allowed or (n == "Bash" and rules)]
+    out = []
+    for n in names:
+        schema = _TOOL_SCHEMAS[n]
+        if n == "Bash" and rules and not bare_bash:
+            schema = dict(schema, description=(
+                schema["description"] + " READ-ONLY PASS: only these commands are permitted — "
+                + _rule_text(rules) + " — with no shell syntax (no pipes, redirection, "
+                "substitution or chaining). Anything else is refused."))
+        out.append({"type": "function", "function": {"name": n, **schema}})
+    return out + list(mcp_specs)
 
 
-def _run_tool(name, args, cwd, offered_names, mcp=None):
+def _run_tool(name, args, cwd, offered_names, mcp=None, bash_rules=None):
     """Execute one tool call, always returning TEXT for the model (errors included — the
     model gets to read the failure and adapt, mirroring how Claude Code surfaces tool
-    errors). A call outside the offered set mutates nothing."""
+    errors). A call outside the offered set mutates nothing.
+
+    `bash_rules` is None for an unrestricted shell (every normal execution run — unchanged) and a
+    list of argv prefixes for a scoped one. It is enforced HERE rather than in `_t_bash` so the
+    refusal is a tool RESULT the model reads and adapts to, not an exception folded into
+    `Error: ...` by the handler below — and so the choke point sits next to `offered_names`,
+    which is the other thing standing between a tool call and the machine."""
     if name not in offered_names:
         return f"Error: tool '{name}' is not available in this run."
+    if name == "Bash" and bash_rules is not None:
+        refusal = bash_refusal((args or {}).get("command"), bash_rules)
+        if refusal:
+            # No trace: the refusal is returned as the tool RESULT, so it is already in the
+            # transcript the same way every other tool outcome is.
+            return refusal
     if mcp is not None and name in mcp:
         return _clip(mcp.call(name, args or {}))
     try:
@@ -807,6 +876,9 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
 
     tools = _offered_tools(allowed_tools, mcp.specs if mcp else ())
     offered_names = {t["function"]["name"] for t in tools}
+    # None = unrestricted shell (the normal execution grant); a list = scoped, enforced per call.
+    _bare_bash, _rules = config.scoped_bash_rules(allowed_tools)
+    bash_rules = None if _bare_bash else (_rules if "Bash" in offered_names else None)
 
     sink = None
     if transcript:
@@ -977,7 +1049,8 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                 elif time.time() > deadline:
                     out = "Error: run timed out before this tool call"
                 else:
-                    out = _run_tool(fn.get("name"), args, cwd, offered_names, mcp)
+                    out = _run_tool(fn.get("name"), args, cwd, offered_names, mcp,
+                                    bash_rules=bash_rules)
                 messages.append({"role": "tool", "tool_call_id": tc.get("id"),
                                  "content": out})
                 _emit(sink, on_event, {"type": "user", "message": {"content": [
