@@ -69,20 +69,22 @@ _WALL = {Reason.auth, Reason.quota, Reason.tools_unsupported}
 _TRANSIENT = {Reason.rate_limit, Reason.overloaded, Reason.server_error}
 
 _MESSAGE = {
-    Reason.auth: ("the local endpoint rejected our credentials (HTTP {code}) — check the "
-                  "model's api_key_env and that OTTO_SECRET_COMMAND resolves it"),
-    Reason.quota: "the local endpoint reports no remaining credit (HTTP 402)",
-    Reason.rate_limit: ("the local endpoint rate-limited every attempt (HTTP 429) — it is "
+    # Every line names THE ENDPOINT, never "local": the same wall is hit by a vendor API with a
+    # bad key or spent quota, and "fix the local server" points the operator at the wrong thing.
+    Reason.auth: ("the model endpoint rejected our credentials (HTTP {code}) — check the "
+                  "endpoint's api_key_env and that OTTO_SECRET_COMMAND resolves it"),
+    Reason.quota: "the model endpoint reports no remaining credit (HTTP 402)",
+    Reason.rate_limit: ("the model endpoint rate-limited every attempt (HTTP 429) — it is "
                         "serving other traffic"),
-    Reason.overloaded: ("the local model endpoint is unreachable (it stayed down through "
+    Reason.overloaded: ("the model endpoint is unreachable (it stayed down through "
                         "every retry/backoff)"),
-    Reason.server_error: ("the local endpoint failed internally on every attempt (HTTP 500)"),
-    Reason.tools_unsupported: ("the local server rejects tool calls — vLLM is missing "
-                               "--enable-auto-tool-choice / --tool-call-parser"),
+    Reason.server_error: ("the model endpoint failed internally on every attempt (HTTP 500)"),
+    Reason.tools_unsupported: ("the model endpoint rejects tool calls (on vLLM: missing "
+                               "--enable-auto-tool-choice / --tool-call-parser)"),
     Reason.context_overflow: "the prompt exceeds the model's context window",
     Reason.unsupported_param: ("the model refuses a parameter in the request body "
                                "({quirk}) — retried in this endpoint's dialect"),
-    Reason.unknown: "the local endpoint failed (HTTP {code})",
+    Reason.unknown: "the model endpoint failed (HTTP {code})",
 }
 
 
@@ -176,7 +178,7 @@ def wall_message(reason_value):
     try:
         reason = Reason(reason_value)
     except ValueError:
-        return f"the local backend hit a wall ({reason_value})"
+        return f"the model endpoint hit a wall ({reason_value})"
     return _MESSAGE[reason].format(code="") if "{code}" in _MESSAGE[reason] else _MESSAGE[reason]
 
 

@@ -134,7 +134,8 @@ def check_models(gateway):
             continue
         probe = gateway.test_model(m["name"])
         if not probe.get("ok"):
-            checks.append(f"local model '{m['name']}' unreachable ({probe.get('detail', '')[:80]})")
+            kind = "hosted" if m.get("kind") == "hosted" else "local"
+            checks.append(f"{kind} model '{m['name']}' unreachable ({probe.get('detail', '')[:80]})")
     backend = f"execution backend: {entry['name']} ({'claude -p' if entry.get('provider') == 'claude' else 'local runtime'})"
     if checks:
         return _check("models", "warn", "; ".join(checks) + f" — {backend}",

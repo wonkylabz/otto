@@ -166,6 +166,8 @@ FOLLOWUP_HANDOFF = os.environ.get("OTTO_FOLLOWUP_HANDOFF", "1") != "0"
 # is safe-escalation, NOT a ban: a capable local model that PASSES verify still executes the
 # write locally (the cost win is preserved). The reason string tags the resulting local->Claude
 # fallback in the audit trail / UI (distinct from the tool-incapable local_disabled reason).
+# A HOSTED frontier model (`gateway.model_kind` == "hosted") never trips this: the latch is
+# tuned for weak models, and it would swap a stronger model for a weaker Claude tier.
 WRITE_LOCAL_ESCALATE_REASON = ("write capability failed verification on the local backend — "
                                "escalating the rest of the ladder to Claude (issue #172)")
 
@@ -231,19 +233,29 @@ def is_no_reply(text):
     return s.strip(_NO_REPLY_TRIM).upper() == NO_REPLY
 
 
-def strict_stop_message(model, what, task=None):
+def strict_stop_message(model, what, task=None, entry=None):
     """The user-facing body for a strict-mode stop. Deliberately loud and self-explaining: this
     string IS the delivered result, so it has to answer "why did nothing happen?" on its own —
-    what failed, that no Claude run silently substituted, and the three ways out."""
+    what failed, that no Claude run silently substituted, and the three ways out.
+
+    `entry` is the pool entry when the caller has it: the copy then names the ENDPOINT and its
+    kind (local vs hosted), because "fix the local endpoint" sends the operator to restart a
+    server that is OpenAI's."""
     where = f"{task} tier" if task else "execution"
-    return ("⛔ **STOPPED — local model failed and Claude fallback is disabled** "
+    kind = "hosted" if (entry or {}).get("kind") == "hosted" else "local"
+    ep = (entry or {}).get("endpoint") or (entry or {}).get("base_url") or ""
+    ep_line = f" · endpoint `{ep}`" if ep else ""
+    fix = (f"check the endpoint `{ep}` — key, quota, model id (Admin health pills / `python3 "
+           "doctor.py`)" if kind == "hosted" else
+           "bring the endpoint back (Admin health pills / `python3 doctor.py`)")
+    return (f"⛔ **STOPPED — the {kind} model failed and Claude fallback is disabled** "
             "(`OTTO_LOCAL_FALLBACK=0`)\n\n"
             f"- **stage:** {where}\n"
-            f"- **local model:** {model}\n"
+            f"- **model:** {model} ({kind}{ep_line})\n"
             f"- **failure:** {what}\n"
-            "- **nothing ran on Claude** — this is the local failure itself, not a degraded "
+            f"- **nothing ran on Claude** — this is the {kind} model's own failure, not a degraded "
             "substitute, and no tokens were spent covering for it.\n\n"
-            "Fix: bring the local endpoint back (Admin health pills / `python3 doctor.py`), "
+            f"Fix: {fix}, "
             "reassign this tier or capability to a Claude model in Admin, or turn the fallback back "
             "on (Admin → Runtime settings, or `OTTO_LOCAL_FALLBACK=1`).")
 
