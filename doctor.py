@@ -146,8 +146,13 @@ def check_models(gateway):
 
 def _probe_tool_calls(m, gateway):
     """Can this local server accept the `tools` parameter? One tiny chat completion with a
-    dummy tool (max_tokens=1). Returns (ok, detail): True / False (rejected — the local agent
-    runtime can never run on it) / None (couldn't tell; reachability reports that separately)."""
+    dummy tool. Returns (ok, detail): True / False (rejected — the local agent runtime can never
+    run on it) / None (couldn't tell; reachability reports that separately).
+
+    The budget is small but NOT 1: a reasoning model spends tokens thinking before it emits
+    anything, so a 1-token ceiling 400s on our own budget and the probe reported "unverified"
+    for a model that accepts tools perfectly well (measured on gpt-5.5). For the same reason a
+    budget-exhausted reply counts as acceptance — the server took the tools and started work."""
     import json
     import urllib.error
     import urllib.request
@@ -160,7 +165,7 @@ def _probe_tool_calls(m, gateway):
     # (issue #10) 400s on the probe itself, and that 400 says nothing about tool support — so
     # this check would report "unverified" for a model that accepts tools perfectly well. The
     # retry below adapts to whatever dialect the server names, exactly like the run paths.
-    body = gateway.chat_body(m, [{"role": "user", "content": "hi"}], 1, tools=[tool])
+    body = gateway.chat_body(m, [{"role": "user", "content": "hi"}], 256, tools=[tool])
     for _ in range(len(error_classifier.QUIRKS) + 1):
         req = urllib.request.Request(m["base_url"].rstrip("/") + "/chat/completions",
                                      data=json.dumps(body).encode(),
@@ -177,7 +182,11 @@ def _probe_tool_calls(m, gateway):
             if adapted is not None:
                 body = adapted
                 continue
-            if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in detail.lower()):
+            low = detail.lower()
+            # It answered and hit OUR ceiling: the tools were accepted, which is the question.
+            if "output limit" in low or ("max_tokens" in low and "higher" in low):
+                return True, ""
+            if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in low):
                 return False, detail
             return None, detail
         except Exception as e:  # noqa: BLE001

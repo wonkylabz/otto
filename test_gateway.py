@@ -5695,6 +5695,24 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertNotIn("vLLM", out["hint"])
         self.assertIn("different execution model", out["hint"])
 
+    def test_the_probe_budget_does_not_fail_a_reasoning_model(self):
+        """The probe asked for 1 token, which a reasoning model spends thinking — so it 400s on
+        OUR ceiling and doctor reported "tool support unverified" for a model that takes tools
+        fine (measured on gpt-5.5). A budget-exhausted reply IS acceptance: the server took the
+        tools and started work, which is the whole question."""
+        import doctor
+        budget = (b'{"error":{"message":"Could not finish the message because max_tokens or '
+                  b'model output limit was reached. Please try again with higher max_tokens."}}')
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data))
+            raise self._400(budget)
+        self._patch_urlopen(fake_urlopen)
+        ok, _ = doctor._probe_tool_calls(self.m, gateway)
+        self.assertIs(ok, True)
+        self.assertGreater(sent[0]["max_tokens"], 1, "a 1-token probe fails on its own budget")
+
     def test_the_vllm_tool_refusal_keeps_its_own_remedy(self):
         """The other server saying the other thing. One wall, two remedies — a wall naming the
         wrong one is worse than a generic one, because the operator acts on it."""
@@ -5790,7 +5808,11 @@ class OpenAiParamDialectTests(unittest.TestCase):
         for mod in ("local_runtime.py", "doctor.py", "server.py", "engine.py", "supervisor.py"):
             with open(mod, encoding="utf-8") as fh:
                 for n, line in enumerate(fh, 1):
-                    if '"max_tokens"' in line and not line.lstrip().startswith("#"):
+                    # Dict-KEY syntax only (`"max_tokens": …` or `body["max_tokens"]`), not any
+                    # mention of the string: matching the bare literal flagged doctor's own
+                    # error-text check, which reads a server message and builds no body at all.
+                    if ('"max_tokens":' in line or '["max_tokens"]' in line) \
+                            and not line.lstrip().startswith("#"):
                         offenders.append(f"{mod}:{n}: {line.strip()}")
         self.assertEqual([], offenders,
                          "build the body through gateway.chat_body, not a literal dict")
