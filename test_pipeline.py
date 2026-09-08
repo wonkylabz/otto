@@ -1526,6 +1526,73 @@ class PlanPreviewLocalSessionTests(unittest.TestCase):
         self.assertEqual(self.local_calls[0]["transcript"],
                          claude_cli.plan_transcript_path("web-planlocal"))
 
+    def _walling_local(self, **flags):
+        def fake_local(prompt, **kw):
+            self.local_calls.append({**kw, "fork_history": None, "fork_existed": False})
+            return {"result": "", "is_error": True, "total_cost_usd": 0,
+                    "session_id": kw.get("resume_session"), "usage": {}, **flags}
+        local_runtime.run_json = fake_local
+
+    def test_a_WALLED_local_preview_re_previews_on_claude(self):
+        """`engine.run_attempt` re-dispatches an execution attempt that hit a deterministic local
+        wall; the preview had no such path, so a model whose endpoint refuses function tools left
+        `plan=""` and the human got an approval card with NO PLAN on it and no diagnosis — the
+        `web-ce430e45` symptom, walked back in through the tier."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        self._walling_local(tools_unsupported=True)
+        out = engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertEqual(len(self.claude_calls), 1, "a walled preview delivered no plan")
+        self.assertEqual(self.claude_calls[0].get("permission_mode"), "plan")
+        self.assertEqual(out["plan"], "1. do the thing")
+
+    def test_every_wall_signal_the_ladder_reads_is_read_here_too(self):
+        """Which layer noticed a dead endpoint must not change what it is called, or the preview
+        recovers from one shape of wall and silently not from another."""
+        for flags in ({"tools_unsupported": True}, {"unavailable": True},
+                      {"wall_reason": "auth"}):
+            with self.subTest(**flags):
+                gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                        "assign": {"preview": "local-flash"}}
+                self.claude_calls, self.local_calls = [], []
+                self._walling_local(**flags)
+                engine.plan_preview("add a retry", self.cap)
+                self.assertEqual(len(self.claude_calls), 1, flags)
+
+    def test_a_plain_failure_does_NOT_re_preview(self):
+        """Same taxonomy as the ladder's: a turn-budget death or a timeout is the model working
+        and not finishing, and re-running a 15-minute preview on Claude to reach the same ceiling
+        doubles the wait for the same nothing."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        self._walling_local()
+        out = engine.plan_preview("add a retry", self.cap)
+        self.assertEqual(self.claude_calls, [])
+        self.assertEqual(out["plan"], "")
+
+    def test_a_walled_local_RESUME_never_falls_back(self):
+        """The one case where "falling back to Claude" IS the original bug: `claude -p --resume
+        local-…` is rejected outright, which is the failure the local-resume branch exists for."""
+        self._walling_local(tools_unsupported=True)
+        out = engine.plan_preview("apply the review comments", self.cap, resume_session=self.sid)
+        self.assertEqual(self.claude_calls, [])
+        self.assertEqual(out["plan"], "")
+
+    def test_strict_mode_refuses_the_fallback(self):
+        """`LOCAL_FALLBACK=0` makes covering a local death with Claude illegal, and the preview
+        is not one of the exempt tiers."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        self._walling_local(tools_unsupported=True)
+        saved = config.setting
+        config.setting = lambda n: False if n == "local_fallback" else saved(n)
+        try:
+            out = engine.plan_preview("add a retry", self.cap)
+        finally:
+            config.setting = saved
+        self.assertEqual(self.claude_calls, [])
+        self.assertEqual(out["plan"], "")
+
     def test_no_local_model_left_yields_no_plan_rather_than_a_doomed_claude_resume(self):
         gateway.load = lambda: {"pool": [{"name": "claude-tier", "provider": "claude",
                                           "model": "claude-sonnet-5"}]}

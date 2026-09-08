@@ -1171,7 +1171,12 @@ def chat_body(m, messages, max_tokens, **extra):
     # parameter at all (gpt-4o: "Unrecognized request argument") loses it always, while one that
     # refuses it only ALONGSIDE tools (gpt-5.5) keeps the operator's effort on tool-free calls,
     # rather than being downgraded endpoint-wide to the cheapest reasoning it has.
-    if (error_classifier.QUIRK_NO_REASONING_EFFORT in q
+    if error_classifier.QUIRK_TOOL_REASONING_NONE in q and body.get("tools"):
+        # Third fact, third handling: this endpoint applies an effort of its own unless told
+        # otherwise, so the field must be SET, not dropped. Checked first — a model that has
+        # learned this one may also carry the drop quirk from the round that tried dropping.
+        body["reasoning_effort"] = "none"
+    elif (error_classifier.QUIRK_NO_REASONING_EFFORT in q
             or (error_classifier.QUIRK_NO_TOOL_REASONING in q and body.get("tools"))):
         body.pop("reasoning_effort", None)
     return body
@@ -1196,6 +1201,8 @@ def adapt_body(body, quirk):
             out[error_classifier.QUIRK_MAX_COMPLETION_TOKENS] = out.pop("max_tokens")
     elif quirk == error_classifier.QUIRK_DEFAULT_TEMPERATURE:
         out.pop("temperature", None)
+    elif quirk == error_classifier.QUIRK_TOOL_REASONING_NONE:
+        out["reasoning_effort"] = "none"
     elif quirk in (error_classifier.QUIRK_NO_REASONING_EFFORT,
                    error_classifier.QUIRK_NO_TOOL_REASONING):
         out.pop("reasoning_effort", None)
@@ -1268,11 +1275,39 @@ def adapt_for(m, status, detail, body):
     v = error_classifier.classify(status, detail)
     if v.action is not error_classifier.Action.adapt:
         return None
-    adapted = adapt_body(body, v.quirk)
+    quirk = resolve_quirk(body, v.quirk)
+    if quirk is None:
+        return None
+    adapted = adapt_body(body, quirk)
     if adapted is None:
         return None
-    learn_quirk(m, v.quirk)
+    learn_quirk(m, quirk)
     return adapted
+
+
+def resolve_quirk(body, quirk):
+    """Which quirk actually applies to THIS body — the state machine `adapt_body` cannot own,
+    because a quirk name alone does not say how far this body has already been adapted.
+
+    `reasoning_effort` + tools is refused by two endpoints with a byte-identical message and
+    needs opposite fixes, so the message can never tell them apart: only the body can. One
+    strictly advancing sequence, each state entered at most once, which is what keeps the retry
+    monotone and bounded:
+
+        has an effort  -> drop it        (gpt-5.5 stops here)
+        absent         -> set "none"     (gpt-5.6-terra stops here)
+        already "none" -> None -> wall   (gpt-6-astra, which rejects "none" too)
+
+    The last step is the important one: obeying the server's "set reasoning_effort to 'none'"
+    advice unconditionally is what made the body oscillate none -> absent -> none until the round
+    budget died, reporting a context overflow that never happened (`adapt_body`'s docstring)."""
+    if quirk == error_classifier.QUIRK_NO_TOOL_REASONING and body.get("tools"):
+        effort = body.get("reasoning_effort")
+        if effort is None:
+            return error_classifier.QUIRK_TOOL_REASONING_NONE
+        if effort == "none":
+            return None
+    return quirk
 
 
 def message_text(msg):

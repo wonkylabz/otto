@@ -4891,13 +4891,17 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # expiry nothing in the code says (Temporal deletes a closed execution at the namespace TTL),
     # and the two windows sharing one `limit` reads as obviously fine — between them, completed
     # work silently disappeared off the board and every re-derivation from the code missed both.
+    # -> 70096: the preview's missing Claude re-dispatch (an approval card with no plan on it,
+    # which the ladder's own wall rule would have prevented) and the THIRD `reasoning_effort`
+    # spelling — one message, two endpoints, opposite fixes, so the old "only removes or renames"
+    # wording was actively wrong and would have been re-derived as a bug.
     # -> 69810 for local plan mode (issue #21). Three things a re-derivation from the code
     # cannot recover: the `preview` tier stopped being Claude-only, so the old "a tier that
     # cannot serve local must refuse a local pick" rule is now WRONG rather than merely absent;
     # WHY there are two layers is a measurement (78% of a Claude planner's Bash is composed),
     # and without it the sandbox reads as over-engineering next to a working allowlist; and the
     # network bound is what the two layers do NOT do, which no amount of reading them reveals.
-    MAX_RULES_BYTES = 69810   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 70096   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -5735,6 +5739,64 @@ class OpenAiParamDialectTests(unittest.TestCase):
                     seen.append(dict(nxt))
                     body = nxt
                 self.assertGreaterEqual(steps, 1, f"{q} changed nothing at all")
+
+    def test_the_SAME_message_needs_opposite_fixes_and_only_the_body_can_tell(self):
+        """gpt-5.5 and gpt-5.6-terra return a byte-identical "Function tools with
+        reasoning_effort are not supported" 400 and need opposite adaptations: the first is fixed
+        by DROPPING the parameter, the second applies an effort server-side so omitting it
+        changes nothing and it must be SET to 'none'. The message cannot distinguish them, which
+        is why `resolve_quirk` reads the body instead of re-reading the text."""
+        drop = {"model": "m", "tools": [1], "reasoning_effort": "high"}
+        self.assertEqual(gateway.resolve_quirk(drop, self.ec.QUIRK_NO_TOOL_REASONING),
+                         self.ec.QUIRK_NO_TOOL_REASONING)
+        already_dropped = {"model": "m", "tools": [1]}
+        self.assertEqual(gateway.resolve_quirk(already_dropped, self.ec.QUIRK_NO_TOOL_REASONING),
+                         self.ec.QUIRK_TOOL_REASONING_NONE)
+
+    def test_the_none_state_is_TERMINAL_so_the_retry_cannot_oscillate(self):
+        """The step that keeps the sequence monotone. Obeying the server's own "set
+        reasoning_effort to 'none'" advice unconditionally is what oscillated none -> absent ->
+        none until the round budget died (run web-43486ee8): a body already carrying 'none' has
+        nothing left to try and must WALL, never go back to dropping."""
+        exhausted = {"model": "m", "tools": [1], "reasoning_effort": "none"}
+        self.assertIsNone(gateway.resolve_quirk(exhausted, self.ec.QUIRK_NO_TOOL_REASONING))
+
+    def test_the_real_loop_settles_in_at_most_three_states(self):
+        """`test_every_adaptation_is_monotone` bounds `adapt_body` alone; the live loop is
+        `resolve_quirk` + `adapt_body` (`adapt_for`), which is where the state machine now is."""
+        body = {"model": "m", "tools": [1], "reasoning_effort": "high"}
+        seen, states = [dict(body)], []
+        while (q := gateway.resolve_quirk(body, self.ec.QUIRK_NO_TOOL_REASONING)) is not None:
+            nxt = gateway.adapt_body(body, q)
+            if nxt is None:
+                break
+            self.assertNotIn(nxt, seen, "the loop re-created an earlier body")
+            self.assertLess(len(states), 3, "the loop never settles")
+            seen.append(dict(nxt))
+            states.append(nxt.get("reasoning_effort", "<absent>"))
+            body = nxt
+        self.assertEqual(states, ["<absent>", "none"])
+
+    def test_a_learned_none_quirk_is_sent_from_the_FIRST_turn(self):
+        """Learning it is only half: without `chat_body` acting on it, every later turn re-sends
+        a body the endpoint refuses and re-pays the 400 — measured as the bug this quirk pair
+        exists to stop for the drop case."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_TOOL_REASONING_NONE])
+        with_tools = gateway.chat_body(m, [], 8, reasoning_effort="high",
+                                       tools=[{"type": "function"}])
+        self.assertEqual(with_tools["reasoning_effort"], "none")
+        # Tool-free calls keep the operator's effort: the pair is what the endpoint refuses.
+        self.assertEqual(gateway.chat_body(m, [], 8, reasoning_effort="high")["reasoning_effort"],
+                         "high")
+
+    def test_the_none_quirk_wins_over_a_drop_quirk_learned_on_the_way(self):
+        """A model reaches the 'none' state by first being tried with the drop, so it can carry
+        BOTH — and if the drop is applied second the field is removed again and the endpoint
+        refuses every turn."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_NO_TOOL_REASONING,
+                                 self.ec.QUIRK_TOOL_REASONING_NONE])
+        body = gateway.chat_body(m, [], 8, reasoning_effort="high", tools=[{"type": "function"}])
+        self.assertEqual(body["reasoning_effort"], "none")
 
     def test_a_rename_needs_both_names_present(self):
         """Anchored on the server naming the problem AND the replacement. An overflow message

@@ -359,6 +359,17 @@ def _pr_branch_note(pr):
         f"will execute on branch `{pr.get('branch')}`, so write the plan as it applies there.\n")
 
 
+def _local_wall_reason(out):
+    """The name of the deterministic wall a local pass hit, or None. Same three signals
+    `engine.run_attempt` reads, so which layer noticed a dead endpoint cannot change what it is
+    called; `wall_reason` already carries the classifier's own word for it."""
+    if out.get("tools_unsupported"):
+        return "tools_unsupported"
+    if out.get("unavailable"):
+        return "unavailable"
+    return out.get("wall_reason") or None
+
+
 def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None, effort=None):
     """Pre-approval dry run: a STRICTLY read-only agentic pass that returns a concrete,
     numbered plan of the operations the capability WOULD perform — so the human approves the
@@ -408,16 +419,39 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     # that setting was a local model, silently the cheapest Claude in the pool (see
     # gateway.TASKS).
     entry = None if resume_session else gateway.preview_model_entry()
+
+    def _on_claude():
+        return (gateway.preview_model_id(), None,
+                _eng()._claude(invocation, allowed_tools=config.PLAN_TOOLS,
+                               model=gateway.preview_model_id(), cwd=cwd, timeout=900,
+                               permission_mode="plan", resume_session=resume_session,
+                               setting_sources=_setting_sources(cwd), effort=effort,
+                               transcript=transcript))
+
     if local_runtime.is_local_session(resume_session) or (
             entry is not None and entry.get("provider") != "claude"):
         out, model, backend = _local_preview(invocation, resume_session, cwd, effort=effort,
                                              entry=entry, transcript=transcript)
+        # A local WALL re-dispatches to Claude, exactly as `engine.run_attempt` does for an
+        # execution attempt (engine.py, `local_wall`). The preview had no such path: a model that
+        # cannot drive the tool loop — say a hosted one whose endpoint refuses function tools —
+        # left `plan=""` and the human got an approval card with NO PLAN on it and no diagnosis.
+        # That is the `web-ce430e45` symptom the local-RESUME branch exists to prevent, walked
+        # back in through the tier.
+        #   Walls only, same taxonomy as the ladder's: a turn-budget death or a timeout is the
+        # model working and not finishing, and re-running a 15-minute preview on Claude to reach
+        # the same ceiling doubles the wait for the same nothing.
+        #   Never for a RESUME. `claude -p --resume local-…` is rejected outright, so "falling
+        # back" there IS the original bug.
+        wall = _local_wall_reason(out)
+        if wall and not resume_session:
+            if config.local_fallback_allowed("preview"):
+                trace("PLAN", f"local preview walled ({wall}) — re-previewing on Claude")
+                model, backend, out = _on_claude()
+            else:
+                trace("PLAN", f"local preview walled ({wall}); strict mode — no Claude fallback")
     else:
-        model, backend = gateway.preview_model_id(), None
-        out = _eng()._claude(invocation, allowed_tools=config.PLAN_TOOLS, model=model, cwd=cwd,
-                  timeout=900, permission_mode="plan", resume_session=resume_session,
-                  setting_sources=_setting_sources(cwd), effort=effort,
-                  transcript=transcript)
+        model, backend, out = _on_claude()
     cost = out.get("total_cost_usd", 0) or 0
     tokens = _eng()._usage(out)
     # The preview is a full agentic pass, so its spend must hit the audit trail / /api/costs
