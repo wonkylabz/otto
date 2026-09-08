@@ -146,32 +146,52 @@ def check_models(gateway):
 
 def _probe_tool_calls(m, gateway):
     """Can this local server accept the `tools` parameter? One tiny chat completion with a
-    dummy tool (max_tokens=1). Returns (ok, detail): True / False (rejected — the local agent
-    runtime can never run on it) / None (couldn't tell; reachability reports that separately)."""
+    dummy tool. Returns (ok, detail): True / False (rejected — the local agent runtime can never
+    run on it) / None (couldn't tell; reachability reports that separately).
+
+    The budget is small but NOT 1: a reasoning model spends tokens thinking before it emits
+    anything, so a 1-token ceiling 400s on our own budget and the probe reported "unverified"
+    for a model that accepts tools perfectly well (measured on gpt-5.5). For the same reason a
+    budget-exhausted reply counts as acceptance — the server took the tools and started work."""
     import json
     import urllib.error
     import urllib.request
-    body = {"model": m["model"], "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1,
-            "tools": [{"type": "function", "function": {
-                "name": "noop", "description": "capability probe",
-                "parameters": {"type": "object", "properties": {}}}}]}
-    req = urllib.request.Request(m["base_url"].rstrip("/") + "/chat/completions",
-                                 data=json.dumps(body).encode(),
-                                 headers=gateway.request_headers(m))
-    try:
-        with urllib.request.urlopen(req, timeout=15):
-            return True, ""
-    except urllib.error.HTTPError as e:
+
+    import error_classifier
+    tool = {"type": "function", "function": {
+        "name": "noop", "description": "capability probe",
+        "parameters": {"type": "object", "properties": {}}}}
+    # gateway.chat_body, not a literal: an endpoint speaking a different parameter dialect
+    # (issue #10) 400s on the probe itself, and that 400 says nothing about tool support — so
+    # this check would report "unverified" for a model that accepts tools perfectly well. The
+    # retry below adapts to whatever dialect the server names, exactly like the run paths.
+    body = gateway.chat_body(m, [{"role": "user", "content": "hi"}], 256, tools=[tool])
+    for _ in range(len(error_classifier.QUIRKS) + 1):
+        req = urllib.request.Request(m["base_url"].rstrip("/") + "/chat/completions",
+                                     data=json.dumps(body).encode(),
+                                     headers=gateway.request_headers(m))
         try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:  # noqa: BLE001
-            detail = ""
-        if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in detail.lower()):
-            return False, detail
-        return None, detail
-    except Exception as e:  # noqa: BLE001
-        return None, str(e)[:120]
+            with urllib.request.urlopen(req, timeout=15):
+                return True, ""
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", errors="replace")[:200]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            adapted = gateway.adapt_for(m, e.code, detail, body)
+            if adapted is not None:
+                body = adapted
+                continue
+            low = detail.lower()
+            # It answered and hit OUR ceiling: the tools were accepted, which is the question.
+            if "output limit" in low or ("max_tokens" in low and "higher" in low):
+                return True, ""
+            if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in low):
+                return False, detail
+            return None, detail
+        except Exception as e:  # noqa: BLE001
+            return None, str(e)[:120]
+    return None, "the endpoint rejected every request-parameter dialect we know"
 
 
 def check_exec_tool_calls(gateway):
@@ -187,11 +207,15 @@ def check_exec_tool_calls(gateway):
                       f"execution on '{entry.get('name')}' via claude -p (tools inherent)")
     ok, detail = _probe_tool_calls(entry, gateway)
     if ok is False:
+        # The hint comes from what the server SAID, not from a fixed sentence: "start vLLM with
+        # --enable-auto-tool-choice" is unactionable for a hosted model whose newest generation
+        # simply cannot take function tools on /chat/completions (OpenAI moved those to
+        # /v1/responses). A day-one check naming the wrong remedy is worse than none.
+        import error_classifier
         return _check("exec tool calls", "warn",
                       f"execution model '{entry['name']}' REJECTS tool calls — every execution "
                       "silently re-dispatches to Claude (local_incapable)",
-                      "start the server with tool support, e.g. vLLM: --enable-auto-tool-choice "
-                      "--tool-call-parser <parser matching the model>")
+                      error_classifier.tools_refused_message(detail))
     if ok is None:
         return _check("exec tool calls", "ok",
                       f"'{entry['name']}': tool support unverified ({detail or 'no response'})")
