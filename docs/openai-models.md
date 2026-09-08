@@ -60,13 +60,23 @@ check reports the same thing before a run pays for it.
 A blocked model is still perfectly good for the **tool-free** tiers — routing, clarify, verify,
 memory — and for tool-free read capabilities via `cap_local_exec`. Only execution is off limits.
 
+## 4. The output budget is one number for every model — handled
+
+`config.LOCAL_EXEC_MAX_TOKENS` (32768) is asked for regardless of what the model can emit, so
+gpt-4o (16384), gpt-4 and gpt-3.5-turbo rejected *every* call:
+
+> max_tokens is too large: 32768. This model supports at most 16384 completion tokens.
+
+Not a context overflow — the prompt fits fine. Otto clamps to the ceiling the server names, in
+one round trip rather than halving toward it.
+
 ## Snapshot — `api.openai.com`, 2026-09-08
 
 Refresh with `probe_endpoint.py` rather than trusting these rows; they are dated for a reason.
 
 | tools on `/chat/completions` | models |
 | --- | --- |
-| **works** (31 of 38) | `gpt-3.5-turbo`, `gpt-4`, `gpt-4-turbo`, `gpt-4.1{,-mini,-nano}`, `gpt-4o{,-mini}`, `gpt-5{,-mini,-nano}`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4{,-mini,-nano}`, `gpt-5.5`, `o1`, `o3`, `o3-mini`, `o4-mini` |
+| **works** (31 of 38, incl. gpt-4o/gpt-4/gpt-3.5 once the output budget is clamped) | `gpt-3.5-turbo`, `gpt-4`, `gpt-4-turbo`, `gpt-4.1{,-mini,-nano}`, `gpt-4o{,-mini}`, `gpt-5{,-mini,-nano}`, `gpt-5.1`, `gpt-5.2`, `gpt-5.4{,-mini,-nano}`, `gpt-5.5`, `o1`, `o3`, `o3-mini`, `o4-mini` |
 | **refuses tools** | `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-6-astra` |
 | **no `/chat/completions` at all** | `gpt-5-pro`, `gpt-5.3-codex`, `o1-pro` |
 

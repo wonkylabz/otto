@@ -5431,7 +5431,27 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertIsNone(self.ec.param_quirk("the temperature outside does not support life"))
 
     def test_the_tools_plus_reasoning_400_is_recognised(self):
+        """The PAIR-only quirk, not the parameter-does-not-exist one — the two messages ask for
+        different adaptations and mapping both onto one loses a real distinction."""
         v = self.ec.classify(400, self.REASONING_400.decode())
+        self.assertIs(v.action, self.ec.Action.adapt)
+        self.assertEqual(v.quirk, self.ec.QUIRK_NO_TOOL_REASONING)
+
+    def test_a_model_with_no_such_parameter_loses_it_ALWAYS(self):
+        """gpt-4o/gpt-4.1 answer "Unrecognized request argument supplied: reasoning_effort" —
+        different wording from the pair refusal, and true with or without tools. Folded into the
+        pair-only quirk, a tool-free turn re-sent it and re-paid the 400 every single turn."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_NO_REASONING_EFFORT])
+        for tools in ([{"type": "function"}], None):
+            with self.subTest(tools=bool(tools)):
+                body = gateway.chat_body(m, [], 8, reasoning_effort="high", tools=tools)
+                self.assertNotIn("reasoning_effort", body)
+
+    def test_the_unrecognised_argument_wording_is_recognised(self):
+        """The gap that survived the first three commits: every non-reasoning OpenAI model
+        phrases it this way, so an effort level made gpt-4o fail on an anonymous 400 the ladder
+        then retried with the identical body."""
+        v = self.ec.classify(400, "Unrecognized request argument supplied: reasoning_effort")
         self.assertIs(v.action, self.ec.Action.adapt)
         self.assertEqual(v.quirk, self.ec.QUIRK_NO_REASONING_EFFORT)
 
@@ -5442,7 +5462,7 @@ class OpenAiParamDialectTests(unittest.TestCase):
         can\'t. Tool-free calls keep the operator\'s effort — the model reasons fine there, and
         an endpoint-wide downgrade would silently spend every one of them at the cheapest
         reasoning the model has."""
-        m = dict(self.m, quirks=[self.ec.QUIRK_NO_REASONING_EFFORT])
+        m = dict(self.m, quirks=[self.ec.QUIRK_NO_TOOL_REASONING])
         with_tools = gateway.chat_body(m, [], 8, reasoning_effort="high",
                                        tools=[{"type": "function"}])
         self.assertNotIn("reasoning_effort", with_tools)
@@ -5489,7 +5509,7 @@ class OpenAiParamDialectTests(unittest.TestCase):
                 self.assertIsNotNone(gateway.adapt_body(body, q))
         # ...and tool-free, where the reasoning quirk's only move is to stop sending it.
         tool_free = {k: v for k, v in body.items() if k != "tools"}
-        self.assertIsNotNone(gateway.adapt_body(tool_free, self.ec.QUIRK_NO_REASONING_EFFORT))
+        self.assertIsNotNone(gateway.adapt_body(tool_free, self.ec.QUIRK_NO_TOOL_REASONING))
 
     # --- the body builder --------------------------------------------------------------
 
@@ -5696,6 +5716,33 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertTrue(out["is_error"])
         self.assertNotIn("context overflow", out["result"])
         self.assertIn("some 400 nothing here recognises", out["result"])
+
+    def test_a_named_output_cap_is_clamped_to_not_discovered_by_halving(self):
+        """`LOCAL_EXEC_MAX_TOKENS` is one number for every model, so any model with a smaller
+        output ceiling — gpt-4o, gpt-4, gpt-3.5-turbo — rejected every call. Not a context
+        overflow (the prompt fits fine), and the server names the ceiling, so halving toward it
+        pays round trips for a number we were already handed."""
+        # 10000, NOT the real 16384: halving 32768 lands on 16384 by arithmetic accident, so a
+        # test written around the real number passes with the clamp deleted (it did — caught by
+        # mutation). A cap that is not a clean half separates clamping from halving.
+        cap = (b'{"error":{"message":"max_tokens is too large: 32768. This model supports at '
+               b'most 10000 completion tokens, whereas you provided 32768.","param":'
+               b'"max_tokens","code":"invalid_value"}}')
+        self.assertEqual(self.ec.output_cap(cap.decode()), 10000)
+        self.assertIsNone(self.ec.output_cap("some other 400"))
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(cap)
+            return {"choices": [{"message": {"role": "assistant", "content": "fits"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.m)
+        self.assertEqual(out["result"], "fits")
+        self.assertEqual(len(sent), 2, "clamped in one round trip, not halved toward it")
+        self.assertEqual(sent[1]["max_tokens"], 10000)
 
     def test_the_overflow_halving_uses_the_endpoints_own_key(self):
         """The 4th site the ticket did not list. `_chat_step` halves the output budget BY NAME;

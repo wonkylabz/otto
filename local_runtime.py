@@ -546,6 +546,16 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
             # retries with the identical over-long prompt twice more.
             if v.action is not error_classifier.Action.prune:
                 raise RuntimeError(f"HTTP {e.code}: {detail or e.reason}") from None
+            # The server named the model's own output ceiling, so clamp to it rather than
+            # discovering it by halving: this is not a full context, it is one number
+            # (LOCAL_EXEC_MAX_TOKENS) applied to every model regardless of what it can emit.
+            cap = error_classifier.output_cap(detail)
+            if cap:
+                key = gateway.token_key(m)
+                cur = int(body.get(key) or config.LOCAL_EXEC_MAX_TOKENS)
+                if cur > cap:
+                    body = {**body, key: cap}
+                    continue
             fit = _context_fit(detail)          # numbers for the final message, when offered
             if fit:
                 max_len, prompt_tokens = fit

@@ -1114,11 +1114,13 @@ def chat_body(m, messages, max_tokens, **extra):
     if max_tokens is not None:
         body[token_key(m)] = max_tokens
     body.update({k: v for k, v in extra.items() if v is not None})
-    # Dropped, never downgraded to a literal: the refusal is about the PAIR, and gpt-6-astra
-    # rejects the `'none'` its own error message recommends. Tool-free calls keep the operator's
-    # effort — the model reasons fine there, and an endpoint-wide downgrade would silently spend
-    # every one of them at the cheapest reasoning the model has.
-    if error_classifier.QUIRK_NO_REASONING_EFFORT in q and body.get("tools"):
+    # Dropped, never downgraded to a literal: gpt-6-astra rejects the `'none'` its own error
+    # message recommends. Two quirks because there are two facts — a model that has no such
+    # parameter at all (gpt-4o: "Unrecognized request argument") loses it always, while one that
+    # refuses it only ALONGSIDE tools (gpt-5.5) keeps the operator's effort on tool-free calls,
+    # rather than being downgraded endpoint-wide to the cheapest reasoning it has.
+    if (error_classifier.QUIRK_NO_REASONING_EFFORT in q
+            or (error_classifier.QUIRK_NO_TOOL_REASONING in q and body.get("tools"))):
         body.pop("reasoning_effort", None)
     return body
 
@@ -1142,7 +1144,8 @@ def adapt_body(body, quirk):
             out[error_classifier.QUIRK_MAX_COMPLETION_TOKENS] = out.pop("max_tokens")
     elif quirk == error_classifier.QUIRK_DEFAULT_TEMPERATURE:
         out.pop("temperature", None)
-    elif quirk == error_classifier.QUIRK_NO_REASONING_EFFORT:
+    elif quirk in (error_classifier.QUIRK_NO_REASONING_EFFORT,
+                   error_classifier.QUIRK_NO_TOOL_REASONING):
         out.pop("reasoning_effort", None)
     else:
         return None

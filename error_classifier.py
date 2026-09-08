@@ -34,6 +34,7 @@ reason the rest is here: which failures are walls is one decision, not an if-cha
 site.
 """
 import enum
+import re
 
 
 class Reason(str, enum.Enum):
@@ -196,8 +197,10 @@ def wall_message(reason_value):
 QUIRK_MAX_COMPLETION_TOKENS = "max_completion_tokens"
 QUIRK_DEFAULT_TEMPERATURE = "default_temperature"
 QUIRK_NO_REASONING_EFFORT = "no_reasoning_effort"
+QUIRK_NO_TOOL_REASONING = "no_tool_reasoning"
 
-QUIRKS = (QUIRK_MAX_COMPLETION_TOKENS, QUIRK_DEFAULT_TEMPERATURE, QUIRK_NO_REASONING_EFFORT)
+QUIRKS = (QUIRK_MAX_COMPLETION_TOKENS, QUIRK_DEFAULT_TEMPERATURE, QUIRK_NO_REASONING_EFFORT,
+          QUIRK_NO_TOOL_REASONING)
 
 
 def param_quirk(detail):
@@ -216,15 +219,23 @@ def param_quirk(detail):
     # positive is silently sampling at temperature 1 for the rest of the process.
     if "'temperature'" in d and ("does not support" in d or "unsupported" in d):
         return QUIRK_DEFAULT_TEMPERATURE
-    # "Function tools with reasoning_effort are not supported for gpt-6-astra in
-    # /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to
-    # 'none'." Note what this one is NOT: reasoning_effort is fine on this model, and tools are
-    # fine on this model — only the PAIR is refused, and the server names the fix. So the
-    # adaptation is not a drop (see gateway.adapt_body); every agentic turn sends tools, so a
-    # drop would leave the model's own default effort in play and reach the same 400.
-    if "reasoning_effort" in d and ("not supported" in d or "unsupported" in d
-                                    or "does not support" in d):
-        return QUIRK_NO_REASONING_EFFORT
+    # `reasoning_effort` is refused two DIFFERENT ways, and they need different adaptations —
+    # one endpoint, one parameter, two facts:
+    #
+    #   "Function tools with reasoning_effort are not supported for gpt-5.5 in
+    #    /v1/chat/completions." — only the PAIR is refused. The model reasons fine on its own,
+    #    so the effort is dropped for tool-carrying bodies and kept for the rest.
+    #
+    #   "Unrecognized request argument supplied: reasoning_effort" — gpt-4o/gpt-4.1 and every
+    #    other non-reasoning model. The parameter does not exist for them, tools or no tools,
+    #    so it is dropped outright. Collapsing this into the pair-only quirk left a tool-free
+    #    turn re-sending it and re-paying the 400 on every single turn.
+    if "reasoning_effort" in d:
+        if "function tools" in d:
+            return QUIRK_NO_TOOL_REASONING
+        if ("unrecognized" in d or "not supported" in d or "unsupported" in d
+                or "does not support" in d):
+            return QUIRK_NO_REASONING_EFFORT
     return None
 
 
@@ -262,7 +273,34 @@ def tools_refused_message(detail=""):
             f"(Admin → LLM models). The endpoint said: {said}")
 
 
+_OUTPUT_CAP = re.compile(r"supports at most (\d+) completion tokens", re.IGNORECASE)
+
+
+def output_cap(detail):
+    """The model's own maximum output budget, when a 400 names it — else None.
+
+    A DIFFERENT failure from a context overflow, though both are about tokens: the prompt fits
+    fine, we simply asked for more completion than this model can produce ("max_tokens is too
+    large: 32768. This model supports at most 16384 completion tokens"). Otto's
+    LOCAL_EXEC_MAX_TOKENS is one number for every model, so any model with a smaller ceiling —
+    gpt-4o, gpt-4, gpt-3.5-turbo — rejected every call.
+
+    Recovering by halving (what a real overflow does) works but pays extra round trips for a
+    number the server already told us, so the caller clamps to it directly."""
+    m = _OUTPUT_CAP.search(detail or "")
+    return int(m.group(1)) if m else None
+
+
 def _looks_like_context_overflow(detail):
+    """Includes the output-budget rejection above: it is not literally a context overflow, but
+    it wants the same `prune` verdict — the caller's recovery for both is "ask for fewer
+    tokens", and it clamps to `output_cap` when the server named one."""
+    if output_cap(detail):
+        return True
+    return _prompt_too_long(detail)
+
+
+def _prompt_too_long(detail):
     """Every phrasing an OpenAI-shaped endpoint has been seen to use. vLLM and OpenAI both
     open with "maximum context length"; an Anthropic-compatible proxy says "prompt is too
     long" and names no limit at all, so a numbers-first test misses it."""
