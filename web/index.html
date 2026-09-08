@@ -4186,7 +4186,7 @@ const NEEDS_LABEL={verify_exhausted:"unverified",qa_fail:"QA failed",qa_inconclu
                    review_fail:"review findings",review_inconclusive:"review inconclusive",
                    budget_exceeded:"over budget",workflow_error:"run failed",delivery_failed:"delivery failed",
                    workflow_dead:"worker died",stuck_timeout:"timed out",
-                   local_fallback_disabled:"local failed, no fallback",
+                   local_fallback_disabled:"model failed, no fallback",
                    claude_auth_expired:"Claude login expired"};
 const NEEDS_HINT={verify_exhausted:"Didn't pass automated verification after all attempts — read the result, then Retry, or Accept it if the judge was wrong.",
                   qa_fail:"Post-PR QA found real problems on the draft PR — review its findings, then Retry.",
@@ -4197,7 +4197,7 @@ const NEEDS_HINT={verify_exhausted:"Didn't pass automated verification after all
                   workflow_error:"The run crashed — read the error below, then Retry.",
                   delivery_failed:"It finished but the result couldn't be delivered — check the target, then Retry.",
                   workflow_dead:"The worker process died mid-run — safe to Retry.",
-                  local_fallback_disabled:"The local model couldn't do the work and OTTO_LOCAL_FALLBACK=0 forbids Claude from covering for it — nothing ran. Fix the local endpoint (or flip the flag), then Retry.",
+                  local_fallback_disabled:"The model's endpoint couldn't do the work and OTTO_LOCAL_FALLBACK=0 forbids Claude from covering for it — nothing ran. The result names the endpoint — fix it (or flip the flag), then Retry.",
                   claude_auth_expired:"Claude rejected our credentials, so nothing ran — the subscription session on the worker host expired. Run `claude /login` there (or fix ANTHROPIC_API_KEY), then Retry.",
                   stuck_timeout:"Ran past its time limit without finishing — Retry or investigate.",
                   unverified:"Delivered but never passed verification — read the result, then Retry, or Accept it if the judge was wrong.",
@@ -6494,7 +6494,8 @@ async function loadAdmin(){
   POLICY_STATE={capabilities:{},mcps:{}};
   data.capabilities.forEach(c=>POLICY_STATE.capabilities[c.name]={risk:c.risk,enabled:c.enabled,tool_free:!!c.tool_free});
   data.mcps.forEach(m=>POLICY_STATE.mcps[m.name]={enabled:m.enabled});   // notes are server-owned — /api/mcp/note is their only writer
-  MODEL_STATE={pool:models.pool, assign:models.assign, endpoints:models.endpoints||[]};
+  MODEL_STATE={pool:models.pool, assign:models.assign, endpoints:models.endpoints||[],
+               kinds:models.kinds||["local","hosted"], hosted_hosts:models.hosted_hosts||[]};
   CONV_STATE={}; ((conv&&conv.repos)||[]).forEach(r=>{ CONV_STATE[r.path]=r; });
   applyCaps(data.capabilities);   // keep the "/" popup + counts in sync with admin edits
   SECRETS=(settings&&settings.secrets)||null;
@@ -6727,10 +6728,10 @@ function endpointsBlock(m){
     const used=(e.models||[]);
     return `<tr class="mrow">
       <td><span class="minfo"><span class="mn">${esc(e.name)}</span>
-        <small>${esc(e.base_url||'')}${e.api_key_env?' &middot; key set':''}${nHeaders(e)?` &middot; ${nHeaders(e)} header${nHeaders(e)===1?'':'s'}`:''}</small></span></td>
+        <small>${esc(e.base_url||'')} &middot; ${esc(e.kind||'local')}${e.api_key_env?' &middot; key set':''}${nHeaders(e)?` &middot; ${nHeaders(e)} header${nHeaders(e)===1?'':'s'}`:''}</small></span></td>
       <td class="c-tag"><span class="srctag" title="${esc(used.join(', ')||'no models yet')}">${used.length}</span></td>
       <td class="c-test"><span class="mtest"><button class="addbtn" data-discover="${esc(e.name)}" title="ask this server which models it serves, and add them">discover</button>
-        <button class="addbtn" data-editep="${esc(e.name)}" title="change the URL, key or headers — every model on this endpoint follows">edit</button></span></td>
+        <button class="addbtn" data-editep="${esc(e.name)}" title="change the URL, key, kind or headers — every model on this endpoint follows">edit</button></span></td>
       <td class="c-rm r"><button class="remove" data-delep="${esc(e.name)}" title="remove this endpoint and its models">&times;</button></td></tr>`;
   }).join("");
   return `<table class="ctable modtable eptable">
@@ -6741,25 +6742,26 @@ function endpointsBlock(m){
 }
 
 function modelsSection(m){
-  const plabel=p=>p.provider==="claude"?"claude":"local";
+  // The tag is the model's CLASS (gateway.model_kind: claude | hosted | local), a stored fact on
+  // its endpoint — never derived from `provider`, which only says the request travels as
+  // OpenAI-compatible HTTP and would tag a vendor's frontier model the same as a 4B on a laptop.
+  const plabel=p=>kindOf(p);
   const pname=p=>p.provider==="claude"?(p.name.replace(/^claude[-\s]?/i,"")||p.name):p.name;
   const radio=(p,phase)=>{
-    const local=p.provider!=="claude";
-    // A local pick on PREVIEW is not a setting, it is a silent substitution: `claude -p
-    // --permission-mode plan` cannot run on a local model, so gateway.preview_model_id degrades
-    // to _default_claude (sonnet) and the radio goes on showing the local model that never ran.
-    // The one phase with no ladder above it is the worst place to hide that, so the option is
-    // refused outright rather than accepted and ignored. memory_gc is HALF local-capable — its
-    // batch classifier goes through complete(), its live tool-check cannot — so that one is
-    // warned, not disabled.
+    const nonClaude=p.provider!=="claude";   // TRANSPORT: dispatched over OpenAI-compatible HTTP
+    // A non-Claude pick on PREVIEW is a silent substitution: only `claude -p --permission-mode
+    // plan` can write one, so gateway.preview_model_id degrades to sonnet while the radio keeps
+    // showing a model that never ran. A TRANSPORT limit, not a class one — hosted is refused
+    // like local, and the copy says "Claude only", never "local". memory_gc is HALF servable
+    // (batch classifier yes, live tool-check no), so that one is warned, not disabled.
     let title='', dis='';
-    if(local && phase==="execution")
-      title=' title="runs execution on Otto&#39;s local agent runtime (OpenAI tool-calling) instead of claude -p — local-only: no Claude escalation. Caps needing a repo .mcp.json stay on Claude."';
-    else if(local && phase==="preview"){
+    if(nonClaude && phase==="execution")
+      title=' title="runs execution on Otto&#39;s own agent runtime (OpenAI tool-calling) instead of claude -p — no Claude escalation: retries stay on this model. Caps needing a repo .mcp.json stay on Claude."';
+    else if(nonClaude && phase==="preview"){
       dis=' disabled';
-      title=' title="unavailable: the approval preview runs claude -p --permission-mode plan, which no local model can serve. Picking one here would silently run sonnet instead and still show this model."';
-    } else if(local && phase==="memory_gc")
-      title=' title="the batch classifier runs locally; the live tool-verification turn cannot (it needs claude -p with read-only tools) and falls back to sonnet."';
+      title=' title="unavailable: the approval preview runs claude -p --permission-mode plan, so it runs on Claude only — no OpenAI-compatible model, local or hosted, can serve it. Picking one here would silently run sonnet instead and still show this model."';
+    } else if(nonClaude && phase==="memory_gc")
+      title=' title="the batch classifier runs on this model; the live tool-verification turn cannot (it needs claude -p with read-only tools) and falls back to sonnet."';
     return `<span class="rc"><input type="radio" name="as-${phase}" value="${esc(p.name)}" ${m.assign[phase]===p.name?'checked':''}${dis}${title}></span>`;
   };
   const PHASE_HELP=[
@@ -6781,7 +6783,7 @@ function modelsSection(m){
   const rows=m.pool.map(p=>`<tr class="mrow">
       <td><span class="minfo"><span class="mn">${plabel(p)} · ${esc(pname(p))}</span>
         <small>${p.provider==='claude'?esc(p.model):esc(p.endpoint||p.base_url||'')+' · '+esc(p.model||'')}</small></span></td>
-      <td class="c-tag"><span class="srctag">${p.provider==='claude'?'cloud':'local'}</span></td>
+      <td class="c-tag"><span class="srctag" title="${p.provider==='claude'?'runs through claude -p':'kind is set on the endpoint (edit it to change)'}">${esc(kindOf(p))}</span></td>
       <td class="c-health" data-mhealth="${esc(p.name)}">${modelHealthPill(p.name)}</td>
       <td class="c-phases"><span class="mradios">${radio(p,'routing')}${radio(p,'plan')}${radio(p,'preview')}${radio(p,'clarify')}${radio(p,'memory')}${radio(p,'verify')}${radio(p,'supervise')}${radio(p,'memory_gc')}${radio(p,'execution')}</span></td>
       <td class="c-turns">${p.provider!=='claude'?`<input type="number" min="1" step="1" data-turns="${esc(p.name)}" value="${p.max_turns||''}" placeholder="60">`:''}</td>
@@ -6916,12 +6918,37 @@ function repointAssignments(gone){
   for(const t in MODEL_STATE.assign){ if(gone.includes(MODEL_STATE.assign[t])) MODEL_STATE.assign[t]=fallback; }
 }
 
+/* An endpoint's KIND — what the model behind it is. `hosted` is a frontier model behind a
+   vendor API; `local` is a weak model on a box we run, which is what the write latch, the
+   cross-run cap latch and the "fix the local server" copy were written for. The guess only
+   PRE-SELECTS from the server's host list (gateway.HOSTED_HOSTS via /api/models) so the two
+   sides can never disagree; the operator's pick is what is stored. */
+const kindOf=p=>p.provider==="claude"?"claude":(p.kind==="hosted"?"hosted":"local");
+function epKindGuess(url){
+  let host=""; try{ host=new URL(url||"").hostname.toLowerCase(); }catch(_){ return "local"; }
+  return (MODEL_STATE.hosted_hosts||[]).some(h=>host===h||host.endsWith("."+h))?"hosted":"local";
+}
+function kindSelect(id,cur){
+  const tip={local:"a model on a server you run (vLLM / Ollama / llama.cpp): weak-model safeguards apply — a write that fails verification escalates to Claude, and a capability that keeps failing here is latched off it",
+             hosted:"a frontier model behind a vendor API (OpenAI, OpenRouter, Together…): no weak-model safeguards — retries stay on it like any strong model"};
+  return `<select id="${id}" title="what the model behind this endpoint is — every model on the endpoint shares it">`
+    +(MODEL_STATE.kinds||["local","hosted"]).map(k=>`<option value="${k}" ${k===cur?"selected":""} title="${esc(tip[k]||"")}">${k}</option>`).join("")+`</select>`;
+}
+function bindKindGuess(urlId,kindId){
+  const u=document.getElementById(urlId), k=document.getElementById(kindId);
+  if(!u||!k) return;
+  let touched=false;
+  k.addEventListener("change",()=>{ touched=true; });
+  u.addEventListener("input",()=>{ if(!touched) k.value=epKindGuess(u.value); });
+}
+
 function showEndpointForm(name){
   const c=document.getElementById("model-form");
   const e=(MODEL_STATE.endpoints||[]).find(x=>x.name===name)||{};
   c.innerHTML=`<div class="aform">
     <label>Name</label><input id="ep-name" placeholder="e.g. gpu-box  &middot;  deepseek" value="${esc(e.name||"")}">
     <label>Base URL (OpenAI-compatible)</label><input id="ep-url" placeholder="http://localhost:11434/v1" value="${esc(e.base_url||"")}">
+    <label>Kind</label>${kindSelect("ep-kind", e.kind||(name?"local":epKindGuess(e.base_url)))}
     <label>API key (or the name of an env var holding it)</label><input id="ep-key" placeholder="blank for a local server" value="${esc(e.api_key_env||"")}">
     <label>Extra headers (optional, one per line)</label><textarea id="ep-headers" rows="3" placeholder="X-Tenant: sre&#10;X-Api-Key: VLLM_GATEWAY_KEY" title="sent on every call to this endpoint — models, chat and embeddings alike. A value that names an env var (or an OTTO_SECRET_COMMAND secret) resolves to it, so a credential need not be stored here.">${esc(headerLines(e.headers))}</textarea>
     <div class="ferr" id="ep-err"></div>
@@ -6929,6 +6956,7 @@ function showEndpointForm(name){
       <button class="btn decline" id="ep-cancel">Cancel</button></div>
   </div>`;
   document.getElementById("ep-cancel").onclick=()=>c.innerHTML="";
+  if(!name) bindKindGuess("ep-url","ep-kind");   // a NEW endpoint follows the URL until the operator picks
   document.getElementById("ep-save").onclick=async()=>{
     const err=document.getElementById("ep-err");
     const nm=val("ep-name"), url=val("ep-url");
@@ -6936,7 +6964,7 @@ function showEndpointForm(name){
     if(nm!==name && (MODEL_STATE.endpoints||[]).some(x=>x.name===nm)){ err.textContent="an endpoint with that name already exists"; return; }
     const hdrs=parseHeaders(document.getElementById("ep-headers").value);
     if(hdrs===null){ err.textContent="each header needs a name: one line is missing its 'Name: value'"; return; }
-    const ep={name:nm, base_url:url, api_key_env:val("ep-key"), headers:hdrs};
+    const ep={name:nm, base_url:url, kind:val("ep-kind"), api_key_env:val("ep-key"), headers:hdrs};
     MODEL_STATE.endpoints=MODEL_STATE.endpoints||[];
     const i=MODEL_STATE.endpoints.findIndex(x=>x.name===name);
     if(i<0) MODEL_STATE.endpoints.push(ep);
@@ -7021,7 +7049,7 @@ function showModelForm(){
   const eps=MODEL_STATE.endpoints||[];
   c.innerHTML=`<div class="aform">
     <label>Type</label>
-    <select id="lm-prov"><option value="claude">Cloud · Claude</option><option value="openai">Local · OpenAI-compatible</option></select>
+    <select id="lm-prov"><option value="claude">Claude (claude -p)</option><option value="openai">OpenAI-compatible endpoint (local or hosted)</option></select>
     <label>Name</label><input id="lm-name" placeholder="e.g. claude-opus  ·  local-qwen">
     <label>Model id</label><input id="lm-model" placeholder="claude-opus-4-8  ·  qwen3-coder:30b">
     <div id="lm-local" style="display:none;flex-direction:column;gap:10px">
@@ -7030,6 +7058,7 @@ function showModelForm(){
       <div id="lm-newep" style="display:${eps.length?"none":"flex"};flex-direction:column;gap:10px">
         <label>Endpoint name</label><input id="lm-epname" placeholder="e.g. gpu-box">
         <label>Base URL (OpenAI-compatible)</label><input id="lm-url" placeholder="http://localhost:11434/v1">
+        <label>Kind</label>${kindSelect("lm-kind","local")}
         <label>API key (optional — an env var name, or the key itself)</label><input id="lm-key" placeholder="blank for local servers">
         <label>Extra headers (optional, one per line)</label><textarea id="lm-headers" rows="2" placeholder="X-Tenant: sre" title="sent on every call to this endpoint; a value naming an env var resolves to it"></textarea>
       </div>
@@ -7042,6 +7071,7 @@ function showModelForm(){
   const epSel=document.getElementById("lm-ep"), newEp=document.getElementById("lm-newep");
   prov.onchange=()=>{ localDiv.style.display = prov.value==="openai" ? "flex" : "none"; };
   epSel.onchange=()=>{ newEp.style.display = epSel.value ? "none" : "flex"; };
+  bindKindGuess("lm-url","lm-kind");
   if(!eps.length) epSel.value="";
   document.getElementById("lm-cancel").onclick=()=>c.innerHTML="";
   document.getElementById("lm-save").onclick=async()=>{
@@ -7059,7 +7089,7 @@ function showModelForm(){
         if((MODEL_STATE.endpoints||[]).some(e=>e.name===ep)){ err.textContent="an endpoint with that name already exists"; return; }
         const hdrs=parseHeaders(document.getElementById("lm-headers").value);
         if(hdrs===null){ err.textContent="each header needs a name: one line is missing its 'Name: value'"; return; }
-        MODEL_STATE.endpoints=[...(MODEL_STATE.endpoints||[]), {name:ep, base_url:url, api_key_env:val("lm-key"), headers:hdrs}];
+        MODEL_STATE.endpoints=[...(MODEL_STATE.endpoints||[]), {name:ep, base_url:url, kind:val("lm-kind"), api_key_env:val("lm-key"), headers:hdrs}];
       }
       m={name,provider:"openai",endpoint:ep,model};
       const turns=val("lm-turns");
@@ -7215,7 +7245,7 @@ function renderAdmin(data, models, el, settings){
           +"so runs fall back to Claude until it is re-tested (automatically, or via the "
           +"Clear button). Picking it in the composer still runs it here."
         : "";
-      opts+=`<optgroup label="${esc(p.name)} · local${blockers.length?' · unavailable':(isLatched?' · latched':'')}">`
+      opts+=`<optgroup label="${esc(p.name)} · ${esc(kindOf(p))}${blockers.length?' · unavailable':(isLatched?' · latched':'')}">`
         +opt("exec|"+p.name,"with tools · never Claude",
              localTip||latchTip||"runs on Otto's local agent runtime: real tools, MCP for stdio servers, and NO Claude — retries and the final escalation stay on this model, so a struggling run surfaces to you instead of falling back",
              blockers.length>0)

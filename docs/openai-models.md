@@ -84,6 +84,24 @@ Refresh with `probe_endpoint.py` rather than trusting these rows; they are dated
 At that date the newest model that can drive execution is **`gpt-5.5`**; `gpt-5.4` also accepts
 `temperature: 0`, so it needs one quirk instead of two.
 
+## Tell Otto the endpoint is hosted
+
+An endpoint has a **kind**: `local` (a model on a box you run) or `hosted` (a frontier model
+behind a vendor API). Every model on the endpoint shares it, and it is what the weak-model
+safeguards key on — the write latch that escalates a verify-failed write to Claude, the
+cross-run capability latch, and the "fix the local endpoint" wording in strict-mode stops and
+needs-you cards. A `hosted` model gets none of those: it retries like any strong model, and a
+failure names the endpoint.
+
+Well-known vendor hosts (`api.openai.com`, `openrouter.ai`, …) are pre-selected `hosted` when
+the endpoint is created; anything else defaults to `local`. Set it yourself in Admin → LLM models
+→ endpoint → edit. A config saved before this field existed is classed on first load by the same
+host list.
+
+What the kind does **not** change: the approval preview. It runs `claude -p --permission-mode
+plan`, so it is Claude-only whatever the endpoint is, and a non-Claude pick there is repointed
+to sonnet with the radio disabled.
+
 ## Not supported: the Responses API
 
 `/v1/responses` is where OpenAI moved function calling for the newest models. Otto speaks

@@ -2719,6 +2719,240 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class ModelKindTests(unittest.TestCase):
+    """Issue #18: every model added through an endpoint was classed LOCAL by the one predicate
+    `provider != "claude"`, so gpt on api.openai.com got the write latch, the cross-run cap latch
+    and "fix the local endpoint" copy tuned for a 4B on a laptop. `kind` is a STORED fact on the
+    endpoint (its models share it); `provider` keeps answering only the TRANSPORT question."""
+
+    HOSTED = {"name": "gpt", "provider": "openai", "endpoint": "openai", "kind": "hosted",
+              "base_url": "https://api.openai.com/v1", "model": "gpt-6"}
+    LOCAL = {"name": "qwen", "provider": "openai", "endpoint": "gpu-box", "kind": "local",
+             "base_url": "http://gpu:8000/v1", "model": "qwen"}
+
+    def setUp(self):
+        self._orig = gateway._PATH
+        self._dir = tempfile.mkdtemp(prefix="otto-kind-")
+        gateway._PATH = os.path.join(self._dir, "models.json")
+
+    def tearDown(self):
+        shutil.rmtree(self._dir, ignore_errors=True)
+        gateway._PATH = self._orig
+
+    def _write(self, cfg):
+        with open(gateway._PATH, "w") as f:
+            json.dump(cfg, f)
+
+    def _disk(self):
+        with open(gateway._PATH) as f:
+            return json.load(f)
+
+    def _legacy(self, url):
+        return {"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "claude-sonnet-5"},
+                         {"name": "m", "provider": "openai", "base_url": url, "model": "x"}],
+                "assign": {"execution": "claude-sonnet"}}
+
+    # --- the store ---------------------------------------------------------------------
+
+    def test_a_legacy_config_without_the_field_still_loads_as_local(self):
+        self._write(self._legacy("https://vllm.x/v1"))
+        cfg = gateway.load()
+        self.assertEqual(cfg["endpoints"][0]["kind"], "local")
+        self.assertEqual(gateway.model_kind(next(m for m in cfg["pool"] if m["name"] == "m")), "local")
+
+    def test_a_well_known_vendor_host_is_guessed_hosted_when_nothing_was_stated(self):
+        # The reporting operator's config: api.openai.com stored with `provider: openai` and
+        # nothing else. The guess is a DEFAULT for an endpoint that never stated a kind.
+        self._write(self._legacy("https://api.openai.com/v1"))
+        cfg = gateway.load()
+        self.assertEqual(cfg["endpoints"][0]["kind"], "hosted")
+        self.assertEqual(gateway.model_kind(cfg["pool"][1]), "hosted")
+
+    def test_the_guess_is_pure_and_never_hosted_for_an_unknown_host(self):
+        self.assertEqual(gateway.guess_kind("https://api.openai.com/v1"), "hosted")
+        self.assertEqual(gateway.guess_kind("https://eu.api.openai.com/v1"), "hosted")
+        self.assertEqual(gateway.guess_kind("http://localhost:11434/v1"), "local")
+        self.assertEqual(gateway.guess_kind("https://openai-proxy.corp/v1"), "local")
+        self.assertEqual(gateway.guess_kind(""), "local")
+        self.assertEqual(gateway.guess_kind(None), "local")
+
+    def test_the_operators_pick_outranks_the_guess_and_survives_a_round_trip(self):
+        # A hosted-shaped URL the operator says is local (a proxy in front of a home box), and a
+        # vendor API the guess doesn't know. The stored field is the authority both ways.
+        self._write({"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "s"},
+                              {"name": "a", "provider": "openai", "endpoint": "p", "model": "x"},
+                              {"name": "b", "provider": "openai", "endpoint": "v", "model": "y"}],
+                     "endpoints": [{"name": "p", "base_url": "https://api.openai.com/v1", "kind": "local"},
+                                   {"name": "v", "base_url": "https://api.newvendor.ai/v1", "kind": "hosted"}],
+                     "assign": {"execution": "claude-sonnet"}})
+        cfg = gateway.load()
+        by = {m["name"]: m for m in cfg["pool"]}
+        self.assertEqual(gateway.model_kind(by["a"]), "local")
+        self.assertEqual(gateway.model_kind(by["b"]), "hosted")
+        gateway.save(cfg)
+        self.assertEqual({e["name"]: e["kind"] for e in self._disk()["endpoints"]},
+                         {"p": "local", "v": "hosted"})
+        by = {m["name"]: m for m in gateway.load()["pool"]}
+        self.assertEqual(gateway.model_kind(by["a"]), "local")
+        self.assertEqual(gateway.model_kind(by["b"]), "hosted")
+
+    def test_kind_is_hydrated_onto_the_entry_and_stripped_on_disk(self):
+        # Consumers read the ENTRY (engine has `exec_entry`, never the endpoint list), so `kind`
+        # rides on it like base_url — and like base_url it must not persist there, or a re-classed
+        # endpoint leaves stale copies behind.
+        self._write(self._legacy("https://api.openai.com/v1"))
+        cfg = gateway.load()
+        self.assertEqual(cfg["pool"][1]["kind"], "hosted")
+        cfg["pool"][1]["kind"] = "local"                 # a stale hand-edit on the entry
+        gateway.save(cfg)
+        self.assertNotIn("kind", self._disk()["pool"][1])
+        self.assertEqual(gateway.load()["pool"][1]["kind"], "hosted")   # the endpoint won
+
+    def test_an_invalid_stored_kind_falls_back_to_the_guess(self):
+        self._write({"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "s"}],
+                     "endpoints": [{"name": "e", "base_url": "http://gpu/v1", "kind": "frontier"}],
+                     "assign": {"execution": "claude-sonnet"}})
+        self.assertEqual(gateway.load()["endpoints"][0]["kind"], "local")
+
+    def test_model_kind_answers_the_class_question_for_every_entry_shape(self):
+        self.assertEqual(gateway.model_kind({"provider": "claude", "name": "c"}), "claude")
+        self.assertEqual(gateway.model_kind(self.HOSTED), "hosted")
+        self.assertEqual(gateway.model_kind(self.LOCAL), "local")
+        self.assertEqual(gateway.model_kind({"provider": "openai", "name": "bare"}), "local")
+        self.assertEqual(gateway.model_kind(None), "claude")   # no entry: nothing to latch
+
+    def test_the_api_hands_the_ui_the_kinds_and_the_host_list_it_pre_selects_from(self):
+        # The UI guesses from the SERVER's list, so the two sides cannot disagree.
+        src = open("server.py").read()
+        self.assertIn('"kinds": list(gateway.KINDS)', src)
+        self.assertIn('"hosted_hosts": list(gateway.HOSTED_HOSTS)', src)
+        ui = open("web/index.html", "rb").read().decode("utf-8")
+        self.assertIn("MODEL_STATE.hosted_hosts", ui)
+        self.assertIn("hosted_hosts:models.hosted_hosts", ui)
+        for h in gateway.HOSTED_HOSTS:
+            self.assertFalse(h in ui, f"{h} is a server-side fact; the UI must not carry its own list")
+
+    # --- the class sites ----------------------------------------------------------------
+
+    def test_a_hosted_write_cap_keeps_the_ordinary_ladder(self):
+        # `write_local` arms the one-judged-fail latch to Claude, tuned for a weak model. A
+        # hosted frontier model on the same runtime is a strong model: it retries like one.
+        saved = (gateway.exec_model_entry, engine._claude, local_runtime.run_json, config.SUPERVISE,
+                 mcp_client.unservable)
+        config.SUPERVISE = False
+        mcp_client.unservable = lambda cap: []
+        engine.trace = engine.say = lambda *a, **k: None
+        local_runtime.run_json = lambda *a, **k: {
+            "result": "did it", "is_error": False, "total_cost_usd": 0, "session_id": "local-1",
+            "usage": {"output_tokens": 9}}
+        engine._claude = lambda *a, **k: self.fail("a hosted write cap must not leave its runtime")
+        cap = registry.Capability("custom", "editor", "edits things")
+        cap.risk = "write"
+        try:
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.HOSTED)
+            att = engine.run_attempt("edit it", cap, attempt=1, wid="w1")
+            self.assertEqual(att["backend"], "local")     # TRANSPORT: still Otto's runtime
+            self.assertFalse(att["write_local"])          # CLASS: no weak-model latch
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.LOCAL)
+            att = engine.run_attempt("edit it", cap, attempt=1, wid="w2")
+            self.assertTrue(att["write_local"])           # the local case is unchanged
+        finally:
+            (gateway.exec_model_entry, engine._claude, local_runtime.run_json, config.SUPERVISE,
+             mcp_client.unservable) = saved
+
+    def test_a_hosted_model_is_never_consulted_against_the_cross_run_latch(self):
+        # A latch left in the store from before the endpoint was re-classed must not exile it.
+        saved = (gateway.exec_model_entry, gateway.cap_local_latched, engine._claude,
+                 local_runtime.run_json, config.SUPERVISE, mcp_client.unservable)
+        config.SUPERVISE = False
+        mcp_client.unservable = lambda cap: []
+        engine.trace = engine.say = lambda *a, **k: None
+        asked = []
+        gateway.cap_local_latched = lambda cap, model, now=None: asked.append(model) or True
+        local_runtime.run_json = lambda *a, **k: {
+            "result": "did it", "is_error": False, "total_cost_usd": 0, "session_id": "local-1",
+            "usage": {"output_tokens": 9}}
+        engine._claude = lambda *a, **k: {"result": "claude", "total_cost_usd": 0.01,
+                                          "session_id": "s", "usage": {"output_tokens": 1}}
+        cap = registry.Capability("skill", "github-pr-review", "reviews PRs")
+        cap.risk = "read"
+        try:
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.HOSTED)
+            att = engine.run_attempt("review", cap, attempt=1, wid="w1")
+            self.assertEqual(att["backend"], "local")
+            self.assertEqual(asked, [])                   # never even read for a hosted entry
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.LOCAL)
+            att = engine.run_attempt("review", cap, attempt=1, wid="w2")
+            self.assertEqual(asked, ["qwen"])
+            self.assertEqual(att["backend"], "claude")    # the local latch still bites
+            self.assertEqual(att["fallback_from"], "qwen")
+        finally:
+            (gateway.exec_model_entry, gateway.cap_local_latched, engine._claude,
+             local_runtime.run_json, config.SUPERVISE, mcp_client.unservable) = saved
+
+    def test_a_hosted_verdict_never_feeds_the_latch_store(self):
+        import memory
+        saved = (memory._audit, gateway.record_cap_local, gateway.resolve_model)
+        fed, entry = [], {}
+        memory._audit = lambda *a, **k: None
+        gateway.record_cap_local = lambda cap, model, passed: fed.append((model, passed))
+        gateway.resolve_model = lambda name, cfg=None: entry.get(name)
+        cap = registry.Capability("skill", "github-pr-review", "reviews PRs")
+        verdict = {"passed": False, "source": "judge", "critique": "meh"}
+        try:
+            entry.update(gpt=dict(self.HOSTED), qwen=dict(self.LOCAL))
+            memory.record_attempt("w", "r", cap, "out", 0, 1, verdict, model="gpt", backend="local")
+            self.assertEqual(fed, [])
+            memory.record_attempt("w", "r", cap, "out", 0, 1, verdict, model="qwen", backend="local")
+            self.assertEqual(fed, [("qwen", False)])
+        finally:
+            memory._audit, gateway.record_cap_local, gateway.resolve_model = saved
+
+    # --- the copy -----------------------------------------------------------------------
+
+    def test_the_strict_stop_names_the_endpoint_and_its_kind_never_local_for_a_hosted_model(self):
+        msg = config.strict_stop_message("gpt", "HTTP 401", entry=self.HOSTED)
+        self.assertIn("hosted model failed", msg)
+        self.assertIn("`openai`", msg)                    # the endpoint to go and fix
+        self.assertNotIn("local", msg.split("OTTO_LOCAL_FALLBACK")[0])
+        self.assertNotIn("local model", msg)
+        self.assertNotIn("local endpoint", msg)
+        loc = config.strict_stop_message("qwen", "timed out", entry=self.LOCAL)
+        self.assertIn("local model failed", loc)
+        self.assertIn("`gpu-box`", loc)
+        bare = config.strict_stop_message("m", "x")        # no entry: the old shape, still local
+        self.assertIn("local model failed", bare)
+
+    def test_the_exception_carries_the_entry_so_every_surface_gets_the_same_copy(self):
+        e = gateway.LocalFallbackDisabled(self.HOSTED, "HTTP 401")
+        self.assertEqual(e.model, "gpt")
+        self.assertIn("hosted model 'gpt'", str(e))
+        self.assertIn("hosted model failed", e.message)
+        e = gateway.LocalFallbackDisabled("qwen", "timed out")      # a bare name still works
+        self.assertIn("local model 'qwen'", str(e))
+
+    def test_no_wall_message_calls_the_endpoint_local(self):
+        import error_classifier
+        for reason in error_classifier.Reason:
+            self.assertNotIn("local", error_classifier.wall_message(reason.value), reason)
+        self.assertNotIn("local", error_classifier.wall_message("something-new"))
+        # engine's two legacy flags now share that wording rather than carrying their own
+        src = open("engine.py").read()
+        self.assertIn('error_classifier.wall_message("tools_unsupported")', src)
+        self.assertIn('error_classifier.wall_message("overloaded")', src)
+
+    def test_the_ui_tags_and_labels_from_kind_not_provider(self):
+        ui = open("web/index.html", "rb").read().decode("utf-8")
+        self.assertIn('const plabel=p=>kindOf(p);', ui)
+        self.assertIn('<span class="srctag" title="${p.provider===\'claude\'?', ui)
+        self.assertNotIn("p.provider==='claude'?'cloud':'local'", ui)
+        self.assertIn("${esc(kindOf(p))}${blockers.length", ui)   # the Execution dropdown
+        self.assertIn('kind:val("ep-kind")', ui)                  # the endpoint form stores it
+        self.assertIn('kind:val("lm-kind")', ui)                  # so does the inline new-endpoint
+        self.assertNotIn('local_fallback_disabled:"local failed', ui)
+        self.assertNotIn("Fix the local endpoint", ui)
+
+
 class JsonStoreConcurrencyTests(unittest.TestCase):
     """`data/models.json` + `data/policy.json` must go through storage's lock+atomic replace.
 
@@ -4650,7 +4884,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 68444 for the monotone-adaptation rule: obeying an endpoint's OWN suggested remedy made
     # the rewrite two-directional, so two mutually-rejected bodies alternated until the round
     # budget died — under a message naming a cause ("context overflow") that never happened.
-    MAX_RULES_BYTES = 68444   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 68722   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 68722 for the transport/class rule (issue #18): one predicate, `provider != "claude"`,
+    # answered two different questions in six layers, and which sites mean WHICH is a decision
+    # with no single home in the code.
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

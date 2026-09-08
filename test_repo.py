@@ -1927,6 +1927,29 @@ class PreviewModelTierTests(unittest.TestCase):
         self.assertEqual(cfg["assign"]["preview"], "claude-sonnet")
         self.assertEqual(gateway.preview_model_id(cfg), "claude-sonnet-5")
 
+    def test_a_HOSTED_pick_is_refused_for_the_same_reason_and_the_copy_says_claude_only(self):
+        """Issue #18's open question, answered: the preview is Claude-only by TRANSPORT
+        (`claude -p --permission-mode plan` is the only thing that can write one), so a hosted
+        frontier model is repointed exactly like a local one — but the refusal must say so,
+        never call the model local."""
+        pool = self._cfg("ds")["pool"] + [{"name": "gpt", "provider": "openai", "model": "gpt-6",
+                                           "endpoint": "openai"}]
+        cfg = gateway._normalize({"pool": pool,
+                                  "endpoints": [{"name": "openai", "kind": "hosted",
+                                                 "base_url": "https://api.openai.com/v1"}],
+                                  "assign": {**{t: "claude-sonnet" for t in gateway.TASKS},
+                                             "preview": "gpt"}})
+        self.assertEqual(gateway.model_kind(next(m for m in cfg["pool"] if m["name"] == "gpt")),
+                         "hosted")
+        self.assertEqual(cfg["assign"]["preview"], "claude-sonnet")
+        ui = open("web/index.html", "rb").read().decode("utf-8")
+        i = ui.index("const radio=(p,phase)=>")
+        block = ui[i:i + 2400]
+        j = block.index('phase==="preview"')
+        title = block[j:block.index("}", j)]
+        self.assertIn("Claude only", title)
+        self.assertNotIn("no local model", title)
+
     def test_an_explicit_claude_preview_pick_is_left_alone(self):
         """The repoint must only touch an assignment that could never have run."""
         cfg = gateway._normalize({"pool": self._cfg("ds")["pool"],

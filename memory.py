@@ -66,7 +66,10 @@ def record_attempt(wid, request, cap, result, cost, attempt, verdict, remember=F
     # place both already hand over a verdict, the model and the backend together.
     # Judged verdicts only: a harness death or a supervisor kill says nothing about whether the
     # capability can work on this model.
-    if backend == "local" and verdict and verdict.get("source") == "judge":
+    # CLASS, not transport: a KNOWN hosted frontier model on the same runtime is never latched.
+    # An unresolvable label keeps the old behaviour — the latch is only ever withheld on evidence.
+    if (backend == "local" and verdict and verdict.get("source") == "judge"
+            and gateway.model_kind(gateway.resolve_model(model)) != "hosted"):
         gateway.record_cap_local(cap.name, model, bool(verdict.get("passed")))
     if remember:
         known = recent_facts(limit=40, project=project)

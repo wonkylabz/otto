@@ -71,24 +71,30 @@ class LocalFallbackDisabled(RuntimeError):
     error) shows the same actionable text. Never raised in the default mode, and never for the
     exempt `verify` tier."""
 
-    def __init__(self, model, what, task=None):
-        self.model, self.what, self.task = model, what, task
-        self.message = config.strict_stop_message(model, what, task=task)
+    def __init__(self, model, what, task=None, entry=None):
+        # `model` may be the pool ENTRY (preferred — the copy then names its kind and endpoint)
+        # or just its name.
+        if isinstance(model, dict):
+            entry, model = model, model.get("name", "")
+        self.model, self.what, self.task, self.entry = model, what, task, entry
+        self.message = config.strict_stop_message(model, what, task=task, entry=entry)
         # The SHORT str() is what a Temporal ActivityError / HTTP 500 shows, so it has to name the
         # flag too — `.message` (the full body) doesn't survive those layers.
         super().__init__(f"OTTO_LOCAL_FALLBACK=0 stopped this run: {task or 'execution'} on "
-                         f"local model '{model}' — {what}")
+                         f"{model_kind(entry) if entry else 'local'} model '{model}' — {what}")
 
 
-def _strict_stop(task, model, what):
+def _strict_stop(task, m, what):
     """Record + raise a strict-mode stop. Traced under its own STRICT tag and counted separately
-    from fallbacks (a stop is the opposite of a fallback — nothing continued on Claude)."""
-    trace("STRICT", f"{task or 'execution'}: {model} failed ({what}) and OTTO_LOCAL_FALLBACK=0 "
+    from fallbacks (a stop is the opposite of a fallback — nothing continued on Claude).
+    `m` is the pool entry, so the operator copy can name the endpoint and its kind."""
+    name = m["name"] if isinstance(m, dict) else m
+    trace("STRICT", f"{task or 'execution'}: {name} failed ({what}) and OTTO_LOCAL_FALLBACK=0 "
                     f"— stopping instead of falling back to Claude")
-    _LAST[task or "execution"] = {"model": model + " ⛔ (strict stop)", "fell_back": False,
+    _LAST[task or "execution"] = {"model": name + " ⛔ (strict stop)", "fell_back": False,
                                   "strict_stop": True}
     _bump(task or "execution", fell_back=False, strict=True)
-    raise LocalFallbackDisabled(model, what, task=task)
+    raise LocalFallbackDisabled(m, what, task=task)
 
 
 def _discover_claude():
@@ -128,6 +134,34 @@ def _default_cfg():
 # endpoint moves every model on it — without touching a single reader.
 _EP_FIELDS = ("base_url", "api_key_env", "headers")
 
+# An endpoint's KIND is what the model behind it is — a weak model on a box we run (`local`),
+# or a frontier model behind a vendor's API (`hosted`). It is a stored fact the operator can set,
+# NOT derived from `provider`: `provider` says how the request travels (OpenAI-compatible HTTP
+# vs `claude -p`) and every model on any such endpoint used to be classed local by that alone.
+# `guess_kind` is only the default for an endpoint that never stated one — well-known vendor
+# hosts and nothing else, so a proxy or a home server can never be guessed hosted.
+KINDS = ("local", "hosted")
+HOSTED_HOSTS = ("api.openai.com", "openrouter.ai", "api.together.xyz", "api.groq.com",
+                "api.mistral.ai", "api.deepseek.com", "api.x.ai", "api.fireworks.ai",
+                "api.perplexity.ai", "generativelanguage.googleapis.com", "api.cohere.com",
+                "api.cerebras.ai", "api.sambanova.ai", "api.moonshot.ai")
+
+
+def guess_kind(base_url):
+    """`hosted` for a well-known vendor API host, else `local`. PURE. A hint only — the
+    stored `kind` on the endpoint is the authority once set."""
+    host = (urllib.parse.urlsplit(base_url or "").hostname or "").lower()
+    return "hosted" if any(host == h or host.endswith("." + h) for h in HOSTED_HOSTS) else "local"
+
+
+def model_kind(m):
+    """`claude` | `hosted` | `local` for a pool entry. The CLASS question — is this a weak
+    model the write latch, the cross-run cap latch and the operator copy were written for?
+    Transport questions (which runtime dispatches it) keep reading `provider`."""
+    if not m or m.get("provider") == "claude":
+        return "claude"
+    return "hosted" if m.get("kind") == "hosted" else "local"
+
 
 def _norm_headers(h):
     """An endpoint's optional headers as a clean {name: value} dict. Names/values carrying a
@@ -165,6 +199,9 @@ def _hydrate(cfg):
     a 4B and a frontier one. An entry whose endpoint no longer exists keeps its own fields if it
     still has them, so a profile import or a hand-edited file self-heals instead of breaking."""
     eps = [dict(e) for e in (cfg.get("endpoints") or []) if e.get("name")]
+    for e in eps:
+        if e.get("kind") not in KINDS:
+            e["kind"] = guess_kind(e.get("base_url"))
     by_name = {e["name"]: e for e in eps}
     by_key = {_ep_key(e): e for e in eps}
     for m in cfg.get("pool", []):
@@ -176,7 +213,9 @@ def _hydrate(cfg):
             if ep is None:
                 ep = {"name": _ep_name(m["base_url"], by_name), "base_url": m["base_url"],
                       "api_key_env": m.get("api_key_env", ""),
-                      "headers": _norm_headers(m.get("headers"))}
+                      "headers": _norm_headers(m.get("headers")),
+                      "kind": m.get("kind") if m.get("kind") in KINDS
+                      else guess_kind(m["base_url"])}
                 eps.append(ep)
                 by_name[ep["name"]] = ep
                 by_key[_ep_key(ep)] = ep
@@ -186,6 +225,7 @@ def _hydrate(cfg):
         m["base_url"] = ep.get("base_url", "")
         m["api_key_env"] = ep.get("api_key_env", "")
         m["headers"] = _norm_headers(ep.get("headers"))
+        m["kind"] = ep["kind"]
     cfg["endpoints"] = eps
     return cfg
 
@@ -199,7 +239,7 @@ def _dehydrate(cfg):
     # riding on each (gateway.endpoints), and the Admin tab posts that decorated shape straight
     # back, so a derived `models` list would otherwise be written to disk and go stale.
     cfg["endpoints"] = [{k: (_norm_headers(v) if k == "headers" else v)
-                         for k, v in e.items() if k in ("name",) + _EP_FIELDS}
+                         for k, v in e.items() if k in ("name", "kind") + _EP_FIELDS}
                         for e in (cfg.get("endpoints") or []) if e.get("name")]
     by_name = {e["name"]: e for e in cfg["endpoints"]}
     for m in cfg.get("pool", []):
@@ -209,6 +249,7 @@ def _dehydrate(cfg):
         m.pop("base_url", None)
         m.pop("api_key_env", None)
         m.pop("headers", None)
+        m.pop("kind", None)
     return cfg
 
 
@@ -285,7 +326,8 @@ def _normalize(cfg):
         if assign.get(t) in removed:
             assign[t] = default
         assign.setdefault(t, default)
-    # A LOCAL model on "preview" is not a setting, it is a silent substitution: `claude -p
+    # A non-Claude model on "preview" — local OR hosted, the preview is Claude-only by transport
+    # — is not a setting, it is a silent substitution: `claude -p
     # --permission-mode plan` cannot run on one, so `preview_model_id` degrades to
     # `_default_claude` and the store, the API and the Admin radio all keep naming a model that
     # never wrote a single plan (user-observed: preview pinned to qwen, every plan written by
@@ -411,10 +453,12 @@ def memory_gc_model_id(cfg=None):
 
 
 def exec_model_entry(cap_name=None, cfg=None):
-    """The FULL pool entry resolved for capability execution — Claude or local. This is
-    the backend dispatch source: provider "claude" → `claude -p` (claude_cli.run_json),
-    anything else → the local agent runtime (local_runtime.run_json). Per-cap cap_exec
-    override wins over the phase-level execution assignment."""
+    """The FULL pool entry resolved for capability execution. This is the backend dispatch
+    source — a TRANSPORT question: provider "claude" → `claude -p` (claude_cli.run_json),
+    anything else → Otto's own agent runtime over OpenAI-compatible HTTP
+    (local_runtime.run_json), whether the endpoint is a laptop vLLM or a vendor API. What KIND
+    of model it is (`model_kind`) is a separate, stored fact. Per-cap cap_exec override wins
+    over the phase-level execution assignment."""
     cfg = cfg or load()
     if cap_name:
         ovr = (cfg.get("cap_exec") or {}).get(cap_name)
@@ -513,7 +557,7 @@ def local_exec_model(cap_name, cfg=None):
     m = _local_model(name, cfg) if name else None
     if m and _local_down_until.get(m["name"], 0) > time.time():
         if not config.local_fallback_allowed():
-            _strict_stop(None, m["name"], "the model is marked down after an earlier failure "
+            _strict_stop(None, m, "the model is marked down after an earlier failure "
                                           f"(skipped for {config.LOCAL_SKIP_S:.0f}s)")
         trace("GATEWAY", f"local exec: {m['name']} marked down; using Claude this attempt")
         return None
@@ -565,7 +609,7 @@ def local_execute(cap_name, prompt, system_context=None):
         if not config.local_fallback_allowed():
             _bump("execution", fell_back=False, down_model=m["name"], down_until=down_until,
                   health=bad)
-            _strict_stop(None, m["name"], f"the tool-free local completion failed: {str(e)[:200]}")
+            _strict_stop(None, m, f"the tool-free local completion failed: {str(e)[:200]}")
         trace("GATEWAY", f"local exec {m['name']} failed ({e}); this attempt runs on Claude")
         _LAST["execution"] = {"model": m["name"] + " → claude (fallback)", "fell_back": True}
         _bump("execution", fell_back=True, down_model=m["name"], down_until=down_until, health=bad)
@@ -953,7 +997,7 @@ def complete(task, prompt):
     # straight to the Claude fallback — so a dead endpoint costs one timeout, not one per call.
     if m.get("provider") != "claude" and _local_down_until.get(m["name"], 0) > time.time():
         if not config.local_fallback_allowed(task):
-            _strict_stop(task, m["name"], "the model is marked down after an earlier failure "
+            _strict_stop(task, m, "the model is marked down after an earlier failure "
                                           f"(skipped for {config.LOCAL_SKIP_S:.0f}s)")
         trace("GATEWAY", f"{task}: {m['name']} marked down; going straight to Claude")
         _LAST[task] = {"model": m["name"] + " → claude (down, skipped)", "fell_back": True}
@@ -973,7 +1017,7 @@ def complete(task, prompt):
                 # verdict — but don't mark the model down: the endpoint is healthy, the
                 # answer just flopped, and a down-mark would exile it for LOCAL_SKIP_S.
                 if not config.local_fallback_allowed(task):
-                    _strict_stop(task, m["name"], "the model returned no usable answer "
+                    _strict_stop(task, m, "the model returned no usable answer "
                                                   "(reasoning-only even after the nudge)")
                 trace("GATEWAY", f"{m['name']} gave no usable answer; falling back to Claude")
                 _LAST[task] = {"model": m["name"] + " → claude (empty reply)", "fell_back": True}
@@ -1006,7 +1050,7 @@ def complete(task, prompt):
             # no opinion on Claude-to-Claude recovery). Mark-down still applies (it's about not
             # re-hitting a dead endpoint), but nothing substitutes for the call.
             _bump(task, fell_back=False, down_model=down_model, down_until=down_until, health=bad)
-            _strict_stop(task, m["name"], f"the call failed: {str(e)[:200]}")
+            _strict_stop(task, m, f"the call failed: {str(e)[:200]}")
         trace("GATEWAY", f"{m['name']} failed ({e}); falling back to Claude")
         _LAST[task] = {"model": m["name"] + " → claude (fallback)", "fell_back": True}
         _bump(task, fell_back=True, down_model=down_model, down_until=down_until, health=bad)
@@ -1399,8 +1443,9 @@ def test_model(name, cfg=None, timeout=None):
         return done(False, f"server up but '{m['model']}' not found — pull it or fix the id "
                            f"({len(ids)} available)")
     except Exception as e:  # noqa: BLE001
-        # Name the endpoint: a bare "<urlopen error timed out>" in the Admin banner says nothing
-        # about WHICH host to go and start.
+        # Name the endpoint, never its class: a bare "<urlopen error timed out>" in the Admin
+        # banner says nothing about WHICH host to go and start, and "local" is wrong for a
+        # vendor API.
         where = (f"cannot reach {m.get('base_url')}: "
                  if m.get("provider") != "claude" and m.get("base_url") else "")
         return done(False, (where + str(e))[:180])
