@@ -198,11 +198,15 @@ def check_exec_tool_calls(gateway):
                       f"execution on '{entry.get('name')}' via claude -p (tools inherent)")
     ok, detail = _probe_tool_calls(entry, gateway)
     if ok is False:
+        # The hint comes from what the server SAID, not from a fixed sentence: "start vLLM with
+        # --enable-auto-tool-choice" is unactionable for a hosted model whose newest generation
+        # simply cannot take function tools on /chat/completions (OpenAI moved those to
+        # /v1/responses). A day-one check naming the wrong remedy is worse than none.
+        import error_classifier
         return _check("exec tool calls", "warn",
                       f"execution model '{entry['name']}' REJECTS tool calls — every execution "
                       "silently re-dispatches to Claude (local_incapable)",
-                      "start the server with tool support, e.g. vLLM: --enable-auto-tool-choice "
-                      "--tool-call-parser <parser matching the model>")
+                      error_classifier.tools_refused_message(detail))
     if ok is None:
         return _check("exec tool calls", "ok",
                       f"'{entry['name']}': tool support unverified ({detail or 'no response'})")

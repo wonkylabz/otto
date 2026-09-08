@@ -5651,6 +5651,30 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertNotIn("vLLM", out["result"])
         self.assertIn("different execution model", out["result"])
 
+    def test_doctors_day_one_warning_carries_the_same_remedy(self):
+        """`otto doctor` is where this is supposed to be caught before a run pays for it, so it
+        must not hand an OpenAI operator "start vLLM with --enable-auto-tool-choice" — the check
+        would be loud, correct, and unactionable."""
+        import doctor
+        refusal = (b'{"error":{"message":"Function tools with reasoning_effort are not supported '
+                   b'for gpt-6-astra in /v1/chat/completions. To use function tools, use '
+                   b'/v1/responses."}}')
+
+        def fake_urlopen(req, timeout=None):
+            raise self._400(refusal)
+        self._patch_urlopen(fake_urlopen)
+
+        class _Gw:
+            request_headers = staticmethod(gateway.request_headers)
+            adapt_for = staticmethod(gateway.adapt_for)
+            chat_body = staticmethod(gateway.chat_body)
+            load = staticmethod(lambda: {"pool": [dict(self.m)]})
+            exec_model_entry = staticmethod(lambda cfg=None: dict(self.m))
+        out = doctor.check_exec_tool_calls(_Gw)
+        self.assertEqual(out["status"], "warn")
+        self.assertNotIn("vLLM", out["hint"])
+        self.assertIn("different execution model", out["hint"])
+
     def test_the_vllm_tool_refusal_keeps_its_own_remedy(self):
         """The other server saying the other thing. One wall, two remedies — a wall naming the
         wrong one is worse than a generic one, because the operator acts on it."""
