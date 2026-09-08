@@ -201,6 +201,28 @@ def sandbox_available():
 _SHELL_META = set(";|&<>$`\\\n\r(){}!")
 
 
+def _flag_forms(token):
+    """Every spelling a denied flag can wear, so membership is not defeated by punctuation.
+
+    An exact-equality test shipped allowing `--method=POST`, `-XPOST` and `-fa=b` past a rule
+    that refused `-X` — three ways to write the same flag, and `_SHELL_META` has no `=` to stop
+    the first (a review caught it; reproduced against the live ruleset). Attached-value and
+    bundled forms both collapse to the flag itself here.
+
+    Deliberately over-generous: a single-dash token expands as GNU bundling (`-la` -> `-l`,
+    `-a`), which is wrong for a CLI using single-dash long options (`find -iname` yields `-i`).
+    That mis-expansion can only ever cause a REFUSAL, never an allow, which is the direction
+    this thing is required to fail in."""
+    if not token.startswith("-") or token in ("-", "--"):
+        return {token}
+    head = token.split("=", 1)[0]
+    forms = {token, head}
+    if not head.startswith("--") and len(head) > 2:
+        forms.add(head[:2])
+        forms.update("-" + c for c in head[1:])
+    return forms
+
+
 def bash_refusal(command, rules):
     """None when `command` is permitted under `rules`, else the refusal text handed back to the
     model as the tool result. The ALLOWLIST layer only — under the sandbox nothing is parsed.
@@ -229,7 +251,7 @@ def bash_refusal(command, rules):
         return f"Error: refused. Could not parse the command ({e})."
     for prefix, denied in rules:
         if tuple(toks[:len(prefix)]) == tuple(prefix):
-            hit = [t for t in toks if t in denied]
+            hit = [t for t in toks if _flag_forms(t) & set(denied)]
             if hit:
                 return (f"Error: refused. `{' '.join(prefix)} {' '.join(hit)}` writes; this pass "
                         "is read-only.")

@@ -6498,7 +6498,7 @@ class LocalPlanModeTests(unittest.TestCase):
         real bound. Locally they are the whole bound, so reproducing them literally is what made
         the planner declare it had no access to anything."""
         for cmd in ("git log --oneline -5", "ls -la apps", "cat README.md",
-                    "sed -n 1,90p regress.py", "find . -name '*.tf'", "gh api repos/o/r"):
+                    "sed -n 1,90p regress.py", "find . -name '*.tf'", "gh pr diff 12"):
             self.assertIsNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
         _, scoped = config.scoped_bash_rules(config.PLAN_TOOLS)
         self.assertLess(len(scoped), len(self.rules))
@@ -6524,18 +6524,50 @@ class LocalPlanModeTests(unittest.TestCase):
 
     def test_write_flags_are_denied_PER_COMMAND(self):
         """Gate 3. A global flag deny is wrong in both directions: `-i` writes for `sed` and
-        means ignore-case for `grep`, and `-X` is a method only for `gh api`."""
-        for cmd in ("sed -i s/a/b/ f.py", "find . -delete", "find . -exec rm {} ;",
-                    "gh api repos/o/r -X POST", "gh api repos/o/r --method DELETE"):
+        means ignore-case for `grep`."""
+        for cmd in ("sed -i s/a/b/ f.py", "find . -delete", "find . -exec rm {} ;"):
             self.assertIsNotNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
-        for cmd in ("grep -i needle f.py", "find . -name x", "gh api repos/o/r"):
+        for cmd in ("grep -i needle f.py", "find . -name x", "find . -iname x"):
             self.assertIsNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+
+    def test_a_denied_flag_survives_ITS_SPELLINGS(self):
+        """The membership test was exact token equality, so a rule refusing `-X` shipped allowing
+        `--method=POST`, `-XPOST` and `-fa=b` — three ways to write one flag, and `_SHELL_META`
+        has no `=` to stop the first. Found in review, reproduced against the live ruleset."""
+        rules = [(("curl",), ("-X", "-d", "--data"))]
+        for cmd in ("curl -X POST u", "curl -XPOST u", "curl --data=x u", "curl -dx u",
+                    "curl -sd x u"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, rules), cmd)
+        self.assertIsNone(local_runtime.bash_refusal("curl -s u", rules))
+
+    def test_the_spelling_expansion_can_only_ever_REFUSE(self):
+        """It expands a single-dash token as GNU bundling, which is wrong for a CLI using
+        single-dash long options (`find -iname` yields `-i`). That must stay the harmless
+        direction: a mis-expansion causes a refusal, never an allow."""
+        forms = local_runtime._flag_forms("-iname")
+        self.assertIn("-i", forms)
+        self.assertIn("-iname", forms)
+        self.assertEqual(local_runtime._flag_forms("plain"), {"plain"})
+        self.assertEqual(local_runtime._flag_forms("--"), {"--"})
+
+    def test_gh_api_is_ABSENT_because_its_language_is_HTTP(self):
+        """It was granted with a denied-flag list, which is the same shape as granting `python`
+        with a list of dangerous statements: the method is just a flag, so read-only means
+        enumerating every spelling of every write flag against a CLI nobody here controls. The
+        reads it served all have safe siblings, so the verb goes rather than the enumeration."""
+        self.assertNotIn("gh api", config.PLAN_BASH_FALLBACK)
+        self.assertIsNotNone(local_runtime.bash_refusal("gh api repos/o/r", self.rules))
+        for safe in ("gh pr view 1 --json comments", "gh pr diff 1", "gh repo view o/r",
+                     "gh issue view 5 --comments"):
+            self.assertIsNone(local_runtime.bash_refusal(safe, self.rules), safe)
 
     def test_neither_layer_bounds_the_NETWORK_and_the_two_differ_there(self):
         """Stated because it is what the layers do NOT do, which reading them never reveals: a
         read-only filesystem stops no remote mutation. The allowlist happens to refuse a POST
         (`-X` is a write flag on `gh api`); the sandbox cannot, and is not pretending to. What
         stands between a plan pass and a remote write is the approval gate, as it always was."""
+        # `gh api` is out of the fallback entirely now, so the asymmetry is starker, not
+        # milder: the sandbox would run a POST that the fallback cannot even spell.
         self.assertIsNotNone(local_runtime.bash_refusal("gh api repos/o/r -X POST", self.rules))
         src = open("local_runtime.py").read()
         i = src.index("def _bwrap_argv(")

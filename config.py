@@ -101,10 +101,16 @@ _BASH_RULE = re.compile(r"^Bash\((?P<cmd>.+?)(?P<wild>:\*)?\)$")
 #   purpose: a global `-i` deny would break `grep -i`, and `sed -i` is only reachable because
 #   `sed` is granted as `sed -n` and nothing else. Verbs whose own language can write (awk, perl,
 #   python, xargs) are simply absent — that is the line between a bounded list and theatre.
+#   `gh api` was granted with a denied-flag list and is now ABSENT for that same reason: its
+#   language is HTTP and the method is just a flag, so keeping it read-only means enumerating
+#   every spelling of every write flag (`-X POST`, `--method=POST`, `-XPOST`, `-fa=b`) against a
+#   CLI nobody here controls — all four of which it shipped allowing. Every read it served has a
+#   safe sibling above (`gh pr view --json comments`, `gh pr diff`, `gh repo view`). A denied
+#   flag now also survives its spellings (`local_runtime._flag_forms`), but that is defence in
+#   depth for the rules that remain, not a licence to add another verb of this shape.
 PLAN_BASH_FALLBACK = {
     "gh issue view": (), "gh issue list": (), "gh pr view": (), "gh pr diff": (),
     "gh pr list": (), "gh pr checks": (), "gh repo view": (), "gh search": (),
-    "gh api": ("-X", "--method", "-f", "-F", "--input"),
     "git log": (), "git show": (), "git diff": (), "git status": (), "git rev-parse": (),
     "git ls-files": (), "git blame": (), "git describe": (), "git cat-file": (),
     "ls": (), "cat": (), "head": (), "tail": (), "wc": (), "file": (), "stat": (),
