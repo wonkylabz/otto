@@ -1070,6 +1070,10 @@ def request_headers(m, content_json=True):
 # alternative is re-paying a wasted round trip on the first call of every worker lifetime, and
 # because a fact discovered about a model belongs where the operator can see it (Admin → LLM
 # models writes the same file).
+#
+# Which models actually work, and the one thing this mechanism CANNOT fix (the newest
+# OpenAI generation refuses function tools on /chat/completions outright):
+# docs/openai-models.md, refreshed by probe_endpoint.py.
 _LEARNED_QUIRKS = {}
 
 

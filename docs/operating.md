@@ -17,6 +17,10 @@ session and no convention judge pays for it.
   phantom empty `data/` at the old path. Diagnose by comparing `curl localhost:$PORT/api/chats`
   against `sqlite3 data/otto.db "SELECT COUNT(*) FROM chats"`.
 
+- **Adding a hosted/OpenAI endpoint**: see **`docs/openai-models.md`** — which models can be an
+  EXECUTION model and which cannot (the newest OpenAI generation refuses function tools on
+  `/chat/completions` outright), and `probe_endpoint.py` to check any endpoint yourself.
+
 ## Running
 
 - **Default**: `./run.sh` — Temporal dev server + `worker.py` + `server.py`. Temporal is
