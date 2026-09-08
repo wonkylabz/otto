@@ -45,12 +45,14 @@ class Reason(str, enum.Enum):
     server_error = "server_error"            # 500 — internal error, often transient
     tools_unsupported = "tools_unsupported"  # rejects the tools param outright
     context_overflow = "context_overflow"    # prompt longer than the window
+    unsupported_param = "unsupported_param"  # the body carries a parameter this model refuses
     unknown = "unknown"
 
 
 class Action(str, enum.Enum):
     retry_in_place = "retry_in_place"  # back off against the SAME endpoint; may still recover
     prune = "prune"                    # shrink the prompt and try again
+    adapt = "adapt"                    # rewrite the body for this endpoint's parameter dialect
     wall = "wall"                      # cannot serve any run: latch off local, re-dispatch
     fail = "fail"                      # nothing structured to do — the normal ladder applies
 
@@ -77,15 +79,20 @@ _MESSAGE = {
     Reason.tools_unsupported: ("the local server rejects tool calls — vLLM is missing "
                                "--enable-auto-tool-choice / --tool-call-parser"),
     Reason.context_overflow: "the prompt exceeds the model's context window",
+    Reason.unsupported_param: ("the model refuses a parameter in the request body "
+                               "({quirk}) — retried in this endpoint's dialect"),
     Reason.unknown: "the local endpoint failed (HTTP {code})",
 }
 
 
 class Verdict:
-    __slots__ = ("reason", "action", "message")
+    __slots__ = ("reason", "action", "message", "quirk")
 
-    def __init__(self, reason, action, message):
+    def __init__(self, reason, action, message, quirk=None):
         self.reason, self.action, self.message = reason, action, message
+        # Only ever set on an `adapt` verdict: WHICH parameter dialect the server just told us
+        # it speaks. The caller rewrites the body for it and retries — see `param_quirk`.
+        self.quirk = quirk
 
     @property
     def is_wall(self):
@@ -123,6 +130,10 @@ def classify(status=None, detail="", transport_error=False):
             return _v(Reason.tools_unsupported, Action.wall)
         if _looks_like_context_overflow(detail):
             return _v(Reason.context_overflow, Action.prune)
+        quirk = param_quirk(detail)
+        if quirk:
+            return Verdict(Reason.unsupported_param, Action.adapt,
+                           _MESSAGE[Reason.unsupported_param].format(quirk=quirk), quirk)
         return _v(Reason.unknown, Action.fail, status)
     if status in (401, 403):
         return _v(Reason.auth, Action.wall, status)
@@ -156,6 +167,45 @@ def wall_message(reason_value):
     except ValueError:
         return f"the local backend hit a wall ({reason_value})"
     return _MESSAGE[reason].format(code="") if "{code}" in _MESSAGE[reason] else _MESSAGE[reason]
+
+
+# --- parameter dialects (issue #10) ----------------------------------------------------
+# Every OpenAI-compatible body Otto sends carries `max_tokens` and `temperature: 0`. OpenAI's
+# newer models reject BOTH — `max_tokens` was renamed `max_completion_tokens`, and only the
+# default temperature is accepted — and each refusal is a 400 that names the offending
+# parameter and, for the rename, its replacement.
+#
+# Detected from the SERVER'S OWN WORDS rather than guessed from the model id, because the id is
+# exactly what we cannot predict: the reporting operator's model was called "chatgpt 6 astra".
+# A name/date table would have to be edited for every future OpenAI generation and would still
+# be wrong the day one ships; a 400 that says `Use 'max_completion_tokens' instead` is right by
+# construction, costs one round trip once, and works on any endpoint that speaks this dialect.
+#
+# Deliberately NOT a wall: unlike a bad key, this failure has a recovery the caller can perform
+# by itself, so it must not latch the ladder off local or light the health badge.
+QUIRK_MAX_COMPLETION_TOKENS = "max_completion_tokens"
+QUIRK_DEFAULT_TEMPERATURE = "default_temperature"
+
+QUIRKS = (QUIRK_MAX_COMPLETION_TOKENS, QUIRK_DEFAULT_TEMPERATURE)
+
+
+def param_quirk(detail):
+    """Which parameter dialect this 400 is asking for, or None. Pure, so the two live bodies
+    below are the whole test corpus.
+
+    The token-limit test requires BOTH names: the server has to be naming `max_tokens` as the
+    problem AND `max_completion_tokens` as the fix, or a context-overflow message that merely
+    mentions max_completion_tokens would rename a parameter that was never the complaint."""
+    d = (detail or "").lower()
+    if "max_completion_tokens" in d and "max_tokens" in d:
+        return QUIRK_MAX_COMPLETION_TOKENS
+    # "Unsupported value: 'temperature' does not support 0 with this model. Only the default
+    # (1) is supported." Anchored on the quoted param name so a model whose ANSWER discusses
+    # temperature can never match — this only ever reads an error body, but the cost of a false
+    # positive is silently sampling at temperature 1 for the rest of the process.
+    if "'temperature'" in d and ("does not support" in d or "unsupported" in d):
+        return QUIRK_DEFAULT_TEMPERATURE
+    return None
 
 
 def _looks_like_context_overflow(detail):

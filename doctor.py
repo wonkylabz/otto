@@ -151,27 +151,36 @@ def _probe_tool_calls(m, gateway):
     import json
     import urllib.error
     import urllib.request
-    body = {"model": m["model"], "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1,
-            "tools": [{"type": "function", "function": {
-                "name": "noop", "description": "capability probe",
-                "parameters": {"type": "object", "properties": {}}}}]}
-    req = urllib.request.Request(m["base_url"].rstrip("/") + "/chat/completions",
-                                 data=json.dumps(body).encode(),
-                                 headers=gateway.request_headers(m))
-    try:
-        with urllib.request.urlopen(req, timeout=15):
-            return True, ""
-    except urllib.error.HTTPError as e:
+    tool = {"type": "function", "function": {
+        "name": "noop", "description": "capability probe",
+        "parameters": {"type": "object", "properties": {}}}}
+    # gateway.chat_body, not a literal: an endpoint speaking a different parameter dialect
+    # (issue #10) 400s on the probe itself, and that 400 says nothing about tool support — so
+    # this check would report "unverified" for a model that accepts tools perfectly well. The
+    # retry below adapts to whatever dialect the server names, exactly like the run paths.
+    body = gateway.chat_body(m, [{"role": "user", "content": "hi"}], 1, tools=[tool])
+    for _ in range(3):
+        req = urllib.request.Request(m["base_url"].rstrip("/") + "/chat/completions",
+                                     data=json.dumps(body).encode(),
+                                     headers=gateway.request_headers(m))
         try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:  # noqa: BLE001
-            detail = ""
-        if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in detail.lower()):
-            return False, detail
-        return None, detail
-    except Exception as e:  # noqa: BLE001
-        return None, str(e)[:120]
+            with urllib.request.urlopen(req, timeout=15):
+                return True, ""
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", errors="replace")[:200]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            adapted = gateway.adapt_for(m, e.code, detail, body)
+            if adapted is not None:
+                body = adapted
+                continue
+            if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in detail.lower()):
+                return False, detail
+            return None, detail
+        except Exception as e:  # noqa: BLE001
+            return None, str(e)[:120]
+    return None, "the endpoint rejected every request-parameter dialect we know"
 
 
 def check_exec_tool_calls(gateway):

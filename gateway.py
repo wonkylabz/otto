@@ -18,11 +18,13 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 import claude_cli
 import config
+import error_classifier
 import storage
 from ui import trace
 
@@ -1053,17 +1055,150 @@ def request_headers(m, content_json=True):
     return headers
 
 
+# --- per-model parameter dialects (issue #10) ------------------------------------------
+# A pool entry may carry `quirks: [...]` — the parameter dialect its endpoint speaks. Otto's
+# bodies have always sent `max_tokens` and `temperature: 0`; OpenAI's newer models reject both
+# (see error_classifier's QUIRK_* notes), and every one of Otto's four body-building sites had
+# the names hardcoded, so an OpenAI endpoint 400'd on the first call from any of them.
+#
+# The quirk is LEARNED from the server's own 400 rather than set by hand: the operator would
+# otherwise have to know the flag exists, and the reported model ("chatgpt 6 astra") is not a
+# name any lookup table here could have anticipated. `quirks` on the entry is the override for
+# an operator who does know — it is merged with, never replaced by, what the endpoint teaches.
+#
+# Learned quirks are memoised per (endpoint, model) AND persisted onto the entry, because the
+# alternative is re-paying a wasted round trip on the first call of every worker lifetime, and
+# because a fact discovered about a model belongs where the operator can see it (Admin → LLM
+# models writes the same file).
+_LEARNED_QUIRKS = {}
+
+
+def _quirk_key(m):
+    return ((m.get("base_url") or "").rstrip("/"), m.get("model") or "")
+
+
+def quirks(m):
+    """Every parameter quirk known for this entry: the operator's own list plus everything an
+    endpoint has taught us. A set, so callers test membership and never index."""
+    known = set(error_classifier.QUIRKS)
+    return ((set(m.get("quirks") or []) | _LEARNED_QUIRKS.get(_quirk_key(m), set()))
+            & known)
+
+
+def token_key(m):
+    """The name THIS model's endpoint wants its output-token budget under. The one reader —
+    `local_runtime`'s overflow recovery halves that budget in place, and reading a hardcoded
+    `max_tokens` off a body that carries `max_completion_tokens` would both lose the halving
+    and re-add the rejected parameter."""
+    return (error_classifier.QUIRK_MAX_COMPLETION_TOKENS
+            if error_classifier.QUIRK_MAX_COMPLETION_TOKENS in quirks(m) else "max_tokens")
+
+
+def chat_body(m, messages, max_tokens, **extra):
+    """The /chat/completions body for this model, in its endpoint's dialect. THE ONE builder —
+    `_chat`, the local runtime's per-turn body and doctor's tool-call probe all go through it,
+    or a dialect learned on one path leaves the others 400-ing.
+
+    `extra` keys whose value is None are dropped, so a caller can pass an optional parameter
+    unconditionally (`tools=tools or None`) instead of building the dict conditionally."""
+    q = quirks(m)
+    body = {"model": m["model"], "messages": messages}
+    # temperature 0 is Otto's determinism setting, not a requirement — a model that only
+    # accepts its default gets no temperature at all rather than a rejected one.
+    if error_classifier.QUIRK_DEFAULT_TEMPERATURE not in q:
+        body["temperature"] = 0
+    if max_tokens is not None:
+        body[token_key(m)] = max_tokens
+    body.update({k: v for k, v in extra.items() if v is not None})
+    return body
+
+
+def adapt_body(body, quirk):
+    """Rewrite a body for a quirk the server just named, or None when it changes nothing.
+
+    None is what BOUNDS the retry: a server that keeps returning the same complaint against an
+    already-adapted body would otherwise loop until its caller's round budget ran out, and the
+    real error would never reach the ladder."""
+    out = dict(body)
+    if quirk == error_classifier.QUIRK_MAX_COMPLETION_TOKENS:
+        if "max_tokens" in out:
+            out[error_classifier.QUIRK_MAX_COMPLETION_TOKENS] = out.pop("max_tokens")
+    elif quirk == error_classifier.QUIRK_DEFAULT_TEMPERATURE:
+        out.pop("temperature", None)
+    else:
+        return None
+    return out if out != body else None
+
+
+def learn_quirk(m, quirk):
+    """Remember that this model's endpoint speaks `quirk`. Best-effort on the persistence half:
+    the in-process memo is what makes the current run correct, and a read-only data dir must
+    never turn a recovered call into a failed one."""
+    if quirk not in error_classifier.QUIRKS:
+        return
+    if quirk in quirks(m):
+        return
+    _LEARNED_QUIRKS.setdefault(_quirk_key(m), set()).add(quirk)
+    trace("GATEWAY", f"{m.get('name') or m.get('model')}: endpoint wants '{quirk}' — adapting")
+    try:
+        def _set(cfg):
+            for e in cfg.get("pool", []):
+                if e.get("name") == m.get("name"):
+                    e["quirks"] = sorted(set(e.get("quirks") or []) | {quirk})
+        _mutate(_set)
+    except Exception:  # noqa: BLE001 - the memo above already fixed this process
+        pass
+
+
 def _chat(m, messages, max_tokens, timeout):
     """One raw /chat/completions call against a local model's endpoint; returns the parsed
     response dict. The single HTTP seam shared by the cheap-tier _openai_complete and the
-    execution-grade local_execute (and the one tests patch)."""
-    body = {"model": m["model"], "temperature": 0, "max_tokens": max_tokens,
-            "messages": messages}
-    req = urllib.request.Request(
-        m["base_url"].rstrip("/") + "/chat/completions",
-        method="POST", headers=request_headers(m), data=json.dumps(body).encode())
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    execution-grade local_execute (and the one tests patch).
+
+    A 400 naming an unsupported parameter is not surfaced: it is the endpoint declaring its
+    dialect, so the body is rewritten and re-sent (bounded — `adapt_body` returns None once it
+    has nothing left to change, which ends the loop). Anything else is raised carrying the
+    SERVER'S own words: `str(HTTPError)` is the fixed "HTTP Error 400: Bad Request", which is
+    exactly how issue #10's real message ("use 'max_completion_tokens' instead") stayed
+    invisible on this path."""
+    body = chat_body(m, messages, max_tokens)
+    url = m["base_url"].rstrip("/") + "/chat/completions"
+    for _ in range(len(error_classifier.QUIRKS) + 1):
+        req = urllib.request.Request(url, method="POST", headers=request_headers(m),
+                                     data=json.dumps(body).encode())
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            detail = _http_detail(e)
+            adapted = adapt_for(m, e.code, detail, body)
+            if adapted is None:
+                raise RuntimeError(f"HTTP {e.code}: {detail or e.reason}") from None
+            body = adapted
+    raise RuntimeError("the endpoint rejected every request-parameter dialect we know")
+
+
+def _http_detail(err):
+    """The response BODY of a failed request, or ''. Readable exactly once, so every caller
+    that wants both the detail and a classification must read it here first."""
+    try:
+        return err.read().decode("utf-8", errors="replace")[:400]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def adapt_for(m, status, detail, body):
+    """A 400 in, the rewritten body out — or None when this failure is not a dialect mismatch.
+    The shared step for every caller that owns its own HTTP loop (`_chat`, the local runtime's
+    `_chat_step`, doctor's probe), so a quirk learned on one path is known to all three."""
+    v = error_classifier.classify(status, detail)
+    if v.action is not error_classifier.Action.adapt:
+        return None
+    adapted = adapt_body(body, v.quirk)
+    if adapted is None:
+        return None
+    learn_quirk(m, v.quirk)
+    return adapted
 
 
 def message_text(msg):

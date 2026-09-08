@@ -4644,7 +4644,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 67920 for the derived-busy rule: a conversation's in-flight flag was cleared on
     # DELIVERY only, so every terminal path that skipped delivery silently deafened a DM for the
     # whole stale window — invisible from the poller, which reads a flag that looks authoritative.
-    MAX_RULES_BYTES = 67920   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 68199 for the one-body-builder rule: four call sites each hardcoded the OpenAI
+    # parameter NAMES, and the fifth would fail the same way — only against an endpoint no test
+    # here can reach, so the rule is the only thing that can stop it being written again.
+    MAX_RULES_BYTES = 68199   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -5328,6 +5331,269 @@ class ErrorClassifierTests(unittest.TestCase):
     def test_every_reason_has_a_message(self):
         for r in self.ec.Reason:
             self.assertIn(r, self.ec._MESSAGE, f"{r} has no operator-facing message")
+
+
+class OpenAiParamDialectTests(unittest.TestCase):
+    """Issue #10: OpenAI's newer models reject BOTH parameters every OpenAI-compatible body Otto
+    sends has carried since day one — `max_tokens` (renamed `max_completion_tokens`) and
+    `temperature: 0` (only the default is accepted). Four call sites hardcoded those names, so an
+    OpenAI endpoint 400'd on the first call from any of them and nothing recovered.
+
+    The dialect is read off the SERVER'S OWN 400 rather than a model-name table: the reported
+    model was called "chatgpt 6 astra", and a table would need editing for every future OpenAI
+    generation while still being wrong the day one ships."""
+
+    # The two bodies OpenAI actually returns, verbatim — a fixture shaped to match the matcher
+    # proves nothing (the lesson privacy.redact's patterns are tested under).
+    MAX_TOKENS_400 = (
+        b'{"error":{"message":"Unsupported parameter: \'max_tokens\' is not supported with '
+        b'this model. Use \'max_completion_tokens\' instead.","type":"invalid_request_error",'
+        b'"param":"max_tokens","code":"unsupported_parameter"}}')
+    TEMPERATURE_400 = (
+        b'{"error":{"message":"Unsupported value: \'temperature\' does not support 0 with this '
+        b'model. Only the default (1) is supported.","type":"invalid_request_error",'
+        b'"param":"temperature","code":"unsupported_value"}}')
+
+    class _Resp:
+        """Just enough of an http response for `with urlopen(...) as r: r.read()`."""
+
+        def __init__(self, payload):
+            self._payload = json.dumps(payload).encode()
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def setUp(self):
+        self.ec = error_classifier
+        gateway._LEARNED_QUIRKS.clear()
+        self.addCleanup(gateway._LEARNED_QUIRKS.clear)
+        self.m = {"name": "gpt", "provider": "openai", "base_url": "http://api/v1", "model": "g6"}
+
+    def _400(self, payload):
+        import urllib.error
+        return urllib.error.HTTPError("http://api/v1", 400, "Bad Request", {},
+                                      io.BytesIO(payload))
+
+    def _patch_urlopen(self, fn):
+        import urllib.request
+        prev = urllib.request.urlopen
+        urllib.request.urlopen = fn
+        self.addCleanup(setattr, urllib.request, "urlopen", prev)
+
+    def _patch_post(self, fn):
+        prev = local_runtime._post
+        local_runtime._post = fn
+        self.addCleanup(setattr, local_runtime, "_post", prev)
+
+    # --- the pure half -----------------------------------------------------------------
+
+    def test_each_real_400_names_its_own_quirk(self):
+        self.assertEqual(self.ec.param_quirk(self.MAX_TOKENS_400.decode()),
+                         self.ec.QUIRK_MAX_COMPLETION_TOKENS)
+        self.assertEqual(self.ec.param_quirk(self.TEMPERATURE_400.decode()),
+                         self.ec.QUIRK_DEFAULT_TEMPERATURE)
+
+    def test_a_dialect_400_is_adapt_not_fail_and_never_a_wall(self):
+        """It used to land in the anonymous `unknown/fail` bucket, which the verify ladder reads
+        as a model-quality failure and retries with the identical rejected body. It must not
+        become a wall either: unlike a bad key, the caller can fix this one itself."""
+        v = self.ec.classify(400, self.MAX_TOKENS_400.decode())
+        self.assertIs(v.action, self.ec.Action.adapt)
+        self.assertEqual(v.quirk, self.ec.QUIRK_MAX_COMPLETION_TOKENS)
+        self.assertFalse(v.is_wall)
+        self.assertFalse(v.counts_as_unhealthy)
+
+    def test_the_other_400s_keep_their_verdicts(self):
+        """The new branch sits between two existing ones. A context overflow must still prune
+        (vLLM's message is all about tokens), and a tool-call rejection must still wall."""
+        ctx = "This model's maximum context length is 16384 tokens. Reduce the length."
+        self.assertIs(self.ec.classify(400, ctx).action, self.ec.Action.prune)
+        self.assertIs(self.ec.classify(400, "use --enable-auto-tool-choice").action,
+                      self.ec.Action.wall)
+        self.assertIsNone(self.ec.param_quirk(ctx))
+        # Prose that merely discusses the word, with no quoted parameter and no refusal.
+        self.assertIsNone(self.ec.param_quirk("the temperature outside does not support life"))
+
+    def test_a_rename_needs_both_names_present(self):
+        """Anchored on the server naming the problem AND the replacement. An overflow message
+        that happened to mention max_completion_tokens would otherwise rename a parameter that
+        was never the complaint, and the real (prunable) failure would be lost."""
+        self.assertIsNone(self.ec.param_quirk("max_completion_tokens must be positive"))
+
+    def test_every_quirk_is_something_adapt_body_can_apply(self):
+        """The two lists are one contract: a name in QUIRKS that adapt_body ignores is a quirk
+        that classifies, learns, changes nothing, and dead-ends the retry."""
+        body = {"model": "g6", "max_tokens": 8, "temperature": 0}
+        for q in self.ec.QUIRKS:
+            with self.subTest(quirk=q):
+                self.assertIsNotNone(gateway.adapt_body(body, q))
+
+    # --- the body builder --------------------------------------------------------------
+
+    def test_the_default_dialect_is_unchanged(self):
+        body = gateway.chat_body(self.m, [{"role": "user", "content": "hi"}], 128)
+        self.assertEqual(body["max_tokens"], 128)
+        self.assertEqual(body["temperature"], 0)
+        self.assertNotIn("max_completion_tokens", body)
+
+    def test_a_quirked_entry_sends_the_other_names_and_never_the_rejected_ones(self):
+        m = dict(self.m, quirks=[self.ec.QUIRK_MAX_COMPLETION_TOKENS,
+                                 self.ec.QUIRK_DEFAULT_TEMPERATURE])
+        body = gateway.chat_body(m, [{"role": "user", "content": "hi"}], 128)
+        self.assertEqual(body["max_completion_tokens"], 128)
+        self.assertNotIn("max_tokens", body)
+        self.assertNotIn("temperature", body)      # absent, not "temperature: 1"
+        self.assertEqual(gateway.token_key(m), "max_completion_tokens")
+
+    def test_optional_extras_are_dropped_when_unset(self):
+        """So a caller passes `tools=tools or None` instead of building the dict conditionally —
+        which is how the runtime grew its own body literal in the first place."""
+        body = gateway.chat_body(self.m, [], 8, tools=None, reasoning_effort="low")
+        self.assertNotIn("tools", body)
+        self.assertEqual(body["reasoning_effort"], "low")
+
+    def test_an_unknown_quirk_string_is_ignored(self):
+        """`quirks` is operator-editable and rides a profile import; an unrecognised entry must
+        degrade to the default dialect, never change the body in a way nothing here defines."""
+        body = gateway.chat_body(dict(self.m, quirks=["banana"]), [], 8)
+        self.assertEqual(body["max_tokens"], 8)
+        self.assertEqual(body["temperature"], 0)
+
+    def test_adapt_body_returns_none_when_it_changes_nothing(self):
+        """This is what BOUNDS every retry loop. A server that keeps complaining about an
+        already-adapted body must surface its error, not spin until the round budget is out."""
+        self.assertIsNone(gateway.adapt_body({"model": "g6", "max_completion_tokens": 8},
+                                             self.ec.QUIRK_MAX_COMPLETION_TOKENS))
+        self.assertIsNone(gateway.adapt_body({"model": "g6"}, "banana"))
+
+    # --- the four call sites -----------------------------------------------------------
+
+    def test_the_cheap_tier_seam_adapts_and_retries(self):
+        """gateway._chat — the shared HTTP seam behind _openai_complete and local_execute. Both
+        quirks in one exchange: fixing only the first still leaves the call 400-ing."""
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data))
+            if len(sent) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            if len(sent) == 2:
+                raise self._400(self.TEMPERATURE_400)
+            return self._Resp({"choices": [{"message": {"content": "answered"}}]})
+        self._patch_urlopen(fake_urlopen)
+        data = gateway._chat(self.m, [{"role": "user", "content": "hi"}], 64, 5)
+        self.assertEqual(data["choices"][0]["message"]["content"], "answered")
+        self.assertEqual(len(sent), 3)
+        self.assertEqual(sent[-1]["max_completion_tokens"], 64)
+        self.assertNotIn("max_tokens", sent[-1])
+        self.assertNotIn("temperature", sent[-1])
+
+    def test_a_learned_dialect_is_spoken_first_next_time(self):
+        """The point of learning it: the wasted round trip is paid once, not per call. And it
+        lands on the pool entry, so data/models.json and Admin show what was discovered."""
+        gateway.save({"pool": [dict(self.m)], "assign": {}, "endpoints": []})
+        entry = next(x for x in gateway.load()["pool"] if x["name"] == "gpt")
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(json.loads(req.data))
+            if len(calls) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            return self._Resp({"choices": [{"message": {"content": "ok"}}]})
+        self._patch_urlopen(fake_urlopen)
+        gateway._chat(entry, [{"role": "user", "content": "hi"}], 64, 5)
+        gateway._chat(entry, [{"role": "user", "content": "again"}], 64, 5)
+        self.assertEqual(len(calls), 3)          # 400 + retry, then ONE call the second time
+        self.assertNotIn("max_tokens", calls[2])
+        self.assertEqual(calls[2]["max_completion_tokens"], 64)
+        persisted = next(x for x in gateway.load()["pool"] if x["name"] == "gpt")
+        self.assertIn(self.ec.QUIRK_MAX_COMPLETION_TOKENS, persisted.get("quirks") or [])
+
+    def test_a_non_dialect_400_still_raises_and_now_carries_the_server_words(self):
+        """`str(HTTPError)` is the fixed 'HTTP Error 400: Bad Request' — which is exactly how
+        the real message stayed invisible on this path while the operator debugged it."""
+        def fake_urlopen(req, timeout=None):
+            raise self._400(b'{"error":{"message":"tokenizer exploded"}}')
+        self._patch_urlopen(fake_urlopen)
+        with self.assertRaises(Exception) as cm:
+            gateway._chat(self.m, [], 64, 5)
+        self.assertIn("tokenizer exploded", str(cm.exception))
+
+    def test_the_agentic_runtime_adapts_mid_turn(self):
+        """local_runtime's per-turn body. `tools` must survive the rewrite, or the adapted
+        retry silently becomes a tool-free turn against a tool-capable model."""
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=["Read"], model_entry=self.m)
+        self.assertFalse(out["is_error"], out.get("result"))
+        self.assertEqual(out["result"], "done")
+        self.assertNotIn("max_tokens", sent[1])
+        self.assertEqual(sent[1]["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS)
+        self.assertTrue(sent[1]["tools"])
+
+    def test_the_overflow_halving_uses_the_endpoints_own_key(self):
+        """The 4th site the ticket did not list. `_chat_step` halves the output budget BY NAME;
+        reading `max_tokens` off a body carrying `max_completion_tokens` both loses the halving
+        and writes back the very parameter this endpoint rejects."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_MAX_COMPLETION_TOKENS])
+        overflow = (b'{"error":{"message":"This model\'s maximum context length is 16384 '
+                    b'tokens. However, you requested 8192 output tokens."}}')
+        sent = []
+
+        def fake_post(mm, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(overflow)
+            return {"choices": [{"message": {"role": "assistant", "content": "fits"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=m)
+        self.assertEqual(out["result"], "fits")
+        self.assertEqual(sent[1]["max_completion_tokens"], config.LOCAL_EXEC_MAX_TOKENS // 2)
+        self.assertNotIn("max_tokens", sent[1])
+
+    def test_the_doctor_probe_adapts_instead_of_reporting_unverified(self):
+        """A dialect 400 says nothing about tool support, so without adapting, `otto doctor`
+        reports 'tool support unverified' for a model that accepts tools perfectly well."""
+        import doctor
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data))
+            if len(sent) == 1:
+                raise self._400(self.MAX_TOKENS_400)
+            return self._Resp({"choices": []})
+        self._patch_urlopen(fake_urlopen)
+        ok, detail = doctor._probe_tool_calls(self.m, gateway)
+        self.assertIs(ok, True, detail)
+        self.assertNotIn("max_tokens", sent[1])
+        self.assertTrue(sent[1]["tools"])
+
+    def test_no_other_module_builds_a_chat_body_of_its_own(self):
+        """The one-builder invariant. Four sites hardcoded these names and each had to be found
+        separately; a fifth would 400 identically, and only against an OpenAI endpoint nobody in
+        CI has. Grep-based on purpose — it is the property, not a behaviour."""
+        offenders = []
+        for mod in ("local_runtime.py", "doctor.py", "server.py", "engine.py", "supervisor.py"):
+            with open(mod, encoding="utf-8") as fh:
+                for n, line in enumerate(fh, 1):
+                    if '"max_tokens"' in line and not line.lstrip().startswith("#"):
+                        offenders.append(f"{mod}:{n}: {line.strip()}")
+        self.assertEqual([], offenders,
+                         "build the body through gateway.chat_body, not a literal dict")
 
 
 class LocalWallPlumbingTests(unittest.TestCase):
