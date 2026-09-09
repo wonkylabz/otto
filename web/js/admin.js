@@ -74,7 +74,7 @@ async function loadAdmin(){
     fetch("/api/stats").then(r=>r.json()).catch(()=>({caps:[]})),
     fetch("/api/settings").then(r=>r.json()).catch(()=>({settings:{}})),
     fetch("/api/conventions").then(r=>r.json()).catch(()=>({repos:[]}))]); }
-  catch(e){ el.innerHTML=`<p class="err">Couldn't load config (${e.message}). Is the server running?</p>`; adminLoaded=false; return; }
+  catch(e){ el.innerHTML=`<p class="err">Couldn't load config (${esc(e.message)}). Is the server running?</p>`; adminLoaded=false; return; }
   GATEWAY_STATS=(health&&health.gateway)||{tasks:{},down:{}};
   MODEL_HEALTH=(models&&models.health)||{};   // fresh: /api/models re-probes stale local entries
   SCORECARD={}; ((stats&&stats.caps)||[]).forEach(c=>{ SCORECARD[c.name]=c; });

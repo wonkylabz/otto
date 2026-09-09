@@ -31,7 +31,7 @@ async function loadJobs(silent){
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
   try { data=await (await fetch("/api/runbooks")).json(); }
-  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load jobs (${e.message}).</p>`; return; }
+  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load jobs (${esc(e.message)}).</p>`; return; }
   _jobs=data.jobs||[]; JOB_CAPS=data.caps||[];
   const onDemand=_jobs.filter(j=>j.on_demand).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   // soonest first — the API returns store order, so the next thing to fire could be anywhere in

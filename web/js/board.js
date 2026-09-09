@@ -95,7 +95,7 @@ async function loadBoard(silent){
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
   try { data=await (await fetch("/api/board")).json(); }
-  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load the board (${e.message}).</p>`; return; }
+  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load the board (${esc(e.message)}).</p>`; return; }
   if(!data.temporal){
     el.innerHTML=`<div class="phead"><h1>Swarm board</h1><p class="sub">Needs Temporal — start Otto with <code>./run.sh</code>.</p></div>`;
     _boardSig=null;

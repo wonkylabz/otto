@@ -5,7 +5,7 @@ async function loadKnowledge(){
   el.innerHTML=`<p class="sub">loading…</p>`;
   let d;
   try { d=await (await fetch("/api/knowledge")).json(); }
-  catch(e){ el.innerHTML=`<p class="err">Couldn't load the knowledge base (${e.message}).</p>`; return; }
+  catch(e){ el.innerHTML=`<p class="err">Couldn't load the knowledge base (${esc(e.message)}).</p>`; return; }
   const st=d.settings||{};
   const embedOpts=['<option value="">keyword match (no embedding model)</option>']
     .concat((d.embed_models||[]).map(n=>`<option value="${esc(n)}"${st.embed_model===n?' selected':''}>${esc(n)}</option>`)).join("");
