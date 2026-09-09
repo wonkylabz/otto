@@ -5743,3 +5743,77 @@ class PrReviewWiringTests(unittest.TestCase):
         self.assertEqual({"key"}, reads,
                          f"the handler reads {reads - {'key'}} off the request — only a key may "
                          "come from an unauthenticated client")
+
+
+class RenderMdListTests(unittest.TestCase):
+    """`renderMD` closed the open list on every BLANK line, and a plan's steps are paragraphs
+    with a blank line between them — so each step became its own `<ol>` and all eleven rendered
+    as "1." (user-observed on runbook-rb-e0f48559-263baf, whose source markdown numbers them
+    1..11 correctly). What actually ends a list is content that stops being list items, and
+    every other branch already closes it for that.
+
+    Run against the REAL function, extracted from `web/index.html` and executed — a grep for the
+    absence of a `closeList()` call would pass just as happily against a renderer that had
+    broken some other way."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.node = shutil.which("node")
+
+    def _render(self, md):
+        """The function as it ships, with only `esc` supplied (it is defined elsewhere in the
+        page and is a plain HTML escape)."""
+        harness = r"""
+          const fs=require("fs");
+          const src=fs.readFileSync(process.argv[1],"latin1");
+          const i=src.indexOf("function renderMD(src){");
+          const j=src.indexOf("\n}\n", i)+3;
+          const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+                                .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+          eval(src.slice(i,j));
+          process.stdout.write(renderMD(JSON.parse(process.argv[2])));
+        """
+        page = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
+        r = subprocess.run([self.node, "-e", harness, "--", page, json.dumps(md)],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_blank_lines_between_steps_stay_ONE_list(self):
+        if not self.node:
+            self.skipTest("node not available")
+        html = self._render("1. first step\n\n2. second step\n\n3. third step")
+        self.assertEqual(html.count("<ol"), 1, "each step became its own list, all numbered 1")
+        self.assertEqual(html.count("<li>"), 3)
+
+    def test_a_list_that_RESUMES_keeps_its_numbering(self):
+        """A plan routinely says "stop after step 3" and picks up at 4 after a paragraph. An
+        `<ol>` with no `start` silently renumbers those to 1, 2 — and the numbers are what the
+        approving human and the executor both refer to."""
+        if not self.node:
+            self.skipTest("node not available")
+        html = self._render("prose here\n\n4. fourth\n\n5. fifth")
+        self.assertIn('<ol start="4">', html)
+        self.assertEqual(html.count("<li>"), 2)
+
+    def test_what_actually_ENDS_a_list_still_does(self):
+        """The blank line was doing a real job badly; these are the cases that must not regress
+        when it stops doing it at all."""
+        if not self.node:
+            self.skipTest("node not available")
+        after_para = self._render("1. a\n\n2. b\n\nplain paragraph")
+        self.assertIn("</ol><p>plain paragraph</p>", after_para)
+        switched = self._render("- bullet\n\n1. numbered")
+        self.assertIn("</ul><ol>", switched)
+        self.assertEqual(self._render("- a\n\n- b").count("<ul>"), 1)
+
+    def test_a_number_from_the_model_can_never_reach_the_attribute_raw(self):
+        """`start` is interpolated into HTML from model-written text; it is coerced to a number,
+        and this is the test that says so rather than the reader having to spot the `+`."""
+        if not self.node:
+            self.skipTest("node not available")
+        html = self._render('12. twelfth')
+        self.assertIn('<ol start="12">', html)
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "web", "index.html"), encoding="latin-1").read()
+        self.assertIn('`<ol start="${+m[1]}">`', src)

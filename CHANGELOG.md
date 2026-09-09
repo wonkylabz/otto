@@ -11,6 +11,20 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The approval plan can be written by a non-Claude model.** The PLAN phase (Admin → phase
+  matrix) accepts a local or hosted model: Otto now has a read-only plan mode of its own, so
+  the pick runs for real instead of silently falling through to Sonnet.
+  **If your `data/models.json` already had a non-Claude model assigned to `preview`,** it was
+  being ignored and Sonnet wrote every plan — after this upgrade that assignment starts taking
+  effect, and your plans will change. Re-tick the PLAN column if you want Sonnet back. This
+  phase has no retry ladder above it and its output is what you approve, so pick deliberately.
+- The plan pass's shell is confined by `bwrap` (read-only filesystem, scratch `/tmp`, Otto's
+  own state masked) where the kernel supports it, and by an argv-only command allowlist where
+  it does not — the transcript records which served each run. Neither confines the network:
+  the approval gate is still what stands between a plan pass and a remote write.
+
 ### Added
 
 - The running version is shown beside the wordmark in the header, with the commit sha in its

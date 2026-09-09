@@ -77,6 +77,81 @@ WRITE_TOOLS = READ_TOOLS + ["Edit", "Write"]
 PLAN_TOOLS = ["Read", "Grep", "Glob",
               "Bash(gh issue view:*)", "Bash(gh pr view:*)", "Bash(gh pr diff:*)"]
 
+# A scoped Bash rule -- `Bash(gh pr view:*)` -- is Claude Code's spelling, and `claude -p`
+# enforces it for us. The LOCAL backend drives its own tool loop, so it has to parse the same
+# rules and enforce them itself (`local_runtime.bash_refusal`), or the plan preview is either
+# blind (no Bash at all: it cannot read the ticket it is planning from) or unguarded (an
+# UNSCOPED shell running before the human has approved anything). Neither is acceptable on the
+# one pass whose whole job is to be read-only.
+#   This is an ALLOWLIST, and that is why it is tractable where `_deny_guard`'s Bash coverage is
+#   not: that one has to find a write hiding anywhere inside an arbitrary shell command
+#   (`tee`, `sed -i`, `python -c`) -- unbounded. This one refuses everything that is not an
+#   exact argv prefix match, so anything it fails to understand is denied rather than allowed.
+_BASH_RULE = re.compile(r"^Bash\((?P<cmd>.+?)(?P<wild>:\*)?\)$")
+
+
+# The read-only command set the local PLAN pass falls back to when the kernel sandbox is not
+# available (`local_runtime.sandbox_available`). It is deliberately WIDER than the three
+# `Bash(gh … view:*)` rules in PLAN_TOOLS, because on the Claude backend those rules are close to
+# advisory: `--permission-mode plan` runs its own read-only classifier, and measured across this
+# box's plan transcripts the planner used `git log`, `ls`, `sed -n`, `find`, `cat` and `gh api`
+# freely — 84% of its Bash calls would have been refused by the PLAN_TOOLS rules alone. Enforcing
+# the literal allowlist locally did not reproduce plan mode, it reproduced a much poorer thing.
+#   Each entry is prefix -> flags that make that command WRITE. Flag denial is per-command on
+#   purpose: a global `-i` deny would break `grep -i`, and `sed -i` is only reachable because
+#   `sed` is granted as `sed -n` and nothing else. Verbs whose own language can write (awk, perl,
+#   python, xargs) are simply absent — that is the line between a bounded list and theatre.
+#   `gh api` was granted with a denied-flag list and is now ABSENT for that same reason: its
+#   language is HTTP and the method is just a flag, so keeping it read-only means enumerating
+#   every spelling of every write flag (`-X POST`, `--method=POST`, `-XPOST`, `-fa=b`) against a
+#   CLI nobody here controls — all four of which it shipped allowing. Every read it served has a
+#   safe sibling above (`gh pr view --json comments`, `gh pr diff`, `gh repo view`). A denied
+#   flag now also survives its spellings (`local_runtime._flag_forms`), but that is defence in
+#   depth for the rules that remain, not a licence to add another verb of this shape.
+PLAN_BASH_FALLBACK = {
+    "gh issue view": (), "gh issue list": (), "gh pr view": (), "gh pr diff": (),
+    "gh pr list": (), "gh pr checks": (), "gh repo view": (), "gh search": (),
+    "git log": (), "git show": (), "git diff": (), "git status": (), "git rev-parse": (),
+    "git ls-files": (), "git blame": (), "git describe": (), "git cat-file": (),
+    "ls": (), "cat": (), "head": (), "tail": (), "wc": (), "file": (), "stat": (),
+    "grep": (), "rg": (), "jq": (), "tree": (), "basename": (), "dirname": (),
+    "realpath": (), "pwd": (), "date": (), "which": (), "du": (), "sed -n": (),
+    "find": ("-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprintf", "-fls", "-fprint"),
+}
+
+
+def plan_bash_rules(extra=()):
+    """The fallback ruleset as `bash_refusal` wants it: [(prefix_tokens, denied_flags)].
+
+    `extra` folds in whatever scoped rules the caller's own allowlist carried, so a future
+    `Bash(...)` grant is never silently narrower than what its allowlist asked for."""
+    rules = [(tuple(k.split()), tuple(v)) for k, v in PLAN_BASH_FALLBACK.items()]
+    have = {r[0] for r in rules}
+    return rules + [(tuple(t), ()) for t in extra if tuple(t) not in have]
+
+
+def scoped_bash_rules(allowed_tools):
+    """Split an allowlist into (bare_bash, rules).
+
+    `bare_bash` is True when plain "Bash" is granted -- an unrestricted shell, today's execution
+    behaviour, and the rules are then irrelevant. `rules` is the list of argv prefixes parsed out
+    of the scoped entries, each already tokenized: "Bash(gh pr view:*)" -> ["gh", "pr", "view"].
+
+    Returns ([], ...) rather than None when there are no scoped entries, so a caller can tell
+    "no restriction asked for" (bare_bash) from "restricted to nothing" (no rules) -- the second
+    must refuse every command, not fall open."""
+    bare, rules = False, []
+    for entry in allowed_tools or []:
+        if entry == "Bash":
+            bare = True
+            continue
+        m = _BASH_RULE.match(str(entry).strip())
+        if m:
+            toks = m.group("cmd").split()
+            if toks:
+                rules.append(toks)
+    return bare, rules
+
 # Every built-in Claude Code tool Otto may ever need. `--allowedTools` grants PERMISSION but
 # unloads nothing — the full built-in set plus every skill/agent listing sits in the system
 # prompt of every turn, re-read on each one. `--disallowedTools` on the complement of this

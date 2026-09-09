@@ -200,9 +200,16 @@ QUIRK_MAX_COMPLETION_TOKENS = "max_completion_tokens"
 QUIRK_DEFAULT_TEMPERATURE = "default_temperature"
 QUIRK_NO_REASONING_EFFORT = "no_reasoning_effort"
 QUIRK_NO_TOOL_REASONING = "no_tool_reasoning"
+# The THIRD way one parameter is refused, and the only one that needs a value rather than a
+# deletion: gpt-5.6-terra applies a reasoning_effort SERVER-SIDE, so omitting the field is not
+# the same as disabling it and the identical "Function tools with reasoning_effort are not
+# supported" 400 comes back against a body that no longer carries it. Its own message names the
+# fix ("or set reasoning_effort to 'none'"), which gpt-6-astra rejects — hence a separate quirk
+# reached only AFTER dropping was tried, never a re-reading of the same message.
+QUIRK_TOOL_REASONING_NONE = "tool_reasoning_none"
 
 QUIRKS = (QUIRK_MAX_COMPLETION_TOKENS, QUIRK_DEFAULT_TEMPERATURE, QUIRK_NO_REASONING_EFFORT,
-          QUIRK_NO_TOOL_REASONING)
+          QUIRK_NO_TOOL_REASONING, QUIRK_TOOL_REASONING_NONE)
 
 
 def param_quirk(detail):

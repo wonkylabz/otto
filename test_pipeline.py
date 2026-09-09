@@ -1453,17 +1453,171 @@ class PlanPreviewLocalSessionTests(unittest.TestCase):
                          "every gated follow-up leaks a session file")
 
     def test_the_local_preview_can_mutate_nothing(self):
-        # `--permission-mode plan` has no local equivalent, so read-only rests entirely on the
-        # tool set. `_offered_tools` matches literal names, so PLAN_TOOLS' three scoped
-        # `Bash(gh … view:*)` rules are never offered — and unscoped Bash must not appear either,
-        # since this runtime does not permission-scope Bash at all.
+        """`--permission-mode plan` has no local equivalent, so read-only is the tool set plus
+        one of the two layers in `local_runtime`. The FULL PLAN_TOOLS goes through — narrowing to
+        Read/Grep/Glob (what this did before those layers existed) is what left a ticket-driven
+        request planned by a model that could not read its ticket."""
         engine.plan_preview("apply the review comments", self.cap, resume_session=self.sid)
         self.assertEqual(self.local_calls[0]["allowed_tools"], config.PLAN_TOOLS)
         offered = {t["function"]["name"]
                    for t in local_runtime._offered_tools(config.PLAN_TOOLS)}
         self.assertTrue(offered, "the local preview was handed no tools at all")
-        self.assertEqual(offered - {"Read", "Grep", "Glob"}, set(),
+        self.assertEqual(offered - {"Read", "Grep", "Glob", "Bash"}, set(),
                          "the local plan preview can act before the human approves anything")
+        self.assertIn("Bash", offered,
+                      "the scoped gh reads were dropped — a ticket-driven task plans blind")
+        # …and whichever layer serves it refuses a write.
+        rules = config.plan_bash_rules()
+        for cmd in ("gh pr create -t x", "rm -rf /tmp/x", "sed -i s/a/b/ f.py"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, rules), cmd)
+        self.assertIsNone(local_runtime.bash_refusal("gh issue view 12 --json body", rules))
+
+    def test_a_FRESH_preview_follows_the_TIER_not_the_session(self):
+        """The other half of the same seam: with no session to inherit, the preview dispatches on
+        the `preview` tier's TRANSPORT, exactly as execution dispatches on `exec_model_entry`.
+        This is what makes the Admin PLAN radio a real setting rather than a label — it used to
+        be repointed to sonnet in the store and disabled in the UI."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        out = engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertEqual(self.claude_calls, [], "the tier pick was ignored and sonnet ran")
+        self.assertEqual(len(self.local_calls), 1)
+        self.assertEqual(self.local_calls[0]["model_entry"]["name"], "local-flash")
+        self.assertIsNone(self.local_calls[0]["resume_session"],
+                          "a fresh preview must not resume anything")
+        self.assertEqual(out["plan"], "1. do the thing locally")
+
+    def test_a_CLAUDE_tier_pick_still_runs_plan_mode(self):
+        """The control: opening the radio must not divert the path that was always correct."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "claude-tier"}}
+        engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertEqual(self.local_calls, [])
+        self.assertEqual(self.claude_calls[0].get("permission_mode"), "plan")
+        self.assertEqual(self.claude_calls[0].get("allowed_tools"), config.PLAN_TOOLS)
+
+    def test_a_fresh_local_preview_leaves_no_session_behind(self):
+        """Nothing resumes a plan, and the runtime saves every turn it takes. A preview that
+        keeps its session leaks one file per gated run — and worse, invites a later resume of a
+        history whose only content is the plan instruction."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        real_save = local_runtime._save_session
+
+        def fake_local(prompt, **kw):
+            sid = kw.get("resume_session") or "local-freshpreview1"
+            self.local_calls.append({**kw, "fork_history": None, "fork_existed": False})
+            real_save(sid, [{"role": "user", "content": "plan pass"}])
+            return {"result": "1. plan", "is_error": False, "total_cost_usd": 0,
+                    "session_id": sid, "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+        local_runtime.run_json = fake_local
+        engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertFalse(os.path.exists(local_runtime.session_path("local-freshpreview1")),
+                         "the fresh local preview leaked its session")
+
+    def test_the_local_preview_writes_a_transcript_too(self):
+        """The board resolves a run's model chip BY reading the transcript, so a preview that
+        writes none leaves the chip blank for the whole (up to 15-minute) phase — and which
+        backend served it must not decide whether the board works."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        engine.plan_preview("add a retry", self.cap, wid="web-planlocal")
+        self.assertEqual(self.local_calls[0]["transcript"],
+                         claude_cli.plan_transcript_path("web-planlocal"))
+
+    def _walling_local(self, **flags):
+        def fake_local(prompt, **kw):
+            self.local_calls.append({**kw, "fork_history": None, "fork_existed": False})
+            return {"result": "", "is_error": True, "total_cost_usd": 0,
+                    "session_id": kw.get("resume_session"), "usage": {}, **flags}
+        local_runtime.run_json = fake_local
+
+    def test_a_WALLED_local_preview_re_previews_on_claude(self):
+        """`engine.run_attempt` re-dispatches an execution attempt that hit a deterministic local
+        wall; the preview had no such path, so a model whose endpoint refuses function tools left
+        `plan=""` and the human got an approval card with NO PLAN on it and no diagnosis — the
+        `web-ce430e45` symptom, walked back in through the tier."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        self._walling_local(tools_unsupported=True)
+        out = engine.plan_preview("add a retry to the poller", self.cap)
+        self.assertEqual(len(self.claude_calls), 1, "a walled preview delivered no plan")
+        self.assertEqual(self.claude_calls[0].get("permission_mode"), "plan")
+        self.assertEqual(out["plan"], "1. do the thing")
+
+    def test_the_walled_transcript_is_KEPT_not_overwritten(self):
+        """Both writers open the same path `w`, so the recovery erased its own evidence: run
+        detail showed a clean sonnet-written plan and nothing said the tier pick had failed."""
+        import claude_cli
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        canonical = claude_cli.plan_transcript_path("web-walled")
+        os.makedirs(os.path.dirname(canonical), exist_ok=True)
+        with open(canonical, "w") as f:
+            f.write('{"type": "otto-meta", "runtime": "local"}\n')
+        try:
+            self._walling_local(tools_unsupported=True)
+            engine.plan_preview("add a retry", self.cap, wid="web-walled")
+            kept = canonical.replace(".jsonl", "-walled-tools_unsupported.jsonl")
+            self.assertTrue(os.path.exists(kept), "the local wall's transcript was erased")
+            self.assertIn("local", open(kept).read())
+            self.assertEqual(len(self.claude_calls), 1)
+            # The CANONICAL path stays the pass whose plan the human approves — the board
+            # resolves a run's model by reading it.
+            self.assertEqual(self.claude_calls[0]["transcript"], canonical)
+        finally:
+            for p in (canonical, canonical.replace(".jsonl",
+                                                   "-walled-tools_unsupported.jsonl")):
+                if os.path.exists(p):
+                    os.unlink(p)
+
+    def test_every_wall_signal_the_ladder_reads_is_read_here_too(self):
+        """Which layer noticed a dead endpoint must not change what it is called, or the preview
+        recovers from one shape of wall and silently not from another."""
+        for flags in ({"tools_unsupported": True}, {"unavailable": True},
+                      {"wall_reason": "auth"}):
+            with self.subTest(**flags):
+                gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                        "assign": {"preview": "local-flash"}}
+                self.claude_calls, self.local_calls = [], []
+                self._walling_local(**flags)
+                engine.plan_preview("add a retry", self.cap)
+                self.assertEqual(len(self.claude_calls), 1, flags)
+
+    def test_a_plain_failure_does_NOT_re_preview(self):
+        """Same taxonomy as the ladder's: a turn-budget death or a timeout is the model working
+        and not finishing, and re-running a 15-minute preview on Claude to reach the same ceiling
+        doubles the wait for the same nothing."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        self._walling_local()
+        out = engine.plan_preview("add a retry", self.cap)
+        self.assertEqual(self.claude_calls, [])
+        self.assertEqual(out["plan"], "")
+
+    def test_a_walled_local_RESUME_never_falls_back(self):
+        """The one case where "falling back to Claude" IS the original bug: `claude -p --resume
+        local-…` is rejected outright, which is the failure the local-resume branch exists for."""
+        self._walling_local(tools_unsupported=True)
+        out = engine.plan_preview("apply the review comments", self.cap, resume_session=self.sid)
+        self.assertEqual(self.claude_calls, [])
+        self.assertEqual(out["plan"], "")
+
+    def test_strict_mode_refuses_the_fallback(self):
+        """`LOCAL_FALLBACK=0` makes covering a local death with Claude illegal, and the preview
+        is not one of the exempt tiers."""
+        gateway.load = lambda: {"pool": [dict(m) for m in self._POOL],
+                                "assign": {"preview": "local-flash"}}
+        self._walling_local(tools_unsupported=True)
+        saved = config.setting
+        config.setting = lambda n: False if n == "local_fallback" else saved(n)
+        try:
+            out = engine.plan_preview("add a retry", self.cap)
+        finally:
+            config.setting = saved
+        self.assertEqual(self.claude_calls, [])
+        self.assertEqual(out["plan"], "")
 
     def test_no_local_model_left_yields_no_plan_rather_than_a_doomed_claude_resume(self):
         gateway.load = lambda: {"pool": [{"name": "claude-tier", "provider": "claude",

@@ -35,10 +35,12 @@ _STATS_PATH = os.path.join(config.DATA_DIR, "gateway-stats.json")
 # "preview" is the PLAN-FIRST APPROVAL PREVIEW, which is a different thing entirely and used to
 # have no tier at all: it took the EXECUTION model, so an operator who set "plan" to Opus got a
 # stronger swarm decomposer and a preview that had never read that setting. Worse, an execution
-# tier on a LOCAL model cannot run `claude -p --permission-mode plan`, so it fell through to
+# tier on a LOCAL model could not run `claude -p --permission-mode plan`, so it fell through to
 # `_default_claude` — deliberately the CHEAPEST tier — and the plan a human approves was written
 # by Haiku, invisibly. The preview is the one phase with no ladder above it: it runs once and its
-# output is what the human reads, so cheap-first is exactly wrong there.
+# output is what the human reads, so cheap-first is exactly wrong there. It is now servable on
+# either backend (`plans._local_preview`), which makes the tier a real pick rather than a
+# Claude-only label — the no-ladder point stands, so pick a weak model here deliberately.
 # "supervise" is the shadow-mode run supervisor (issue #143) — mid-attempt checkpoints over
 # the live execution stream; local-capable like verify (load() backfills it into old configs).
 # "memory_gc" is the on-demand memory garbage collector (`memory.gc_preview`), which is TWO
@@ -326,19 +328,13 @@ def _normalize(cfg):
         if assign.get(t) in removed:
             assign[t] = default
         assign.setdefault(t, default)
-    # A non-Claude model on "preview" — local OR hosted, the preview is Claude-only by transport
-    # — is not a setting, it is a silent substitution: `claude -p
-    # --permission-mode plan` cannot run on one, so `preview_model_id` degrades to
-    # `_default_claude` and the store, the API and the Admin radio all keep naming a model that
-    # never wrote a single plan (user-observed: preview pinned to qwen, every plan written by
-    # sonnet). The Admin UI refuses the pick, but the store is the authority and an older config
-    # already holds one — so repoint it here rather than leave the assignment lying. No other
-    # tier gets this: every one of them either runs local for real or falls back per call.
-    if _claude_model(assign.get("preview"), cfg) is None:
-        assign["preview"] = next((m["name"] for m in pool
-                                  if m.get("provider") == "claude" and "sonnet" in m["model"]),
-                                 next((m["name"] for m in pool if m.get("provider") == "claude"),
-                                      assign["preview"]))
+    # "preview" used to be REPOINTED here whenever it held a non-Claude model, because
+    # `claude -p --permission-mode plan` is the only thing that could write a plan and a
+    # non-Claude pick was therefore a silent substitution — the store, the API and the Admin
+    # radio all naming a model that never wrote one (user-observed: preview pinned to qwen,
+    # every plan written by sonnet). The local backend now has plan mode of its own
+    # (`plans._local_preview` + `local_runtime.bash_refusal`), so the pick is real and dispatches
+    # on TRANSPORT like execution does — see `preview_model_entry`. Nothing to repoint.
     # Per-capability execution overrides (capability name -> pool model name). Empty by
     # default; falls back to the phase-level execution model below.
     cap_exec = cfg.setdefault("cap_exec", {})
@@ -434,11 +430,23 @@ def preview_model_id(cfg=None):
     """CLAUDE model id for the plan-first approval preview (`plans.plan_preview`).
 
     An explicit tier, so "which model writes the plan I approve" is a setting rather than a
-    consequence of the execution assignment. A LOCAL model here cannot serve plan mode at all,
-    so it degrades to `_default_claude` (sonnet-first); see the TASKS note above."""
+    consequence of the execution assignment. This is the CLAUDE-dispatch half only: a non-Claude
+    assignment does not resolve here and falls back to `_default_claude`, exactly as
+    `exec_model_id` does. Backend CHOICE is `preview_model_entry`'s job."""
     cfg = cfg or load()
     m = _model_for("preview", cfg)
     return m["model"] if m.get("provider") == "claude" else _default_claude(cfg)
+
+
+def preview_model_entry(cfg=None):
+    """The FULL pool entry for the approval preview — the backend dispatch source, same TRANSPORT
+    question `exec_model_entry` answers: provider "claude" → `claude -p --permission-mode plan`,
+    anything else → `plans._local_preview` over Otto's own tool loop.
+
+    The preview is the one phase with no verify rung above it — it runs once and its output is
+    what a human approves — so an operator pointing it at a local model is opting into that. The
+    tier stays a deliberate, separate setting for exactly that reason."""
+    return _model_for("preview", cfg or load())
 
 
 def memory_gc_model_id(cfg=None):
@@ -1163,10 +1171,29 @@ def chat_body(m, messages, max_tokens, **extra):
     # parameter at all (gpt-4o: "Unrecognized request argument") loses it always, while one that
     # refuses it only ALONGSIDE tools (gpt-5.5) keeps the operator's effort on tool-free calls,
     # rather than being downgraded endpoint-wide to the cheapest reasoning it has.
-    if (error_classifier.QUIRK_NO_REASONING_EFFORT in q
+    if error_classifier.QUIRK_TOOL_REASONING_NONE in q and body.get("tools"):
+        # Third fact, third handling: this endpoint applies an effort of its own unless told
+        # otherwise, so the field must be SET, not dropped. Checked first — a model that has
+        # learned this one may also carry the drop quirk from the round that tried dropping.
+        body["reasoning_effort"] = "none"
+    elif (error_classifier.QUIRK_NO_REASONING_EFFORT in q
             or (error_classifier.QUIRK_NO_TOOL_REASONING in q and body.get("tools"))):
         body.pop("reasoning_effort", None)
     return body
+
+
+def effective_effort(m, effort, tools=None):
+    """The `reasoning_effort` this endpoint will ACTUALLY be sent — which is not always the one
+    the operator picked, and used to be the difference nothing reported.
+
+    gpt-5.6-terra refuses tools alongside any effort, so `QUIRK_TOOL_REASONING_NONE` pins
+    "none" on every tool-carrying turn: an operator who chose a reasoning model at `high` gets
+    all of its agentic work, the approval plan included, at the model's weakest setting with no
+    tell anywhere. Same failure shape as `--effort`'s unvalidated level, which ran at the default
+    while every layer reported the pick honoured.
+
+    Built by asking `chat_body` rather than restating its rules, so the two cannot drift."""
+    return chat_body(m, [], None, reasoning_effort=effort, tools=tools).get("reasoning_effort")
 
 
 def adapt_body(body, quirk):
@@ -1188,6 +1215,8 @@ def adapt_body(body, quirk):
             out[error_classifier.QUIRK_MAX_COMPLETION_TOKENS] = out.pop("max_tokens")
     elif quirk == error_classifier.QUIRK_DEFAULT_TEMPERATURE:
         out.pop("temperature", None)
+    elif quirk == error_classifier.QUIRK_TOOL_REASONING_NONE:
+        out["reasoning_effort"] = "none"
     elif quirk in (error_classifier.QUIRK_NO_REASONING_EFFORT,
                    error_classifier.QUIRK_NO_TOOL_REASONING):
         out.pop("reasoning_effort", None)
@@ -1260,11 +1289,39 @@ def adapt_for(m, status, detail, body):
     v = error_classifier.classify(status, detail)
     if v.action is not error_classifier.Action.adapt:
         return None
-    adapted = adapt_body(body, v.quirk)
+    quirk = resolve_quirk(body, v.quirk)
+    if quirk is None:
+        return None
+    adapted = adapt_body(body, quirk)
     if adapted is None:
         return None
-    learn_quirk(m, v.quirk)
+    learn_quirk(m, quirk)
     return adapted
+
+
+def resolve_quirk(body, quirk):
+    """Which quirk actually applies to THIS body — the state machine `adapt_body` cannot own,
+    because a quirk name alone does not say how far this body has already been adapted.
+
+    `reasoning_effort` + tools is refused by two endpoints with a byte-identical message and
+    needs opposite fixes, so the message can never tell them apart: only the body can. One
+    strictly advancing sequence, each state entered at most once, which is what keeps the retry
+    monotone and bounded:
+
+        has an effort  -> drop it        (gpt-5.5 stops here)
+        absent         -> set "none"     (gpt-5.6-terra stops here)
+        already "none" -> None -> wall   (gpt-6-astra, which rejects "none" too)
+
+    The last step is the important one: obeying the server's "set reasoning_effort to 'none'"
+    advice unconditionally is what made the body oscillate none -> absent -> none until the round
+    budget died, reporting a context overflow that never happened (`adapt_body`'s docstring)."""
+    if quirk == error_classifier.QUIRK_NO_TOOL_REASONING and body.get("tools"):
+        effort = body.get("reasoning_effort")
+        if effort is None:
+            return error_classifier.QUIRK_TOOL_REASONING_NONE
+        if effort == "none":
+            return None
+    return quirk
 
 
 def message_text(msg):

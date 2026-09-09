@@ -4891,7 +4891,22 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # expiry nothing in the code says (Temporal deletes a closed execution at the namespace TTL),
     # and the two windows sharing one `limit` reads as obviously fine — between them, completed
     # work silently disappeared off the board and every re-derivation from the code missed both.
-    MAX_RULES_BYTES = 69003   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 70919 for the pre-mortem's three: the sandbox read-deny (it confines WRITES by
+    # construction, so "read-only" read as safe while `cat` handed Otto's API keys to a
+    # third-party endpoint), the recovery that erased its own evidence, and a quirk that
+    # DOWNGRADES rather than drops. All three are cases where the system reported success while
+    # quietly doing something worse — the class no re-derivation from the code ever surfaces.
+    # -> 70096: the preview's missing Claude re-dispatch (an approval card with no plan on it,
+    # which the ladder's own wall rule would have prevented) and the THIRD `reasoning_effort`
+    # spelling — one message, two endpoints, opposite fixes, so the old "only removes or renames"
+    # wording was actively wrong and would have been re-derived as a bug.
+    # -> 69810 for local plan mode (issue #21). Three things a re-derivation from the code
+    # cannot recover: the `preview` tier stopped being Claude-only, so the old "a tier that
+    # cannot serve local must refuse a local pick" rule is now WRONG rather than merely absent;
+    # WHY there are two layers is a measurement (78% of a Claude planner's Bash is composed),
+    # and without it the sandbox reads as over-engineering next to a working allowlist; and the
+    # network bound is what the two layers do NOT do, which no amount of reading them reveals.
+    MAX_RULES_BYTES = 70919   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -5730,6 +5745,78 @@ class OpenAiParamDialectTests(unittest.TestCase):
                     body = nxt
                 self.assertGreaterEqual(steps, 1, f"{q} changed nothing at all")
 
+    def test_the_SAME_message_needs_opposite_fixes_and_only_the_body_can_tell(self):
+        """gpt-5.5 and gpt-5.6-terra return a byte-identical "Function tools with
+        reasoning_effort are not supported" 400 and need opposite adaptations: the first is fixed
+        by DROPPING the parameter, the second applies an effort server-side so omitting it
+        changes nothing and it must be SET to 'none'. The message cannot distinguish them, which
+        is why `resolve_quirk` reads the body instead of re-reading the text."""
+        drop = {"model": "m", "tools": [1], "reasoning_effort": "high"}
+        self.assertEqual(gateway.resolve_quirk(drop, self.ec.QUIRK_NO_TOOL_REASONING),
+                         self.ec.QUIRK_NO_TOOL_REASONING)
+        already_dropped = {"model": "m", "tools": [1]}
+        self.assertEqual(gateway.resolve_quirk(already_dropped, self.ec.QUIRK_NO_TOOL_REASONING),
+                         self.ec.QUIRK_TOOL_REASONING_NONE)
+
+    def test_the_none_state_is_TERMINAL_so_the_retry_cannot_oscillate(self):
+        """The step that keeps the sequence monotone. Obeying the server's own "set
+        reasoning_effort to 'none'" advice unconditionally is what oscillated none -> absent ->
+        none until the round budget died (run web-43486ee8): a body already carrying 'none' has
+        nothing left to try and must WALL, never go back to dropping."""
+        exhausted = {"model": "m", "tools": [1], "reasoning_effort": "none"}
+        self.assertIsNone(gateway.resolve_quirk(exhausted, self.ec.QUIRK_NO_TOOL_REASONING))
+
+    def test_the_real_loop_settles_in_at_most_three_states(self):
+        """`test_every_adaptation_is_monotone` bounds `adapt_body` alone; the live loop is
+        `resolve_quirk` + `adapt_body` (`adapt_for`), which is where the state machine now is."""
+        body = {"model": "m", "tools": [1], "reasoning_effort": "high"}
+        seen, states = [dict(body)], []
+        while (q := gateway.resolve_quirk(body, self.ec.QUIRK_NO_TOOL_REASONING)) is not None:
+            nxt = gateway.adapt_body(body, q)
+            if nxt is None:
+                break
+            self.assertNotIn(nxt, seen, "the loop re-created an earlier body")
+            self.assertLess(len(states), 3, "the loop never settles")
+            seen.append(dict(nxt))
+            states.append(nxt.get("reasoning_effort", "<absent>"))
+            body = nxt
+        self.assertEqual(states, ["<absent>", "none"])
+
+    def test_a_learned_none_quirk_is_sent_from_the_FIRST_turn(self):
+        """Learning it is only half: without `chat_body` acting on it, every later turn re-sends
+        a body the endpoint refuses and re-pays the 400 — measured as the bug this quirk pair
+        exists to stop for the drop case."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_TOOL_REASONING_NONE])
+        with_tools = gateway.chat_body(m, [], 8, reasoning_effort="high",
+                                       tools=[{"type": "function"}])
+        self.assertEqual(with_tools["reasoning_effort"], "none")
+        # Tool-free calls keep the operator's effort: the pair is what the endpoint refuses.
+        self.assertEqual(gateway.chat_body(m, [], 8, reasoning_effort="high")["reasoning_effort"],
+                         "high")
+
+    def test_the_none_quirk_wins_over_a_drop_quirk_learned_on_the_way(self):
+        """A model reaches the 'none' state by first being tried with the drop, so it can carry
+        BOTH — and if the drop is applied second the field is removed again and the endpoint
+        refuses every turn."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_NO_TOOL_REASONING,
+                                 self.ec.QUIRK_TOOL_REASONING_NONE])
+        body = gateway.chat_body(m, [], 8, reasoning_effort="high", tools=[{"type": "function"}])
+        self.assertEqual(body["reasoning_effort"], "none")
+
+    def test_the_effort_a_quirk_DOWNGRADES_is_reportable(self):
+        """A learned `tool_reasoning_none` pins the weakest reasoning on every tool-carrying turn
+        — the approval plan included — while the operator's pick still reads as honoured
+        everywhere. `effective_effort` is what lets the transcript and the trace say otherwise;
+        it asks `chat_body` rather than restating its rules, so the two cannot drift."""
+        m = dict(self.m, quirks=[self.ec.QUIRK_TOOL_REASONING_NONE])
+        self.assertEqual(gateway.effective_effort(m, "high", tools=[{"type": "function"}]),
+                         "none")
+        self.assertEqual(gateway.effective_effort(m, "high"), "high")
+        self.assertEqual(gateway.effective_effort(dict(self.m), "high", tools=[1]), "high")
+        src = open("local_runtime.py").read()
+        self.assertIn('"effort_sent": effort_sent', src,
+                      "the transcript cannot say which effort actually served the run")
+
     def test_a_rename_needs_both_names_present(self):
         """Anchored on the server naming the problem AND the replacement. An overflow message
         that happened to mention max_completion_tokens would otherwise rename a parameter that
@@ -6393,3 +6480,278 @@ class McpUsageNoteTests(unittest.TestCase):
                                                   "off": {"enabled": False, "notes": "skip"}}})
         exported = {"mcps": {n: {"notes": t} for n, t in policy.mcp_notes().items()}}
         self.assertEqual(exported["mcps"], {"grafana": {"notes": "g-note"}})
+
+
+class LocalPlanModeTests(unittest.TestCase):
+    """`--permission-mode plan` is what makes the approval preview read-only on the Claude
+    backend, and it has no local equivalent — so the local backend reproduces it in two layers:
+    a bwrap read-only sandbox where the shell stays whole, and an argv-only allowlist where it
+    cannot.
+
+    The measurement that decided the shape: across this box's Claude-served plan transcripts, 78%
+    of the planner's Bash calls used pipes, redirection, `;` or `$()`, and 84% would have been
+    refused by `PLAN_TOOLS`' three scoped `gh` rules. On the Claude backend that allowlist is
+    close to advisory — plan mode runs its own read-only classifier — so enforcing it literally
+    did not reproduce plan mode, it reproduced a much poorer thing (user-observed: a plan whose
+    Risks section read "No AWS or Terraform access from here (only gh)")."""
+
+    def setUp(self):
+        self.rules = config.plan_bash_rules()
+
+    # --- layer 1: the sandbox ----------------------------------------------------------
+
+    def test_the_sandbox_is_PROBED_never_assumed_from_PATH(self):
+        """`bwrap` installs fine on a host with unprivileged user namespaces disabled, where
+        every invocation fails at runtime. Believing PATH there turns the plan pass into an error
+        loop instead of falling back — so the probe must both RUN a command and see a write
+        refused."""
+        src = open("local_runtime.py").read()
+        self.assertIn("shutil.which(\"bwrap\")", src)
+        self.assertIn("r.returncode != 0 and \"ok\" in", src,
+                      "a probe that cannot prove the refusal must be a no")
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_sandbox_refuses_every_write_but_runs_the_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "f.txt"), "w").write("hello")
+            out = local_runtime._run_tool("Bash", {"command": "cat f.txt"}, d, {"Bash"}, None,
+                                          bash_mode="sandbox")
+            self.assertIn("hello", out, "the sandbox blocked a read")
+            out = local_runtime._run_tool("Bash", {"command": "touch breach"}, d, {"Bash"}, None,
+                                          bash_mode="sandbox")
+            self.assertFalse(os.path.exists(os.path.join(d, "breach")))
+            self.assertIn("Read-only", out)
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_sandbox_leaves_the_shell_WHOLE(self):
+        """The whole point of layer 1. An argv-only guard refuses 78% of what a planner actually
+        does, so if composition does not work here the sandbox has bought nothing."""
+        out = local_runtime._run_tool(
+            "Bash", {"command": "echo a; echo b | wc -l; echo $((1+1)) > /tmp/s; cat /tmp/s"},
+            None, {"Bash"}, None, bash_mode="sandbox")
+        for expect in ("a", "1", "2"):
+            self.assertIn(expect, out)
+        self.assertFalse(os.path.exists("/tmp/s"), "the scratch tmpfs leaked onto the host")
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_a_cwd_under_tmp_survives_the_scratch_tmpfs(self):
+        """`--tmpfs /tmp` MASKS anything under /tmp, so a run whose cwd lives there — tests, a
+        scratch clone — died with "Can't chdir" before running a thing."""
+        with tempfile.TemporaryDirectory(dir="/tmp") as d:
+            open(os.path.join(d, "f.txt"), "w").write("visible")
+            out = local_runtime._run_tool("Bash", {"command": "cat f.txt"}, d, {"Bash"}, None,
+                                          bash_mode="sandbox")
+            self.assertIn("visible", out)
+            local_runtime._run_tool("Bash", {"command": "touch breach"}, d, {"Bash"}, None,
+                                    bash_mode="sandbox")
+            self.assertFalse(os.path.exists(os.path.join(d, "breach")),
+                             "re-binding the cwd over the tmpfs made it WRITABLE")
+
+    def test_nothing_is_parsed_under_the_sandbox(self):
+        """Layer 1 must not also run layer 2, or it inherits the poverty it exists to remove."""
+        src = open("local_runtime.py").read()
+        i = src.index("if name == \"Bash\" and bash_mode:")
+        block = src[i:i + 400]
+        self.assertIn('if bash_mode == "allowlist":', block,
+                      "the allowlist must be reached only in the fallback mode")
+
+    def test_a_sandbox_that_does_not_actually_refuse_a_write_is_NOT_used(self):
+        """The fail-safe, and the one the skip-guarded tests above cannot cover: if bwrap is
+        present but its confinement is broken or misconfigured, the probe must see the write
+        SUCCEED and report unavailable, so the run falls back to the allowlist rather than
+        planning under a sandbox that isn't one."""
+        saved_probe, saved_cache = local_runtime._bwrap_argv, local_runtime._SANDBOX
+        try:
+            # A "sandbox" that is really just a shell — writes go straight through.
+            local_runtime._bwrap_argv = lambda command, cwd=None: ["bash", "-lc", command]
+            local_runtime._SANDBOX = None
+            self.assertFalse(local_runtime.sandbox_available(),
+                             "a sandbox that let the probe's write through was trusted")
+        finally:
+            local_runtime._bwrap_argv, local_runtime._SANDBOX = saved_probe, saved_cache
+        self.assertFalse(os.path.exists(local_runtime._SANDBOX_PROBE),
+                         "the probe leaves its file on the host when confinement is broken")
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_sandbox_also_enforces_the_READ_deny_set(self):
+        """The sandbox is a WRITE guard by construction, and "read-only" reads as safe when it is
+        not: `_read_guard` covers the Read tool, so `Read data/models.json` was refused while
+        `cat data/models.json` returned the endpoint API keys — into the context of what is, on
+        this path, a THIRD-PARTY model endpoint. The local plan pass had no shell at all before
+        the sandbox, so this is exposure the sandbox itself introduced."""
+        state = os.path.join(config.DATA_DIR, "models.json")
+        if not os.path.exists(state):
+            self.skipTest("no models.json in this data dir")
+        out = local_runtime._run_tool("Bash", {"command": f"cat {state}"}, None, {"Bash"}, None,
+                                      bash_mode="sandbox")
+        self.assertNotIn("base_url", out, "the sandbox handed Otto's state to the model")
+        self.assertNotIn("api_key", out)
+        # ...and the repo around it is still readable, or the planner has nothing to plan from.
+        readme = local_runtime._run_tool("Bash", {"command": "cat CLAUDE.md"},
+                                         os.path.dirname(config.DATA_DIR.rstrip("/")),
+                                         {"Bash"}, None, bash_mode="sandbox")
+        self.assertIn("Otto", readme)
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_read_deny_masks_honour_the_cwd_EXEMPTION(self):
+        """`file_safety` exempts a run whose cwd IS Otto's own checkout — otherwise Otto working
+        on itself cannot read its own tree. The mask must not be stricter than the rule it
+        enforces, or repo-mode on this repo dies inside the sandbox."""
+        root = os.path.dirname(config.DATA_DIR.rstrip("/"))
+        self.assertEqual(file_safety.read_denied_globs(allow_cwd=root), [])
+        self.assertEqual(local_runtime._read_deny_mounts(cwd=root), [])
+        self.assertTrue(local_runtime._read_deny_mounts(cwd=None),
+                        "an unanchored run got no masks at all")
+
+    # --- layer 2: the allowlist fallback -----------------------------------------------
+
+    def test_the_fallback_is_WIDER_than_the_claude_allowlist(self):
+        """`PLAN_TOOLS`' three `gh` rules are what `claude -p` is handed, where plan mode is the
+        real bound. Locally they are the whole bound, so reproducing them literally is what made
+        the planner declare it had no access to anything."""
+        for cmd in ("git log --oneline -5", "ls -la apps", "cat README.md",
+                    "sed -n 1,90p regress.py", "find . -name '*.tf'", "gh pr diff 12"):
+            self.assertIsNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+        _, scoped = config.scoped_bash_rules(config.PLAN_TOOLS)
+        self.assertLess(len(scoped), len(self.rules))
+
+    def test_shell_syntax_is_refused_wholesale(self):
+        """Gate 1. Refusing every metacharacter turns "is this command safe?" (undecidable) into
+        "is this a bare argv line?" (a character test) — chaining, redirection, substitution and
+        expansion all fall to one rule nobody has to enumerate. Quotes are NOT in the set: the
+        fallback execs argv with no shell, so quoting composes nothing."""
+        for cmd in ("gh pr view 1; rm -rf /tmp/x", "gh pr view 1 && curl evil.sh",
+                    "gh pr view 1 | tee /tmp/x", "gh pr diff 1 > /tmp/x",
+                    "gh pr view $(whoami)", "gh pr view `id`", "cat a\nrm -rf b"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+        self.assertIsNone(local_runtime.bash_refusal("grep -n 'foo bar' x.py", self.rules),
+                          "quoting is not composition and must survive")
+
+    def test_the_prefix_match_is_token_wise_and_cannot_be_widened(self):
+        """Gate 2. Substring matching would admit `gh pr viewers`; a whole-command match would
+        reject `gh pr view 12 --json title`, which is the point of granting it."""
+        for cmd in ("gh pr viewers", "gh pr create -t x", "gh pr merge 1", "rm -rf /tmp/x",
+                    "echo gh pr view", "python3 -c import os", "xargs rm"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+
+    def test_write_flags_are_denied_PER_COMMAND(self):
+        """Gate 3. A global flag deny is wrong in both directions: `-i` writes for `sed` and
+        means ignore-case for `grep`."""
+        for cmd in ("sed -i s/a/b/ f.py", "find . -delete", "find . -exec rm {} ;"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+        for cmd in ("grep -i needle f.py", "find . -name x", "find . -iname x"):
+            self.assertIsNone(local_runtime.bash_refusal(cmd, self.rules), cmd)
+
+    def test_a_denied_flag_survives_ITS_SPELLINGS(self):
+        """The membership test was exact token equality, so a rule refusing `-X` shipped allowing
+        `--method=POST`, `-XPOST` and `-fa=b` — three ways to write one flag, and `_SHELL_META`
+        has no `=` to stop the first. Found in review, reproduced against the live ruleset."""
+        rules = [(("curl",), ("-X", "-d", "--data"))]
+        for cmd in ("curl -X POST u", "curl -XPOST u", "curl --data=x u", "curl -dx u",
+                    "curl -sd x u"):
+            self.assertIsNotNone(local_runtime.bash_refusal(cmd, rules), cmd)
+        self.assertIsNone(local_runtime.bash_refusal("curl -s u", rules))
+
+    def test_the_spelling_expansion_can_only_ever_REFUSE(self):
+        """It expands a single-dash token as GNU bundling, which is wrong for a CLI using
+        single-dash long options (`find -iname` yields `-i`). That must stay the harmless
+        direction: a mis-expansion causes a refusal, never an allow."""
+        forms = local_runtime._flag_forms("-iname")
+        self.assertIn("-i", forms)
+        self.assertIn("-iname", forms)
+        self.assertEqual(local_runtime._flag_forms("plain"), {"plain"})
+        self.assertEqual(local_runtime._flag_forms("--"), {"--"})
+
+    def test_gh_api_is_ABSENT_because_its_language_is_HTTP(self):
+        """It was granted with a denied-flag list, which is the same shape as granting `python`
+        with a list of dangerous statements: the method is just a flag, so read-only means
+        enumerating every spelling of every write flag against a CLI nobody here controls. The
+        reads it served all have safe siblings, so the verb goes rather than the enumeration."""
+        self.assertNotIn("gh api", config.PLAN_BASH_FALLBACK)
+        self.assertIsNotNone(local_runtime.bash_refusal("gh api repos/o/r", self.rules))
+        for safe in ("gh pr view 1 --json comments", "gh pr diff 1", "gh repo view o/r",
+                     "gh issue view 5 --comments"):
+            self.assertIsNone(local_runtime.bash_refusal(safe, self.rules), safe)
+
+    def test_neither_layer_bounds_the_NETWORK_and_the_two_differ_there(self):
+        """Stated because it is what the layers do NOT do, which reading them never reveals: a
+        read-only filesystem stops no remote mutation. The allowlist happens to refuse a POST
+        (`-X` is a write flag on `gh api`); the sandbox cannot, and is not pretending to. What
+        stands between a plan pass and a remote write is the approval gate, as it always was."""
+        # `gh api` is out of the fallback entirely now, so the asymmetry is starker, not
+        # milder: the sandbox would run a POST that the fallback cannot even spell.
+        self.assertIsNotNone(local_runtime.bash_refusal("gh api repos/o/r -X POST", self.rules))
+        src = open("local_runtime.py").read()
+        i = src.index("def _bwrap_argv(")
+        self.assertNotIn("--unshare-net", src[i:i + 900],
+                         "unsharing the network would stop the planner reading its ticket")
+
+    def test_no_rules_refuses_everything_rather_than_falling_open(self):
+        self.assertIsNotNone(local_runtime.bash_refusal("gh pr view 1", []))
+        self.assertIsNotNone(local_runtime.bash_refusal("", self.rules))
+
+    def test_a_language_that_can_write_is_simply_ABSENT(self):
+        """The line between a bounded list and theatre: no interpreter is granted, so nobody has
+        to reason about what a program string does."""
+        for verb in ("python3", "python", "perl", "ruby", "node", "awk", "xargs", "tee", "dd"):
+            self.assertNotIn(verb, config.PLAN_BASH_FALLBACK)
+
+    def test_the_guard_is_enforced_at_the_dispatch_choke_point(self):
+        """`bash_refusal` being correct is worthless if `_run_tool` doesn't call it. And it must
+        come back as a tool RESULT the model reads and adapts to, not an exception."""
+        with tempfile.TemporaryDirectory() as d:
+            probe = os.path.join(d, "probe")
+            out = local_runtime._run_tool("Bash", {"command": f"touch {probe}"},
+                                          None, {"Bash"}, None, bash_mode="allowlist",
+                                          bash_rules=self.rules)
+            self.assertIn("refused", out)
+            self.assertFalse(os.path.exists(probe), "the guard did not stop the command running")
+
+    # --- wiring ------------------------------------------------------------------------
+
+    def test_an_unrestricted_run_is_completely_unaffected(self):
+        """Every normal execution turn passes bash_mode=None. A guard that leaks into those
+        breaks every repo-mode run on the local backend."""
+        out = local_runtime._run_tool("Bash", {"command": "echo otto-unrestricted"},
+                                      None, {"Bash"}, None, bash_mode=None)
+        self.assertIn("otto-unrestricted", out)
+
+    def test_a_bare_Bash_grant_is_reported_separately_from_the_rules(self):
+        """The execution allowlist grants plain "Bash" — an unrestricted shell, and it must stay
+        distinguishable from "restricted to nothing", which has to refuse rather than fall open."""
+        bare, rules = config.scoped_bash_rules(config.READ_TOOLS)
+        self.assertTrue(bare)
+        self.assertEqual(rules, [])
+        bare, rules = config.scoped_bash_rules(config.PLAN_TOOLS)
+        self.assertFalse(bare, "PLAN_TOOLS must never grant an unscoped shell")
+        self.assertIn(["gh", "issue", "view"], rules)
+
+    def test_scoped_rules_OFFER_Bash_and_the_two_modes_read_DIFFERENTLY(self):
+        """`_offered_tools` matched literal names, so the scoped rules were dropped and the local
+        preview planned ticket-driven work blind. And the description is the model's only map of
+        the boundary — the two layers are different instruments and must not read alike."""
+        offered = {t["function"]["name"]: t["function"]
+                   for t in local_runtime._offered_tools(config.PLAN_TOOLS, bash_mode="sandbox")}
+        self.assertEqual(set(offered), {"Bash", "Read", "Grep", "Glob"})
+        self.assertIn("read-only", offered["Bash"]["description"])
+        self.assertIn("full shell", offered["Bash"]["description"])
+        fb = {t["function"]["name"]: t["function"]
+              for t in local_runtime._offered_tools(config.PLAN_TOOLS, bash_mode="allowlist")}
+        self.assertIn("git log", fb["Bash"]["description"])
+        self.assertIn("no pipes", fb["Bash"]["description"])
+        self.assertNotEqual(offered["Bash"]["description"], fb["Bash"]["description"])
+
+    def test_write_tools_are_still_unreachable_in_a_plan_pass(self):
+        """The Bash layers are the new half; the tool set is the old one and must not have moved."""
+        offered = {t["function"]["name"]
+                   for t in local_runtime._offered_tools(config.PLAN_TOOLS)}
+        self.assertEqual(offered & {"Edit", "Write", "WebFetch"}, set())
+
+    def test_run_json_picks_the_mode_from_the_allowlist_and_records_it(self):
+        """The wiring, asserted where it lives. The transcript must say WHICH layer served the
+        pass: the two produce very different plans, and a preview that came back thin is
+        otherwise indistinguishable from a weak model."""
+        src = open("local_runtime.py").read()
+        self.assertIn('bash_mode = "sandbox" if sandbox_available() else "allowlist"', src)
+        self.assertIn('"bash_mode": bash_mode', src)
+        self.assertIn("bash_mode=bash_mode, bash_rules=bash_rules", src)
