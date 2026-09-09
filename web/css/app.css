@@ -733,6 +733,13 @@
   .mcpbtn { font-size: 12px; background: var(--raised); color: var(--text);
     border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 9px; cursor: pointer; flex: none; }
   .mcpbtn:hover { border-color: var(--accent); }
+  .mcpbtn.go { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  /* A registered-but-inactive server: the argv is what is being approved, so it is shown in the
+     row rather than folded into a tooltip. */
+  .mcppending { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .mcppending .abadge { margin-left: 0; }
+  .mcpcmd { background: var(--raised); border-radius: var(--r-sm); padding: 2px 7px;
+    overflow-wrap: anywhere; }
   .mcpwarn { background: var(--danger-soft); border: 1px solid var(--danger-line); border-radius: var(--r-md);
     padding: 10px 12px; margin: 4px 0 12px; font-size: 13px; color: var(--text); display: flex;
     align-items: center; gap: 12px; }
@@ -992,6 +999,7 @@
   .abadge.bad { color: var(--danger); border-color: var(--danger); }
   .abadge.fell { color: var(--warn); border-color: var(--warn); text-transform: none; margin-left: 0; }
   .abadge.shadow { color: var(--dim); border-color: var(--line); text-transform: none; margin-left: 0; }
+  .abadge.warn { color: var(--warn); border-color: var(--warn); }
   /* Output tokens per model. This is a ranked part-to-whole over ~12 classes; past ~7 classes
      that all carry meaning the form is a TABLE, not a longer inline list and not more colours.
      As a wrapping run of "name number" pairs the figures never aligned, so the one question it

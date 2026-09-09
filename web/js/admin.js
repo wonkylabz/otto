@@ -872,16 +872,24 @@ function renderAdmin(data, models, el, settings){
     </div>`;
   }).join("");
   const HLABEL={connected:"connected",failed:"failed",needs_auth:"needs auth",pending:"pending",unknown:"unknown"};
-  const mcpUnhealthy=m=>m.enabled&&["failed","needs_auth","pending"].includes(m.health);
+  const mcpUnhealthy=m=>m.enabled&&m.confirmed!==false&&["failed","needs_auth","pending"].includes(m.health);
   // `claude mcp login` fixes AUTH (HTTP/SSE/connector), not a broken stdio binary/env — only
   // offer Reconnect where it can actually help; a failed local server just shows its pill.
   const mcpCanReconnect=m=>m.enabled&&(m.health==="needs_auth"||(m.health==="failed"&&m.source==="connector"));
   const mcpIssues=data.mcps.filter(mcpUnhealthy).length;
   MCP_ISSUES=mcpIssues;
   setAdminBadge(mcpIssues, modelIssues());
+  // An Otto-registered server is stored INACTIVE: its command line is spawned as the operator on
+  // the next run that uses it, so the human confirming it has to SEE the argv, not just a name.
+  const pending=m=>m.source==="otto"&&m.confirmed===false;
   const mcpRows=data.mcps.map(m=>`
-    <tr class="arow ${m.enabled?'':'off'}">
-      <td><span class="nm">${esc(m.display||m.name)}</span></td>
+    <tr class="arow ${m.enabled&&!pending(m)?'':'off'}">
+      <td><span class="nm">${esc(m.display||m.name)}</span>
+        ${pending(m)?`<div class="mcppending"><span class="abadge warn">not activated</span>
+          <code class="mcpcmd">${esc(m.command||"")}</code>
+          <button class="mcpbtn go" data-actmcp="${esc(m.name)}"
+            title="allow Otto to spawn this exact command on runs that use this server">Activate</button>
+          </div>`:''}</td>
       <td class="c-health"><span class="ctl">
         ${m.health?`<span class="hpill ${esc(m.health)}" title="last claude mcp list health check">${HLABEL[m.health]||esc(m.health)}</span>`:''}
         ${mcpCanReconnect(m)?`<button class="mcpbtn" data-reconnect="${esc(m.name)}" title="claude mcp login — opens a browser to re-authenticate this server">Reconnect</button>`:''}
@@ -1132,6 +1140,12 @@ function renderAdmin(data, models, el, settings){
   }));
   el.querySelectorAll("[data-delcap]").forEach(b=>b.addEventListener("click",()=>removeItem("/api/capability/remove",{name:b.dataset.delcap})));
   el.querySelectorAll("[data-delmcp]").forEach(b=>b.addEventListener("click",()=>removeItem("/api/mcp/remove",{name:b.dataset.delmcp})));
+  el.querySelectorAll("[data-actmcp]").forEach(b=>b.addEventListener("click",async()=>{
+    b.disabled=true; b.textContent="Activating\u2026";
+    try{ await fetch("/api/mcp/activate",{method:"POST",headers:{"Content-Type":"application/json"},
+                                          body:JSON.stringify({name:b.dataset.actmcp})}); }catch(e){}
+    loadAdmin();
+  }));
   const recheck=document.getElementById("mcp-recheck");
   if(recheck) recheck.addEventListener("click",async()=>{
     recheck.disabled=true; const t=recheck.textContent; recheck.textContent="Checking…";
@@ -1278,6 +1292,7 @@ function showMcpForm(){
     <label>Name</label><input id="mf-name" placeholder="e.g. github">
     <label>Command</label><input id="mf-cmd" placeholder="npx">
     <label>Arguments (one per line)</label><textarea id="mf-args" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea>
+    <p class="sub" style="margin:2px 0 0">Added servers are stored <b>inactive</b> — Otto spawns this command on your machine, so you activate it from the list below after checking the command line.</p>
     <div class="ferr" id="mf-err"></div>
     <div class="factions"><button class="btn approve" id="mf-save">Add MCP server</button><button class="btn decline" id="mf-cancel">Cancel</button></div>
   </div>`;

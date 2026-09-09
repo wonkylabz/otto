@@ -3258,6 +3258,136 @@ class BundleTests(unittest.TestCase):
             policy.import_bundle({"not": "a bundle"})
 
 
+class McpActivationTests(unittest.TestCase):
+    """Registering an MCP server and RUNNING it are two acts (issue #4).
+
+    `command`+`args` are spawned as the operator on the next run that uses the server, so a
+    stored def is the largest single primitive the API exposes. The gate is on the DEF, not on
+    one endpoint, because a def reaches a subprocess through TWO doors — `--mcp-config` for the
+    Claude backend and `mcp_client.servable` for the local one — and through more than one
+    writer (the Admin form, a profile import)."""
+
+    ENTRY = {"command": "npx", "args": ["-y", "evil-server"]}
+
+    def setUp(self):
+        self._orig = (policy._MCPDEF, policy._PATH)
+        tmp = tempfile.mkdtemp(prefix="otto-mcpact-")
+        policy._MCPDEF = os.path.join(tmp, "mcp-servers.json")
+        policy._PATH = os.path.join(tmp, "policy.json")
+
+    def tearDown(self):
+        policy._MCPDEF, policy._PATH = self._orig
+
+    def _doors(self):
+        """Both paths a stored def can reach a spawned subprocess through."""
+        import mcp_client
+        pol = policy.load()
+        claude = (policy.active_mcp_config(pol) or {}).get("mcpServers", {})
+        orig = mcp_client._user_servers          # the operator's own ~/.claude.json is not ours
+        mcp_client._user_servers = lambda: {}
+        try:
+            local = mcp_client.servable(pol)
+        finally:
+            mcp_client._user_servers = orig
+        return set(claude), set(local)
+
+    def test_an_added_server_is_stored_inactive_and_neither_backend_spawns_it(self):
+        """The whole point. Before this, one POST to /api/mcp/add put a command line into the
+        config `claude` is handed on the very next run — no confirmation anywhere."""
+        policy.add_mcp_def("evil", self.ENTRY)
+        self.assertIn("evil", policy.mcp_defs())            # registered...
+        self.assertEqual((set(), set()), self._doors())     # ...and runnable by nobody
+
+        policy.confirm_mcp_def("evil")
+        self.assertEqual(({"evil"}, {"evil"}), self._doors())
+
+    def test_activation_is_not_the_enable_toggle(self):
+        """Two different questions: `enabled` is the operator's on/off switch, `confirmed` is
+        'a human has seen this argv'. Collapsing them would make the default-True toggle grant
+        exactly what the gate exists to withhold."""
+        policy.add_mcp_def("evil", self.ENTRY)
+        # Default-enabled (all_mcps says so) and still not runnable.
+        row = next(m for m in policy.all_mcps(policy.load()) if m["name"] == "evil")
+        self.assertTrue(row["enabled"])
+        self.assertFalse(row["confirmed"])
+        self.assertEqual((set(), set()), self._doors())
+
+    def test_the_row_carries_the_exact_command_line_a_human_must_approve(self):
+        """A name is not the thing being approved. The Admin row renders `command` verbatim."""
+        policy.add_mcp_def("evil", self.ENTRY)
+        row = next(m for m in policy.all_mcps(policy.load()) if m["name"] == "evil")
+        self.assertEqual("npx -y evil-server", row["command"])
+
+    def test_a_def_written_before_activation_existed_still_runs(self):
+        """Grandfathering, deliberately: an absent `confirmed` means 'stored under the old
+        contract'. Disabling those on upgrade breaks a working install to prevent nothing —
+        the operator added them. Every writer stamps the flag now, so absent only means past."""
+        policy.save_mcp_defs({"legacy": dict(self.ENTRY)})
+        self.assertEqual(({"legacy"}, {"legacy"}), self._doors())
+
+    def test_a_bundle_import_lands_unconfirmed_too(self):
+        """The second writer into the store. A bundle is a command line from ANOTHER machine —
+        gating only the Admin endpoint would make activation a convention, not a guard."""
+        policy.import_bundle({"otto_bundle": 1, "capabilities": [],
+                              "mcp_servers": {"evil": dict(self.ENTRY)}})
+        self.assertIn("evil", policy.mcp_defs())
+        self.assertEqual((set(), set()), self._doors())
+
+    def test_otto_bookkeeping_never_reaches_the_spawned_config(self):
+        """`confirmed`/`added_at` are ours; the mcpServers payload is the MCP client's schema."""
+        policy.add_mcp_def("good", self.ENTRY)
+        policy.confirm_mcp_def("good")
+        served = policy.active_mcp_config(policy.load())["mcpServers"]["good"]
+        self.assertEqual({"command", "args"}, set(served))
+
+    def test_confirming_an_unknown_server_registers_nothing(self):
+        """The endpoint returns 400 off this None — activation must never be a second way to
+        create a def."""
+        self.assertIsNone(policy.confirm_mcp_def("never-added"))
+        self.assertEqual({}, policy.mcp_defs())
+
+    def test_every_registry_change_is_audited_with_its_command_line(self):
+        """The durable record of what became runnable and when. Without the command line the
+        row cannot answer the only question worth asking of it afterwards."""
+        import audit
+        rows = []
+        orig = (audit._append_audit, audit._append_content)
+        audit._append_audit = rows.append
+        audit._append_content = lambda *a, **k: None
+        try:
+            audit.audit_mcp_change("add", "evil", self.ENTRY)
+            audit.audit_mcp_change("activate", "evil", self.ENTRY)
+            audit.audit_mcp_change("remove", "evil", self.ENTRY)
+        finally:
+            audit._append_audit, audit._append_content = orig
+        self.assertEqual(["add", "activate", "remove"], [r["mcp"]["action"] for r in rows])
+        self.assertTrue(all(r["mcp"]["command"] == "npx -y evil-server" for r in rows))
+        self.assertEqual(3, len({r["workflow"] for r in rows}))   # never collide
+
+    def test_the_endpoints_go_through_the_gated_writer(self):
+        """`_post_mcp_add` writing `policy.save_mcp_defs` directly is exactly the bug, and it
+        reads as harmless — this is the guard that a later edit can't quietly restore it."""
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")) as fh:
+            src = fh.read()
+        add = src.split("def _post_mcp_add(")[1].split("\n    def ")[0]
+        self.assertIn("policy.add_mcp_def(", add)
+        self.assertNotIn("save_mcp_defs", add)
+        self.assertIn("engine.audit_mcp_change(", add)
+        self.assertIn('"/api/mcp/activate": Handler._post_mcp_activate', src)
+
+    def test_admin_shows_the_argv_and_an_activate_button(self):
+        """A server nobody can spawn yet is useless if the UI shows no way to allow it, and an
+        Activate button next to a bare NAME approves something the human never read."""
+        src = ui_src()
+        self.assertIn('data-actmcp=', src)
+        self.assertIn('"/api/mcp/activate"', src)
+        # The ARGV, not just a class name that also exists in the stylesheet: the button and the
+        # command it approves have to be the same block of markup.
+        pending = src.split("const pending=")[1].split("const mcpTable")[0]
+        self.assertIn("esc(m.command", pending)
+        self.assertLess(pending.index("esc(m.command"), pending.index("data-actmcp="))
+
+
 class ConnectorParseTests(unittest.TestCase):
     """`claude mcp list` parsing — claude.ai connectors aren't in ~/.claude.json, so this
     is the only way Otto can discover & allowlist them (mcp__claude_ai_<Name>__…)."""
@@ -4914,7 +5044,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # the split itself is built on: per-script `"use strict"`, load order, `ui_src()` as the
     # only reader, and read-per-request + `no-store`. Paid for in one session: the file a UI
     # edit opens went from ~139k tokens to ~3k.
-    MAX_RULES_BYTES = 72131   # fetched tier — bounded, but looser; it is not always loaded
+    # 72131 -> 72407 for the MCP activation rule (issue #4): registering a command and running
+    # it became two acts, and the gate is on the DEF because a def reaches a subprocess through
+    # two doors and more than one writer — none of which a reader of either module can infer.
+    MAX_RULES_BYTES = 72407   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

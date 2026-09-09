@@ -15,6 +15,7 @@ import re
 
 import config
 import gateway
+import policy
 import registry
 import storage
 from ui import trace
@@ -48,6 +49,29 @@ def audit_repo_changes(wid, request, changed):
     _append_audit(entry)
     _append_content(wid, at, request=request, result=summary, detail=changed)
     trace("GUARD", f"in-place repo edit flagged: {names}")
+
+
+def audit_mcp_change(action, name, entry=None, actor="admin"):
+    """Audit a change to the MCP server registry: `add`, `activate` or `remove`.
+
+    Registering a command and running it are two separate acts (policy.add_mcp_def), and this is
+    the durable record of both — it is the only place the exact command line that became runnable
+    is written down. Config changes have no run behind them, so the row mints a wid the documented
+    way (engine._next_wid) rather than inventing an id scheme."""
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    cmdline = policy.mcp_command_line(entry) if entry else ""
+    at = datetime.datetime.now().isoformat(timespec="seconds")
+    wid = _eng()._next_wid()
+    entry_row = {
+        "at": at, "workflow": wid, "capability": f"{actor}:mcp-{action}",
+        "risk": "write", "outcome": "ran", "cost_usd": 0,
+        "mcp": {"action": action, "name": name, "command": cmdline},
+    }
+    _append_audit(entry_row)
+    _append_content(wid, at, request=f"MCP server {action}: {name}",
+                    result=(f"`{cmdline}`" if cmdline else f"removed `{name}`"))
+    trace("MCP", f"{action} {name}" + (f" -> {cmdline}" if cmdline else ""))
+    return wid
 
 
 def _schema(conn):
