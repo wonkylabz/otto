@@ -5846,7 +5846,11 @@ class UiAssetLayoutTests(unittest.TestCase):
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:
     # 27 @media and 41 @keyframes blocks interleave with the components they style and the
     # cascade is order-dependent, so it is a change of behaviour risk, not a change of file.
-    ASSET_MAX = 109_757
+    # Raised +294 for the Jobs-row legibility pass (clamped request, {{param}} chips): the seam
+    # this ratchet asks for does not exist in app.css, so the deliberate raise IS the answer here.
+    # -> 112_842 finishing that pass: two-line rows, the request at the reading measure, the
+    # asks slot, and the two Admin-matrix columns whose declared width forgot the cell padding.
+    ASSET_MAX = 112_842
 
     def _assets(self):
         out = {}

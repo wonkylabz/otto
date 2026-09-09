@@ -63,6 +63,11 @@ async function loadJobs(silent){
   wireJobs(el);
 }
 
+/* {{param}} placeholders are the noisiest thing in a request line — raw braces read as damage,
+   and a 3-line request in body type out-shouts the name it sits under. Chip them instead. Runs
+   AFTER esc(), which leaves braces alone, so this can never reopen a tag. */
+const jvars = s => s.replace(/\{\{\s*([\w.\-]+)\s*\}\}/g, '<span class="jvar">$1</span>');
+
 function jobRow(j){
   const busy = j.running || (j.id in _triggering);
   // A migrated schedule has no name of its own — it got request[:80], so the row would otherwise
@@ -71,21 +76,42 @@ function jobRow(j){
   const derived = j.request && j.name && j.request.startsWith(j.name);
   const title = derived ? j.request : (j.name || j.request);
   const sub = derived ? "" : (j.request && j.request !== j.name ? j.request : "");
+  // Identity first, then shape. The arrow that used to lead this line read as a bullet
+  // artifact at the start of every row, and "(pinned)" in parens read louder than the cap
+  // name it qualifies.
   const bits=[
-    j.cap?`&rarr; <b>${esc(j.cap)}</b> (pinned)`:'auto-route',
+    j.cap?`<span class="jcap">${esc(j.cap)}</span>`:'<span class="jcap jauto-route">auto-route</span>',
     j.steps.length?`<b>${j.steps.length}</b> steps`:null,
-    j.params.length?`<b>${j.params.length}</b> param${j.params.length===1?'':'s'}`:null,
+    // An on-demand row names its parameters in the .jasks slot instead, so the count there
+    // would be the same fact twice.
+    (j.params.length && !j.on_demand)?`<b>${j.params.length}</b> param${j.params.length===1?'':'s'}`:null,
     j.has_doc?'has notes':null,
   ].filter(Boolean);
+  // What Run will ask for is the on-demand analogue of a cron's next fire, so it takes the same
+  // slot: the action gutter then lands at one x down BOTH sections. The {{name}} chips in the
+  // request say it too, but that block is clamped to two lines and can truncate them away.
+  const names=j.params.map(pp=>pp.name).filter(Boolean);
+  const asks = !names.length ? '<span class="jnoask">no parameters</span>'
+    : `asks <span class="jasknames">${names.slice(0,3).map(n=>`<span class="jvar">${esc(n)}</span>`).join(" ")}</span>${names.length>3?` +${names.length-3}`:''}`;
   const approve = j.on_demand ? ''
     : (j.auto_approve ? '<span class="jauto" title="a cron fire runs writes with nobody present">auto-approves writes</span>'
                       : '<span class="jreads" title="an unattended write is skipped, so this only ever reads">reads only</span>');
-  return `<div class="job ${j.enabled?'':'off'}">
+  // The switch is a left RAIL outside .jbody, not the first cell of the title row: as a grid cell
+  // it indented the name while the request and status below it stayed flush with the card, so
+  // every scheduled row had three different left edges.
+  // An on-demand row carries no cron and no next-fire, so it drops those two slots entirely
+  // rather than rendering them empty: reserved-but-blank columns opened ~270px of dead gap
+  // between the name and the buttons, which is what stopped the section reading as a list.
+  // The "on demand" tag went with them — its own section heading already says so.
+  return `<div class="job ${j.enabled?'':'off'}${j.on_demand?' jod':' jsw'}">
+    ${j.on_demand?'':`<span class="switch ${j.enabled?'on':''}" data-togglejob="${j.id}" title="enable / disable"></span>`}
+    <div class="jbody">
     <div class="jtop">
-      ${j.on_demand?'<span></span>':`<span class="switch ${j.enabled?'on':''}" data-togglejob="${j.id}" title="enable / disable"></span>`}
-      <span class="jname" title="${esc(title)}">${esc(title)}</span>
-      <span class="jslot jcronslot">${j.on_demand?'<span class="jtag">on demand</span>':`<span class="jcron">${esc(j.cron)}</span>`}</span>
-      <span class="jslot jnextslot">${j.on_demand?'':`<span class="jnext" title="${esc(j.next_run||'')}">next ${esc(j.next_run?shortWhen(j.next_run):'—')}</span>`}</span>
+      <span class="jname" title="${esc(title)}">${jvars(esc(title))}</span>
+      ${j.on_demand
+        ? `<span class="jslot jasks" title="${esc(names.join(", "))}">${asks}</span>`
+        : `<span class="jslot jcronslot"><span class="jcron">${esc(j.cron)}</span></span>
+      <span class="jslot jnextslot"><span class="jnext" title="${esc(j.next_run||'')}">next ${esc(j.next_run?shortWhen(j.next_run):'—')}</span></span>`}
       <div class="jactions">
         <button class="addbtn" data-editjob="${j.id}">edit</button>
         ${busy ? '<span class="runspin"><span class="spin"></span>running…</span>'
@@ -93,9 +119,12 @@ function jobRow(j){
         <button class="remove" data-deljob="${j.id}" title="remove">&times;</button>
       </div>
     </div>
-    ${sub?`<div class="jreq">${esc(sub)}</div>`:''}
-    <div class="jstatus">${approve}${approve?' ':''}${bits.join(" · ")}
-      ${j.on_demand?'':` · last <span title="${esc(j.last_run||'')}">${j.last_run?esc(shortWhen(j.last_run)):'never'}</span>`}</div>
+    <div class="jstatus">
+      ${approve?`<span class="jriskslot">${approve}</span>`:''}
+      <span class="jmeta">${bits.join(" · ")}${j.on_demand?'':` · last <span title="${esc(j.last_run||'')}">${j.last_run?esc(shortWhen(j.last_run)):'never'}</span>`}</span>
+      ${sub?`<span class="jreq" title="${esc(sub)}">${jvars(esc(sub))}</span>`:''}
+    </div>
+    </div>
   </div>`;
 }
 

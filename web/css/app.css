@@ -747,13 +747,18 @@
   .tres.ok { color: var(--ok); }
   .tres.bad { color: var(--danger); }
   /* model table — one model per row, the phase assignment radios in their own columns */
+  /* 62px was sized for the chip's TEXT and forgot the cell's own 10px padding either side, so
+     the CLAUDE/HOSTED chip (measured 60px) was clipped by 18px inside a 42px content box. The
+     endpoints table reuses .c-tag for a model COUNT, which does fit, hence .mpool. */
   .modtable .c-tag { width: 62px; }
+  .modtable.mpool .c-tag { width: 82px; }
   .modtable .c-health { width: 104px; }
   /* 8 phases x the .rc column width (46px) — the header labels and the radios are two flex
      rows that must land on the same grid, so a tier added to gateway.TASKS has to widen this
      too (ModelPhaseColumnWidthTests). */
   .modtable .c-phases { width: 414px; }
-  .modtable .c-turns { width: 74px; }
+  /* Must stay >= the input's width plus the cell padding (ModelColumnFitTests). */
+  .modtable .c-turns { width: 78px; }
   .modtable .c-turns input { width: 56px; }
   .modtable .c-test { width: 150px; }
   .modtable .c-rm { width: 30px; }
@@ -1022,14 +1027,27 @@
     .atable .c-out { width: 78px; } }
 
   /* jobs (runbooks) */
-  .job { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 14px; margin-bottom: 10px; }
+  /* Every vertical value here is deliberate: nine runbooks at the original 110px row filled a
+     screen, so comparing them — the point of a list — needed scrolling. */
+  .job { border: 1px solid var(--line); border-radius: var(--r-md); padding: 6px 12px; margin-bottom: 4px;
+    transition: background .12s, border-color .12s; }
+  .job:hover { background: var(--raised); border-color: var(--line-strong); }
   .job.off { opacity: .5; }
-  .job .jtop { display: grid; grid-template-columns: auto minmax(0,1fr) 118px 150px auto;
+  .job.jsw { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 0 11px; align-items: start; }
+  .job .jbody { min-width: 0; }
+  .job.jsw > .switch { margin-top: 2px; }
+  .job .jtop { display: grid; grid-template-columns: minmax(0,1fr) 118px 150px auto;
     align-items: center; gap: 12px; }
-  .job .jname { font-size: 14px; color: var(--text); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  /* No cron and no next-fire, so those two columns merge into one saying what Run will ask
+     for. Same total width, so the action gutter sits at one x in both sections. */
+  .job.jod .jtop { grid-template-columns: minmax(0,1fr) 280px auto; }
+  .job .jasks { font-size: 12px; color: var(--dim); overflow: hidden; white-space: nowrap;
+    text-overflow: ellipsis; min-width: 0; }
+  .job .jasks .jvar { font-size: 11.5px; }
+  .job .jnoask { font-style: italic; opacity: .75; }
+  .job .jname { font-size: 15px; color: var(--text); font-weight: 600; min-width: 0; overflow-wrap: anywhere;
+    line-height: 1.22; }
   .job .jslot { min-width: 0; }
-  .job .jtag { font-size: 11px; color: var(--dim); border: 1px solid var(--line);
-    border-radius: 999px; padding: 2px 8px; }
   /* The two groups reuse .asection/.secttoggle — same collapsible section furniture as the
      Events and Admin tabs, rather than a third bespoke heading style. */
   .asection-body > .job:last-child { margin-bottom: 4px; }
@@ -1058,8 +1076,33 @@
     .job .jtop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
     .job .jname { flex: 1 1 220px; }
     .job .jactions { margin-left: auto; } }
-  .job .jreq { color: var(--text); font-size: 14px; margin: 9px 0 6px; }
-  .job .jstatus { font-size: 12px; color: var(--dim); }
+  /* The request rides ON the meta line, so every row is two lines and the same height as its
+     neighbours. Capped at the reading measure: the full column set ~180 characters a line. */
+  .job .jreq { color: var(--text-2); font-size: 12.5px; min-width: 0; flex: 0 1 auto;
+    max-width: var(--measure); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Without it the capability name and the request's first words read as one phrase. */
+  .job .jreq::before { content: "·"; margin-right: 7px; color: var(--dim); }
+  .job .jvar { font-family: var(--mono); font-size: .92em; color: var(--accent);
+    background: var(--accent-soft); border-radius: 4px; padding: 0 4px; }
+  .job .jstatus { font-size: 12px; color: var(--dim); display: flex; align-items: baseline; gap: 8px;
+    line-height: 1.35; flex-wrap: nowrap; }
+  /* Risk stays FIRST (highest-stakes fact on a cron row) but in a fixed slot, so the
+     capability after it starts at one x and the identities read as a column. */
+  .job .jriskslot { flex: 0 0 148px; }
+  .job .jmeta { min-width: 0; white-space: nowrap; flex: 0 0 auto; }
+  /* The row's identity, so it is the one thing on the meta line that is not dim. */
+  .job .jcap { color: var(--text-2); font-weight: 600; }
+  .job .jcap.jauto-route { font-weight: 500; font-style: italic; }
+  /* The two-line row is a wide-screen shape: with no room for both, `nowrap` ran the meta line
+     out of the card. Must sit AFTER the rules it overrides — the selectors tie on specificity,
+     so source order decides, and this block earlier in the file silently did nothing. */
+  @media (max-width: 900px) {
+    .job .jstatus { flex-wrap: wrap; }
+    .job .jmeta { white-space: normal; }
+    .job .jriskslot { flex-basis: auto; }
+    .job .jreq { flex-basis: 100%; max-width: 100%; white-space: normal;
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .job .jreq::before { content: none; } }
   .runspin { font-size: 12px; color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
   .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line);
     border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }

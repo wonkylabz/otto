@@ -426,7 +426,7 @@ function modelsSection(m){
     ${endpointsBlock(m)}
     <p class="sub" style="margin:2px 0 8px">One model per phase — hover a column header for what it does. The cheap phases take a local model happily.</p>
     ${badge}
-    <table class="ctable modtable">
+    <table class="ctable modtable mpool">
       <colgroup><col><col class="c-tag"><col class="c-health"><col class="c-phases"><col class="c-turns"><col class="c-test"><col class="c-rm"></colgroup>
       ${head}<tbody>${rows}</tbody></table></div></div>`;
 }

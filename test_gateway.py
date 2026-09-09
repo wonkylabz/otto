@@ -6326,6 +6326,48 @@ class ModelPhaseColumnWidthTests(unittest.TestCase):
                       "the grid the header labels were laid out in")
 
 
+class ModelColumnFitTests(unittest.TestCase):
+    """`.ctable` is `table-layout: fixed`, so a declared column width is ENFORCED: content wider
+    than it does not widen the column, it spills out of the cell. Both offenders here were the
+    same arithmetic slip — the width was sized against the content and the cell's own 10px of
+    padding either side was forgotten, leaving 20px less room than the number suggests.
+
+    Measured in headless Chrome against the live Admin tab: the TYPE chip renders 59-60px
+    (CLAUDE/HOSTED) in what was a 42px content box, and the Turns input is 56px in what was a
+    54px one. Neither errors, neither logs — the text is just cut off."""
+
+    def _css(self):
+        return ui_src()
+
+    def _pad(self, ui):
+        m = re.search(r"\.ctable td \{ padding: \d+px (\d+)px", ui)
+        self.assertIsNotNone(m, ".ctable td padding declaration has moved")
+        return int(m.group(1)) * 2
+
+    def test_the_turns_column_leaves_room_for_its_own_input(self):
+        ui = self._css()
+        col = int(re.search(r"\.modtable \.c-turns \{ width: (\d+)px", ui).group(1))
+        inp = int(re.search(r"\.modtable \.c-turns input \{ width: (\d+)px", ui).group(1))
+        pad = self._pad(ui)
+        self.assertGreaterEqual(col, inp + pad,
+                                f"the input is {inp}px and the cell spends {pad}px on padding, so "
+                                f"the column needs {inp + pad}px; it declares {col}px, which clips "
+                                f"the field under a fixed table-layout")
+
+    def test_the_type_column_leaves_room_for_the_widest_chip(self):
+        """80px = the measured 60px chip + the cell's 20px of padding. The models table needs its
+        own selector because the endpoints table reuses `.c-tag` for a model COUNT, which fits
+        62px fine — widening that one would just add 20px of dead column."""
+        ui = self._css()
+        col = int(re.search(r"\.modtable\.mpool \.c-tag \{ width: (\d+)px", ui).group(1))
+        self.assertGreaterEqual(col, 60 + self._pad(ui),
+                                f"the TYPE chip measures 60px and the cell spends {self._pad(ui)}px "
+                                f"on padding; {col}px clips it")
+        self.assertIn('class="ctable modtable mpool"', ui,
+                      "the models table lost its .mpool class, so the .c-tag width above now "
+                      "applies to nothing and the chip is clipped again")
+
+
 class LocalExecTokenCeilingTests(unittest.TestCase):
     """The ceiling has to clear a REASONING model's budget, because a truncated reasoning stream
     is the one thing `local_runtime` refuses to stitch — continuing it accretes chain-of-thought
