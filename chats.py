@@ -22,7 +22,7 @@ import config
 import storage
 
 _DB = config.DB_PATH
-MAX_CHATS = 100        # keep the most-recent N; older ones are dropped
+MAX_CHATS = 100        # keep the most-recent N UNPINNED chats; older ones are dropped
 MAX_MESSAGES = 400     # per-chat safety cap
 
 
@@ -218,9 +218,13 @@ def save(chat):
             [(cid, i, m.get("role"), m.get("text"), m.get("ts"), int(bool(m.get("pending"))))
              for i, m in enumerate(messages)])
 
-        # Cap the store: drop everything ranked past MAX_CHATS by the sidebar's own order.
+        # Cap the store: keep the MAX_CHATS most-recent UNPINNED chats and drop the rest. A pin
+        # is the user saying "don't lose this", so a pinned chat is exempt from the cap and does
+        # not consume a slot — the trim ranks by recency alone, which is the sidebar's order
+        # within the unpinned group it is allowed to touch.
         stale = [r["id"] for r in conn.execute(
-            "SELECT id FROM chats ORDER BY updated DESC, seq DESC LIMIT -1 OFFSET ?", (MAX_CHATS,))]
+            "SELECT id FROM chats WHERE pinned = 0 "
+            "ORDER BY updated DESC, seq DESC LIMIT -1 OFFSET ?", (MAX_CHATS,))]
         if stale:
             marks = ", ".join("?" * len(stale))
             conn.execute(f"DELETE FROM messages WHERE chat_id IN ({marks})", stale)
