@@ -56,7 +56,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
 
 
 class AuthoredPlanTests(unittest.TestCase):
@@ -916,9 +916,7 @@ class AdminBadgeSourcesTests(unittest.TestCase):
     two ends against each other rather than re-testing the logic."""
 
     def _html(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     def test_the_poll_reads_every_source_the_health_endpoint_publishes(self):
         with open(os.path.join(os.path.dirname(__file__), "server.py"), encoding="utf-8") as f:
@@ -1381,8 +1379,7 @@ class VersioningTests(unittest.TestCase):
             self.assertIn('"version": config.VERSION', f.read(),
                           "/api/health stopped serving the version — the UI chip goes blank and "
                           "'which build is this?' becomes unanswerable from the browser")
-        with open(os.path.join(self.ROOT, "web", "index.html"), encoding="utf-8") as f:
-            ui = f.read()
+        ui = ui_src()
         self.assertIn('id="ver"', ui, "the header lost its version chip")
         self.assertIn("function applyVersion(", ui, "the version painter is gone")
         # The CALL, not the definition: `applyVersion(h)` matches its own `function`
@@ -1637,9 +1634,7 @@ class CapabilityTableColumnsTests(unittest.TestCase):
     into the wrong column. Greps the three ends against each other."""
 
     def _html(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     def test_colgroup_header_and_row_have_the_same_number_of_cells(self):
         html = self._html()
@@ -1682,14 +1677,14 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
     def test_the_handoff_resubmit_carries_the_whole_composer(self):
         # A handoff IS a fresh submit — it re-enters /api/submit, so every setting a normal
         # submit sends must ride along or the visible composer silently doesn't apply.
-        call = self._call(self._src("web/index.html"), 'api("/api/submit",{request:task')
+        call = self._call(ui_src(), 'api("/api/submit",{request:task')
         for field in ("model_override", "memory_enabled", "repo", "qa", "plan_mode", "auto_approve"):
             self.assertIn(field, call, f"the handoff re-submit drops {field}")
 
     def test_the_handoff_and_rebind_resubmits_carry_the_auto_approve_toggle(self):
         # Dropping it re-gates a run the human already pre-authorized on screen — the opposite
         # failure to the model picker's, and just as invisible.
-        src = self._src("web/index.html")
+        src = ui_src()
         call = self._call(src, 'api("/api/submit",{request:task+carryContextForSubmit(true)')
         self.assertIn("auto_approve: selectedAutoApprove()", call,
                       "the model-rebind re-submit drops the approval toggle")
@@ -1698,7 +1693,7 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
         # `_line`, not `_call`: this assertion passed with the field DELETED, because `_call`'s
         # window ran past the one-line fetch into the rebind re-submit below it, which carries
         # a model_override of its own. A guard that cannot fail is not a guard.
-        line = self._line(self._src("web/index.html"), 'api("/api/continue",{session_id')
+        line = self._line(ui_src(), 'api("/api/continue",{session_id')
         self.assertIn("model_override: selectedModelOverride()", line,
                       "/api/continue is called without the composer's model pick")
 
@@ -1713,7 +1708,7 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
     def test_every_composer_resubmit_carries_the_effort_pick(self):
         # Effort is one more composer control on the same three paths the model pick rides. A
         # dropped hop is invisible: the run completes, at the wrong effort, reporting success.
-        src = self._src("web/index.html")
+        src = ui_src()
         for marker, what in (
                 ('api("/api/submit",{request:task+carryContextForSubmit(true)', "model-rebind"),
                 ('api("/api/submit",{request:task', "handoff")):
@@ -1850,7 +1845,7 @@ class ResumeModelRebindTests(unittest.TestCase):
     def test_the_client_carries_the_conversation_into_the_rebound_run(self):
         # A rebind leaves a live session, so the history that resume carried implicitly has to be
         # passed explicitly — otherwise switching model silently forgets the conversation.
-        html = self._src("web/index.html")
+        html = ui_src()
         branch = html[html.index("if(out && out.rebind){"):html.index("if(out && out.handoff){")]
         self.assertIn("carryContextForSubmit(true)", branch,
                       "the rebound run drops the conversation")
@@ -1859,7 +1854,7 @@ class ResumeModelRebindTests(unittest.TestCase):
         self.assertNotIn("suppressCarry=true", branch, "suppressCarry would void the carry")
 
     def test_the_switch_is_stated_on_screen(self):
-        html = self._src("web/index.html")
+        html = ui_src()
         branch = html[html.index("if(out && out.rebind){"):html.index("if(out && out.handoff){")]
         self.assertIn("recordMsg(", branch, "the session ends with no visible explanation")
 
@@ -1868,7 +1863,7 @@ class ResumeModelRebindTests(unittest.TestCase):
         # figure different from the one above it (judged a fabricated "live" pull on
         # web-50af486b), or to skip the check and assert nothing changed. Measured on the local
         # model: 1/5 replies reconciled the conflict under the bare label, 5/5 under this text.
-        html = self._src("web/index.html")
+        html = ui_src()
         body = html[html.index("function carryContextForSubmit("):]
         block = body[:body.index("\n}")]
         self.assertIn("re-checked with tools", block, "the carry doesn't require a re-check")
@@ -1877,7 +1872,7 @@ class ResumeModelRebindTests(unittest.TestCase):
     def test_carry_context_honours_the_force_flag(self):
         # The guard exists because resume carries history implicitly; the rebind path is the one
         # case where a session is live AND the carry is still needed.
-        html = self._src("web/index.html")
+        html = ui_src()
         body = html[html.index("function carryContextForSubmit("):]
         self.assertIn("(currentSession && !force)", body[:200],
                       "carryContextForSubmit still returns '' for every live session")
@@ -2259,11 +2254,10 @@ class RuleEnforcementTests(unittest.TestCase):
         "run-pipeline.md:Unattended dead-end rule",
         "run-pipeline.md:conventions._SOURCES is the whole input set.",
         "run-pipeline.md:engine.critique_plan",
-        # --- ui.md (4) ---
+        # --- ui.md (3) ---
         "ui.md:An in-flight flag for a long action lives OUTSIDE the render",
         "ui.md:CSS.escape() is for identifiers, never inside a quoted attribute selec",
         "ui.md:Verifying UI changes headlessly",
-        "ui.md:web/index.html contains NUL bytes",
     })
 
     @classmethod
@@ -2322,7 +2316,7 @@ class RuleEnforcementTests(unittest.TestCase):
 
 
 class ThemeUiTests(unittest.TestCase):
-    """Admin -> Appearance -> Theme, in `web/index.html`.
+    """Admin -> Appearance -> Theme (`web/css/tokens.css` + `web/js/admin.js`).
 
     A palette is a wall of hex values with no behaviour of its own, so the failure mode is
     silence: a theme that half-applies still renders, just with one token inherited from a
@@ -2330,9 +2324,7 @@ class ThemeUiTests(unittest.TestCase):
     without any visible error."""
 
     def _html(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     _PALETTE = re.compile(r"^\s*(:root, \[data-theme=\"[a-z-]+\"\]|:root\[data-theme="
                           r"\"[a-z-]+\"\], \[data-theme=\"[a-z-]+\"\]) \{(.*?)^  \}",
@@ -2400,14 +2392,14 @@ class AutoApproveToggleTests(unittest.TestCase):
             return f.read()
 
     def test_the_toggle_defaults_to_off(self):
-        html = self._src("web/index.html")
+        html = ui_src()
         i = html.index('id="autoapprove"')
         self.assertNotIn("checked", html[html.rindex("<input", 0, i):html.index(">", i)],
                          "the approval gate ships pre-authorized")
         self.assertIn("function selectedAutoApprove()", html)
 
     def test_both_chat_ingresses_forward_the_toggle(self):
-        html = self._src("web/index.html")
+        html = ui_src()
         for marker in ('api("/api/submit",{request:req', 'api("/api/continue",{session_id'):
             call = html[html.index(marker):html.index("}))", html.index(marker)) + 3]
             self.assertIn("auto_approve: selectedAutoApprove()", call,
@@ -2424,7 +2416,7 @@ class AutoApproveToggleTests(unittest.TestCase):
                          "approval must never be read straight off a request body")
 
     def test_the_composer_hint_states_which_mode_is_live(self):
-        html = self._src("web/index.html")
+        html = ui_src()
         self.assertIn('id="gatehint"', html)
         self.assertIn("function applyApprovalHint()", html)
         self.assertIn('e.target.id==="autoapprove") applyApprovalHint()', html,
@@ -2565,15 +2557,13 @@ class RuntimeSettingsUiCoverageTests(unittest.TestCase):
     """Admin renders every runtime setting generically, so a NEW spec key needs no UI work to
     appear — which is exactly why it silently appears WRONG: unnamed in `SETTING_HELP` it renders
     as its raw store key with no explanation, and unlisted in `SETTING_GROUPS` it lands in
-    "Other", away from the knob it belongs beside. `web/index.html` says as much in a comment
+    "Other", away from the knob it belongs beside. `web/js/admin.js` says as much in a comment
     over `SETTING_GROUPS` ("a hardcoded list must never be able to silently drop a setting the
     server grew") and nothing enforced it. Both directions matter: a stale entry for a deleted
     setting is dead copy that reads as a live knob."""
 
     def _blocks(self):
-        with open(os.path.join(os.path.dirname(__file__), "web/index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            src = f.read()
+        src = ui_src()
         i = src.index("const SETTING_GROUPS=[")
         return (src[src.index("const SETTING_HELP={"):i], src[i:src.index("];", i)])
 

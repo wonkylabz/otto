@@ -1,0 +1,144 @@
+  :root {
+    /* The live page's accent, resolved on the root against whichever theme won. A theme card
+       overrides --accent locally to preview a palette; this stays the app's own, so a control
+       that must speak for the page (the selected ring) can still reach it. */
+    --page-accent: var(--accent);
+    /* not part of any palette — the same in every theme, so no theme block repeats them */
+    --r-sm: 6px; --r-md: 8px; --r-lg: 12px;
+    /* ONE step of nesting. Three idioms render a child grouping (an Events subsection, an
+       Appearance .uigroup, a Runtime-settings group row) and they must indent by the same
+       amount, or the page teaches two different depths for one level (SubsectionIndentTests). */
+    --indent-sub: 16px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* Comfortable reading measure. The content column is capped at 1320px, which is right for the
+       Audit table but sets running prose ~180 characters wide — twice the readable range. In `ch`
+       so it tracks the font rather than a px guess; ~88ch at 14px lands near the 680px the chat
+       bubble already uses, so the two reading surfaces agree. Tables keep the full column. */
+    --measure: 88ch;
+  }
+
+  /* The default palette. Double-scoped like every other theme below rather than living on a
+     bare :root, so its own card in the Appearance picker previews IT and not whatever theme the
+     page is currently wearing — and still exactly one copy of the values. */
+  :root, [data-theme="chocolate-truffle"] {
+    color-scheme: light;
+    /* chocolate-truffle cream scale (source cream #FDFBD4, retuned).
+       Two measured problems with the source scale, both unique to this theme among the five:
+       its ground carried OKLCh chroma .0505 — roughly 10x GitHub/Stripe/Notion/Linear and 4x
+       this app's own next-warmest theme — so a full screen of it read as sticky-note yellow
+       rather than paper; and every surface sat within 1.04x luminance of the ground, leaving
+       the whole UI's structure resting on one .14-alpha hairline. Chroma is now .020 (still the
+       warmest of the light themes) and the steps are 1.08/1.06/1.03, in line with lush-forest
+       and wisteria-bloom. Ordering is unchanged: surface-2 < ground < surface < raised. */
+    --ground: #F8F6E7; --surface: #FEFCF2; --surface-2: #F1EDDA; --raised: #FFFFFA;
+    --line: rgba(56,36,13,.14); --line-strong: rgba(56,36,13,.24);
+    /* text scale: truffle espresso #38240D. --dim is 3.5 L darker than the source #7E6A4A: on the
+       deeper surface-2 the old value measured 4.41 and missed AA, and it is the sidebar/rail ink. */
+    --text: #38240D; --text-2: #5C4A34; --dim: #746040;
+    /* accent: truffle caramel #C05800, 6% deeper so it clears AA on cream */
+    --accent: #AF5000; --accent-soft: rgba(175,80,0,.10); --accent-line: rgba(175,80,0,.34);
+    --on-accent: #FFF9EC;
+    /* semantic status: moss / olive-gold / red — each pulled off the accent hue */
+    --ok: #2C5A22; --ok-soft: rgba(44,90,34,.14);
+    --warn: #6B5600; --warn-soft: rgba(107,86,0,.11); --warn-line: rgba(107,86,0,.34);
+    --danger: #B01F2A; --danger-soft: rgba(176,31,42,.10); --danger-line: rgba(176,31,42,.32);
+    --danger-deep: #8E1620;
+    /* ink washes reused off the text hue: zebra striping, the modal scrim, the modal shadow */
+    /* pipeline-stage chips (board): one hue per stage, tuned per theme (see .bchip.stage) */
+    --stg-router: #615E56; --stg-clarify: #7B3B8E; --stg-decompose: #1C675F;
+    --stg-plan: #2B5A97; --stg-gate: #7A5602; --stg-run: #2F6B26;
+    --stg-pr: #A32B6E; --stg-review: #4B47A8; --stg-qa: #954716; --stg-deliver: #45607A;
+    --zebra: rgba(56,36,13,.045); --scrim: rgba(56,36,13,.34); --shadow: rgba(56,36,13,.18);
+  }
+
+  /* ---------------------------------------------------------------------------------------
+     THEMES (Admin -> Appearance). Palettes are named after the Figma color-combination library
+     they were drawn from; the tokens are derived from each palette, not copied raw, so text
+     keeps clearing AA on its own ground.
+
+     Chocolate Truffle is the default and is declared just above, on `:root` itself — so an
+     unset (or unknown) `data-theme` falls through to it.
+
+     Every block is written twice-scoped: on the root for the live page, and on any element
+     carrying `data-theme` so a swatch in the picker renders in the real palette instead of a
+     hand-copied list of hexes that drifts.
+
+     LIGHT themes take a near-white --on-accent (light ink on a mid-tone fill); DARK themes
+     invert the relationship — the semantic colours become light tints and --on-accent becomes
+     the dark ink that sits on top of them. --on-accent is the text on --accent AND on --danger
+     fills, so those two must stay on the same side of the palette.
+     ------------------------------------------------------------------------------------- */
+
+  /* Lush Forest — forest greens on a pale leaf ground. --ok is pulled to olive so a green
+     accent and the green "passed" status don't read as the same signal. */
+  :root[data-theme="lush-forest"], [data-theme="lush-forest"] {
+    color-scheme: light;
+    --ground: #EFF5EC; --surface: #F9FCF7; --surface-2: #E4EEE0; --raised: #FFFFFF;
+    --line: rgba(22,48,28,.14); --line-strong: rgba(22,48,28,.24);
+    --text: #16301C; --text-2: #3B5442; --dim: #63796A;
+    --accent: #1E5E3A; --accent-soft: rgba(30,94,58,.10); --accent-line: rgba(30,94,58,.34);
+    --on-accent: #F4FBF4;
+    --ok: #4A7016; --ok-soft: rgba(74,112,22,.14);
+    --warn: #6E5300; --warn-soft: rgba(110,83,0,.11); --warn-line: rgba(110,83,0,.34);
+    --danger: #A62B25; --danger-soft: rgba(166,43,37,.10); --danger-line: rgba(166,43,37,.32);
+    --danger-deep: #83201B;
+    --stg-router: #506053; --stg-clarify: #6D3E92; --stg-decompose: #126864;
+    --stg-plan: #23578F; --stg-gate: #765900; --stg-run: #2A6A2F;
+    --stg-pr: #9B2A6B; --stg-review: #46429F; --stg-qa: #92471A; --stg-deliver: #3F5E75;
+    --zebra: rgba(22,48,28,.045); --scrim: rgba(22,48,28,.34); --shadow: rgba(22,48,28,.18);
+  }
+
+  /* Wisteria Bloom — soft lavender ground under a deep violet ink. */
+  :root[data-theme="wisteria-bloom"], [data-theme="wisteria-bloom"] {
+    color-scheme: light;
+    --ground: #F4F1FA; --surface: #FBF9FF; --surface-2: #EAE3F5; --raised: #FFFFFF;
+    --line: rgba(46,33,64,.14); --line-strong: rgba(46,33,64,.24);
+    --text: #2E2140; --text-2: #524465; --dim: #746889;
+    --accent: #63389B; --accent-soft: rgba(99,56,155,.10); --accent-line: rgba(99,56,155,.34);
+    --on-accent: #FAF6FF;
+    --ok: #226B45; --ok-soft: rgba(34,107,69,.14);
+    --warn: #6F5400; --warn-soft: rgba(111,84,0,.11); --warn-line: rgba(111,84,0,.34);
+    --danger: #A82239; --danger-soft: rgba(168,34,57,.10); --danger-line: rgba(168,34,57,.32);
+    --danger-deep: #85172B;
+    --stg-router: #5E5670; --stg-clarify: #8E2F86; --stg-decompose: #156465;
+    --stg-plan: #2C55A0; --stg-gate: #725400; --stg-run: #24663D;
+    --stg-pr: #A3285B; --stg-review: #3F3FA0; --stg-qa: #8F4519; --stg-deliver: #3F5D77;
+    --zebra: rgba(46,33,64,.045); --scrim: rgba(46,33,64,.36); --shadow: rgba(46,33,64,.20);
+  }
+
+  /* Ink Wash — monochrome sumi charcoal, the neutral dark. */
+  :root[data-theme="ink-wash"], [data-theme="ink-wash"] {
+    color-scheme: dark;
+    --ground: #16181C; --surface: #1D2025; --surface-2: #23272D; --raised: #292E35;
+    --line: rgba(226,231,238,.13); --line-strong: rgba(226,231,238,.26);
+    --text: #E6E9EE; --text-2: #B4BAC4; --dim: #89909C;
+    --accent: #9CBADA; --accent-soft: rgba(156,186,218,.14); --accent-line: rgba(156,186,218,.38);
+    --on-accent: #14171C;
+    --ok: #7BC98C; --ok-soft: rgba(123,201,140,.16);
+    --warn: #DFC073; --warn-soft: rgba(223,192,115,.14); --warn-line: rgba(223,192,115,.38);
+    --danger: #EE7C7C; --danger-soft: rgba(238,124,124,.14); --danger-line: rgba(238,124,124,.36);
+    --danger-deep: #F49A9A;
+    --stg-router: #A6AEBA; --stg-clarify: #C79BE8; --stg-decompose: #6FC9C0;
+    --stg-plan: #8FB6E8; --stg-gate: #DFC073; --stg-run: #7BC98C;
+    --stg-pr: #E79BC8; --stg-review: #A9A6F0; --stg-qa: #E8A17C; --stg-deliver: #9FB6C8;
+    --zebra: rgba(226,231,238,.045); --scrim: rgba(6,8,10,.62); --shadow: rgba(0,0,0,.5);
+  }
+
+  /* Blue Eclipse — midnight blue, the saturated dark. */
+  :root[data-theme="blue-eclipse"], [data-theme="blue-eclipse"] {
+    color-scheme: dark;
+    --ground: #0C1526; --surface: #121E33; --surface-2: #16243D; --raised: #1B2B48;
+    --line: rgba(190,214,255,.14); --line-strong: rgba(190,214,255,.28);
+    --text: #E4ECFA; --text-2: #B0C1DD; --dim: #8193B3;
+    --accent: #86ACF2; --accent-soft: rgba(134,172,242,.14); --accent-line: rgba(134,172,242,.38);
+    --on-accent: #0A1120;
+    --ok: #6FD1A0; --ok-soft: rgba(111,209,160,.16);
+    --warn: #E8C169; --warn-soft: rgba(232,193,105,.14); --warn-line: rgba(232,193,105,.38);
+    --danger: #FF7A85; --danger-soft: rgba(255,122,133,.14); --danger-line: rgba(255,122,133,.36);
+    --danger-deep: #FF9AA3;
+    --stg-router: #93A6C6; --stg-clarify: #C0A2F0; --stg-decompose: #48C9DB;
+    --stg-plan: #7FB0FF; --stg-gate: #E8C169; --stg-run: #6FD1A0;
+    --stg-pr: #F0A0CE; --stg-review: #B4AFFF; --stg-qa: #F0A87F; --stg-deliver: #A8C0D8;
+    --zebra: rgba(190,214,255,.045); --scrim: rgba(3,7,15,.64); --shadow: rgba(0,0,0,.55);
+  }

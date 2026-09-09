@@ -915,10 +915,33 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return u.hostname in _LOCAL_HOSTS and port == self.server.server_address[1]
 
+    def _static(self, path):
+        """Serve web/css/*.css and web/js/*.js — the UI's own assets, nothing else.
+
+        `index.html` is the tag list; the stylesheets and the view modules it pulls live
+        beside it. The allowlist is (one directory, one extension) with the basename taken
+        AFTER os.path.basename, so `..%2f` and a nested path both collapse to a name that
+        either exists in that one directory or 404s. Sent `no-store` like every other
+        response: that is what makes a UI edit ship on a plain refresh rather than a
+        cache-buster, and these are localhost bytes.
+        """
+        kind, _, name = path.split("?", 1)[0].lstrip("/").partition("/")
+        ctype = {"css": "text/css; charset=utf-8",
+                 "js": "text/javascript; charset=utf-8"}.get(kind)
+        if not ctype or name != os.path.basename(name) or not name.endswith("." + kind):
+            return self._send(404, b"not found", "text/plain")
+        try:
+            with open(os.path.join(HERE, "web", kind, name), "rb") as f:
+                self._send(200, f.read(), ctype)
+        except OSError:
+            self._send(404, b"not found", "text/plain")
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "web", "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
+        elif self.path.startswith("/css/") or self.path.startswith("/js/"):
+            self._static(self.path)
         elif self.path == "/api/health":
             # `mcp.unhealthy` and `models.broken` both read CACHED health (no slow re-poll, no
             # probe) so any tab can feed the Admin-tab warning badge cheaply on its poll.

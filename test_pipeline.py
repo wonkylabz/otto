@@ -55,7 +55,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
 
 
 class PlanPreviewAuditTests(unittest.TestCase):
@@ -1688,9 +1688,7 @@ class GateStateForwardingTests(unittest.TestCase):
         return src[i:src.index("}", i)]
 
     def test_every_field_the_gate_ui_reads_is_forwarded(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            html = f.read()
+        html = ui_src()
         call = re.search(r"await gate\(content, cap, (st\..*?)\);", html)
         self.assertIsNotNone(call, "the chat's gate() call moved — re-point this test")
         fields = [f.strip().removeprefix("st.") for f in call.group(1).split(",")]
@@ -1716,9 +1714,7 @@ class PlanRevisionFeedbackTests(unittest.TestCase):
     on `replanning` (in-flight) and never on the counter alone."""
 
     def _revision_poll(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            html = f.read()
+        html = ui_src()
         m = re.search(r"async function awaitRevision\(\).*?\n      }", html, re.S)
         self.assertIsNotNone(m, "the gate's revision poll moved — re-point this test")
         return m.group(0)
@@ -1742,9 +1738,7 @@ class PlanRevisionFeedbackTests(unittest.TestCase):
         # poll has to drive the two stages it is standing in for.
         self.assertIn("onReplan", self._revision_poll(),
                       "the revision poll never repaints the pipeline — it reads as gate-held")
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            html = f.read()
+        html = ui_src()
         painter = re.search(r"const onReplan=\(phase,t\)=>\{.*?\n        \};", html, re.S)
         self.assertIsNotNone(painter, "the pipeline painter moved — re-point this test")
         painter = painter.group(0)
@@ -3513,7 +3507,7 @@ class BrainstormModeTests(unittest.TestCase):
     def test_the_composer_disables_the_losing_control_rather_than_ignoring_it(self):
         """The workflow resolves every conflict on its own, so the UI is not a safety control —
         it is there because a toggle that silently does nothing is the bug being fixed."""
-        html = _read("web/index.html")
+        html = ui_src()
         self.assertIn("function applyModeExclusions(){", html)
         # Wired to all three controls, not just the one that changed last.
         self.assertIn('if(["repopick","bscheck","plancheck"].includes(e.target.id))', html)
@@ -3523,7 +3517,7 @@ class BrainstormModeTests(unittest.TestCase):
 
     # --- the composer toggle ---------------------------------------------------------------
     def test_the_toggle_is_expressed_as_a_pin_and_an_explicit_slash_wins(self):
-        html = _read("web/index.html")
+        html = ui_src()
         self.assertIn('id="bscheck"', html)
         # The fallback must be guarded on `!pin`, i.e. a typed "/assistant …" outranks a toggle
         # the user set three messages ago.

@@ -98,7 +98,7 @@ Temporal is required — `server.py` refuses to start without it (the old non-du
 
 | Layer | File(s) | Notes |
 |---|---|---|
-| Ingress | `web/index.html` + `server.py` | chat UI + HTTP / Temporal client |
+| Ingress | `web/index.html` + `web/css/`, `web/js/` + `server.py` | chat UI + HTTP / Temporal client |
 | Async work queue | `board.py` | a GitHub Projects "Ready" column, polled → unattended runs → result commented back |
 | Orchestration | `workflows.py`, `worker.py` | the durable Temporal workflow (the only run path) |
 | Router #1 (which agent) | `engine.route` | an LLM call via the gateway |

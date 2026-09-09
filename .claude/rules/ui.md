@@ -1,7 +1,15 @@
-# UI conventions (`web/index.html`)
+# UI conventions (`web/index.html` + `web/css/`, `web/js/`)
 
-- **`web/index.html` contains NUL bytes** (sentinels around fenced-code-block placeholders) — `grep` needs `-a`; the Edit tool can't string-match a line containing one, so patch those bytes via a script.
-- **The mascot's SVG and CSS are JS template literals** — a backtick in a comment there ends the string and the element silently never defines: no error, `<otto-mascot>` just renders nothing (`MascotStateTests`).
+`index.html` is the head, the markup shell and the tag list — no style, no logic. Everything
+else is an asset: `css/tokens.css` (design tokens + the five palettes), `css/app.css`, and the
+scripts, one per tab plus `util`/`markdown`/`modal` (shared) and `boot` (startup). Classic
+`<script src>`, no bundler, served by `server.Handler._static`.
+
+- **A new asset needs its OWN `"use strict";`, a tag in `index.html`, and a size under the ratchet** — the directive is per-SCRIPT, so omitting it drops that file into sloppy mode silently; an untagged file is dead code that still reads as live (`UiAssetLayoutTests`).
+- **Load order: shared primitives before the views, `boot.js` LAST** — a top-level statement runs when its file does, so anything a view calls across a file boundary must be called from an event handler, never at load (`UiAssetLayoutTests`).
+- **A test reads the UI through `test_support.ui_src()`, never `web/index.html`** — it re-inlines every asset in document order, which is what keeps the ~60 grep guards (and their `.index()` ordering assertions) meaning anything (`UiAssetLayoutTests`).
+- **Assets are read per request and sent `no-store`; never add a cache-buster** — only the ROUTE ever needed a restart, so a UI edit still ships on a plain refresh. `_static` is one directory + one extension + basename only (`UiAssetRouteTests`).
+- **The mascot's SVG and CSS are JS template literals** (`web/js/mascot-element.js`) — a backtick in a comment there ends the string and the element silently never defines: no error, `<otto-mascot>` just renders nothing (`MascotStateTests`).
 - **A subsection is INDENTED** (`.asection .subsection`) — a flush inner heading reads as another sibling, not a child; quieter type alone doesn't say it (`SubsectionIndentTests`).
 - Tab copy lives on the control (`title=`), not in prose above it; config forms open in a shared modal (`openFormModal`/`closeFormModal`); every ingress toggles from its card (`.switch`), not inside its config form; long stores render collapsed+filtered+paginated, and overflow must be measured only while visible (`scrollHeight` is 0 under `display:none`); every Admin/Audit section is a real `<table>` with widths in CSS classes, not inline `<col style>`.
 - **Nothing that shells out belongs in a request the panel's spinner awaits.** `loadAdmin` fans out 6 fetches in one `Promise.all`, so the slowest is the load time: `/api/policy` serves CACHED MCP health and the client tops it up via `refreshMcpHealth`. `claude mcp list` health-checks every server (~8s) — `policy.all_mcps` needs its result twice and must read `_mcp_status` ONCE (`…never_triggers_the_slow_health_check`/`…one_status_read_serves_both_consumers`).
