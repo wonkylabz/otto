@@ -1343,6 +1343,24 @@ class ChatHistoryTests(unittest.TestCase):
             chats.save({"id": f"c{i}", "title": str(i), "messages": []})
         self.assertLessEqual(len(chats.list_summaries()), chats.MAX_CHATS)
 
+    def test_a_pinned_chat_survives_a_trim(self):
+        """The trim ranked by recency alone while the sidebar ranks pins first, so a pinned
+        thread left idle for a few weeks fell past MAX_CHATS and lost its row and every one of
+        its messages on the next unrelated save. Measured on a live store sitting at 98/100
+        with two pins. A pin is the user saying "do not lose this", so it is exempt from the
+        cap and spends no slot: MAX_CHATS counts UNPINNED chats."""
+        chats.save({"id": "keep", "title": "pinned and stale",
+                    "messages": [{"role": "user", "text": "do not lose me"}]})
+        chats.set_pinned("keep", True)
+        for i in range(chats.MAX_CHATS + 12):
+            chats.save({"id": f"c{i}", "title": str(i), "messages": []})
+        kept = chats.get("keep")
+        self.assertIsNotNone(kept, "the trim deleted a pinned chat")
+        self.assertEqual([m["text"] for m in kept["messages"]], ["do not lose me"])
+        # The cap still bites — it just counts only the rows the trim is allowed to touch.
+        self.assertEqual(len([c for c in chats.list_summaries() if not c["pinned"]]),
+                         chats.MAX_CHATS)
+
     def test_labels_persist_across_upsert(self):
         chats.save({"id": "L", "title": "t", "labels": ["scheduled-job"], "messages": []})
         self.assertEqual(chats.get("L")["labels"], ["scheduled-job"])

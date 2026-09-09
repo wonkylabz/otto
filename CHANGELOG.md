@@ -40,6 +40,14 @@ changelog that restates it is a second copy of `git log`.
 - This changelog, and `docs/releasing.md`: what Otto's version number promises an operator,
   and `release.py` to cut a release from it.
 
+### Fixed
+
+- **A pinned chat is no longer deleted when the history is trimmed.** The store keeps the 100
+  most recent chats; the trim ranked purely by recency while the sidebar floats pins to the
+  top, so a pinned thread left idle long enough dropped off the end and took its messages with
+  it. Pinned chats are now exempt from the cap and spend no slot against it — the 100 counts
+  unpinned chats. **Anything already trimmed is gone**; this only stops it happening again.
+
 ### Security
 
 - **Error text from the server is escaped before it reaches the page.** Thirteen of the UI's
