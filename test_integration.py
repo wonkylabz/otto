@@ -1527,8 +1527,8 @@ class SlackListenerActivityTests(unittest.TestCase):
         cap.risk = "read"
         activities._caps = [cap]                          # so activities._cap("answer-thing") resolves
         self._orig = {n: getattr(slack, n)
-                      for n in ("load", "enabled", "any_enabled", "poll", "post", "start_run",
-                                "record_seen", "watch_conversation", "thread_context",
+                      for n in ("load", "enabled", "any_enabled", "poll", "post", "react",
+                                "start_run", "record_seen", "watch_conversation", "thread_context",
                                 "channel_context", "signal_decision", "mark_awaiting_gate")}
         slack.enabled = lambda cfg=None: True
         slack.any_enabled = lambda cfg=None: True
@@ -1544,6 +1544,12 @@ class SlackListenerActivityTests(unittest.TestCase):
         slack.post = lambda ch, text, thread_ts=None, identity="user", **k: (
             self.identities.append(identity)
             or self.posts.append((ch, text, thread_ts)) or True)
+        # Acknowledging a message is a REACTION, not a post (slack.ACK_REACTION). `self.can_react`
+        # is what a test flips to stand in for a token without `reactions:write`, where the ack
+        # must fall back to the text post it replaced.
+        self.reactions, self.can_react = [], True
+        slack.react = lambda ch, ts, name=slack.ACK_REACTION, identity="user": (
+            self.can_react and (self.reactions.append((ch, ts, name, identity)) or True))
         slack.start_run = lambda wid, params: (self.started.append((wid, params)) or "started")
         slack.record_seen = lambda ch, ts, identity="user": self.seen.append((ch, ts))
         # `**k` on purpose: this seam gains pass-through arguments (identity, pending_wid,
@@ -1720,6 +1726,53 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(self.seen, [("C7", "9.0")])                 # cursor advanced
         self.assertEqual(out["picked"], ["slack-C7-9-0"])
 
+    def test_a_followup_is_acked_with_a_reaction_not_a_post(self):
+        """The ack used to be a POST, and a posted ack is a promise made before anything knows
+        there is an answer to make. Measured live (2026-09-09, run
+        slack-b-D0BVD1F856Y-1788898832-893429): the turn resolved to config.NO_REPLY — a
+        legitimate silence, the message was an acknowledgement — and "On it — let me check…" was
+        left as the thread's last word, reading as a run that had died. A reaction promises
+        nothing, so silence stays silence.
+
+        It also lands on the TRIGGERING message, which is what makes it read as "seen": a post
+        can only go to the conversation, a reaction points at the thing it acknowledges."""
+        self._orig_handoff = self.activities.engine.followup_handoff
+        self.activities.engine.followup_handoff = lambda *a, **k: None       # a continuation
+        try:
+            self._dm("and the second one?", rec=self._convo(), ts="21.0")
+            self.activities.poll_slack({})
+        finally:
+            self.activities.engine.followup_handoff = self._orig_handoff
+        self.assertEqual(self.posts, [], "a follow-up ack must not be posted")
+        self.assertEqual(self.reactions, [("C7", "21.0", self.slack.ACK_REACTION, "user")])
+
+    def test_the_bot_identity_reacts_on_first_contact_too(self):
+        """The USER identity's first ack is an INTRODUCTION — it posts from the owner's own
+        account, and the reader has to be told they are talking to his assistant. The bot has
+        nothing to introduce: its name, avatar and APP badge already said it, so its stock ack was
+        pure filler ("On it — let me look into this…") on every single message."""
+        self.slack.poll = lambda cfg: [{"channel": "C7", "ts": "9.0", "thread_ts": None,
+                                        "user": "U2", "text": "deploy?", "is_dm": True,
+                                        "identity": "bot"}]
+        self.activities.poll_slack({})
+        self.assertEqual(len(self.started), 1)
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.reactions, [("C7", "9.0", self.slack.ACK_REACTION, "bot")])
+
+    def test_a_token_that_cannot_react_falls_back_to_the_posted_ack(self):
+        """`reactions:write` is an OPTIONAL scope (slack._OPTIONAL_SCOPES): an installed listener
+        whose token predates it must still say it has seen the message. Degrading to the older,
+        worse-reading posted ack is the fallback; acknowledging nothing is not."""
+        self.can_react = False
+        self._orig_handoff = self.activities.engine.followup_handoff
+        self.activities.engine.followup_handoff = lambda *a, **k: None
+        try:
+            self._dm("and the second one?", rec=self._convo(), ts="21.0")
+            self.activities.poll_slack({})
+        finally:
+            self.activities.engine.followup_handoff = self._orig_handoff
+        self.assertEqual(self.posts, [("C7", self.slack._FOLLOWUP_ACK, None)])
+
     def test_backlog_burst_acks_once_per_conversation(self):
         """A backlog catch-up (or just a fast burst) can return several picks for the SAME
         conversation in one poll() call — each firing its own ack reads as "On it… On it…"
@@ -1780,7 +1833,9 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(out["resumed"], [wid])
         # The reply goes to the DM itself, never into a thread hanging off the question.
         self.assertIsNone(params["reply_to"]["thread_ts"])
-        self.assertEqual(self.posts, [("C7", self.slack._FOLLOWUP_ACK, None)])
+        # A follow-up is acknowledged by REACTING to the message, never by posting.
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.reactions, [("C7", "20.0", self.slack.ACK_REACTION, "user")])
         # A DM reads through the CHANNEL cursor, so that's what advances.
         self.assertEqual(self.seen, [("C7", "20.0")])
         self.assertEqual(self.watched, [("C7", None, None, None, True)])
@@ -1802,7 +1857,10 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(params["chat_key"], "slack-C7-9-0")     # still the same conversation
         self.assertEqual(out["handed_off"], [wid])
         self.assertEqual(out["resumed"], [])
-        self.assertEqual(self.posts, [("C7", "hold on…", None)])   # full ack: it's a new task
+        # A reaction, not the introduction: they have met Otto in this conversation already, and a
+        # handoff is still the same conversation (it only changes which cap does the work).
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.reactions, [("C7", "20.0", self.slack.ACK_REACTION, "user")])
 
     def test_a_dm_with_no_session_falls_back_to_transcript_context(self):
         """First contact, or the previous run died: still answerable, carrying the conversation so
@@ -1888,7 +1946,8 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(params["reply_to"]["thread_ts"], "9.0")
         # Short ack (Otto has already introduced itself in this thread), and the THREAD cursor is
         # advanced — never the channel's, which would skip unhandled top-level messages.
-        self.assertEqual(self.posts, [("C7", self.slack._FOLLOWUP_ACK, "9.0")])
+        self.assertEqual(self.posts, [])
+        self.assertEqual(self.reactions, [("C7", "20.0", self.slack.ACK_REACTION, "user")])
         self.assertEqual(self.seen, [])
         self.assertEqual(self.watched, [("C7", "9.0", None, "20.0", True)])
         self.assertEqual(out["resumed"], ["slack-C7-20-0"])

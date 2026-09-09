@@ -407,6 +407,60 @@ def _k_stale_slack_context_is_not_today(out):
                    + reply[:130].replace("\n", " "))
 
 
+# The live incident (2026-09-09, slack-b-D0BVD1F856Y-1788898832-893429): Otto's own turn ended on
+# an open question — which of two branches to put the service on — and the operator's answer came
+# back as a remark rather than a directive ("Good thing you stopped and asked. The work on that
+# branch wasn't done"). The turn resolved to NO_REPLY, which the contract's own wording allowed:
+# the message reads as an acknowledgement. But a decision Otto asked for was still outstanding, so
+# the silence read as a dead run, and the operator was left not knowing what the service was on.
+_OTTO_ASKED = (
+    "Which one do you want? If it's \"move it to main,\" say so and I'll do the checkout, "
+    "./install.sh, and the launchd restart right away.")
+
+
+def _c_answering_an_open_question_is_never_silence():
+    """The incident and its control in one case. The control is a genuinely CONTENTLESS
+    acknowledgement after a turn that closed cleanly — silence has to survive there or the
+    carve-out swallows every "thanks" in Slack.
+
+    The incident's own message is NOT reusable as the control: "the work on that branch wasn't
+    done" carries a fact about the world, so answering it is defensible with or without the
+    clause, and the control half then fails about half the time on the model's judgement rather
+    than on the prompt (measured 2026-09-09, claude-sonnet-5).
+
+    Read this case as a GUARD, not as proof of the clause: with the previous turn spelled out in
+    the prompt, claude-sonnet-5 answers the open question 4/4 without the clause too (measured the
+    same day). The live silence happened where the previous turn was visible only through the
+    resumed `claude -p` session, which a cheap-tier replay cannot reproduce — so what this pins is
+    that a future widening of the NO_REPLY rule cannot make silence the right answer here."""
+    out = {}
+    for name, prior, text in (
+            ("open", _OTTO_ASKED,
+             "Good thing you stopped and asked. The work on that branch wasn't done"),
+            ("closed", "Done — the service is back up on your branch, nothing changed in the "
+                       "working tree.", "nice one, thanks 🙏")):
+        msg = {"channel": "D2", "ts": str(time.time()), "is_dm": True, "text": text}
+        params = slack.to_followup(msg, {}, {})
+        out[name] = (gateway.complete(
+            "execution",
+            contracts._DIRECT_REPLY_FORMAT
+            + "\n\nYour previous turn in this conversation, which they are replying to:\n"
+            + prior + "\n\n" + params["request"]) or "").strip()
+    return out
+
+
+def _k_answering_an_open_question_is_never_silence(out):
+    silent = {k: config.is_no_reply(v) for k, v in out.items()}
+    if silent["open"]:
+        return False, ("stayed silent on a reply to Otto's OWN open question — the decision it "
+                       "asked for is still outstanding and nobody was told")
+    if not silent["closed"]:
+        return (False, "the control spoke too: a bare acknowledgement after a closed turn should "
+                       "still be NO_REPLY, or every \"thanks\" gets a reply "
+                       f"({out['closed'][:90]})".replace("\n", " "))
+    return True, f"answered the open question ({out['open'][:80]}".replace("\n", " ") + "…), silent on the control"
+
+
 def _c_slack_bot_speaks_for_itself():
     """The same self-identification question under both framings, so the pair is its own control.
 
@@ -878,6 +932,11 @@ CASES = [
      "incident": "slack-D06DXA34BEZ-1788480668, 2026-09-04",
      "what": "a 3-day-old DM spine is reported with its own date, never as what happened today",
      "run": _c_stale_slack_context_is_not_today, "check": _k_stale_slack_context_is_not_today},
+    {"id": "no-reply-not-after-otto-asked", "tier": "cheap",
+     "incident": "slack-b-D0BVD1F856Y-1788898832-893429, 2026-09-09",
+     "what": "a reply to Otto's own open question is never 'nothing to say' — the control still is",
+     "run": _c_answering_an_open_question_is_never_silence,
+     "check": _k_answering_an_open_question_is_never_silence},
     {"id": "slack-bot-speaks-for-itself", "tier": "cheap", "incident": "PR: Slack bot identity",
      "what": "the bot answers under its own name and never claims to relay for the owner",
      "run": _c_slack_bot_speaks_for_itself, "check": _k_slack_bot_speaks_for_itself},

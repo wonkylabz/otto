@@ -196,7 +196,8 @@ Scopes — Otto reads your own DMs, which a bot token can never see:
 | `channels:history` | public channels you're in |
 | `groups:history` | private channels you're in |
 | `search:read` | `search.messages`, how @-mentions are found |
-| `chat:write` | post the ack + the result |
+| `chat:write` | post the introduction + the result |
+| `reactions:write` | acknowledge a message with 👀 (optional — without it, Otto posts an ack instead) |
 
 No Event Subscriptions, no Socket Mode, no app-distribution review — inbound is a Web-API poll on
 a Temporal Schedule (a user token has no event stream). Add a bot user to the *same* app if you
@@ -227,7 +228,8 @@ also want the bot identity, below.
 - `allow_self` — test mode: implicitly allows the token owner, so a solo self-DM triggers a run
   without listing your own ID. Turn it **off** on a real workspace.
 - `approval_default: "ask"` keeps writes pausing on the Needs-you board; reads auto-answer
-- `ack_template` (posted when a run starts), `greeting_template` (the reply to a message with no
+- `ack_template` (the introduction posted on first contact under your own account — every other
+  acknowledgement is a 👀 reaction on the message), `greeting_template` (the reply to a message with no
   request in it — "hi", "thanks" — which never starts a run), `watch_dms`, `watch_mentions`,
   `poll_seconds`, `max_per_poll` to taste
 
@@ -246,7 +248,8 @@ Under **OAuth & Permissions → Scopes**, add these as *Bot* Token Scopes:
 | `channels:history` | **read** those channels |
 | `im:read` | **list** DMs sent to the bot |
 | `im:history` | **read** those DMs |
-| `chat:write` | post the ack + the result |
+| `chat:write` | post the result |
+| `reactions:write` | acknowledge a message with 👀 (optional — without it, Otto posts an ack instead) |
 | `users:read` | resolve who is talking |
 | `groups:read` + `groups:history` | private channels (optional) |
 | `mpim:read` + `mpim:history` | group DMs (optional) |
@@ -390,7 +393,11 @@ one?" or "no, I meant staging" work without repeating the context.
 
 - Only the thread is continuable. A new *top-level* message (in the channel or DM, outside the
   thread) is a new task, with a new session — that's the deliberate signal for "different subject".
-- The follow-up ack is short (`On it — let me check…`): the introduction only happens once.
+- A follow-up is acknowledged with a 👀 **reaction** on your message, not a post. A posted ack is a
+  promise made before Otto knows whether there is anything to say, and a turn that legitimately
+  says nothing then leaves "On it — let me check…" as the thread's last word. The introduction
+  (your own account, first contact) is still a post; a token without `reactions:write` falls back
+  to posting the old ack.
 - A `thanks!` in a thread is answered with silence, not with the greeting again.
 - A follow-up that turns the conversation into a **write** ("just restart it then") is re-classified
   and pauses on the Needs-you board for you, even though nobody is watching — someone else's words

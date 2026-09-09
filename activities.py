@@ -906,6 +906,8 @@ def poll_slack(payload: dict) -> dict:
     # A backlog catch-up (or just several fast messages) can return multiple picks for the SAME
     # thread/DM in one poll() call — one ack per pick then reads as "On it… On it… On it…" stuttering
     # ahead of the actual replies. One ack per conversation per poll pass is enough to say "I'm on it".
+    # Only the POSTED fallback needs this: a reaction lands on its own message, so one per pick is
+    # exactly right there.
     acked_ts = set()
     for msg in slack.poll(cfg):
         rec = msg.get("conversation")                   # the conversation's record, or None
@@ -1049,11 +1051,26 @@ def poll_slack(payload: dict) -> dict:
             # Keyed on the identity too: both may have work in the same channel in one pass, and
             # they are two different speakers — suppressing one's ack because the other already
             # spoke leaves a message looking unseen.
-            ack_key = (identity, msg["channel"], ack_ts)
-            if ack_key not in acked_ts:
-                slack.post(msg["channel"], slack._FOLLOWUP_ACK if resume else _ack_text(identity),
-                           thread_ts=ack_ts, identity=identity)
-                acked_ts.add(ack_key)
+            # Acknowledge by REACTING to the message (slack.ACK_REACTION), not by posting: an
+            # ack post is a promise made before anything knows there is an answer to make, and a
+            # turn that resolves to NO_REPLY then leaves "On it — let me check…" as the last word
+            # in the thread. The one exception is the USER identity's FIRST contact in a
+            # conversation, where the ack is not filler but the introduction — it posts from the
+            # owner's own account, and a reader getting a reply from a person's account deserves
+            # to be told up front they are talking to his assistant. The bot never needs that
+            # (its name, avatar and APP badge already said it), and a follow-up never does.
+            intro = (identity == slack.USER and not resume
+                     and not ((rec or {}).get("session")))
+            acked = False
+            if not intro:
+                acked = slack.react(msg["channel"], msg["ts"], identity=identity)
+            if not acked:
+                ack_key = (identity, msg["channel"], ack_ts)
+                if ack_key not in acked_ts:
+                    slack.post(msg["channel"],
+                               slack._FOLLOWUP_ACK if resume else _ack_text(identity),
+                               thread_ts=ack_ts, identity=identity)
+                    acked_ts.add(ack_key)
             # Track this conversation from now on (or refresh it), marking the run in flight so the
             # next message waits for it to deliver instead of racing its session.
             _watch(msg, ack_ts, wid=None if rec else wid, pending=True, run_wid=wid)

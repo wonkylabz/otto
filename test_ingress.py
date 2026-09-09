@@ -745,6 +745,17 @@ class SlackDirectReplyContractTests(unittest.TestCase):
         engine.run_attempt("do the thing", self.cap, wid="w2")
         self.assertNotIn(config.NO_REPLY, self.sysctx[1])
 
+    def test_the_escape_hatch_is_closed_when_otto_itself_asked_something(self):
+        """The escape hatch's own wording made this legal: a reply to a question OTTO asked reads
+        as an acknowledgement, so the turn stayed silent and the decision it had asked for was
+        left outstanding with nobody told (slack-b-D0BVD1F856Y-1788898832-893429). Behaviour is
+        pinned by the `no-reply-not-after-otto-asked` regression case; this pins the clause."""
+        engine.run_attempt("someone said: good thing you asked", self.cap, wid="w1",
+                           audience="conversation")
+        ctx = self.sysctx[0]
+        self.assertIn("never applies", ctx)
+        self.assertIn("own last turn asked them something", ctx)
+
     def test_verify_accepts_silence_in_a_conversation_and_never_elsewhere(self):
         """The judge must not fail "nothing to say" into a retry ladder — there is nothing for the
         next attempt to do better at, which is how "Dammit" burned 3 attempts. Deterministic, so it

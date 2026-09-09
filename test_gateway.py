@@ -5047,7 +5047,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 72131 -> 72407 for the MCP activation rule (issue #4): registering a command and running
     # it became two acts, and the gate is on the DEF because a def reaches a subprocess through
     # two doors and more than one writer — none of which a reader of either module can infer.
-    MAX_RULES_BYTES = 72407   # fetched tier — bounded, but looser; it is not always loaded
+    # 72407 -> 72908 for the two Slack ack rules: an interim ack is a reaction, not a post, and
+    # silence is not an answer to a question Otto itself asked. Neither is inferable from the
+    # poll activity (which posts) or the reply contract (which offers the silence hatch) alone —
+    # the pair only makes sense read together, so it is two rules, not one.
+    MAX_RULES_BYTES = 72908   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
