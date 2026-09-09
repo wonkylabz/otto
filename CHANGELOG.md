@@ -25,6 +25,13 @@ changelog that restates it is a second copy of `git log`.
   it does not — the transcript records which served each run. Neither confines the network:
   the approval gate is still what stands between a plan pass and a remote write.
 
+- **An MCP server you add is now stored inactive until you activate it.** Registering one
+  writes a command line that Otto spawns on your machine as you, so adding it and allowing it
+  to run are now two steps: Admin → MCP servers shows a new server with the exact command line
+  and an Activate button. **Servers already in `data/mcp-servers.json` keep working** — the new
+  flag is only applied to what is added from here on, including profile/bundle imports. Adds,
+  activations and removals are recorded in the audit trail.
+
 ### Added
 
 - The running version is shown beside the wordmark in the header, with the commit sha in its

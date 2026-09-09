@@ -96,13 +96,18 @@ def servable(pol=None):
     """Every server the LOCAL backend can launch, `{name: def}`.
 
     Otto's own registry (`data/mcp-servers.json`, the same defs that become `--mcp-config`
-    for Claude) wins over a same-named user entry, so one registry drives both backends.
+    for Claude) wins over a same-named user entry ONCE ACTIVATED, so one registry drives both
+    backends; before that the def is inert and a same-named user entry stands.
     Honours the Admin enable/disable overrides `policy.all_mcps` already exposes — a server
     switched off in the UI must not come back through a different door."""
     pol = policy.load() if pol is None else pol
     ov = (pol or {}).get("mcps", {})
     out = dict(_user_servers())
-    out.update(policy.mcp_defs() or {})
+    # An Otto-registered def is inert until a human has activated it (policy.mcp_confirmed) —
+    # this is the LOCAL half of that gate, and it has to be here rather than at the endpoint:
+    # `--mcp-config` is only one of the two doors a stored command reaches a subprocess through.
+    out.update({n: policy.runnable_mcp(d) for n, d in (policy.mcp_defs() or {}).items()
+                if policy.mcp_confirmed(d)})
     # `_is_stdio` is applied HERE, to everything, rather than trusted from each source: this
     # is the one function callers gate on, so a remote entry reaching it through any future
     # source must still be refused.

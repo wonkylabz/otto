@@ -40,6 +40,7 @@
 
 `mcp_client.py` — stdio JSON-RPC only, stdlib.
 
+- **Registering a server and RUNNING it are two acts** (`policy.add_mcp_def`; `McpActivationTests`) — a stored `command`+`args` is spawned as the operator, so the gate is on the DEF and BOTH doors read it (`active_mcp_config`, `mcp_client.servable`). Audited with the argv.
 - **Servable/unservable is the whole design**: a stdio server (`command`+`args`) is a subprocess we spawn. A claude.ai *connector* (Gmail/Calendar/Slack/Notion) is remote OAuth inside Claude Code's own session — nothing to spawn, no token to present. `servable()` refuses anything not stdio.
 - **A cap needing a connector must not run locally** — `mcp_client.unservable(cap)` keeps it on Claude (strict mode stops instead). The Admin Execution dropdown disables local options for such a cap.
 - **Two bounds, not one**: which servers = a cap's `tools:` frontmatter ∩ servable ∩ risk allowlist; how many tools = `Pool` ranks against the request, keeping at most `LOCAL_MCP_MAX_TOOLS` (25) — the full fleet is schema resent every turn, fatal on a small context window. An undeclared cap draws only the request-relevant few.

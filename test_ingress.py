@@ -5850,7 +5850,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # this ratchet asks for does not exist in app.css, so the deliberate raise IS the answer here.
     # -> 112_842 finishing that pass: two-line rows, the request at the reading measure, the
     # asks slot, and the two Admin-matrix columns whose declared width forgot the cell padding.
-    ASSET_MAX = 112_842
+    # -> 113_394 for the MCP activation row (issue #4): a registered-but-inactive server has to
+    # show the argv it would spawn, so the command line is rendered in the row, not a tooltip.
+    ASSET_MAX = 113_394
 
     def _assets(self):
         out = {}

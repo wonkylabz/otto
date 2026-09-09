@@ -1645,18 +1645,33 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True}))
 
     def _post_mcp_add(self, body):
-        """POST /api/mcp/add"""
+        """POST /api/mcp/add — REGISTER a server; it does not run until activated.
+
+        `command`+`args` are spawned as the operator on the next run that uses this server, so
+        this endpoint is the largest single primitive the API exposes and adding is deliberately
+        not the same act as enabling: policy.add_mcp_def stores it inactive, and /api/mcp/activate
+        is where a human confirms the exact command line. Both halves are audited."""
         name = (body.get("name") or "").strip()
         cmd = (body.get("command") or "").strip()
         if not name or not cmd:
             self._send(400, json.dumps({"error": "name and command are required"})); return
-        defs = policy.mcp_defs()
         entry = {"command": cmd, "args": body.get("args", [])}
         if body.get("env"):
             entry["env"] = body["env"]
-        defs[name] = entry
-        policy.save_mcp_defs(defs)
-        self._send(200, json.dumps({"ok": True}))
+        stored = policy.add_mcp_def(name, entry)
+        engine.audit_mcp_change("add", name, stored)
+        self._send(200, json.dumps({"ok": True, "confirmed": False,
+                                    "command": policy.mcp_command_line(stored)}))
+
+    def _post_mcp_activate(self, body):
+        """POST /api/mcp/activate — the human confirmation that lets a stored def be spawned."""
+        name = (body.get("name") or "").strip()
+        entry = policy.confirm_mcp_def(name) if name else None
+        if entry is None:
+            self._send(400, json.dumps({"error": "unknown MCP server"})); return
+        engine.audit_mcp_change("activate", name, entry)
+        self._send(200, json.dumps({"ok": True, "confirmed": True,
+                                    "command": policy.mcp_command_line(entry)}))
 
     def _post_mcp_note(self, body):
         """POST /api/mcp/note — operator usage guidance for one MCP server (empty text clears
@@ -1672,8 +1687,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_mcp_remove(self, body):
         """POST /api/mcp/remove"""
-        defs = policy.mcp_defs(); defs.pop(body.get("name"), None)
+        name = body.get("name")
+        defs = policy.mcp_defs(); gone = defs.pop(name, None)
         policy.save_mcp_defs(defs)
+        if gone is not None:
+            engine.audit_mcp_change("remove", name, gone)
         self._send(200, json.dumps({"ok": True}))
 
     def _post_mcp_recheck(self, body):
@@ -2097,6 +2115,7 @@ _POST_ROUTES = {
     "/api/knowledge/preview": Handler._post_knowledge_preview,
     "/api/knowledge/reembed": Handler._post_knowledge_reembed,
     "/api/knowledge/settings": Handler._post_knowledge_settings,
+    "/api/mcp/activate": Handler._post_mcp_activate,
     "/api/mcp/add": Handler._post_mcp_add,
     "/api/mcp/note": Handler._post_mcp_note,
     "/api/mcp/recheck": Handler._post_mcp_recheck,

@@ -38,6 +38,12 @@ proxy, and do not run it on a shared host.
   `local_runtime._deny_guard` re-implements the deny list for its own Write/Edit, but its
   `Bash` is **not** covered — parsing a shell to catch `tee`/`sed -i` would be theatre.
 
+- Registering an MCP server (`/api/mcp/add`) stores a command line Otto will **spawn on your
+  machine**. It is stored inactive: nothing reaches `--mcp-config` or the local backend until
+  you press Activate in Admin, next to the exact argv. Adding, activating and removing are all
+  written to the audit trail. This bounds what one request through the unauthenticated API can
+  do; it is not a substitute for the section above.
+
 ### Untrusted input reaches the model
 
 Slack messages, GitHub issue bodies and webhook payloads are all attacker-influencable text

@@ -45,6 +45,54 @@ def save_mcp_defs(d):
     _write(_MCPDEF, d)
 
 
+# --- activation: an added server is stored INACTIVE ------------------------------------------
+# Storing an MCP def is the largest single primitive this API exposes: `command`+`args` are
+# handed to `--mcp-config` (Claude) and to mcp_client.servable (local), so whatever is written
+# here is SPAWNED on the next run, as the operator. Registering it and running it are therefore
+# two separate acts — a def is inert until a human has seen the exact command line and pressed
+# Activate. The flag lives on the DEF, not on the `enabled` toggle, because it is a property of
+# the command, and because that is the one place BOTH backends already read.
+#
+# An absent `confirmed` means "written before activation existed" and is honoured, not silently
+# disabled: those defs were added by the operator under the old contract, and killing a working
+# server on upgrade is a worse failure than the one this prevents. Every writer stamps it now,
+# so the absent case only ever describes the past.
+
+
+def mcp_confirmed(d):
+    return bool((d or {}).get("confirmed", True))
+
+
+def add_mcp_def(name, entry):
+    """Register an MCP server INACTIVE. The ONE writer for a newly added def — every path that
+    accepts a command from outside (the Admin form, a profile import) goes through it, or the
+    activation step is just a UI convention one endpoint happens to follow."""
+    entry = dict(entry)
+    entry["confirmed"] = False
+    entry["added_at"] = time.time()
+    defs = mcp_defs()
+    defs[name] = entry
+    save_mcp_defs(defs)
+    return entry
+
+
+def confirm_mcp_def(name):
+    """Activate a stored-inactive server. Returns the def (so the caller can audit the exact
+    command line that just became runnable), or None if there is no such server."""
+    defs = mcp_defs()
+    if name not in defs:
+        return None
+    defs[name]["confirmed"] = True
+    save_mcp_defs(defs)
+    return defs[name]
+
+
+def mcp_command_line(d):
+    """The exact command line a def will spawn — what the human is actually approving."""
+    d = d or {}
+    return " ".join([str(d.get("command", ""))] + [str(a) for a in d.get("args", [])]).strip()
+
+
 def load():
     return storage.read_json(_PATH, {"capabilities": {}, "mcps": {}})
 
@@ -184,7 +232,9 @@ def import_bundle(bundle, existing_caps=(), existing_mcps=()):
         final = name if name not in mcp_names else _dedupe(name, mcp_names)
         if final != name:
             mcp_renamed.append({"from": name, "to": final})
-        defs[final] = _safe_mcp(d)   # re-strip on import too — never trust incoming values
+        # Re-strip on import (never trust incoming values) and stamp UNCONFIRMED: a bundle is
+        # a command line from another machine, which is exactly the thing activation exists for.
+        defs[final] = dict(_safe_mcp(d), confirmed=False, added_at=time.time())
         mcp_names.add(final)
         mcp_added.append(final)
     save_mcp_defs(defs)
@@ -528,8 +578,11 @@ def all_mcps(pol, allow_refresh=False, force=False):
         return (ov.get(n, {}).get("notes") or "")
     out = [{"name": n, "enabled": ov.get(n, {}).get("enabled", True), "source": "claude",
             "health": health.get(n), "notes": note(n)} for n in discover_mcps()]
+    # `confirmed` rides on the otto-source rows only: a server discovered from ~/.claude.json or
+    # a claude.ai connector was registered outside Otto and is not ours to gate.
     out += [{"name": n, "enabled": ov.get(n, {}).get("enabled", True), "source": "otto",
-             "health": health.get(n), "notes": note(n)} for n in mcp_defs()]
+             "confirmed": mcp_confirmed(d), "command": mcp_command_line(d),
+             "health": health.get(n), "notes": note(n)} for n, d in mcp_defs().items()]
     out += [{"name": c["name"], "display": c.get("display", c["name"]),
              "enabled": ov.get(c["name"], {}).get("enabled", True), "source": "connector",
              "health": health.get(c["name"]), "notes": note(c["name"])}
@@ -571,8 +624,17 @@ def enabled_mcps(pol):
 
 
 def active_mcp_config(pol):
-    """The --mcp-config payload for enabled Otto-added servers (None if none)."""
+    """The --mcp-config payload for enabled, ACTIVATED Otto-added servers (None if none).
+
+    One of the two doors a stored def reaches a subprocess through (mcp_client.servable is the
+    other, for the local backend). Both gate on `mcp_confirmed`, or registering a command is
+    still the same thing as running it — just on one backend."""
     ov = (pol or {}).get("mcps", {})
-    defs = mcp_defs()
-    active = {n: d for n, d in defs.items() if ov.get(n, {}).get("enabled", True)}
+    active = {n: runnable_mcp(d) for n, d in mcp_defs().items()
+              if mcp_confirmed(d) and ov.get(n, {}).get("enabled", True)}
     return {"mcpServers": active} if active else None
+
+
+def runnable_mcp(d):
+    """A def as the MCP client protocol expects it — Otto's own bookkeeping keys stripped."""
+    return {k: v for k, v in (d or {}).items() if k not in ("confirmed", "added_at")}
