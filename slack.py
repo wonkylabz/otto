@@ -84,7 +84,20 @@ _ACK_DEFAULT = (f"{config.OWNER_NAME} isn't available right now, but I'm his ass
 # Interim ack for a FOLLOW-UP inside a thread Otto already answered. Deliberately not
 # configurable: `ack_template` exists to introduce Otto to a stranger, and re-introducing itself on
 # every turn of an ongoing conversation reads like a bot loop.
+#
+# This is the FALLBACK text now (see ACK_REACTION): a run is normally acknowledged by reacting to
+# the message, and this is posted only where reacting is not possible.
 _FOLLOWUP_ACK = "On it — let me check…"
+
+# How Otto says "seen, working on it": a reaction on the triggering message, not a post.
+#
+# A posted ack is a PROMISE, and it is made before anything knows whether there is an answer to
+# make — a turn that then resolves to config.NO_REPLY (a legitimate silence: the message was an
+# acknowledgement, nothing was asked) leaves "On it — let me check…" as the thread's last word,
+# reading as a run that died. Measured live: 2026-09-09, run slack-b-…-1788898832-893429 replied
+# NO_REPLY under a posted ack. A reaction carries no promise, so silence stays silence — and the
+# same stamped sentence on every turn is what made an ongoing conversation read as a bot.
+ACK_REACTION = "eyes"
 
 _GREETING_DEFAULT = (f"{config.OWNER_NAME} isn't available right now, but I'm his assistant — "
                      "what do you need?")
@@ -273,6 +286,7 @@ def whoami(identity=USER):
 _SCOPES = {
     USER: {
         "chat:write":       ("post the ack and the answer", True),
+        "reactions:write":  ("acknowledge a message with 👀 instead of a post", True),
         "im:read":          ("list your DM conversations", "watch_dms"),
         "im:history":       ("read DM messages", "watch_dms"),
         "mpim:history":     ("group DMs", "watch_dms"),
@@ -283,6 +297,7 @@ _SCOPES = {
     },
     BOT: {
         "chat:write":       ("post the ack and the answer", True),
+        "reactions:write":  ("acknowledge a message with 👀 instead of a post", True),
         "app_mentions:read": ("see @-mentions of the bot", "bot_watch_mentions"),
         # `users.conversations` and `conversations.info` need the *:read scopes, NOT the
         # *:history ones. Without channels:read the bot cannot even enumerate the channels it
@@ -296,9 +311,11 @@ _SCOPES = {
 }
 # Needed only for private channels / group DMs. Absent, those are invisible but public channels
 # still work — so this is reported as a NOTE, never as the reason the bot is silent.
+# `reactions:write` is optional for the same reason: without it the ack falls back to the posted
+# text it replaced, which is worse reading but not silence.
 _OPTIONAL_SCOPES = {
-    USER: {"groups:history"},
-    BOT: {"groups:read", "groups:history", "mpim:read", "mpim:history"},
+    USER: {"groups:history", "reactions:write"},
+    BOT: {"groups:read", "groups:history", "mpim:read", "mpim:history", "reactions:write"},
 }
 
 _GRANTED = {}
@@ -582,6 +599,20 @@ def post(channel, text, thread_ts=None, blocks=None, identity=USER):
     if out.get("ok") and out.get("ts"):
         _record_posted_ts(out["ts"])
     return bool(out.get("ok"))
+
+
+def react(channel, ts, name=ACK_REACTION, identity=USER):
+    """Add an emoji reaction to one message AS `identity`. True if the reaction is now there.
+    Never raises.
+
+    `already_reacted` is a SUCCESS: the same message can be picked twice (a retried poll, a
+    re-delivered pick), and reporting that as a failure would fall the caller back to posting a
+    text ack — the exact stuttering the reaction replaced. Every other error is False, so a token
+    without `reactions:write` degrades to the old posted ack rather than acknowledging nothing."""
+    if not (channel and ts):
+        return False
+    out = _api("reactions.add", identity=identity, channel=channel, timestamp=ts, name=name)
+    return bool(out.get("ok")) or out.get("error") == "already_reacted"
 
 
 # --- runtime state (data/slack-state.json) ---------------------------------
