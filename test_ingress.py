@@ -59,7 +59,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
 
 
 class CronTests(unittest.TestCase):
@@ -2120,9 +2120,7 @@ class SlackBadgeIndependenceTests(unittest.TestCase):
     trusts it and stops reading the card."""
 
     def _js(self):
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     def test_the_parent_badge_never_writes_to_the_subsection_badge(self):
         js = self._js()
@@ -3416,9 +3414,7 @@ class HeaderCounterTests(unittest.TestCase):
     "56 facts" beside "35")."""
 
     def _html(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     def test_facts_badge_counts_facts_not_rows(self):
         # `MEM.facts` is rows; `facts_total` is facts, and is what the page header shows.
@@ -3663,7 +3659,7 @@ class PostDispatchTests(unittest.TestCase):
         """The real backstop: 51 of 80 routes are named in NO test, so the UI is the only thing
         exercising them. A route the page calls with nothing to serve it is a 404 in the
         browser and nowhere else."""
-        srv, html = self._src("server.py"), self._src("web/index.html")
+        srv, html = self._src("server.py"), ui_src()
         exact = set(re.findall(r'^    "(/api/[^"]+)": Handler\._post_\w+,$', srv, re.M))
         prefixes = [p for p, _ in re.findall(r'^    \("(/api/[^"]+)", Handler\.(_post_\w+)\),$',
                                              srv, re.M)]
@@ -3705,9 +3701,7 @@ class KnowledgeTabWidthTests(unittest.TestCase):
     view keeps its `.k*` class prefix."""
 
     def _html(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     def _rule(self, html, selector):
         m = re.search(re.escape(selector) + r"\s*\{(.*?)\}", html, re.S)
@@ -3763,9 +3757,7 @@ class SubsectionIndentTests(unittest.TestCase):
     idioms free to pick their own depth would teach two answers for one level."""
 
     def _html(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     def _rule(self, html, selector):
         m = re.search(re.escape(selector) + r"\s*\{(.*?)\}", html, re.S)
@@ -3820,7 +3812,7 @@ class SubsectionIndentTests(unittest.TestCase):
 
 
 class OttoMarkTests(unittest.TestCase):
-    """The logo (`web/index.html`). It wears the ACTIVE PALETTE, which is the whole reason it
+    """The logo (`web/index.html` + `web/js/theme-boot.js`). It wears the ACTIVE PALETTE, which
     exists twice: the `#mk` <symbol> every site pulls in with <use> reads the tokens directly,
     but the favicon is a data: URI - its own document, with no access to this page's custom
     properties - so it has to be REPAINTED from the resolved values on every theme change.
@@ -3831,7 +3823,7 @@ class OttoMarkTests(unittest.TestCase):
 
     @staticmethod
     def _ui():
-        return open("web/index.html", "rb").read().decode("utf-8")
+        return ui_src()
 
     def _default_theme_tokens(self):
         """chocolate-truffle is declared on :root itself, so it is what an unset (or unknown)
@@ -3886,7 +3878,7 @@ class OttoMarkTests(unittest.TestCase):
 
 
 class MascotStateTests(unittest.TestCase):
-    """Otto the mascot (`web/index.html`, `web/otto-mascot.js`) - the companion in the corner
+    """Otto the mascot (`web/js/mascot-element.js` + `web/js/mascot.js`) - the companion in the corner
     whose state IS the pipeline's state. Verified in a real headless Chrome first (every mood
     driven, every tab switched, hidden and restored); what this pins is the handful of
     properties an edit could break with no visible symptom - a stage he has no mood for still
@@ -3894,7 +3886,7 @@ class MascotStateTests(unittest.TestCase):
 
     @staticmethod
     def _ui():
-        return open("web/index.html", "rb").read().decode("utf-8")
+        return ui_src()
 
     def _stage_table(self):
         ui = self._ui()
@@ -3997,19 +3989,44 @@ class MascotStateTests(unittest.TestCase):
             self.assertNotIn(spelling, block, "mascotFleet puts a workflow id on screen")
 
     def test_the_element_ships_without_a_service_restart(self):
-        """<otto-mascot> is INLINE, not a second asset. A served file needs a route in
-        server.py, and a route ships only on a service restart - which restarts the worker in
-        the same unit and costs whatever run is in flight its current attempt. index.html is
-        re-read per request, so inline means a UI edit lands on a refresh."""
-        ui = self._ui()
-        self.assertRegex(ui, r"customElements\.define\(['\"]otto-mascot['\"]",
+        """An edit to the mascot must land on a plain refresh.
+
+        It used to be inline for this reason: a served file needs a route in server.py, and a
+        route ships only on a service restart - which restarts the worker in the same unit and
+        costs whatever run is in flight its current attempt. The element is its own file now,
+        so what has to hold is the property, not the inlining: `_static` opens the file per
+        request and sends `no-store`, so only the ROUTE ever needed the restart and that was
+        paid once. A cache-buster query or an `open()` hoisted to import time would each put
+        the old behaviour back."""
+        self.assertRegex(ui_src(), r"customElements\.define\(['\"]otto-mascot['\"]",
                          "the custom element is no longer defined in the page")
-        self.assertNotIn('src="/otto-mascot.js"', ui,
-                         "the mascot went back to being a served asset - that needs a restart")
-        self.assertNotIn("otto-mascot.js", open("server.py").read(),
-                         "server.py grew a route for it again")
-        self.assertFalse(os.path.exists("web/otto-mascot.js"),
-                         "a second copy on disk is a copy that drifts")
+        self.assertTrue(os.path.exists("web/js/mascot-element.js"),
+                        "the element's file is gone")
+        self.assertIn('<script src="/js/mascot-element.js"></script>',
+                      open("web/index.html", encoding="utf-8").read(),
+                      "index.html no longer pulls the mascot element in")
+        route = self._static_route()
+        self.assertIn("open(os.path.join(HERE,", route,
+                      "the asset route no longer reads from disk inside the request")
+        self.assertNotIn("?v=", open("web/index.html", encoding="utf-8").read(),
+                         "an asset gained a cache-buster; no-store already ships every edit")
+
+    @staticmethod
+    def _static_route():
+        src = open("server.py", encoding="utf-8").read()
+        i = src.index("def _static(self")
+        return src[i:src.index("\n    def ", i + 10)]
+
+    def test_the_asset_route_sends_no_store(self):
+        """`_send` is the ONE place a response is written and it sets `no-store` for everything,
+        which is what makes a UI edit visible on refresh rather than after a hard reload. An
+        asset route that answered with its own `send_header` would quietly opt out."""
+        route = self._static_route()
+        self.assertIn("self._send(", route, "the asset route bypasses _send")
+        self.assertNotIn("send_header", route,
+                         "the asset route writes its own headers, so it can lose no-store")
+        self.assertIn('self.send_header("Cache-Control", "no-store")',
+                      open("server.py", encoding="utf-8").read())
 
     def test_the_chat_list_gives_up_real_estate_rather_than_scrolling_under_him(self):
         """Bottom PADDING on a scroll container only clears him at the end of the scroll:
@@ -4486,14 +4503,12 @@ class MascotStateTests(unittest.TestCase):
 
 
 class EstopUiTests(unittest.TestCase):
-    """The pause control in `web/index.html`. Behaviour was verified in a real browser (click →
+    """The pause control (`web/js/chat.js`, markup in `web/index.html`). Verified in a real browser (click →
     strip + label + server sentinel → submit refused 409 → click → released); what this pins is
     the handful of properties a later edit could quietly break without any visible symptom."""
 
     def _html(self):
-        with open(os.path.join(os.path.dirname(__file__), "web", "index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            return f.read()
+        return ui_src()
 
     def test_the_busy_flag_lives_outside_the_render(self):
         """`ESTOP_BUSY` must be module-scope, not a local inside the handler: the click is a
@@ -4569,7 +4584,7 @@ class BoardStageChipTests(unittest.TestCase):
         """The Admin models table renders headers and radio columns from two separate lists, in
         order — so adding a tier to one and not the other silently mislabels EVERY column to its
         right, which reads as working UI."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         head = ui[ui.index("PHASE_HELP"):ui.index("PHASE_HELP") + 1400]
         labels = re.findall(r'\["(\w+)","', head)
         radios = re.findall(r"radio\(p,'(\w+)'\)", ui)
@@ -4579,18 +4594,18 @@ class BoardStageChipTests(unittest.TestCase):
                          "the radio columns must be exactly gateway.TASKS, in order")
 
     def test_the_chip_renders_only_while_running(self):
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         self.assertIn('const stage=(it.status==="RUNNING"&&it.stage)', ui)
 
     def test_stage_survives_the_change_detection_key(self):
         """The board only re-renders a card when its key changes; a field absent from the key
         updates invisibly — which for a stage chip means it never advances."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         self.assertIn("it.status,it.phase,it.stage,", ui)
 
     def test_every_stage_the_server_can_emit_has_help_text(self):
         """A bare uppercase token with no tooltip is jargon; the chip exists to orient."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         helped = set(re.findall(r"^\s*(?:const STAGE_HELP=\{)?([A-Z]+):", ui, re.M))
         wf = open("workflows.py").read()
         emitted = set(re.findall(r'self\._enter\("([A-Z]+)"\)', wf))
@@ -4602,7 +4617,7 @@ class BoardStageChipTests(unittest.TestCase):
         """The chip is colour-coded so the Running column reads at a glance. A stage whose token
         is missing from ONE theme silently falls back to the same grey as its neighbour there —
         the colour language works in four themes and quietly stops in the fifth."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         wf = open("workflows.py").read()
         emitted = {s.lower() for s in re.findall(r'self\._enter\("([A-Z]+)"\)', wf)}
         self.assertTrue(emitted, "no stages found in workflows.py — the regex has drifted")
@@ -4632,7 +4647,7 @@ class BoardFinishOrderTests(unittest.TestCase):
                       "`end` no longer comes from the workflow's CLOSE time")
 
     def test_the_closed_columns_are_ordered_by_finish_time(self):
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         self.assertIn("const closedAt=it=>it.end||it.start", ui)
         for col in ("cols.done", "cols.needs"):
             self.assertIn("%s.sort((a,b)=>closedAt(b).localeCompare(closedAt(a)));" % col, ui,
@@ -4640,14 +4655,14 @@ class BoardFinishOrderTests(unittest.TestCase):
 
     def test_the_card_stamp_follows_the_order_it_is_sorted_in(self):
         """A column ordered by finish time but stamped with start times reads as mis-sorted."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         i = ui.index('class="bwhen"')
         self.assertIn("shortWhen(it.end||it.start)", ui[i:i + 200])
 
     def test_finish_time_survives_the_change_detection_key(self):
         """The board skips the DOM rebuild when its signature is unchanged; a field absent from
         the key updates invisibly — here, a card that just closed would never re-sort."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         self.assertIn("it.start,it.end,", ui)
 
 
@@ -4843,7 +4858,7 @@ class BoardRetentionTests(unittest.TestCase):
         """The card is real, its Temporal history is not. A "Temporal ↗" link on it 404s, which
         reads as Otto having lost the run — the very thing this whole change is about — so the
         link is dropped and a chip says where the card came from instead."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         i = ui.index("const link=(data.ui")
         self.assertIn("!it.archived", ui[i:i + 120],
                       "an archived card still renders a Temporal history link that 404s")
@@ -4876,7 +4891,7 @@ class ChatViewCollapseTests(unittest.TestCase):
     document.title); these guard the four ways each one silently stops working."""
 
     def _ui(self):
-        return open("web/index.html", "rb").read().decode("utf-8")
+        return ui_src()
 
     def test_the_collapsed_sidebar_keeps_its_reopen_control(self):
         """Collapsing hides the list's contents, never the toggle: the aside stays a 34px rail
@@ -4949,7 +4964,7 @@ class MascotHomeTests(unittest.TestCase):
     sidebar, and back there on a double-click after a drag)."""
 
     def _ui(self):
-        return open("web/index.html", "rb").read().decode("utf-8")
+        return ui_src()
 
     def test_home_is_measured_off_the_rail_not_stored_as_a_fraction(self):
         """The rail is a fixed-width column against a variable window, so the fraction that
@@ -5658,9 +5673,7 @@ class PrReviewWiringTests(unittest.TestCase):
         refused rather than silently storing the empty list that means all.
 
         (Driven end-to-end in a headless page too; this is the ratchet that keeps it.)"""
-        with open(os.path.join(self.ROOT, "web", "index.html"),
-                  encoding="utf-8", errors="replace") as f:
-            ui = f.read()
+        ui = ui_src()
         body = ui.split("function showPrReviewForm", 1)[1].split("\nasync function", 1)[0]
         for needed in ('id="pf2-scope-any"', 'id="pf2-scope-only"',
                        "pick at least one repo"):
@@ -5676,9 +5689,7 @@ class PrReviewWiringTests(unittest.TestCase):
         nothing. The endpoint must serve the list, and the form must render it."""
         with open(os.path.join(self.ROOT, "server.py"), encoding="utf-8") as f:
             self.assertIn("pr_review.known_repos()", f.read())
-        with open(os.path.join(self.ROOT, "web", "index.html"),
-                  encoding="utf-8", errors="replace") as f:
-            ui = f.read()
+        ui = ui_src()
         self.assertIn("data-prrepo=", ui)
         self.assertIn("PRREV_REPOS", ui)
 
@@ -5686,9 +5697,7 @@ class PrReviewWiringTests(unittest.TestCase):
         """Only registered repos get a tick, so a configured slug for an unregistered repo has
         to remain visible and editable — otherwise merely OPENING the form and saving silently
         narrows the allowlist to the subset Otto happens to have registered."""
-        with open(os.path.join(self.ROOT, "web", "index.html"),
-                  encoding="utf-8", errors="replace") as f:
-            ui = f.read()
+        ui = ui_src()
         body = ui.split("function showPrReviewForm", 1)[1].split("\nasync function", 1)[0]
         self.assertIn("filter(r=>!known.has(r))", body, "unregistered slugs are not shown")
         self.assertIn("ticked.concat(extra)", body, "the save drops one of the two sources")
@@ -5697,9 +5706,7 @@ class PrReviewWiringTests(unittest.TestCase):
         """The Events panel states configuration; the review is READ in its chat, so that is
         where it is acted on — judging a review from a one-line preview in a config panel is
         how you approve something you did not read."""
-        with open(os.path.join(self.ROOT, "web", "index.html"),
-                  encoding="utf-8", errors="replace") as f:
-            ui = f.read()
+        ui = ui_src()
         self.assertIn('id="prbar"', ui, "the chat has no PR-review action bar")
         self.assertIn("updatePrBar", ui)
         panel = ui.split("async function loadPrReviews", 1)[1].split("\nfunction showPrReviewForm", 1)[0]
@@ -5752,8 +5759,8 @@ class RenderMdListTests(unittest.TestCase):
     1..11 correctly). What actually ends a list is content that stops being list items, and
     every other branch already closes it for that.
 
-    Run against the REAL function, extracted from `web/index.html` and executed — a grep for the
-    absence of a `closeList()` call would pass just as happily against a renderer that had
+    Run against the REAL function, extracted from `web/js/markdown.js` and executed — a grep for
+    the absence of a `closeList()` call would pass just as happily against a renderer that had
     broken some other way."""
 
     @classmethod
@@ -5765,7 +5772,7 @@ class RenderMdListTests(unittest.TestCase):
         page and is a plain HTML escape)."""
         harness = r"""
           const fs=require("fs");
-          const src=fs.readFileSync(process.argv[1],"latin1");
+          const src=fs.readFileSync(process.argv[1],"utf8");
           const i=src.indexOf("function renderMD(src){");
           const j=src.indexOf("\n}\n", i)+3;
           const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
@@ -5773,7 +5780,7 @@ class RenderMdListTests(unittest.TestCase):
           eval(src.slice(i,j));
           process.stdout.write(renderMD(JSON.parse(process.argv[2])));
         """
-        page = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
+        page = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "js", "markdown.js")
         r = subprocess.run([self.node, "-e", harness, "--", page, json.dumps(md)],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -5815,5 +5822,138 @@ class RenderMdListTests(unittest.TestCase):
         html = self._render('12. twelfth')
         self.assertIn('<ol start="12">', html)
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "web", "index.html"), encoding="latin-1").read()
+                                "web", "js", "markdown.js"), encoding="utf-8").read()
         self.assertIn('`<ol start="${+m[1]}">`', src)
+
+
+class UiAssetLayoutTests(unittest.TestCase):
+    """The UI was ONE 558 KB / 8,197-line file: ~139k tokens to read, i.e. most of a context
+    window spent before any edit, growing ~4 KB/day. It is now `web/index.html` (a tag list)
+    plus two stylesheets and sixteen scripts, cut on the section boundaries the author had
+    already written into the file.
+
+    Nothing here is style: each assertion pins a property that was measured to matter while
+    doing the split, and the two ceilings are ratchets with no headroom — an asset that grows
+    past one fails the suite until it is cut, which is the only thing that stops the blob
+    reassembling itself under a different name."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    WEB = os.path.join(ROOT, "web")
+    # index.html holds the head, the markup shell and the tags — no rule, no style, no logic.
+    INDEX_MAX = 14_009
+    # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
+    # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
+    # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:
+    # 27 @media and 41 @keyframes blocks interleave with the components they style and the
+    # cascade is order-dependent, so it is a change of behaviour risk, not a change of file.
+    ASSET_MAX = 109_757
+
+    def _assets(self):
+        out = {}
+        for sub in ("css", "js"):
+            for name in sorted(os.listdir(os.path.join(self.WEB, sub))):
+                out[sub + "/" + name] = os.path.join(self.WEB, sub, name)
+        return out
+
+    def _index(self):
+        with open(os.path.join(self.WEB, "index.html"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_index_html_is_only_a_tag_list(self):
+        """The whole point of the split. `index.html` is re-read per request and is the first
+        thing any UI session opens, so what it must NOT hold is a rule or a function."""
+        doc = self._index()
+        self.assertLessEqual(len(doc.encode()), self.INDEX_MAX,
+                             "index.html is growing again — put it in an asset, or ratchet this "
+                             "constant deliberately")
+        self.assertNotIn("<style>", doc, "CSS came back inline")
+        self.assertNotIn("function ", doc, "logic came back inline")
+        self.assertNotRegex(doc, r"<script>\s*\n", "an inline script block came back")
+
+    def test_no_asset_exceeds_the_ceiling(self):
+        for rel, path in self._assets().items():
+            self.assertLessEqual(os.path.getsize(path), self.ASSET_MAX,
+                                 "%s is over the ceiling — cut it, don't raise the ratchet "
+                                 "without saying why in the constant's comment" % rel)
+
+    def test_every_script_declares_use_strict(self):
+        """`"use strict"` is per-SCRIPT, not per-page. The original had one directive at the
+        top of one script; splitting without repeating it would silently drop the back half of
+        the app into sloppy mode, where a typo'd assignment creates a global instead of
+        throwing."""
+        for rel, path in self._assets().items():
+            if not rel.endswith(".js"):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                first = fh.readline().strip()
+            self.assertEqual(first, '"use strict";',
+                             "%s does not open with its own strict directive" % rel)
+
+    def test_every_asset_on_disk_is_pulled_in_and_every_tag_resolves(self):
+        """Both directions. An asset with no tag is dead code that still reads as live; a tag
+        with no asset is a 404 the page recovers from silently, one view at a time."""
+        doc = self._index()
+        tagged = set(re.findall(r'<script src="/(js/[\w.-]+)">', doc))
+        tagged |= set(re.findall(r'<link rel="stylesheet" href="/(css/[\w.-]+)">', doc))
+        on_disk = set(self._assets())
+        self.assertEqual(on_disk - tagged, set(), "asset on disk that index.html never loads")
+        self.assertEqual(tagged - on_disk, set(), "index.html loads an asset that isn't there")
+
+    def test_the_scripts_load_in_dependency_order(self):
+        """Classic scripts run in document order, and a top-level statement runs the moment its
+        file does — so the shared primitives must be defined before the views that call them,
+        and `boot.js` (whose startup pass calls into chat, tabs and the mascot) must be last.
+        Nothing else here is order-sensitive: everything a view calls across a file boundary is
+        called from an event handler, i.e. after every script has run."""
+        order = re.findall(r'<script src="/js/([\w.-]+)">', self._index())
+        for early in ("util.js", "markdown.js", "modal.js"):
+            self.assertLess(order.index(early), order.index("chat.js"),
+                            "%s must load before the views that use it" % early)
+        self.assertEqual(order[-1], "boot.js", "boot.js is no longer last")
+
+    def test_the_page_carries_no_nul_bytes(self):
+        """`renderMD`'s fenced-block placeholder was a literal NUL, which defeated every
+        string-matching editor and forced `grep -a` on the whole UI. It is a private-use code
+        point now, written as an escape so every file stays plain text."""
+        for rel, path in {**self._assets(),
+                          "index.html": os.path.join(self.WEB, "index.html")}.items():
+            with open(path, "rb") as fh:
+                self.assertNotIn(b"\x00", fh.read(), "%s carries a NUL byte" % rel)
+
+    def test_no_other_test_reads_index_html_for_its_CONTENT(self):
+        """The tautological-guard trap, at suite scale. `index.html` is 14 KB of tags now, so a
+        UI guard that opens it directly still PASSES — it just asserts nothing. Only the two
+        classes that are about the tag list itself may read it; everything else goes through
+        `ui_src()`."""
+        allowed = {"UiAssetLayoutTests", "MascotStateTests", "UiAssetRouteTests"}
+        offenders = []
+        for name in sorted(glob.glob(os.path.join(self.ROOT, "test_*.py"))):
+            src = open(name, encoding="utf-8").read()
+            tree = ast.parse(src)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef) or node.name in allowed:
+                    continue
+                for call in ast.walk(node):
+                    # an `open(...)` whose path mentions index.html, however it is spelled
+                    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                            and call.func.id == "open" and call.args):
+                        continue
+                    arg = ast.get_source_segment(src, call.args[0]) or ""
+                    if "index.html" in arg:
+                        offenders.append("%s:%s:%d" % (os.path.basename(name), node.name,
+                                                       call.lineno))
+        self.assertEqual(offenders, [],
+                         "these read index.html directly; use test_support.ui_src()")
+
+    def test_ui_src_reproduces_the_served_document(self):
+        """`ui_src()` is what the ~60 grep-based UI guards read. If it drifted from what the
+        browser gets, every one of them would be asserting against a document that does not
+        exist — the tautological-guard failure mode, at suite scale."""
+        src = ui_src()
+        self.assertNotIn('<script src="/js/', src, "a tag was left un-inlined")
+        self.assertNotIn('rel="stylesheet"', src, "a stylesheet was left un-inlined")
+        for probe in ("function renderMD(src){", "function esc(s){", "--page-accent",
+                      "customElements.define(", "function activateTab(", "function loadAdmin("):
+            self.assertIn(probe, src, "ui_src() lost %r" % probe)
+        # order is what the .index()-style guards depend on
+        self.assertLess(src.index("function esc(s){"), src.index("function loadAdmin("))

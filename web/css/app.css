@@ -1,0 +1,1424 @@
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; overflow: hidden; background: var(--ground); color: var(--text);
+    font-family: var(--sans); font-size: 15px; line-height: 1.55; display: flex; flex-direction: column; }
+  /* shared form controls; later per-context rules override layout only */
+  input, textarea, select { background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm);
+    color: var(--text); font-family: var(--sans); font-size: 13px; }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); outline: none; }
+  input[type=checkbox], input[type=radio] { background: none; border: none; }
+
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 22px;
+    border-bottom: 1px solid var(--line); background: var(--ground); }
+  /* Otto's face. Defined ONCE as the #mk <symbol> at the top of <body> and pulled in with
+     <use>; it carries its own brand colours, so nothing here tints it. */
+  .mark { width: 28px; height: 28px; flex: none; }
+  .wordmark { display: flex; flex-direction: column; }
+  .wordmark b { font-weight: 600; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; }
+  .wordmark span { color: var(--dim); font-size: 12px; letter-spacing: .01em; }
+  /* Version rides the wordmark, not the Admin tab: the first question about a
+     misbehaving Otto is which one is running, and a tab hides an Admin field. */
+  .wordmark .ver { font-variant-numeric: tabular-nums; }
+  .status { margin-left: auto; display: flex; align-items: center; gap: 18px; font-size: 12px; color: var(--text-2); }
+  .status b { color: var(--text); font-weight: 600; }
+
+  /* Global pause. Lives in the header rather than Admin because the state has to be unmissable
+     from wherever you are: the symptom of a forgotten pause is "Otto stopped working", and a
+     control behind a tab is one you look for only after suspecting it. */
+  .estop { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+    color: var(--text-2); background: transparent; border: 1px solid var(--line);
+    padding: 5px 10px; border-radius: var(--r-md); cursor: pointer; white-space: nowrap; }
+  .estop:hover { color: var(--danger); border-color: var(--danger-line); }
+  .estop .estopdot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  /* Engaged: the loud state. Filled, not merely outlined — an outline reads as one more chip in
+     a row of chips, and this one must not be skimmable. */
+  .estop.on { color: var(--on-accent); background: var(--danger); border-color: var(--danger-deep); }
+  .estop.on:hover { color: var(--on-accent); background: var(--danger-deep); }
+  .estop.on .estopdot { background: var(--on-accent); animation: estopPulse 1.6s ease-in-out infinite; }
+  .estop[disabled] { opacity: .55; cursor: progress; }
+  @keyframes estopPulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .estop.on .estopdot { animation: none; } }
+  /* Full-width strip under the header, so the reason is readable and the pause is visible even
+     with the header's status group scrolled/crowded on a narrow window. */
+  .estopbar { display: none; align-items: center; gap: 10px; font-size: 12.5px;
+    color: var(--danger-deep); background: var(--danger-soft);
+    border-bottom: 1px solid var(--danger-line); padding: 7px 20px; }
+  body.paused .estopbar { display: flex; }
+  .estopbar b { font-weight: 700; letter-spacing: .02em; }
+  .estopbar .estopwhy { color: var(--text-2); }
+
+  .tabs { display: flex; gap: 4px; margin-left: 18px; }
+  .tab { font-size: 13px; font-weight: 500; color: var(--dim);
+    background: transparent; border: 1px solid transparent; padding: 6px 13px; border-radius: var(--r-md); cursor: pointer; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); background: var(--raised); border-color: var(--line); }
+  /* runs-needing-a-human counter on the Board tab (approvals, clarifications, needs-human) */
+  .tabbadge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 9px;
+    font-size: 11px; font-weight: 700; color: var(--on-accent); background: var(--danger-deep); vertical-align: 1px; }
+  /* the explicit display above would otherwise beat the [hidden] UA rule — a zero-count
+     badge must actually disappear, not render "0" */
+  .tabbadge[hidden] { display: none; }
+
+  main { flex: 1; min-height: 0; }
+  .chatview { height: 100%; display: grid; grid-template-columns: 232px 1fr 322px; }
+  .adminview { height: 100%; overflow-y: auto; padding: 30px 40px 70px; }
+  /* One centred content column across every config/data tab (Schedules, Events, Memory,
+     Knowledge, Audit, Admin) so they read as the same app. Done as padding rather than an inner
+     wrapper div: no render function has to change, and the scroll container stays the view itself
+     (which the Audit table's sticky header depends on). Board is excluded — its kanban wants the
+     full width. */
+  .adminview:not(#boardview) { padding-left: max(40px, calc((100% - 1320px) / 2));
+    padding-right: max(40px, calc((100% - 1320px) / 2)); }
+  .adminview[hidden], .chatview[hidden] { display: none; }
+  .history { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--surface-2); }
+  .histhead { display: flex; align-items: center; justify-content: space-between; padding: 16px 14px 11px;
+    font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+  .histhead button { font-family: var(--sans); font-size: 12px; color: var(--accent); background: transparent;
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 9px; cursor: pointer; }
+  .histhead button:hover { border-color: var(--accent); }
+  .histlist { overflow-y: auto; padding: 0 8px 14px; flex: 1; min-height: 0; }
+  /* Collapsed, the chat list keeps a narrow rail rather than disappearing: a sidebar with no
+     on-screen edge needs its reopen control to live somewhere else, and there is nowhere else
+     in this view that reads as "the chat list". The rail is the toggle. */
+  .chatview.histcollapsed { grid-template-columns: 34px 1fr 322px; }
+  .histcollapsed .histhead { padding: 16px 0 11px; justify-content: center; }
+  .histcollapsed .histhead > span:not(.hacts), .histcollapsed .histhead #new-chat,
+  .histcollapsed .histlist { display: none; }
+  .histhead .hacts { display: flex; align-items: center; gap: 6px; }
+  .histhead .histtoggle { border-color: transparent; padding: 3px; line-height: 0; color: var(--dim); }
+  .histhead .histtoggle:hover { color: var(--accent); border-color: var(--line); }
+  .histtoggle svg { display: block; width: 14px; height: 14px; }
+  .histcollapsed .histtoggle svg { transform: rotate(180deg); }
+  /* The list renders one page at a time — a 100-chat sidebar buries the pinned ones you
+     actually reopen, and every poll re-renders the whole thing. */
+  .histmore { display: block; width: 100%; margin-top: 6px; padding: 7px 8px; font-family: var(--sans);
+    font-size: 12px; color: var(--dim); background: transparent; border: 1px dashed var(--line);
+    border-radius: var(--r-md); cursor: pointer; }
+  .histmore:hover { color: var(--accent); border-color: var(--accent); }
+  .histitem { position: relative; padding: 9px 30px 9px 10px; border-radius: var(--r-md); cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
+  .histitem:hover { background: var(--raised); }
+  .histitem.active { background: var(--raised); border-color: var(--line-strong); }
+  .htitle { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* one line: only the cap name ellipsises, so the message count never gets cut off */
+  .hmeta { font-size: 11px; color: var(--dim); margin-top: 3px; display: flex; align-items: baseline; gap: 4px; }
+  .hmeta .hcap { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hmeta .hcount { flex: none; white-space: nowrap; }
+  .hlabel { display: inline-block; flex: none; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+    background: var(--accent-soft); color: var(--accent); border-radius: 4px; padding: 1px 5px; margin-right: 5px; vertical-align: 1px; }
+  /* spinner shown while a chat's workflow is still in flight (it has a live run_id) */
+  .hspin { position: absolute; top: 11px; right: 9px; }
+  .histitem:hover .hspin { display: none; }          /* the delete (×) takes its place on hover */
+  .hdel { position: absolute; top: 8px; right: 6px; background: transparent; border: none; color: var(--dim);
+    cursor: pointer; font-size: 15px; line-height: 1; opacity: 0; padding: 0 3px; }
+  .histitem:hover .hdel { opacity: 1; }
+  .hdel:hover { color: var(--danger); }
+  /* pin toggle — visible on hover, stays lit when the chat is pinned (pinned chats sort to the top) */
+  .hpin { position: absolute; top: 9px; right: 25px; background: transparent; border: none; color: var(--dim);
+    cursor: pointer; line-height: 0; opacity: 0; padding: 2px 3px; transition: opacity .15s, color .15s; }
+  .hpin svg { display: block; width: 13px; height: 13px; }
+  .histitem:hover .hpin { opacity: .55; }
+  .histitem:hover .hpin:hover { opacity: 1; color: var(--accent); }
+  .hpin.on { opacity: 1; color: var(--accent); }
+  .convo { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }
+  .stream { flex: 1; overflow-y: auto; padding: 30px 34px 8px; scroll-behavior: smooth; }
+  .stream::-webkit-scrollbar { width: 10px; }
+  .stream::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; }
+
+  .msg { max-width: 680px; margin: 0 0 22px; }
+  /* "Show earlier" pill at the top of a replayed chat. The older turns stay in the DOM, hidden,
+     so revealing them costs no re-render and keeps their order. */
+  .msgmore { display: block; margin: 0 auto 22px; padding: 6px 14px; font-family: var(--sans);
+    font-size: 12px; color: var(--dim); background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 999px; cursor: pointer; }
+  .msgmore:hover { color: var(--accent); border-color: var(--accent); }
+  .msg.user { margin-left: auto; }
+  .msg.user .body { background: var(--accent-soft); border: 1px solid var(--accent-line);
+    border-radius: 14px 14px 4px 14px; padding: 11px 15px; color: var(--text); }
+  .msg.eno .row { display: flex; gap: 12px; align-items: flex-start; }
+  /* No chip behind it: the mark is already a rounded tile, and a tile inside a bordered tile
+     reads as a logo that didn't load. */
+  .avatar { flex: none; width: 30px; height: 30px; display: grid; place-items: center; }
+  .avatar > svg { width: 30px; height: 30px; }
+  .msg.eno .body { background: var(--surface); border: 1px solid var(--line);
+    border-radius: 4px 14px 14px 14px; padding: 13px 16px; flex: 1; min-width: 0; }
+  .msg .body { overflow-wrap: anywhere; word-break: break-word; }
+  .msg .who { font-size: 12px; color: var(--text-2); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px; }
+  .msg .body p { margin: 0 0 8px; }
+  .msg .body p:last-child { margin-bottom: 0; }
+  .msg .body strong { color: var(--text); font-weight: 600; }
+  .msg .body code { font-family: var(--mono); font-size: 12.5px; background: var(--raised); padding: 1px 5px; border-radius: 4px; color: var(--text-2); }
+  .result { font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; word-break: break-word; color: var(--text); }
+  .result.plain { white-space: pre-wrap; }
+  .result p { margin: 0 0 9px; }
+  .result p:last-child { margin-bottom: 0; }
+  .result h1, .result h2, .result h3, .result h4, .result h5, .result h6 {
+    font-size: 15px; font-weight: 600; color: var(--text); margin: 14px 0 7px; letter-spacing: .01em; }
+  .result h1:first-child, .result h2:first-child, .result h3:first-child { margin-top: 0; }
+  .result strong { color: var(--text); font-weight: 600; }
+  .result em { font-style: italic; }
+  .result code { font-family: var(--mono); font-size: 12.5px; background: var(--raised); padding: 1px 5px; border-radius: 4px; color: var(--text-2); }
+  .result ul, .result ol { margin: 4px 0 9px; padding-left: 20px; }
+  .result li { margin: 2px 0; }
+  .result a { color: var(--accent); text-decoration: underline; }
+  .result pre { background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 11px 13px; margin: 8px 0; overflow-x: auto; }
+  .result pre code { background: none; padding: 0; color: var(--text-2); font-size: 12.5px; line-height: 1.6; }
+  .result blockquote { border-left: 2px solid var(--line); margin: 8px 0; padding: 2px 0 2px 12px; color: var(--text-2); }
+  .result hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
+  .result table { border-collapse: collapse; margin: 9px 0; font-size: 13px; display: block; max-width: 100%; overflow-x: auto; }
+  .result th, .result td { border: 1px solid var(--line); padding: 6px 11px; text-align: left; vertical-align: top; }
+  .result th { background: var(--raised); color: var(--text); font-weight: 600; white-space: nowrap; }
+  .result tbody tr:nth-child(even) { background: var(--zebra); }
+  .err { color: var(--danger); }
+
+  /* Board card detail modal — the card itself only has room for a clipped 2-3 line preview;
+     clicking it opens the full result here, comfortably laid out with the same markdown
+     styling as a chat message (.result, above). */
+  .modalOverlay { position: fixed; inset: 0; background: var(--scrim); display: flex;
+    align-items: center; justify-content: center; z-index: 200; padding: 28px; }
+  .modalOverlay[hidden] { display: none; }
+  .modalBox { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+    max-width: 680px; width: 100%; max-height: 82vh; display: flex; flex-direction: column;
+    box-shadow: 0 16px 48px var(--shadow); }
+  .modalHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+    padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .modalTitle { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .modalTitle b { color: var(--text); font-size: 14px; }
+  .modalClose { background: transparent; border: none; color: var(--dim); font-size: 22px;
+    line-height: 1; cursor: pointer; padding: 2px 8px; border-radius: var(--r-sm); flex: none; }
+  .modalClose:hover { color: var(--text); background: var(--raised); }
+  .modalBody { padding: 16px 18px; overflow-y: auto; }
+  .modalHint { font-size: 13px; color: var(--warn); line-height: 1.5; margin-bottom: 12px;
+    padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  /* Config forms in a modal: the modal already supplies the surface, border and padding, so the
+     .aform chrome would double up. Slightly wider than a read-only modal for the two-column rows. */
+  .formModalBox { max-width: 760px; }
+  .formModalBox .aform { background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
+  .formModalBox .factions { position: sticky; bottom: 0; background: var(--surface); padding-top: 12px;
+    margin-top: 2px; border-top: 1px solid var(--line); }
+  /* run-detail debug drawer (#96) */
+  .dbgmeta { font-size: 12px; color: var(--dim); margin-bottom: 14px; line-height: 1.7; }
+  .dbgmeta .k { color: var(--text); }
+  .dbgatt { border: 1px solid var(--line); border-radius: var(--r-md); margin-bottom: 12px; overflow: hidden; }
+  .dbgatt-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 12px;
+    background: var(--surface-2); font-size: 12px; color: var(--dim); cursor: pointer; }
+  .dbgatt-h .an { color: var(--text); font-weight: 700; }
+  .dbgverd { padding: 1px 7px; border-radius: 9px; font-size: 11px; font-weight: 600; }
+  .dbgverd.pass { background: var(--ok-soft); color: var(--ok); }
+  .dbgverd.fail { background: var(--danger-soft); color: var(--danger); }
+  .dbgverd.none { background: var(--raised); color: var(--dim); }
+  .dbgbody { padding: 11px 12px; display: none; }
+  .dbgatt.open .dbgbody { display: block; }
+  .dbgsec { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--dim); margin: 10px 0 5px; }
+  .dbgsec:first-child { margin-top: 0; }
+  .dbgcrit { font-size: 13px; color: var(--warn); line-height: 1.5; white-space: pre-wrap; }
+  .dbgtrace { font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--text-2);
+    background: var(--ground); border-radius: var(--r-sm); padding: 9px 11px; max-height: 320px; overflow: auto;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+  .dbgtrace .tu { color: var(--accent); } .dbgtrace .tr { color: var(--dim); } .dbgtrace .as { color: var(--text-2); }
+  .dbgresult { font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap;
+    overflow-wrap: anywhere; color: var(--text-2); }
+  .bdebug { cursor: pointer; }
+
+  /* "thinking" indicator — shows in the chat stream while the backend works
+     (routing, running claude -p, …) so a long-running turn doesn't look frozen */
+  .thinking { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px;
+    font-size: 12px; line-height: 1.55; color: var(--dim); }
+  /* A live label wraps to 2-3 lines; centred, the dots floated mid-paragraph away from the
+     text they belong to. `margin-top` centres them on the FIRST line instead. */
+  .thinking .tdots { display: inline-flex; gap: 4px; flex: none; margin-top: 6px; }
+  .thinking .tdots i { width: 6px; height: 6px; border-radius: 2px; background: var(--accent);
+    animation: tpulse 1.2s ease-in-out infinite; }
+  .thinking .tdots i:nth-child(2) { animation-delay: .18s; }
+  .thinking .tdots i:nth-child(3) { animation-delay: .36s; }
+  .thinking .tlabel { opacity: .9; }
+  @keyframes tpulse { 0%, 100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+  /* shadow-mode AI supervisor badge (issue #143) — sits in the message title (.who) while a
+     fresh write/read attempt is being watched, so its position never depends on the length of
+     the live progress text next to it; ok=dim/accent, flag=amber when a checkpoint would have
+     retried. Advisory only, so this is deliberately understated, never alarming. */
+  .supwatch { display: inline-flex; align-items: center; gap: 5px; flex: none;
+    padding: 2px 7px; border: 1px solid var(--line); border-radius: 5px;
+    font-size: 11px; letter-spacing: .02em; text-transform: none; font-weight: 400;
+    color: var(--dim); cursor: default; }
+  .supwatch .supdot { width: 5px; height: 5px; border-radius: 50%; flex: none;
+    background: var(--accent); animation: tpulse 1.6s ease-in-out infinite; }
+  .supwatch.flag { border-color: var(--warn-line); color: var(--warn); }
+  .supwatch.flag .supdot { background: var(--warn); }
+
+  .greeting { color: var(--text-2); }
+  .chips { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
+  .chip { font-size: 13px; color: var(--text); background: var(--raised);
+    border: 1px solid var(--line); padding: 8px 12px; border-radius: var(--r-md); cursor: pointer; transition: border-color .15s, transform .1s; }
+  .chip:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .chip .tag { color: var(--dim); }
+
+  .gate { border: 1px solid var(--warn-line); background: var(--warn-soft);
+    border-left: 3px solid var(--warn); border-radius: var(--r-md); padding: 15px 17px; margin-top: 4px; }
+  .gate .glabel { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); margin-bottom: 9px; }
+  .gate .cap { font-family: var(--mono); font-size: 13px; color: var(--text); }
+  .gate .inv { font-family: var(--mono); font-size: 12px; color: var(--dim); margin: 7px 0 10px; word-break: break-word; }
+  .gate .inv:empty { display: none; }
+  .gate .repo { font-size: 12px; color: var(--accent); margin: 0 0 12px; word-break: break-word; }
+  .gate .whygate { font-size: 12px; color: var(--warn); margin: 0 0 10px; word-break: break-word; }
+  .gate .planlabel { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); margin-bottom: 6px; }
+  /* The plan preview is instructed to investigate and produce concrete steps, but on a genuine
+     judgment call it sometimes punts and asks the human questions instead, or asks one mid-plan —
+     pulled into its own box (`splitPlanQuestions`) so it can never be lost inside a wall of steps. */
+  .gate .questions { font-size: 13px; color: var(--text); background: var(--accent-soft);
+    border: 1px solid var(--accent-line); border-radius: var(--r-sm); padding: 10px 12px; margin: 0 0 14px; }
+  .gate .questions .qlabel { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .gate .questions ul { margin: 0; padding-left: 18px; }
+  .gate .questions li { margin: 3px 0; word-break: break-word; }
+  /* Plan critic findings. Above the plan and visually louder than it: they are the reason to
+     open the plan and read it closely. */
+  .gate .concerns { font-size: 13px; color: var(--text); background: rgba(190,60,40,.08);
+    border: 1px solid rgba(190,60,40,.35); border-radius: var(--r-sm); padding: 10px 12px; margin: 0 0 14px; }
+  .gate .concerns .clabel { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--warn); margin-bottom: 6px; }
+  .gate .concerns ul { margin: 0; padding-left: 18px; }
+  .gate .concerns li { margin: 3px 0; word-break: break-word; }
+  /* The chat card is now just this one-line status — the full plan (concerns, questions, steps,
+     approve/decline) lives in a modal opened via "See plan", instead of cramming everything into
+     the feed where a multi-step plan was unreadable. */
+  .gate .gatestatus { font-size: 13px; color: var(--text-2); }
+  .gate .gatestatus.isq { color: var(--accent); }
+  /* Status and "See plan" are one statement, so they sit on one row (wrapping only when the
+     status runs long) — stacked, the button hung off the status with no gap of its own. */
+  .gate .gatefoot { display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 10px 14px; margin-top: 10px; }
+  .gate .gatefoot .seeplan { flex: none; }
+  .gate .actions { display: flex; gap: 10px; }
+  /* Shown instead of the plan block when the preview produced nothing (timeout/error) — an
+     empty gate with no explanation reads as "nothing to see here" rather than "this failed". */
+  .gate .nopreviewnote { font-size: 12.5px; color: var(--warn); margin: 0 0 14px; }
+  /* Request-changes affordance: free-text feedback on the plan, folded into a re-preview
+     instead of forcing a blind approve/decline. Sits below the actions, hidden until "Request
+     changes" is clicked. */
+  .gate .revisenote { font-size: 12.5px; color: var(--accent); margin-top: 10px; }
+  .gate .revisebox { margin-top: 10px; }
+  .gate .revisetext { width: 100%; box-sizing: border-box; resize: vertical; max-height: none;
+    flex: none; font-size: 13px; padding: 8px 10px; margin-bottom: 8px; }
+  .gate .reviseactions { display: flex; gap: 8px; }
+  .btn { font-size: 13px; font-weight: 500; border-radius: var(--r-md); padding: 9px 16px; cursor: pointer; border: 1px solid transparent; transition: filter .15s, background .15s; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.approve { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+  .btn.approve:hover { filter: brightness(1.08); }
+  .btn.accept { background: transparent; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .btn.accept:hover { background: var(--accent); color: var(--on-accent); }
+  .btn.revise { background: transparent; border-color: var(--accent-line); color: var(--accent); }
+  .btn.revise:hover { border-color: var(--accent); }
+  .btn.decline { background: transparent; border-color: var(--line); color: var(--text-2); }
+  .btn.decline:hover { color: var(--text); border-color: var(--dim); }
+  /* Terminate is the one board action that destroys work in flight — it reads as just
+     another neutral outline next to Deny/Dismiss unless it carries the danger colour. */
+  .btn.danger { background: transparent; border-color: var(--danger-line); color: var(--danger); font-weight: 600; }
+  .btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--on-accent); }
+  /* swarm panel — parallel sub-task fan-out shown in chat */
+  .swarm { border: 1px solid var(--accent-line); border-radius: var(--r-md); padding: 13px 15px; margin: 4px 0 8px;
+    background: var(--accent-soft); }
+  .swarm .swhead { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 10px; }
+  .swarm .swrow { display: flex; align-items: center; gap: 9px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .swarm .swrow:first-of-type { border-top: none; }
+  .swarm .swrow code { color: var(--text); font-size: 12.5px; flex: none; }
+  .swarm .swsub { color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .swarm .swnote { font-size: 12px; color: var(--dim); margin-top: 10px; }
+  /* clarification card — informational (accent), distinct from the amber write gate */
+  .clarify { border: 1px solid var(--accent-line); border-left: 3px solid var(--accent);
+    background: var(--accent-soft); border-radius: var(--r-md); padding: 15px 17px; margin-top: 4px; }
+  .clarify .clabel { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-bottom: 9px; }
+  .clarify .cq { font-size: 14px; color: var(--text); margin-bottom: 13px; }
+  .clarify .cfield { display: flex; gap: 10px; }
+  .clarify .cinput { flex: 1; background: var(--ground); border: 1px solid var(--line); border-radius: var(--r-md);
+    color: var(--text); font-family: var(--sans); font-size: 14px; padding: 9px 12px; outline: none; }
+  .clarify .cinput:focus { border-color: var(--accent); }
+  .clarify .csend { background: var(--accent); color: var(--on-accent); }
+  .clarify.resolved { background: none; border-left-color: var(--dim); border-color: var(--line); }
+  .clarify .cresolved { font-size: 13px; color: var(--accent); }
+
+  .gate.resolved { background: none; border-left-color: var(--dim); border-color: var(--line); }
+  .gate .resolution { font-size: 12.5px; }
+  .gate .resolution.ok { color: var(--ok); }
+  .gate .resolution.no { color: var(--dim); }
+
+  /* Rides the text baseline like the <code> chip it sits beside in "I'll use `cap` WRITE" —
+     `vertical-align: middle` centred it on the x-height instead, lifting the pill visibly
+     above the chip next to it. */
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; vertical-align: baseline; position: relative; top: 1px; }
+  .badge.read { background: var(--accent-soft); color: var(--accent); }
+  .badge.write { background: var(--warn-soft); color: var(--warn); }
+  /* Integration status at a glance (Events tab), same visual weight as .badge.read/.write. */
+  .badge.on { background: var(--ok-soft); color: var(--ok); }
+  .badge.off { background: var(--raised); color: var(--dim); }
+  .badge.warn { background: var(--warn-soft); color: var(--warn); }
+
+  .composer { border-top: 1px solid var(--line); padding: 16px 24px 20px; background: var(--surface-2); }
+  .slashpop { background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); margin-bottom: 8px;
+    max-height: 240px; overflow-y: auto; padding: 5px; }
+  .slashitem { display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: var(--r-sm); cursor: pointer; }
+  .slashitem.sel { background: var(--accent-soft); }
+  .slashname { font-family: var(--mono); font-size: 12.5px; color: var(--accent); flex: none; }
+  .slashitem small { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .field { display: flex; gap: 12px; align-items: flex-end; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 10px 12px; transition: border-color .15s; }
+  .field:focus-within { border-color: var(--accent); }
+  textarea { flex: 1; resize: none; background: none; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; max-height: 120px; outline: none; }
+  textarea::placeholder { color: var(--dim); }
+  .send { flex: none; background: var(--accent); color: var(--on-accent); border: none; width: 40px; height: 40px; border-radius: var(--r-md); cursor: pointer; font-size: 17px; transition: filter .15s, background .15s; }
+  .send:hover { filter: brightness(1.08); }
+  .send:disabled { opacity: .4; cursor: not-allowed; }
+  .send.stop { background: var(--danger-deep); font-size: 14px; }
+  .hint { font-size: 12px; color: var(--dim); margin-top: 9px; }
+  /* The scope mode pair. Its whole job is that "any repo" and "no repos ticked" stop looking
+     identical, so the disabled list has to read as OFF, not as an empty list. */
+  .modepick { display: flex; flex-direction: column; gap: 4px; }
+  .aform .modepick label.moderow { display: flex; align-items: center; gap: 8px; margin: 0;
+    font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none;
+    color: var(--text); cursor: pointer; }
+  .modepick input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+  .disclist.dim { opacity: .45; }
+  .disclist.dim .discrow { cursor: default; }
+  .sessionbar { display: flex; align-items: center; gap: 9px; font-size: 12px;
+    color: var(--accent); margin-bottom: 10px; }
+  .sessionbar .sdot { width: 7px; height: 7px; border-radius: 2px; background: var(--accent); flex: none; }
+  .sessionbar b { color: var(--text); font-weight: 600; }
+  .sessionbar .nt { margin-left: auto; cursor: pointer; color: var(--text-2); border: 1px solid var(--line);
+    border-radius: var(--r-sm); padding: 3px 10px; }
+  .sessionbar .nt:hover { color: var(--text); border-color: var(--dim); }
+  .sid { cursor: pointer; color: var(--dim); font-family: var(--mono); }
+  .sid:hover { color: var(--text); text-decoration: underline; }
+  .sessmeta { margin-top: 7px; font-size: 12px; color: var(--dim); }
+  .resultmeta { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--dim); }
+  .resultmeta .sessmeta { margin-top: 0; }
+  /* Unverified / needs-human outcome: a run that "completed" but never passed verification
+     (or hit QA fail / budget) must NOT read like a clean success — flag it prominently. */
+  .needsflag { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 12px;
+    padding: 10px 12px; border: 1px solid var(--danger-line); border-left: 3px solid var(--danger);
+    border-radius: var(--r-md); background: var(--danger-soft); }
+  .needsflag .nf-ic { font-size: 14px; line-height: 1.3; }
+  .needsflag .nf-t { display: block; font-size: 13px; font-weight: 600; color: var(--danger); }
+  .needsflag .nf-h { display: block; font-size: 12px; color: var(--text-2); margin-top: 2px; }
+  .msg .stamp { margin-top: 5px; font-size: 11px; color: var(--dim); }
+  .msg.user .stamp { text-align: right; }
+  .msg.eno .stamp { margin-left: 42px; }  /* align under the card: avatar (30px) + row gap (12px) */
+  /* Composer options: repo target, post-PR follow-ups, and run mode — one settings panel so
+     the controls read as a single unit instead of loose fields floating over the composer.
+     Grouped into labeled rows so it's clear WHEN each control applies (see #57 / plan-mode). */
+  .optpanel { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 11px 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 10px; }
+  .optbar { font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 7px; }
+  /* A class that sets its own `display` always beats the UA stylesheet's `[hidden]{display:none}`
+     (author styles outrank user-agent styles regardless of selector specificity) — so a `display`-
+     setting class must pair with its own [hidden] override, same as .adminview/.modalOverlay/.notif
+     elsewhere on this page, or the element ignores `hidden` entirely and always renders. */
+  .optbar[hidden] { display: none; }
+  .optrow { display: flex; align-items: center; gap: 14px; row-gap: 6px; flex-wrap: wrap; }
+  .optlabel { color: var(--dim); font-size: 12px; font-weight: 500; flex: none; width: 112px; }
+  /* A label sitting mid-row (not the row's leading column, e.g. "Model" beside the run-mode
+     toggles) shouldn't inherit the leading column's fixed width — that stretches a short word
+     into a wide empty box and shoves whatever follows it far to the right. */
+  .optlabel.inline { width: auto; }
+  .optpanel select { background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm);
+    color: var(--text); font-size: 12px; padding: 4px 9px; }
+  .optpanel select:focus { border-color: var(--accent); outline: none; }
+  .optpanel .repohint, .optpanel .opthint { color: var(--dim); }
+  .optpanel .opthint { font-style: italic; }
+  .optpanel .opthint[hidden] { display: none; }
+  /* A fixed, non-configurable state (the always-on PR review) reads as a quiet status chip,
+     never a toggle — there's nothing to turn off, so it must not look interactive. */
+  .fixedchip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--accent); }
+  .fixedchip svg { width: 12px; height: 12px; flex: none; }
+  .fixedchip.off { color: var(--dim); }
+  .fixedchip.off svg { opacity: .5; }
+  /* A real per-run toggle keeps a native checkbox (a11y + keyboard) but is SKINNED as the same
+     pill switch Admin uses (.switch), so a chat-level setting reads as the same kind of control
+     as an admin one instead of a bare browser checkbox dropped into a polished page. */
+  .optpanel .opt { display: inline-flex; align-items: center; gap: 7px; font-size: 12px;
+    color: var(--text-2); cursor: pointer; user-select: none; }
+  .optpanel .opt[hidden] { display: none; }   /* see the .optbar[hidden] note above */
+  .optpanel .opt input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .optpanel .opt .pill { display: inline-block; width: 30px; height: 17px; border-radius: 9px;
+    background: var(--raised); border: 1px solid var(--line); position: relative; flex: none;
+    transition: background .15s, border-color .15s; }
+  .optpanel .opt .pill::after { content: ""; position: absolute; top: 1px; left: 1px;
+    width: 13px; height: 13px; border-radius: 50%; background: var(--dim);
+    transition: transform .15s, background .15s; }
+  .optpanel .opt input:checked + .pill { background: var(--accent-soft); border-color: var(--accent); }
+  .optpanel .opt input:checked + .pill::after { transform: translateX(13px); background: var(--accent); }
+  .optpanel .opt input:focus-visible + .pill { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .optpanel .opt.off { color: var(--dim); cursor: not-allowed; }
+  .optpanel .opt.off .pill { opacity: .5; }
+  /* The panel collapses to its header row. Collapsed, it names every setting that is NOT at its
+     default (#optsum) — a hidden panel that silently holds "Auto approve" on is worse than the
+     three rows it saves. */
+  .optpanel.collapsed { padding: 7px 14px; }
+  .opthead { display: flex; align-items: center; gap: 8px; width: 100%; padding: 0; background: transparent;
+    border: none; font-family: var(--sans); font-size: 12px; font-weight: 500; color: var(--dim);
+    cursor: pointer; text-align: left; }
+  .opthead:hover { color: var(--text-2); }
+  .opthead svg { display: block; width: 12px; height: 12px; flex: none; transition: transform .15s; }
+  .optpanel.collapsed .opthead svg { transform: rotate(-90deg); }
+  .optpanel.collapsed .optbar { display: none; }
+  .optsum { min-width: 0; color: var(--dim); font-weight: 400; font-style: italic;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .optpanel:not(.collapsed) .optsum { display: none; }
+
+  .rail { background: var(--surface-2); display: flex; flex-direction: column; min-height: 0; }
+  .rail h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 0; padding: 19px 22px 12px; }
+  .pipe { padding: 4px 22px; flex: 1; overflow-y: auto; }
+  .pipe.idle::after { content: "Stages light up as your request moves through them. Several are skipped on most runs.";
+    display: block; font-size: 12px; line-height: 1.5; color: var(--dim); padding: 6px 0 2px; }
+  .node { display: flex; gap: 13px; align-items: flex-start; padding-bottom: 4px; }
+  .node .gut { display: flex; flex-direction: column; align-items: center; flex: none; }
+  .node .tile { width: 13px; height: 13px; border-radius: 2px; background: var(--surface); border: 1px solid var(--line); margin-top: 3px; transition: background .25s, box-shadow .25s, border-color .25s; }
+  .node .stem { width: 1px; flex: 1; background: var(--line); margin: 4px 0; min-height: 22px; }
+  .node:last-child .stem { display: none; }
+  .node .ncontent { flex: 1; min-width: 0; }
+  .node .lbl { font-size: 12px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); padding-top: 1px; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  /* per-stage timer (how long the stage took); ticks live while a stage is active, freezes when done */
+  .node .timer { font-size: 11px; letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--dim); flex: none; opacity: 0; transition: opacity .2s; font-variant-numeric: tabular-nums; }
+  .node .timer.set { opacity: .8; }
+  .node.active .timer, .node.gatehold .timer { opacity: .9; color: var(--accent); }
+  .node.gatehold .timer { color: var(--warn); }
+  .node .detail { font-size: 12px; font-weight: 400; color: var(--dim); display: block; margin-top: 3px; text-transform: none; letter-spacing: 0; min-height: 14px; word-break: break-word; }
+  .node .detail:empty { display: none; }   /* idle rail: the stage description lives in the node's title */
+  .node.active .tile { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .node.active .lbl { color: var(--text); }
+  .node.gatehold .tile { background: var(--warn); border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+  .node.gatehold .lbl { color: var(--warn); }
+  /* completed stages stay lit so a finished run reads as done at a glance;
+     the pipeline only resets when the next human message rebuilds it. */
+  .node.done .tile { background: var(--ok); border-color: var(--ok); box-shadow: none; }
+  .node.done .stem { background: var(--ok); opacity: .5; }
+  .node.done .lbl { color: var(--text); }
+  .node.done .detail { color: var(--text); }
+  /* a stage that errored out — painted red so a failed run reads at a glance */
+  .node.failed .tile { background: var(--danger-deep); border-color: var(--danger-deep); box-shadow: 0 0 0 3px var(--danger-soft); }
+  .node.failed .lbl { color: var(--danger); }
+  .node.failed .detail { color: var(--danger); }
+  /* a stage that was bypassed (no clarification, auto-approved read, skipped run) — painted
+     darker/muted so it reads as "nothing happened here", distinct from a completed (green) stage.
+     Defined after .node.done so it wins on equal specificity. */
+  .node.done.skipped .tile { background: var(--ground); border-color: var(--line); box-shadow: none; }
+  .node.done.skipped .stem { background: var(--line); opacity: 1; }
+  .node.done.skipped .lbl { color: var(--dim); }
+  .node.done.skipped .detail { color: var(--dim); }
+  .pick { display: inline-flex; align-items: center; gap: 7px; font-size: 12px;
+    color: var(--text); background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--dim);
+    border-radius: var(--r-sm); padding: 5px 9px; margin-top: 9px; transform-origin: left center;
+    animation: pickin .34s cubic-bezier(.2,.9,.3,1.35) both; }
+  .pick.read { border-left-color: var(--accent); }
+  .pick.write { border-left-color: var(--warn); }
+  .pick .pdot { width: 7px; height: 7px; border-radius: 2px; background: var(--dim); flex: none; }
+  .pick.read .pdot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .pick.write .pdot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+  .pick .pkind { color: var(--dim); }
+  @keyframes pickin { from { opacity: 0; transform: scale(.4) translateY(-5px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+
+  .ledger { border-top: 1px solid var(--line); padding: 15px 22px 18px; font-size: 12px; color: var(--dim); }
+  .ledger .lrow { display: flex; justify-content: space-between; padding: 3px 0; }
+  .ledger .lrow b { color: var(--text); font-weight: 600; }
+  .ledger .lrow b.gold { color: var(--text); }
+  /* finished-tasks notification (tasks that completed in chats you weren't watching) */
+  .notif { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line);
+    padding: 12px 22px; font-size: 12px; color: var(--dim); }
+  .notif[hidden] { display: none; }
+  .notif .nhead { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .notif .ndot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger-deep); flex: none; }
+  .notif b { color: var(--text); }
+  .notif .nclear { margin-left: auto; border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px 8px; }
+  .notif .nhead:hover .nclear { color: var(--text); border-color: var(--dim); }
+  .notif .nlist { display: flex; flex-direction: column; gap: 2px; }
+  .notif .nitem { padding: 3px 6px; border-radius: var(--r-sm); color: var(--text-2); cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .notif .nitem:hover { color: var(--text); background: var(--line); }
+  .notif .nmore { padding: 2px 6px; color: var(--dim); font-size: 11px; }
+
+  /* admin */
+  .adminview h1 { font-size: 22px; margin: 0 0 4px; }
+  .adminview h2 { font-size: 16px; font-weight: 600; margin: 0; }
+  .adminview .sub { color: var(--text-2); font-size: 13px; line-height: 1.55; margin: 0 0 16px; max-width: 760px; }
+  .adminview .sub b { font-weight: 600; }
+  /* Page header: the title and its one-line explanation share a row, and status pills are pushed
+     to the right edge — a wide window shouldn't spend three stacked lines on prose. Anything the
+     lede used to spell out now lives in a title= on the control it describes. */
+  .phead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 16px; }
+  .phead h1, .phead h2 { margin: 0; }
+  .phead .sub { margin: 0; flex: 1 1 340px; max-width: 900px; }
+  .phead .pside { margin-left: auto; flex: none; }
+  /* Count pill right-aligns like .pside. Without this it just follows .sub, whose width is capped
+     at 900px, so the pill's x tracked each section's HEADING length — three counts, three
+     positions (measured 1083/1158/1094px). Admin's `.asection h3` counts already align: their
+     `.secttoggle` is flex:1, which does the same job. */
+  .phead .sectcount { margin-left: auto; flex: none; align-self: center; }
+  .phead.sec { margin-top: 26px; padding-top: 13px; border-top: 1px solid var(--line); }
+  /* Memory tab: one collapsible section per store, so the tab opens on facts instead of on all
+     three stores concatenated. The caret sits in the header row itself. */
+  .phead.memtoggle { cursor: pointer; align-items: center; }   /* the caret centers against the
+    whole title+subtitle block, not just its first line — matters once the subtitle wraps to two
+    lines (baseline alignment, the .phead default, only matches the FIRST line's baseline) */
+  .phead .gcaret { color: var(--accent); font-size: 12px; transition: transform .15s; }
+  .phead.memtoggle:hover h2 { color: var(--accent); }
+  .memsec.collapsed .memsec-body { display: none; }
+  .memsec.collapsed .phead .gcaret { transform: rotate(-90deg); }
+  .memsec .memhead { margin: 12px 0 0; }
+  .memcount { margin-left: 2px; white-space: nowrap; }
+  .memmore { display: block; margin: 4px 0 18px; padding: 6px 0; }
+  .memmore:hover { color: var(--accent); }
+  /* A stored approach is a whole method (often 10+ lines), so 46 of them is a scroll even in
+     chunks — clamp to ~4 lines and expand the one you're reading, same fade as a board card. */
+  .approach.clamped, .rule.clamped { max-height: 88px; overflow: hidden; cursor: pointer;
+    -webkit-mask-image: linear-gradient(180deg,#000 64%,transparent); mask-image: linear-gradient(180deg,#000 64%,transparent); }
+  .approach.clamped:hover, .rule.clamped:hover { border-left-color: var(--accent); }
+  /* stored bodies are model-written markdown — render it rather than showing the ** and 1. */
+  .approach p, .rule p { margin: 0 0 6px; }
+  .approach p:last-child, .rule p:last-child { margin-bottom: 0; }
+  .approach ul, .approach ol, .rule ul, .rule ol { margin: 0 0 6px; padding-left: 18px; }
+  .approach strong, .rule strong { color: var(--text); font-weight: 600; }
+  .approach code, .rule code { font-family: var(--mono); font-size: 12px; background: var(--surface-2);
+    padding: 0 4px; border-radius: 3px; }
+  .adminview code { font-family: var(--mono); color: var(--accent); font-size: 12px; }
+  /* No width cap: every other tab spans the full container, so capping Admin left its right edge
+     short of theirs. Prose stays readable via .sub (760px) rather than by narrowing the section. */
+  .asection { margin-bottom: 22px; }
+  /* Titles are the page's structure, so they outrank body text: --text-2 (8.8:1) not --dim
+     (4.9:1, the same grey as secondary labels), over a --line-strong rule. The negative margin
+     lets the hover band breathe past the content while the text stays aligned with it. */
+  .asection h3 { font-size: 12px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--text-2); border-bottom: 1px solid var(--line-strong); padding: 8px 10px 9px; margin: 0 -10px 8px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; border-radius: var(--r-sm) var(--r-sm) 0 0; }
+  /* Section-level collapse: the title IS the toggle — no redundant inner group header. */
+  .secttoggle { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; flex: 1; min-width: 0; }
+  .asection.coll h3:hover { background: var(--surface-2); }
+  .asection.coll h3:hover .secttoggle { color: var(--text); }
+  .secttoggle .gcaret { color: var(--accent); }
+  .asection.coll.collapsed .secttoggle .gcaret { transform: rotate(-90deg); }
+  /* Everything but the header, not just .asection-body: the add-forms (#cap-form, #mcp-form,
+     #project-form) and the MCP warning are siblings of the body, so a body-only rule left an
+     open "+ MCP server" form standing under a section that says it is collapsed. */
+  .asection.coll.collapsed > *:not(h3) { display: none; }
+  /* A collapsed section still has to say what's inside it. */
+  .sectcount { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--dim);
+    background: var(--raised); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+  .asection.coll h3:hover .sectcount { color: var(--text-2); border-color: var(--line-strong); }
+  .h3btns { display: inline-flex; align-items: center; gap: 8px; }
+  /* An integration (Slack, GitHub) groups the features it offers, so a second one drops in as a
+     sibling. A subsection is INDENTED and one step quieter than its parent — the outer name is the
+     vendor, the inner one the feature, and the indent is what says which owns which. */
+  .asection .subsection { margin: 2px 0 14px; padding-left: var(--indent-sub);
+    border-left: 1px solid var(--line); }
+  .asection .subsection:last-child { margin-bottom: 2px; }
+  .asection .subsection h3 { font-size: 11px; letter-spacing: .05em; color: var(--dim);
+    border-bottom: 1px solid var(--line); padding: 6px 8px 7px; margin: 0 -8px 6px; }
+  .asection .subsection h3:hover .secttoggle { color: var(--text-2); }
+
+  /* Appearance -> Theme. One card per palette, laid out to grow: the section is a stack of
+     labelled groups (.uigroup), so a later density / type-scale control drops in as a sibling
+     without disturbing this one. */
+  /* Same nesting rule as `.asection .subsection`: Theme and Companion are groups INSIDE
+     Appearance, and flush they read as two more sections. Quieter type alone doesn't say it. */
+  .uigroup { margin: 0 0 20px; padding-left: var(--indent-sub);
+    border-left: 1px solid var(--line); }
+  .uigroup:last-child { margin-bottom: 4px; }
+  .uigroup > h4 { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--dim); margin: 0 0 3px; }
+  .themegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin-top: 10px; }
+  /* The card carries `data-theme`, so everything inside it renders in that palette's own tokens.
+     That is the whole preview mechanism — no hex value is ever restated in markup or JS, so a
+     palette edit above cannot leave a stale swatch behind. */
+  .themecard { text-align: left; font-family: var(--sans); cursor: pointer; padding: 0; overflow: hidden;
+    background: var(--ground); color: var(--text);
+    border: 1px solid var(--line-strong); border-radius: var(--r-md); transition: box-shadow .15s, transform .1s; }
+  .themecard:hover { box-shadow: 0 4px 14px var(--shadow); }
+  .themecard:active { transform: translateY(1px); }
+  /* The selected ring is drawn in the PAGE's accent, not the card's — it says "this is the one
+     you are looking at", which is a statement about the app, not about the palette. */
+  .themecard.sel { outline: 2px solid var(--page-accent); outline-offset: 2px; }
+  .themebar { display: flex; height: 34px; }
+  .themebar span { flex: 1; }
+  .themebar .s1 { background: var(--surface-2); } .themebar .s2 { background: var(--raised); }
+  .themebar .s3 { background: var(--accent); flex: 1.4; } .themebar .s4 { background: var(--ok); }
+  .themebar .s5 { background: var(--warn); } .themebar .s6 { background: var(--danger); }
+  .themebody { padding: 9px 11px 11px; border-top: 1px solid var(--line); }
+  .themename { font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: baseline; gap: 6px; }
+  /* Always in the DOM, shown only on the selected card — so switching is one class toggle and
+     never a markup rewrite. */
+  .themecard .cur { display: none; }
+  .themecard.sel .cur { display: inline-block; }
+  .themename .cur { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 1px 5px; }
+  .themedesc { font-size: 11.5px; color: var(--text-2); margin-top: 2px; line-height: 1.45; }
+  .addbtn { font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none;
+    color: var(--accent); background: transparent; border: 1px solid var(--line); border-radius: var(--r-sm);
+    padding: 4px 10px; cursor: pointer; }
+  .addbtn:hover { border-color: var(--accent); }
+  .aform { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 15px;
+    margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
+  .aform label { font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: -4px; }
+  .aform input, .aform textarea, .aform select { padding: 9px 11px; }
+  .aform textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
+  .aform .frow { display: flex; gap: 12px; }
+  .aform .frow > div { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+  .aform .ferr { color: var(--danger); font-size: 12px; }
+  .aform .factions { display: flex; gap: 9px; }
+  /* Endpoints: the same table idiom as the models below it — a sibling, not a card. */
+  .eptable { margin-bottom: 18px; }
+  .eptable .mn { font-weight: 500; }
+  /* Discovered models: a long list must scroll inside the form, not stretch the panel. Each row
+     is a <label>, so it must opt OUT of .aform's uppercase label styling — a model id is a
+     verbatim string and upper-casing it makes two distinct ids look like one repeated. */
+  /* Cream like .optpanel, not the near-white form surface — a picker is a panel, not a form. */
+  .aform.discpanel { background: var(--surface-2); }
+  .disclist { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto;
+    border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; }
+  .aform .disclist label.discrow { display: flex; align-items: center; gap: 9px; margin: 0;
+    padding: 5px 10px; font-size: 13px; font-weight: 400; letter-spacing: 0;
+    text-transform: none; color: var(--text); cursor: pointer; }
+  .discrow + .discrow { border-top: 1px solid var(--line); }
+  .discrow:hover { background: var(--accent-soft); }
+  .discrow input { margin: 0; flex: none; }
+  .discrow code { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .discrow .disalias { margin-left: auto; color: var(--dim); font-size: 11px; font-family: var(--mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .discrow .dishave { color: var(--dim); font-size: 11px; flex: none; }
+  /* Slack auto-answer form — grouped sections, toggle rows, and helper microcopy. */
+  .slackform { gap: 16px; padding: 18px; }
+  .slackform .sk-sec { display: flex; flex-direction: column; gap: 10px;
+    border-top: 1px solid var(--line); padding-top: 15px; }
+  .slackform .sk-sectitle { font-size: 13px; font-weight: 600; color: var(--text);
+    letter-spacing: 0; text-transform: none; }
+  /* The hint line belongs to .aform, not the Slack form — the board form uses it too. */
+  .aform .sk-help { font-size: 12px; color: var(--dim); line-height: 1.5;
+    text-transform: none; letter-spacing: 0; font-weight: 400; margin: 0 0 2px; display: block; }
+  .aform .sk-help code, .slackform .sk-tg-txt code { font-family: var(--mono); font-size: 11px;
+    background: var(--raised); padding: 1px 5px; border-radius: 4px; color: var(--text-2); }
+  .slackform .sk-opt { color: var(--dim); font-weight: 400; }
+  .slackform .sk-toggle { flex-direction: row; align-items: flex-start; gap: 11px; cursor: pointer;
+    padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--r-sm);
+    background: var(--raised); text-transform: none; letter-spacing: 0; margin: 0; }
+  .slackform .sk-toggle:hover { border-color: var(--line-strong); }
+  .slackform .sk-toggle.sk-master { border-color: var(--accent-line); background: var(--accent-soft); }
+  .slackform .sk-toggle.sk-test { border-color: var(--warn-line); background: var(--warn-soft); }
+  .slackform .sk-toggle input[type=checkbox] { margin-top: 2px; flex: none; }
+  .slackform .sk-tg-txt { display: flex; flex-direction: column; gap: 3px; }
+  .slackform .sk-tg-txt b { font-size: 13px; font-weight: 600; color: var(--text); }
+  .slackform .sk-tg-txt small { font-size: 12px; color: var(--dim); line-height: 1.45; }
+  .slackform .frow > label.sk-toggle { flex: 1; }
+  /* Recessed "well" so inputs are obviously editable against the surface card (the default
+     raised bg + faint line barely reads as a field). Toggle chips stay raised/lighter. */
+  .slackform input, .slackform textarea, .slackform select {
+    background: var(--ground); border-color: var(--line-strong); }
+  .slackform input:hover, .slackform textarea:hover, .slackform select:hover { border-color: var(--dim); }
+  .slackform textarea.sk-mono { font-family: var(--mono); font-size: 12.5px; min-height: 88px; }
+  .slackform textarea.sk-ack { min-height: 56px; }
+  .srctag { display: inline-block; white-space: nowrap; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--dim); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; flex: none; }
+  .srctag.plug { color: var(--accent); border-color: var(--accent-line); text-transform: none; letter-spacing: 0;
+    max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stocktag { display: inline-block; white-space: nowrap; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn-line);
+    border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+  .stocktag.repo { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-line); }
+  .stocktag.user { color: var(--ok); background: var(--ok-soft); border-color: var(--ok); }
+  .hpill { display: inline-block; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+    border-radius: 4px; padding: 2px 6px; flex: none; border: 1px solid transparent; }
+  .hpill.connected { color: var(--ok); background: var(--ok-soft); }
+  .hpill.failed { color: var(--danger); background: var(--danger-soft); }
+  .hpill.needs_auth, .hpill.pending { color: var(--warn); background: var(--warn-soft); }
+  .hpill.unknown { color: var(--dim); border-color: var(--line); }
+  /* model health (last real outcome or probe) — same pill, its own two states */
+  .hpill.ok { color: var(--ok); background: var(--ok-soft); }
+  .hpill.bad { color: var(--danger); background: var(--danger-soft); }
+  .mcpbtn { font-size: 12px; background: var(--raised); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 9px; cursor: pointer; flex: none; }
+  .mcpbtn:hover { border-color: var(--accent); }
+  .mcpwarn { background: var(--danger-soft); border: 1px solid var(--danger-line); border-radius: var(--r-md);
+    padding: 10px 12px; margin: 4px 0 12px; font-size: 13px; color: var(--text); display: flex;
+    align-items: center; gap: 12px; }
+  .mcpwarn .msg { flex: 1; max-width: none; margin: 0; }   /* not the chat bubble .msg (680px cap) */
+  .assignrow { display: flex; align-items: center; gap: 14px; padding: 8px 2px; }
+  .assignrow .alabel { font-family: var(--mono); font-size: 13px; color: var(--text); width: 116px; flex: none; }
+  .assignrow select { padding: 7px 10px; }
+  .assignrow .anote { font-size: 12px; color: var(--dim); }
+  .testbtn { text-transform: none; letter-spacing: 0; }
+  .tres { font-size: 12px; flex: 1; min-width: 0; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tres.ok { color: var(--ok); }
+  .tres.bad { color: var(--danger); }
+  /* model table — one model per row, the phase assignment radios in their own columns */
+  .modtable .c-tag { width: 62px; }
+  .modtable .c-health { width: 104px; }
+  /* 8 phases x the .rc column width (46px) — the header labels and the radios are two flex
+     rows that must land on the same grid, so a tier added to gateway.TASKS has to widen this
+     too (ModelPhaseColumnWidthTests). */
+  .modtable .c-phases { width: 414px; }
+  .modtable .c-turns { width: 74px; }
+  .modtable .c-turns input { width: 56px; }
+  .modtable .c-test { width: 150px; }
+  .modtable .c-rm { width: 30px; }
+  /* both cells: the td's 10px .ctable padding otherwise shrinks the radio row 20px inside the
+     header's own grid, and the two rows drift apart */
+  .modtable th.c-phases, .modtable td.c-phases { padding-left: 0; padding-right: 0; }
+  .modtable th.c-phases { padding-top: 0; padding-bottom: 0; }
+  /* the warning banner above the table already names every broken model, so the per-row pill
+     is the first thing to shed when the window can't hold the columns */
+  @media (max-width: 940px) { .modtable .c-health { display: none; } }
+  @media (max-width: 1010px) { .modtable .c-turns { display: none; } }
+  .mrow.off { opacity: .5; }
+  .mrow .minfo { display: block; min-width: 0; }
+  .mrow .minfo .mn { font-family: var(--mono); font-size: 13px; color: var(--text); }
+  .mrow .minfo small { display: block; color: var(--dim); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mradios { display: flex; flex: none; }
+  .mradios .rc { width: 46px; display: flex; justify-content: center; }
+  .mradios .rc.h { font-size: 11px; letter-spacing: .03em; text-transform: uppercase; color: var(--dim); cursor: help; }
+  .mradios input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+  .mradios input:disabled { opacity: .25; cursor: not-allowed; }
+  .mtest { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .remove { background: transparent; border: none; color: var(--dim); cursor: pointer; font-size: 16px; line-height: 1; flex: none; padding: 0 2px; }
+  .remove:hover { color: var(--danger); }
+  .remove.edit { font-size: 13px; }
+  .remove.edit:hover { color: var(--accent); }
+
+  /* memory */
+  .memhead { display: flex; align-items: baseline; gap: 22px; margin: 0 0 22px; flex-wrap: wrap; }
+  /* GC only, and only while it's a single lone control (no toolbar yet) — Run GC / the spinner
+     centered in the row, same as the empty-state screenshot asked for. Once candidates exist,
+     the row goes back to normal (select all/none left, Evict selected pushed right via its own
+     margin-left:auto) since a centered CLUSTER of toolbar buttons reads worse than a left-aligned one. */
+  .memhead.gccenter { justify-content: center; }
+  #gc-list.gccenter { text-align: center; }   /* "Not run yet." / "Nothing flagged" under the centered button */
+  p.sub.gccenter { text-align: center; max-width: none; }   /* the scanning hint, under the centered button — .sub's own max-width would otherwise keep it hugging the left edge */
+  .memstat { font-size: 12px; color: var(--dim); }
+  .memstat b { color: var(--text); font-weight: 600; font-size: 16px; }
+  .memstat b.gold { color: var(--text); }
+  .clearbtn { font-size: 12px; color: var(--dim); background: transparent;
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px 11px; cursor: pointer; margin-left: auto; }
+  .clearbtn:hover { color: var(--danger); border-color: var(--danger); }
+  .event { border-left: 2px solid var(--line); padding: 0 0 0 16px; margin: 0 0 20px; position: relative; }
+  .event::before { content: ""; position: absolute; left: -5px; top: 5px; width: 8px; height: 8px; border-radius: 2px; background: var(--dim); }
+  .event.write::before { background: var(--warn); }
+  .event.read::before { background: var(--accent); }
+  .event .etop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .event .ecap { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+  .event .ewhen { font-size: 12px; color: var(--dim); }
+  .event .ecost { font-size: 12px; color: var(--dim); margin-left: auto; }
+  .event .ereq { color: var(--text); font-size: 13.5px; margin: 6px 0 4px; }
+  .event .ereply { font-family: var(--mono); font-size: 12px; color: var(--text-2); white-space: pre-wrap; word-break: break-word;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 9px 12px; max-height: 140px; overflow: auto; }
+  .memempty { color: var(--dim); font-size: 13px; }
+  #memoryview .event { display: grid; grid-template-columns: minmax(0, var(--measure)) minmax(0, 1fr);
+    column-gap: 30px; align-items: start; }
+  #memoryview .event > .fact, #memoryview .event > .approach, #memoryview .event > .rule { grid-column: 1; }
+  #memoryview .event > .esrc { grid-column: 2; grid-row: 1 / -1; margin-top: 0; align-self: start; }
+  #memoryview .gccand { max-width: var(--measure); }
+  @media (max-width: 1100px) { #memoryview .event { grid-template-columns: minmax(0,1fr); }
+    #memoryview .event > .esrc { grid-column: 1; grid-row: auto; margin-top: 4px; } }
+  .fact { font-size: 14px; color: var(--text); padding: 7px 0 7px 14px; border-left: 2px solid var(--accent); margin-bottom: 7px;
+    display: flex; align-items: flex-start; gap: 8px; }
+  .ftext { flex: 1; min-width: 0; word-break: break-word; }
+  /* the per-fact control only appears on hover — one per fact would otherwise shout on a 90-row list */
+  .factdel { opacity: 0; transition: opacity .12s; flex: 0 0 auto; }
+  .fact:hover .factdel, .factdel:focus { opacity: 1; }
+  .esrc { font-size: 12px; color: var(--dim); margin-top: 4px; }
+  /* memory GC candidates: the whole row is the click target (not just the checkbox), and an
+     unchecked one visibly dims — the row IS the "will this be evicted?" indicator. */
+  .gccand { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px 8px 14px; margin-bottom: 6px;
+    border-left: 2px solid var(--warn); border-radius: 0 var(--r-sm) var(--r-sm) 0; cursor: pointer; transition: opacity .12s, background .12s; }
+  .gccand:hover { background: var(--surface-2); }
+  .gccand input[type=checkbox] { margin-top: 3px; accent-color: var(--accent); cursor: pointer; flex: 0 0 auto; }
+  .gccand .gcbody { flex: 1; min-width: 0; }
+  .gccand.gcunchecked { opacity: .5; }
+  .approach { font-size: 13.5px; color: var(--text); padding: 7px 0 7px 14px; border-left: 2px solid var(--warn);
+    margin-bottom: 7px; white-space: pre-wrap; word-break: break-word; }
+  .soldel, .ruledel, .ruleedit, .factdel { font-size: 11px; color: var(--dim); background: transparent;
+    border: none; cursor: pointer; padding: 0 0 0 8px; text-decoration: underline; }
+  .soldel:hover, .ruledel:hover, .ruleedit:hover, .factdel:hover { color: var(--danger); }
+  /* behaviour rules (issue #68) */
+  .rule { font-size: 13.5px; color: var(--text); padding: 7px 0 7px 14px; border-left: 2px solid var(--warn);
+    margin-bottom: 7px; white-space: pre-wrap; word-break: break-word; }
+  .rscope { font-family: var(--mono); font-size: 11px; color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 2px 6px; }
+  .ruleadd { margin: 0 0 18px; }
+  .ruleadd textarea { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 12px; font: inherit; font-size: 13.5px; resize: vertical; }
+  .rulerow { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  .rulerow select { padding: 6px 10px; }
+  .rulecard { background: var(--surface); border: 1px solid var(--warn-line); border-radius: var(--r-md); padding: 12px 14px; margin: 6px 0; }
+  .rulecard .rc-h { font-size: 12px; color: var(--text-2); margin-bottom: 8px; }
+  .rulecard textarea { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; font: inherit; font-size: 13.5px; resize: vertical; }
+  .rulecard .rc-row { display: flex; gap: 10px; align-items: center; margin-top: 9px; flex-wrap: wrap; }
+  .rulecard select { padding: 6px 10px; }
+  .rc-save { font-size: 12.5px; font-weight: 600; color: var(--on-accent); background: var(--accent); border: none;
+    border-radius: var(--r-sm); padding: 7px 14px; cursor: pointer; }
+  .rc-dismiss { font-size: 12.5px; color: var(--dim); background: transparent;
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 6px 12px; cursor: pointer; }
+  /* knowledge base (issue #67) */
+  /* Knowledge is a full-width tab like every other one, so its controls take the whole content
+     column. The inputs used to stop at 760px while the headings, empty state, settings row and
+     section rules ran the full width (measured: 760 vs 1305 at a 1506px window), which left the
+     forms looking half-drawn and this tab looking narrower than its siblings. */
+  .kadd { margin: 14px 0 18px; }
+  .kadd[hidden] { display: none; }
+  /* store first, action second: with the form permanently open the page led with a 200px paste
+     box and said "0 documents" underneath it in passing. */
+  .kbar { display: flex; align-items: baseline; gap: 12px; margin: 0 0 12px; }
+  .kbar .kaddbtn { margin-left: auto; }
+  /* An empty store's most important message should not be its quietest. */
+  .kempty { border: 1px dashed var(--line-strong); border-radius: var(--r-md);
+    padding: 26px 22px; text-align: center; color: var(--dim); font-size: 13px; }
+  .kempty b { display: block; color: var(--text); font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .kadd input, .kprev input { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 12px; font: inherit; font-size: 13.5px; margin-bottom: 8px; }
+  .kadd textarea { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 12px; font: inherit; font-size: 13.5px; resize: vertical; }
+  .kdoc { font-size: 14px; color: var(--text); }
+  .kwarn { font-size: 11px; color: var(--warn); border: 1px solid var(--warn-line);
+    border-radius: var(--r-sm); padding: 1px 6px; margin-left: 6px; white-space: nowrap; }
+  .ksettings { display: flex; gap: 26px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }
+  .ksettings label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 8px; }
+  .ksettings select { padding: 6px 10px; }
+  .ksettings #k-thrv { color: var(--text); font-variant-numeric: tabular-nums; min-width: 30px; }
+  .ksettings input[type=range] { accent-color: var(--accent); height: 18px; cursor: pointer; width: 180px; }
+  .kprev { display: flex; gap: 10px; align-items: flex-start; }
+  /* flex, not width:100% — at full width a 100% input is already the whole row, so the Preview
+     button lands past the right edge every other block in the tab lines up on. */
+  .kprev input { margin-bottom: 0; width: auto; flex: 1 1 auto; min-width: 0; }
+  /* per-project instructions (issue #69) */
+  .projinstr { margin: 0; }
+  .projinstr textarea { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; font: inherit; font-size: 12.5px; resize: vertical; }
+  .projinstr .pi-save { margin-top: 6px; }
+  /* per-MCP usage notes: same shape as the standing-instructions box, one column over */
+  .mcpnote textarea { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 10px; font: inherit; font-size: 12.5px; resize: vertical; }
+  .mcpnote .mn-save { margin-top: 6px; margin-left: 0; }
+
+  /* audit — denser, forensic, immutable */
+  .immutable { font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    color: var(--dim); border: 1px solid var(--line); border-radius: 5px; padding: 3px 8px; }
+  /* One real table, not a list of divs: named columns, so "which model / how long / how many
+     tokens" is answerable by scanning DOWN a column instead of re-parsing every row. */
+  /* max-width, not full bleed: 9 short columns stretched over a 1500px window put a dead band
+     between "Reason" and "Output" and pushed the badges away from the name they belong to. */
+  .atable { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
+  /* -30px, not 0: sticky offsets resolve against the scroll container's CONTENT box, and
+     .adminview has 30px of top padding — at top:0 rows scroll through that band above the
+     header instead of under it. */
+  .atable th { position: sticky; top: -30px; z-index: 1; background: var(--ground);
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--dim); text-align: left; padding: 7px 14px;
+    border-bottom: 1px solid var(--line-strong); white-space: nowrap; }
+  .atable td { padding: 8px 14px; border-bottom: 1px solid var(--line);
+    vertical-align: baseline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* flush the outer edges so the table lines up with the header/filters above it */
+  .atable th:first-child, .atable td:first-child { padding-left: 2px; }
+  .atable th:last-child, .atable td:last-child { padding-right: 2px; }
+  .atable th.num, .atable td.num { text-align: right; }
+  .atable td.num { font-variant-numeric: tabular-nums; }
+  /* Column widths live here (not as inline <col style>) so the media queries below can override
+     them. "Run" is the only unsized column, so it absorbs the slack on a wide window. */
+  .atable .c-when { width: 120px; } .atable .c-cap { width: 210px; }
+  .atable .c-try { width: 84px; }   .atable .c-verdict { width: 190px; }
+  .atable .c-model { width: 148px; }
+  .atable .c-took { width: 76px; }
+  .atable .c-out { width: 96px; }   .atable .c-caret { width: 20px; }
+  /* "Run" is the only unsized column — it absorbs the slack: it has something to show on every
+     row (the id that correlates with the transcript, the board card and the workflow-id filter
+     above), unlike Reason (below), which is set on a minority of rows. */
+  .atable .c-run { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  /* Verdict + reason share one cell (issue: two columns that were each blank on the other's rows
+     — every needs-human/supervisor row had an EMPTY verdict badge and only Reason carried the
+     outcome, and every verified/unverified row had no reason). Stacked, not inline, so a long
+     reason ("code review: changes_requested") gets its own line instead of fighting the badge
+     for the same nowrap/ellipsis run — the earlier Fallback-column bug was exactly a badge's
+     border getting scissored by the parent td's overflow:hidden. */
+  .averdict { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+  .averdict .areason { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 100%; }
+  .arec { cursor: pointer; }
+  .arec:nth-child(even) { background: var(--surface-2); }
+  .arec:hover { background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); }
+  .arec .awhen { color: var(--dim); font-size: 12px; }
+  .arec .acap { font-family: var(--mono); color: var(--text); }
+  .arec .amodel, .arec .adur, .arec .areason { color: var(--dim); }
+  .arec .anone { color: var(--line-strong); }
+  /* The plan's author, beside its label. Muted: it qualifies the plan, it is not a heading. */
+  .planlabel .planby{font-weight:400;opacity:.7;font-size:12px}
+  /* Current pipeline stage on a RUNNING card. Deliberately quiet: it is orientation, not a
+     warning, and must not compete with the needs/advisory chips beside it. */
+  .bchip.stage{text-transform:uppercase;letter-spacing:.04em;font-size:10px}
+  /* One hue per stage, so a glance at the Running column reads WHICH stage each card is in
+     without reading six words. Each theme carries its own tuned set (--stg-*); a stage with
+     no token keeps the default --sc and renders exactly as the chip did before. */
+  .bchip.stage { --sc: var(--dim); color: var(--sc);
+    border-color: color-mix(in srgb, var(--sc) 42%, transparent);
+    background: color-mix(in srgb, var(--sc) 12%, var(--surface-2)); }
+  .bchip.stage.s-router{--sc:var(--stg-router)}
+  .bchip.stage.s-clarify{--sc:var(--stg-clarify)}
+  .bchip.stage.s-decompose{--sc:var(--stg-decompose)}
+  .bchip.stage.s-plan{--sc:var(--stg-plan)}
+  .bchip.stage.s-gate{--sc:var(--stg-gate)}
+  .bchip.stage.s-run{--sc:var(--stg-run)}
+  .bchip.stage.s-pr{--sc:var(--stg-pr)}
+  .bchip.stage.s-review{--sc:var(--stg-review)}
+  .bchip.stage.s-qa{--sc:var(--stg-qa)}
+  .bchip.stage.s-deliver{--sc:var(--stg-deliver)}
+  /* the chosen model could not run this attempt and another substituted. Marked ON the model
+     name rather than in a column of its own: it is set on 2% of rows, so a dedicated column
+     spent 104px to render ~1400 em-dashes. A colour + glyph carries it without adding a box
+     that the cell's overflow:hidden would scissor — which is what broke the last attempt to
+     put this in the Model cell, so the badge is deliberately NOT reintroduced here. */
+  .arec .amodel.fell { color: var(--warn); }
+  .arec .amodel.fell::before { content: "\21a9"; margin-right: 4px; opacity: .8; }
+  .arec .aout.ran { color: var(--ok); }
+  .arec .aout.denied { color: var(--danger); }
+  .arec .acaret { color: var(--dim); text-align: right; width: 16px; }
+  .arec:hover .acaret { color: var(--accent); }
+  .arec.denied .acap { color: var(--dim); text-decoration: line-through; }
+  .aout-trunc { color: var(--dim); font-size: 12px; margin-top: 6px; }
+  .areq-full { font-size: 13px; color: var(--text-2); white-space: pre-wrap;
+    overflow-wrap: anywhere; margin-bottom: 10px; }
+  .areq-full b { color: var(--text); font-weight: 600; }
+  .abadge { font-size: 11px; letter-spacing: .03em; text-transform: uppercase;
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-left: 6px; color: var(--dim); }
+  .abadge.ok { color: var(--ok); border-color: var(--ok); }
+  .abadge.bad { color: var(--danger); border-color: var(--danger); }
+  .abadge.fell { color: var(--warn); border-color: var(--warn); text-transform: none; margin-left: 0; }
+  .abadge.shadow { color: var(--dim); border-color: var(--line); text-transform: none; margin-left: 0; }
+  /* Output tokens per model. This is a ranked part-to-whole over ~12 classes; past ~7 classes
+     that all carry meaning the form is a TABLE, not a longer inline list and not more colours.
+     As a wrapping run of "name number" pairs the figures never aligned, so the one question it
+     exists to answer — who spent the most — could not be read off it at all.
+     The bar is a magnitude cue only: ONE hue for every row, never darker-where-bigger, which
+     would double-encode length as colour and burn a channel for nothing. Every row also carries
+     its number and its share as text, so nothing here is encoded by colour alone. */
+  .tokwrap { margin: -8px 0 22px; }
+  .toktable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .toktable td { padding: 3px 0; vertical-align: middle; border: none; }
+  .toktable .tkname { color: var(--text-2); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 190px; padding-right: 12px; }
+  .toktable .tkbar { width: 100%; }
+  .toktable .tkbar i { display: block; height: 7px; border-radius: 2px;
+    background: var(--accent); opacity: .55; min-width: 2px; }
+  .toktable .tkval { text-align: right; padding-left: 12px; color: var(--text);
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .toktable .tkpct { text-align: right; padding-left: 10px; color: var(--dim);
+    font-variant-numeric: tabular-nums; white-space: nowrap; width: 46px; }
+  @media (max-width: 620px) { .toktable .tkbar { display: none; } }
+  .aest { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .03em; }
+  .atable td .abadge { margin-left: 0; }   /* try/verdict have their own cells now */
+  /* Narrow: drop columns you can recover from the detail modal, keep what identifies a row.
+     Fixed table-layout does NOT shrink over-wide columns — it overflows — so each step must take
+     the remaining widths back under the window before the next one is needed. */
+  @media (max-width: 1180px) { .atable .c-run    { display: none; } }
+  @media (max-width: 1024px) { .atable .c-took   { display: none; } }
+  @media (max-width: 950px)  { .atable .c-model  { display: none; } }
+  @media (max-width: 800px)  { .atable .c-try    { display: none; } }
+  @media (max-width: 660px)  { .atable .c-when { width: 86px; } .atable .c-cap { width: 148px; }
+    .atable .c-verdict { width: 104px; } .atable th, .atable td { padding: 8px 8px; } }
+  @media (max-width: 560px)  { .atable .c-when { width: 76px; } .atable .c-cap { width: 128px; }
+    .atable .c-out { width: 78px; } }
+
+  /* jobs (runbooks) */
+  .job { border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 14px; margin-bottom: 10px; }
+  .job.off { opacity: .5; }
+  .job .jtop { display: grid; grid-template-columns: auto minmax(0,1fr) 118px 150px auto;
+    align-items: center; gap: 12px; }
+  .job .jname { font-size: 14px; color: var(--text); font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .job .jslot { min-width: 0; }
+  .job .jtag { font-size: 11px; color: var(--dim); border: 1px solid var(--line);
+    border-radius: 999px; padding: 2px 8px; }
+  /* The two groups reuse .asection/.secttoggle — same collapsible section furniture as the
+     Events and Admin tabs, rather than a third bespoke heading style. */
+  .asection-body > .job:last-child { margin-bottom: 4px; }
+  /* One editor row per parameter / step. Grid rather than flex so every row's columns line up
+     down the list — a ragged left edge makes 8 steps unreadable. */
+  .erow { display: grid; gap: 8px; align-items: center; margin-bottom: 8px;
+    grid-template-columns: 1fr 1fr 1fr 1.4fr auto auto; }
+  .erow-step { grid-template-columns: 70px 2fr 1.2fr 1fr auto; }
+  .erow input, .erow select { margin: 0; }
+  .erow .echk { display: flex; flex-direction: row; align-items: center; gap: 5px;
+    font-size: 12px; color: var(--dim); margin: 0; white-space: nowrap; }
+  @media (max-width: 780px) {
+    .erow, .erow-step { grid-template-columns: 1fr 1fr auto; }
+  }
+  .wideModalBox { max-width: 900px; }
+  .job .jcron { font-family: var(--mono); font-size: 12.5px; color: var(--text-2); white-space: nowrap; }
+  .job .jnext { font-size: 12px; color: var(--dim); white-space: nowrap; }
+  .job .jactions { display: flex; gap: 8px; align-items: center; }
+  /* Whether an unattended write runs without a human is the highest-stakes fact on the row; in a
+     dot-separated run-on it read exactly like "has notes". */
+  .job .jauto { font-size: 11px; letter-spacing: .02em; border-radius: 4px; padding: 1px 6px;
+    color: var(--warn); border: 1px solid var(--warn-line); background: var(--warn-soft); }
+  .job .jreads { font-size: 11px; letter-spacing: .02em; border-radius: 4px; padding: 1px 6px;
+    color: var(--dim); border: 1px solid var(--line); }
+  @media (max-width: 900px) {
+    .job .jtop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .job .jname { flex: 1 1 220px; }
+    .job .jactions { margin-left: auto; } }
+  .job .jreq { color: var(--text); font-size: 14px; margin: 9px 0 6px; }
+  .job .jstatus { font-size: 12px; color: var(--dim); }
+  .runspin { font-size: 12px; color: var(--accent); display: inline-flex; align-items: center; gap: 6px; }
+  .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pageSpin { display: flex; align-items: center; justify-content: center; height: 100%; }
+  .pageSpin .spin { width: 26px; height: 26px; border-width: 3px; }
+  .cronpreset { font-family: var(--mono); font-size: 12px; color: var(--accent); background: var(--raised);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 9px; cursor: pointer; }
+  .cronpreset:hover { border-color: var(--accent); }
+  .warn { color: var(--warn); }
+  .bundlebtns { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .bundlemsg { font-size: 12px; }
+  .bundlemsg.ok { color: var(--ok); }
+  .bundlemsg.bad { color: var(--danger); }
+  /* swarm board */
+  /* Columns share the row, but an EMPTY column shrinks to a stub instead of holding a quarter of
+     the window hostage — the busy column gets that space for its cards. */
+  .board { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 16px; align-items: flex-start; }
+  .healthstrip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .phead .healthstrip { margin-top: 0; }
+  .hchip { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); }
+  .hchip.ok { color: var(--ok); }
+  .hchip.bad { color: var(--danger); }
+  .bcol { flex: 1 1 280px; min-width: 0; background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: var(--r-lg); padding: 10px; min-height: 70px; }
+  .bcol.empty { flex: 0 1 240px; }   /* wide enough for the header + count on one line */
+  .bcolhead { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--dim);
+    padding: 2px 4px 10px; display: flex; justify-content: space-between; }
+  .bcolhead.run { color: var(--accent); }
+  .bcolhead.wait { color: var(--warn); }
+  .bcolhead span { opacity: .7; }
+  .bcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 11px; margin-bottom: 9px; }
+  .bcard:hover { border-color: var(--line-strong); }
+  .bcard:last-child { margin-bottom: 0; }
+  .bcard.failed { border-color: var(--danger); }
+  /* the card a push notification's tap was about — held long enough to find in a full column */
+  .bcard.focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft, rgba(0,0,0,.08)); }
+  .btop { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .bcap { font-family: var(--mono); font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bstatus { font-size: 12px; color: var(--dim); margin-top: 6px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .bdot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); flex: none; }
+  .bdot.ok { background: var(--ok); } .bdot.bad { background: var(--danger); } .bdot.warn { background: var(--warn); }
+  /* A running card is the only thing on the board still changing — a static dot and a static
+     word read exactly like a stalled run, so both breathe. */
+  .bstatus.live .bdot { background: var(--accent); animation: brun 1.6s ease-in-out infinite; }
+  .bstatus .bell { margin-left: -4px; letter-spacing: 1px; }
+  .bstatus .bell i { font-style: normal; opacity: .25; }
+  .bstatus.live .bell i { animation: brun 1.4s ease-in-out infinite; }
+  .bstatus.live .bell i:nth-child(2) { animation-delay: .18s; }
+  .bstatus.live .bell i:nth-child(3) { animation-delay: .36s; }
+  @keyframes brun { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+  .bchips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .bchips:empty { display: none; }
+  .bchip { display: inline-block; max-width: 100%; font-size: 11px; color: var(--dim);
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+  .bchip.local { color: var(--accent); border-color: var(--accent-line); }
+  .bchip.bfell { color: var(--warn); border-color: var(--warn-line); }
+  .bchip.warn, a.bchip.warn { color: var(--warn); border-color: var(--warn-line); text-decoration: none; }
+  a.bchip.warn:hover { border-color: var(--warn); }
+  .bsched { color: var(--warn); }
+  .bwarn { color: var(--warn); }
+  a.bwarn { text-decoration: none; } a.bwarn:hover { text-decoration: underline; }
+  .bout { font-size: 12px; color: var(--dim); margin-top: 6px; max-height: 46px; overflow: hidden; line-height: 1.4; overflow-wrap: anywhere; }
+  .bout.clip { -webkit-mask-image: linear-gradient(180deg,#000 55%,transparent); mask-image: linear-gradient(180deg,#000 55%,transparent); }
+  .bout p { margin: 0 0 4px; }
+  .bout p:last-child { margin-bottom: 0; }
+  .bout strong { color: var(--text); font-weight: 600; }
+  .bout code { font-family: var(--mono); background: var(--raised); padding: 0 4px; border-radius: 3px; }
+  .bout h1, .bout h2, .bout h3, .bout h4, .bout h5, .bout h6 { font-size: 12px; margin: 0 0 4px; color: var(--dim); }
+  .bout ul, .bout ol { margin: 0 0 4px; padding-left: 16px; }
+  .boutlabel { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); margin-top: 8px; }
+  .bout[data-expand] { cursor: pointer; }
+  .bout[data-expand]:hover { color: var(--text); }
+  .bmore { font-size: 12px; color: var(--accent); cursor: pointer; margin-top: 4px; }
+  .bmore:hover { text-decoration: underline; }
+  .bhint { font-size: 12px; color: var(--warn); margin-top: 6px; line-height: 1.4; }
+  .bretried { font-size: 12px; color: var(--accent); margin-top: 6px; line-height: 1.4; }
+  .bretried a { color: var(--accent); }
+  .bfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; margin-top: 8px; font-size: 11px; color: var(--dim); }
+  .bfoot .bwhen { margin-right: auto; white-space: nowrap; }
+  .bfoot a { color: var(--accent); text-decoration: none; }
+  .bfoot a:hover { text-decoration: underline; }
+  .bapprove { display: flex; gap: 8px; margin-top: 9px; }
+  /* inline "answer the clarification" control on an awaiting-clarification board card */
+  .bquestion { font-size: 12.5px; color: var(--text); margin-top: 7px; line-height: 1.45; }
+  .bclarify { display: flex; gap: 8px; margin-top: 8px; }
+  .bclarify input { flex: 1; padding: 6px 9px; font-size: 12.5px; }
+  .btn.sm { padding: 5px 12px; font-size: 12px; }
+  @media (max-width: 560px) { .bcol, .bcol.empty { flex: 1 1 100%; } }
+  .aform input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
+  /* capabilities: search + collapsible category groups */
+  .captools { display: flex; gap: 8px; align-items: center; margin: 12px 0 8px; }
+  .capsearch { flex: 1; padding: 8px 11px; }
+  .capsearch::placeholder { color: var(--dim); }
+  .linkbtn { font-size: 12px; color: var(--dim); background: transparent;
+    border: none; cursor: pointer; padding: 5px 6px; white-space: nowrap; }
+  .linkbtn:hover { color: var(--accent); }
+  .agroup { margin: 0; }
+  .agroup.hide { display: none; }
+  .agroup-head { display: flex; align-items: center; gap: 10px; padding: 10px 4px; cursor: pointer;
+    border-bottom: 1px solid var(--line); user-select: none; }
+  .agroup-head:hover .glabel { color: var(--accent); }
+  .gcaret { font-size: 9px; color: var(--dim); width: 9px; flex: none; transition: transform .12s; }
+  .agroup.collapsed .gcaret { transform: rotate(-90deg); }
+  .glabel { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text); }
+  .gcount { font-size: 11px; color: var(--dim); background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; flex: none; }
+  .gon { font-size: 11px; color: var(--dim); margin-left: auto; flex: none; }
+  .agroup.collapsed .agroup-body { display: none; }
+  .asub { margin-left: 16px; border-left: 1px solid var(--line); }
+  .asub.hide { display: none; }
+  .asub-head { display: flex; align-items: center; gap: 8px; padding: 8px 4px 8px 12px; cursor: pointer; user-select: none; }
+  .asub-head:hover .subname { color: var(--text); }
+  .asub-caret { font-size: 8px; color: var(--dim); width: 9px; flex: none; transition: transform .12s; }
+  .asub.collapsed .asub-caret { transform: rotate(-90deg); }
+  .subname { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .asub.collapsed .asub-body { display: none; }
+  .capnone { font-size: 12.5px; color: var(--dim); padding: 14px 4px; }
+  /* Every Admin section body is a real <table> (.ctable), not a stack of flex rows: a control's
+     meaning comes from its column header instead of a tooltip, and controls line up in a column
+     across rows whose labels are different lengths. Same reasoning as the Audit table (.atable),
+     but non-sticky — these lists are short and live inside collapsible groups. */
+  .ctable { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .ctable th { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--dim); text-align: left; padding: 7px 10px; white-space: nowrap;
+    border-bottom: 1px solid var(--line-strong); }
+  .ctable td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: middle;
+    overflow: hidden; }
+  /* flush the outer edges so a table lines up with the header/search above it */
+  .ctable th:first-child, .ctable td:first-child { padding-left: 4px; }
+  .ctable th:last-child, .ctable td:last-child { padding-right: 4px; }
+  .ctable th.r, .ctable td.r { text-align: right; }
+  .ctable td.wrap { white-space: normal; overflow: visible; vertical-align: top; }
+  .ctable tbody tr:hover { background: var(--surface-2); }
+  /* pills/switches are inline-block, so without this they'd sit on the cell's text baseline */
+  .ctable td .switch, .ctable td .riskpill, .ctable td .srctag, .ctable td .hpill { vertical-align: middle; }
+  .ctable .ctl { display: flex; align-items: center; gap: 8px; }
+  .ctable .ctl.r { justify-content: flex-end; }
+  /* .arow is a <tr> now. Never give it display:flex again — a flex <tr> stops being a table row
+     and every column in the section loses its alignment. */
+  .arow { display: table-row; }
+  .arow.hide { display: none; }
+  .arow.off .nm { color: var(--dim); }
+  .arow.off .nm small { opacity: .85; }
+  .arow .nm { display: block; font-family: var(--mono); font-size: 13px; color: var(--text);
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .arow .nm small { display: block; font-family: var(--sans); color: var(--dim); font-size: 12px; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Capabilities table: name/desc | score | execution | risk | on | row actions. The switch gets
+     its own column so it can't shift left on the rows that also carry edit/remove buttons. */
+  .captable .c-used { width: 68px; }
+  .captable .c-score { width: 132px; }
+  .captable .c-exec { width: 182px; }
+  .captable .c-risk { width: 70px; }
+  .captable .c-on { width: 54px; }
+  .captable .c-act { width: 48px; }
+  .captable .cmodel { display: block; }
+  .captable .capexec { width: 100%; }
+  /* Plugin category: ONE header table above all its sub-group tables, indented by the .asub
+     rail (16px margin + 1px border) so its columns sit over theirs. */
+  .captable.caphead { margin-left: 17px; width: calc(100% - 17px); }
+  /* Narrow windows: shed the two informational columns before the interactive ones. A hidden
+     column needs the <col> AND its th/td — the <col> alone doesn't hide the cells. */
+  @media (max-width: 1020px) { .captable .c-score { display: none; } }
+  @media (max-width: 900px) { .captable .c-used { display: none; } }
+  @media (max-width: 820px) { .captable .c-exec { display: none; } }
+  .capexec { font-family: var(--mono); font-size: 11px; color: var(--dim); background: var(--raised);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 7px; width: 150px; cursor: pointer; }
+  .capexec.set { color: var(--accent); border-color: var(--accent); }
+  .capexec:focus { outline: none; border-color: var(--accent); }
+  .latchclear { font-family: var(--mono); font-size: 10px; color: var(--warn);
+    background: transparent; border: 1px solid var(--warn); border-radius: var(--r-sm);
+    padding: 2px 5px; margin-left: 5px; cursor: pointer; white-space: nowrap; }
+  .scorechip { display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .01em; flex: none;
+    padding: 3px 7px; border-radius: var(--r-sm); border: 1px solid var(--line); cursor: default;
+    white-space: nowrap; color: var(--dim); background: var(--raised); }
+  .scorechip.ok { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+  .scorechip.warn { color: var(--warn); border-color: var(--warn-line); background: var(--warn-soft); }
+  .scorechip.danger { color: var(--danger); border-color: var(--danger-line); background: var(--danger-soft); }
+  /* run count: plain number, no chip — it's a fact, not a verdict, and a bordered pill beside the
+     reliability chip would read as a second status. `.zero` for a cap that has never run. */
+  .usedchip { font-family: var(--mono); font-size: 12px; color: var(--text); cursor: default; }
+  .usedchip.zero { color: var(--dim); opacity: .6; }
+  .riskpill { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    padding: 4px 0; width: 52px; text-align: center; border-radius: var(--r-sm); cursor: pointer; border: 1px solid transparent; user-select: none; flex: none; }
+  .riskpill.read { background: var(--accent-soft); color: var(--accent); }
+  .riskpill.write { background: var(--warn-soft); color: var(--warn); }
+  .switch { display: inline-block; width: 38px; height: 21px; border-radius: 11px; background: var(--raised); border: 1px solid var(--line);
+    position: relative; cursor: pointer; flex: none; transition: background .15s, border-color .15s; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%;
+    background: var(--dim); transition: transform .15s, background .15s; }
+  /* ON is a SOLID accent fill with the knob in --on-accent, not an --accent-soft wash with an
+     --accent knob. On the two dark themes that wash is a .14-alpha tint over --raised (a ~1.05x
+     luminance step, invisible at 38x21px) and the knob's --accent sits within a few points of
+     the OFF knob's --dim — so an on switch and an off switch read as the same control. A solid
+     track is the one state difference that survives every palette. */
+  .switch.on { background: var(--accent); border-color: var(--accent); }
+  .switch.on::after { transform: translateX(17px); background: var(--on-accent); }
+  .switch.locked { cursor: not-allowed; opacity: .5; }
+  /* Runtime settings table: setting (label + what it does + its env var) | source | value. */
+  .settable .c-src { width: 122px; }
+  .settable .c-val { width: 150px; }
+  .settable td { vertical-align: top; }
+  .setrow.off .setinfo .mn { color: var(--dim); opacity: 1; }
+  /* Group headers inside the one settings table — the panel stays a single real table.
+     A group is a SUBSECTION of Runtime settings, so it carries the same indent and left rule
+     as `.asection .subsection`: flush, "SECRETS" sat further LEFT than the "RUNTIME SETTINGS"
+     title above it and read as a peer of the section rather than a child of it. Applied to the
+     first COLUMN so the table stays one table — the header cell takes the indent alone (a
+     column heading has to stay over its own content), the body cells take the indent plus the
+     rule, which border-collapse joins into one continuous line down the whole group. */
+  .settable th:first-child { padding-left: calc(4px + var(--indent-sub)); }
+  .settable tbody td:first-child { padding-left: calc(4px + var(--indent-sub));
+    border-left: 1px solid var(--line); }
+  .settable .setgroup td { padding: 16px 0 5px calc(4px + var(--indent-sub)); font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .07em; text-transform: uppercase; color: var(--text-2);
+    border-bottom: 1px solid var(--line-strong); }
+  .settable .setgroup:first-child td { padding-top: 4px; }
+  .setinfo { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .setinfo .mn { font-size: 13px; color: var(--text); white-space: normal; }
+  .setinfo small { color: var(--dim); font-size: 12px; line-height: 1.45; white-space: normal; }
+  .setinfo .setenv { font-family: var(--mono); font-size: 11px; color: var(--dim); opacity: .7; }
+  .setsel, .setnum { background: var(--raised); color: var(--fg); border: 1px solid var(--line);
+    border-radius: var(--r-sm); padding: 5px 8px; font-size: 12.5px; font-family: var(--mono); }
+  .setnum { width: 96px; }
+  .setsel { max-width: 100%; }
+  .setsel:disabled, .setnum:disabled { opacity: .5; cursor: not-allowed; }
+  /* MCP servers table */
+  .mcptable .c-health { width: 230px; }
+  .mcptable .c-src { width: 96px; }
+  .mcptable .c-on { width: 54px; }
+  .mcptable .c-act { width: 48px; }
+  .mcptable td { vertical-align: top; }
+  /* Project repos table — the standing-instructions box is a column, not a second stacked row. */
+  .projtable .c-repo { width: 300px; }
+  .projtable .c-ns { width: 170px; }
+  .projtable .c-ns .srctag { white-space: normal; }
+  .projtable .c-conv { width: 160px; }
+  .projtable .c-act { width: 48px; }
+  .projtable td { vertical-align: top; }
+  /* Conventions cell: rule count opens the list, state pill says whether the judge is seeing it. */
+  .convcell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+  .convcount { font-size: 12.5px; color: var(--text-2); background: none; border: 0; padding: 0;
+    cursor: pointer; text-decoration: underline; text-underline-offset: 2px; font-family: inherit; }
+  .convcount:disabled { cursor: default; text-decoration: none; color: var(--dim); }
+  .convstate { font-size: 11px; padding: 2px 7px; border-radius: var(--r-sm); border: 1px solid var(--line); }
+  .convstate.fresh { color: var(--ok); }
+  .convstate.stale { color: var(--warn); }
+  .convstate.none, .convstate.absent { color: var(--dim); }
+  .convrules { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.65; }
+  .convrules li { margin-bottom: 5px; }
+  @media (max-width: 1120px) { .projtable .c-conv { display: none; } }
+  /* Base tool allowlists table */
+  .tooltable .c-kind { width: 150px; }
+  .tooltable td.c-kind { color: var(--text-2); font-size: 12.5px; }
+  .toolchips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .toolchips span { font-family: var(--mono); font-size: 11.5px; color: var(--dim); background: var(--surface-2);
+    border: 1px solid var(--line); padding: 4px 9px; border-radius: var(--r-sm); }
+  .saved { font-size: 12px; color: var(--ok); opacity: 0; transition: opacity .2s; margin-left: 8px; }
+  .saved.show { opacity: 1; }
+
+  /* Tight screens: drop the informational rail first (keep the interactive Chats sidebar),
+     then the sidebar only on very narrow widths. */
+  @media (max-width: 1100px) { .chatview { grid-template-columns: 200px 1fr; } .rail { display: none; } }
+  @media (max-width: 1180px) { .status { gap: 12px; } .wordmark span { display: none; } }
+  @media (max-width: 1040px) { header { gap: 10px; padding: 12px 14px; } .tabs { margin-left: 8px; }
+    .status > span[title*="risk"] { display: none; } }
+  @media (max-width: 900px)  { .status > span { display: none; } .estop { margin-left: auto; } }
+  /* Below ~740px the eight tabs (559px of them) are themselves wider than the header can give,
+     so the whole header overflowed the viewport and carried the pause button off-screen with it —
+     the same failure the 1040px step fixes, one constraint further down. The tab strip scrolls
+     inside the header instead, so every tab stays reachable and the pause stays pinned. */
+  @media (max-width: 820px)  { .tabs { flex: 1 1 auto; min-width: 0; overflow-x: auto;
+      margin-left: 8px; scrollbar-width: none; } .tabs::-webkit-scrollbar { display: none; }
+    .tab { flex: none; } }
+  @media (max-width: 680px) { .chatview { grid-template-columns: 1fr; } .history { display: none; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+  /* ---- Otto, the mascot: the dock ------------------------------------------------------
+     Mounted OUTSIDE <main>, so switching tabs never unmounts him — the tabs are view swaps
+     inside one page, and a mascot living in a view would restart its animation on every
+     switch and disappear on seven of the eight. Docked at the FOOT OF THE WORKFLOW RAIL: the
+     rail's own empty space, the one region of this view that holds no control (the composer,
+     the chat list and the ledger each own theirs) — and the only one that stays his when the
+     chat list is collapsed. The dock itself is pointer-transparent; only Otto and his bubble
+     take clicks.
+     He speaks in ONE voice and one colour: the bubble is plain ink with his accent down its
+     edge, never a per-stage tint. Recolouring the panel on every stage turned a line of
+     speech into a status light, which is what the board's stage chips are for. */
+  /* He wears the palette like the mark does: --accent is his line (set once on the element,
+     never per stage), --surface is his paper so he reads as the same material as everything
+     else instead of a transparent drawing over the chat list, and --warn is the antenna - the
+     one warm accent the mark carries too. */
+  .mascot otto-mascot { --otto-paper: var(--surface); --otto-accent: var(--warn); }
+  /* The dock's box is his FIGURE and nothing else: the bubble is absolutely positioned off it,
+     never a flex sibling. mascotPlace() anchors the dock by `top`, so while the bubble was in
+     flow every mood that stopped speaking (error -> idle is the one you see) shortened the box
+     from the top and teleported him up by a bubble's height. Same reasoning as --m-h below:
+     he does not move because he said something. */
+  /* Seed values only — mascotPlace() overwrites left/top on first paint. They match his HOME
+     (the foot of the workflow rail) so the frame before that paint isn't a flash in the
+     opposite corner. */
+  .mascot { position: fixed; right: 66px; bottom: 96px; width: 190px; z-index: 50;
+    display: flex; flex-direction: column; align-items: flex-start;
+    pointer-events: none; }
+  .mascot[hidden] { display: none; }
+  .mascot otto-mascot { pointer-events: auto; cursor: grab; margin-left: 8px;
+    touch-action: none; }        /* or a touch drag scrolls the page instead of moving him */
+  .mascot.dragging otto-mascot, .mascot.dragging .mbubble { cursor: grabbing; }
+  .mascot.dragging { user-select: none; }
+  /* Dropped near the top there is no room for a bubble above his head, so it goes below and
+     the tail turns over. Placement is the user's, so the bubble accommodates it. */
+  .mascot.below .mbubble { bottom: auto; top: calc(100% + 1px); }
+  .mascot.below .mbubble::after { bottom: auto; top: -5px;
+    border-right: 0; border-bottom: 0; border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
+  .mbubble { pointer-events: auto; position: absolute; bottom: calc(100% + 1px); left: 0;
+    max-width: 190px; cursor: grab;
+    touch-action: none;
+    background: var(--raised); border: 1px solid var(--line); border-left: 2px solid var(--accent);
+    border-radius: var(--r-lg); padding: 7px 22px 8px 11px; box-shadow: 0 5px 16px var(--shadow);
+    transition: transform .2s; }
+  .mbubble:hover { transform: translateY(-1px); }
+  .mbubble b { display: block; font-size: 12px; font-weight: 500; color: var(--text);
+    letter-spacing: .01em; }
+  .mbubble span { display: block; font-size: 11px; line-height: 1.35; color: var(--dim);
+    margin-top: 1px; word-break: break-word; }
+  .mbubble span[hidden] { display: none; }
+  .mbubble[hidden] { display: none; }
+  /* the tail, pointing down at his head */
+  .mbubble::after { content: ""; position: absolute; left: 15px; bottom: -5px; width: 8px; height: 8px;
+    background: var(--raised); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    transform: rotate(45deg); }
+  .mtoggle { display: inline-flex; align-items: center; gap: 9px; font-size: 13px;
+    color: var(--text); cursor: pointer; user-select: none; }
+  .mtoggle.off { color: var(--dim); }
+  .mhide { position: absolute; top: 2px; right: 3px; width: 17px; height: 17px; line-height: 1;
+    font-size: 13px; color: var(--dim); background: transparent; border: 0; border-radius: var(--r-sm);
+    cursor: pointer; opacity: 0; transition: opacity .15s; }
+  .mbubble:hover .mhide { opacity: 1; }
+  .mhide:hover { color: var(--text); background: var(--surface-2); }
+  /* He floats over the bottom-left, so the surfaces that reach that corner give up his
+     height. The chat list needs a real INSET, not bottom padding: it is a scroll container,
+     and padding only clears him when you are scrolled to the end - scrolled anywhere else,
+     a chat row sits under his head. Shrinking the flex item moves the viewport itself. */
+  /* Reserved only while he is IN that corner. Once dragged elsewhere the space comes back:
+     where he stands is the user's decision, and a hole under a mascot who is no longer there
+     is the layout lying about its own contents.
+     --m-h is his MEASURED height, published by mascotLayout: a literal here silently stops
+     matching the moment his `size` changes, and the symptom (one chat row tucked under his
+     head) is the kind nobody files. The fallback covers the tick before the first measure. */
+  body.mascot-reserve .histlist { margin-bottom: calc(var(--m-h, 130px) + 14px); }
+  body.mascot-reserve .adminview { padding-bottom: calc(var(--m-h, 130px) + 46px); }
+  /* Under 680px the Chats sidebar is gone and the chat stream owns the corner — no room for
+     a companion without covering the conversation. */
+  @media (max-width: 680px) { .mascot { display: none; } }
+
+  /* System hint line (e.g. "this thread can't be resumed — starting fresh with context"). */
+  .sysnote { margin: 10px auto; max-width: 640px; text-align: center; font-size: 12px;
+    color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn-line);
+    border-radius: var(--r-md); padding: 6px 12px; }

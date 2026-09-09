@@ -57,7 +57,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
 
 
 class PrCopyTests(unittest.TestCase):
@@ -1946,7 +1946,7 @@ class PreviewModelTierTests(unittest.TestCase):
         self.assertEqual(gateway.model_kind(next(m for m in cfg["pool"] if m["name"] == "gpt")),
                          "hosted")
         self.assertEqual(cfg["assign"]["preview"], "gpt")
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         i = ui.index("const radio=(p,phase)=>")
         block = ui[i:i + 2400]
         j = block.index('phase==="preview"')
@@ -1964,7 +1964,7 @@ class PreviewModelTierTests(unittest.TestCase):
         """The radio was disabled while a pick could not run. It runs now, so the control opens —
         but the phase still has no verify rung above it and its output is what a human approves,
         which the tooltip has to say or the pick reads as free."""
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         i = ui.index("const radio=(p,phase)=>")
         block = ui[i:i + 2400]
         self.assertIn('phase==="preview"', block)
@@ -1980,7 +1980,7 @@ class PreviewModelTierTests(unittest.TestCase):
         self.assertIn('"plan_model": self._plan_model', open("workflows.py").read())
         # server._wf_state's gate block is a WHITELIST — absent here, the browser never sees it.
         self.assertIn('"plan_model": st.get("plan_model")', open("server.py").read())
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         self.assertIn("written by", ui)
 
 

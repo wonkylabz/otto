@@ -40,7 +40,7 @@ Read the layer's rules file before editing it — each carries the invariants th
 | Cost, privacy, memory, report shaping | `privacy.py`, `memory.py`, `knowledge.py`, `contracts.py`, `delivery.py` | `.claude/rules/memory-privacy.md` |
 | Gateway, backends, MCP, tool guardrails | `gateway.py`, `local_runtime.py`, `mcp_client.py`, `policy.py`, `claude_cli.py` | `.claude/rules/gateway-backends.md` |
 | Engine facade + audit store | `engine.py`, `audit.py`, and the modules split out of them | `.claude/rules/engine-core.md` |
-| UI | `web/index.html` | `.claude/rules/ui.md` |
+| UI | `web/index.html` + `web/css/`, `web/js/` | `.claude/rules/ui.md` |
 
 Two cross-layer invariants that don't live in any one of them:
 

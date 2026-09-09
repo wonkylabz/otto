@@ -56,7 +56,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
 
 
 class AutoEngageRepoTests(unittest.TestCase):
@@ -2826,7 +2826,7 @@ class ModelKindTests(unittest.TestCase):
         src = open("server.py").read()
         self.assertIn('"kinds": list(gateway.KINDS)', src)
         self.assertIn('"hosted_hosts": list(gateway.HOSTED_HOSTS)', src)
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         self.assertIn("MODEL_STATE.hosted_hosts", ui)
         self.assertIn("hosted_hosts:models.hosted_hosts", ui)
         for h in gateway.HOSTED_HOSTS:
@@ -2942,7 +2942,7 @@ class ModelKindTests(unittest.TestCase):
         self.assertIn('error_classifier.wall_message("overloaded")', src)
 
     def test_the_ui_tags_and_labels_from_kind_not_provider(self):
-        ui = open("web/index.html", "rb").read().decode("utf-8")
+        ui = ui_src()
         self.assertIn('const plabel=p=>kindOf(p);', ui)
         self.assertIn('<span class="srctag" title="${p.provider===\'claude\'?', ui)
         self.assertNotIn("p.provider==='claude'?'cloud':'local'", ui)
@@ -4654,7 +4654,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # -> 8079 for one index entry: `slack_socket.py` shipped as a new ingress module with
     # nothing in the layer table pointing at it, and that table IS how a session finds a layer's
     # file at all. 19 bytes to stop a module being invisible is the trade this ratchet is for.
-    MAX_BYTES = 8079          # resident tier — the per-session tax. +135 in the
+    # -> 8103 for the UI row: the UI is a directory now (`web/css/`, `web/js/`), and the layer
+    # table is the only place a session learns a layer has more than one file. Same 24-byte
+    # trade as the slack_socket entry below it.
+    MAX_BYTES = 8103          # resident tier — the per-session tax. +135 in the
                                # commit that cited ResidentRuleGuardTests on five rules:
                                # prose enforcement fits ~8 rules in a judging prompt, a
                                # test always runs, so bytes buying a guard are a good trade.
@@ -4906,7 +4909,12 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # WHY there are two layers is a measurement (78% of a Claude planner's Bash is composed),
     # and without it the sandbox reads as over-engineering next to a working allowlist; and the
     # network bound is what the two layers do NOT do, which no amount of reading them reveals.
-    MAX_RULES_BYTES = 70919   # fetched tier — bounded, but looser; it is not always loaded
+    # 70919 -> 72131 for the UI split. The UI stopped being one 558 KB file, so ui.md gained
+    # the layout paragraph (which file holds what — nothing else records it now) and four rules
+    # the split itself is built on: per-script `"use strict"`, load order, `ui_src()` as the
+    # only reader, and read-per-request + `no-store`. Paid for in one session: the file a UI
+    # edit opens went from ~139k tokens to ~3k.
+    MAX_RULES_BYTES = 72131   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -6283,7 +6291,7 @@ class ModelPhaseColumnWidthTests(unittest.TestCase):
     """
 
     def _css(self):
-        return open("web/index.html", "rb").read().decode("utf-8")
+        return ui_src()
 
     def test_the_phase_column_is_wide_enough_for_every_tier(self):
         ui = self._css()

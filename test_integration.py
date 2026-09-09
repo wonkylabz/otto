@@ -30,6 +30,7 @@ import gateway
 import policy
 import local_runtime
 import registry
+from test_support import ui_src
 
 try:
     from concurrent.futures import ThreadPoolExecutor
@@ -2329,9 +2330,7 @@ class WfStateTransientFailureTests(unittest.TestCase):
     def test_the_client_keeps_polling_an_unreachable_run(self):
         # The server half is useless if the browser treats the new state as a fall-through into
         # the terminal branch: it must continue the loop and touch no node.
-        with open(os.path.join(os.path.dirname(__file__), "web/index.html"),
-                  encoding="utf-8", errors="surrogateescape") as f:
-            html = f.read()
+        html = ui_src()
         i = html.index('st.state==="unreachable"')
         branch = html[i:html.index('st.state==="failed"', i)]
         self.assertIn("continue;", branch, "an unreachable poll must keep the watch loop alive")
@@ -6543,3 +6542,91 @@ class McpNoteEndpointTests(unittest.TestCase):
         self.assertEqual(status, 200)
         saved = policy.load()["mcps"]["grafana"]
         self.assertEqual(saved, {"enabled": False, "notes": "read-only token"})
+
+
+class UiAssetRouteTests(unittest.TestCase):
+    """`server.Handler._static` — the only route that serves a file off disk. The API is
+    unauthenticated and bound to localhost, so the guard that matters is not auth but SCOPE:
+    one directory, one extension, basename only. These drive it over real HTTP."""
+
+    @classmethod
+    def setUpClass(cls):
+        import server
+        cls.httpd = ThreadingTCPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd.daemon_threads = True
+        cls.base = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=5)
+        cls.httpd.server_close()
+
+    def _get(self, path):
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=10) as r:
+                return r.status, r.read(), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), dict(e.headers)
+
+    def test_a_real_asset_is_served_with_its_content_type(self):
+        status, body, headers = self._get("/js/util.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b'"use strict";', body)
+        self.assertEqual(headers["Content-Type"], "text/javascript; charset=utf-8")
+        status, body, headers = self._get("/css/app.css")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "text/css; charset=utf-8")
+
+    def test_every_asset_is_sent_no_store(self):
+        """A cached asset is a UI edit that does not ship on refresh — the property the mascot
+        element was kept inline for. `no-store` is what replaces the inlining."""
+        for path in ("/", "/js/chat.js", "/css/tokens.css"):
+            self.assertEqual(self._get(path)[2].get("Cache-Control"), "no-store", path)
+
+    def test_the_route_refuses_everything_but_its_two_directories(self):
+        """Each of these parses, raises nothing, and must 404 rather than read a file. The
+        traversal ones are the reason `name != os.path.basename(name)` is checked BEFORE the
+        join: a single `..` segment is enough to leave `web/` entirely."""
+        for path in ("/js/../server.py", "/js/../../etc/passwd", "/css/../js/chat.js",
+                     "/js/%2e%2e/server.py", "/js/..%2fserver.py", "/js/sub/chat.js",
+                     "/js/chat.css", "/css/app.js", "/js/", "/css/",
+                     "/js/nonexistent.js", "/data/otto.db", "/js/../data/settings.json"):
+            self.assertEqual(self._get(path)[0], 404, path)
+
+    def test_a_non_asset_sitting_in_the_asset_directory_is_still_refused(self):
+        """The extension check is what makes the directory an allowlist of ASSETS rather than
+        of paths. Without it, anything that ends up beside the scripts — an editor's `.orig`
+        backup, a dropped `.env` — is served to anyone who can reach the port."""
+        import server
+        web = os.path.join(os.path.dirname(os.path.abspath(server.__file__)), "web")
+        probes = [os.path.join(web, "js", "chat.js.orig"), os.path.join(web, "css", ".env")]
+        for path in probes:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("SECRET=1\n")
+        try:
+            for url in ("/js/chat.js.orig", "/css/.env"):
+                status, body, _ = self._get(url)
+                self.assertEqual(status, 404, url)
+                self.assertNotIn(b"SECRET", body, url)
+        finally:
+            for path in probes:
+                os.unlink(path)
+
+    def test_a_served_asset_is_read_from_disk_per_request(self):
+        """The route must not hold the bytes from import time, or an edit needs a restart."""
+        import server
+        path = os.path.join(os.path.dirname(os.path.abspath(server.__file__)), "web", "js",
+                            "__probe.js")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write('"use strict";\n// first\n')
+        try:
+            self.assertIn(b"// first", self._get("/js/__probe.js")[1])
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('"use strict";\n// second\n')
+            self.assertIn(b"// second", self._get("/js/__probe.js")[1],
+                          "the asset route caches, so a UI edit needs a restart again")
+        finally:
+            os.unlink(path)

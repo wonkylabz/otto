@@ -185,3 +185,31 @@ def _storage_hammer(path, worker_id, iterations):
     for i in range(iterations):
         storage.mutate_json(path, lambda data: data + [[worker_id, i]], default=[])
 
+
+_UI_ROOT = os.path.dirname(os.path.abspath(__file__))
+_UI_TAG = re.compile(r'^<script src="/js/([\w.-]+)"></script>$|'
+                     r'^<link rel="stylesheet" href="/css/([\w.-]+)">$', re.M)
+
+
+def ui_src():
+    """The UI as the BROWSER receives it: `web/index.html` with every `<script src>` and
+    stylesheet `<link>` replaced by the file's own text, in document order.
+
+    `web/index.html` is a tag list now, so a test that opened it directly would assert
+    against 14 KB of tags and pass vacuously. Inlining here keeps every existing assertion
+    valid — including the ordering ones (`src.index(a) < src.index(b)`), which only mean
+    anything against one document in load order. This is the ONE reader; a new UI file needs
+    no change here as long as it is pulled in by a tag.
+    """
+    path = os.path.join(_UI_ROOT, "web", "index.html")
+    with open(path, encoding="utf-8") as fh:
+        doc = fh.read()
+
+    def inline(m):
+        js, css = m.group(1), m.group(2)
+        sub = os.path.join("js", js) if js else os.path.join("css", css)
+        with open(os.path.join(_UI_ROOT, "web", sub), encoding="utf-8") as fh:
+            body = fh.read()
+        return (f"<script>\n{body}</script>" if js else f"<style>\n{body}</style>")
+
+    return _UI_TAG.sub(inline, doc)
