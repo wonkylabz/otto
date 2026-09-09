@@ -1,7 +1,9 @@
 "use strict";
 /* Shared primitives, loaded before every view module below: three or more of them use each
    of these, so a view never has to depend on another view for a formatting helper. */
-function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+/* `'` is escaped too: the tree happens to quote every attribute with `"`, so a single quote was
+   safe by coincidence rather than by rule — one single-quoted attribute would have broken out. */
+function esc(s){ return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 function val(id){ return document.getElementById(id).value.trim(); }
 

@@ -5974,3 +5974,52 @@ class UiAssetLayoutTests(unittest.TestCase):
             self.assertIn(probe, src, "ui_src() lost %r" % probe)
         # order is what the .index()-style guards depend on
         self.assertLess(src.index("function esc(s){"), src.index("function loadAdmin("))
+
+
+class UiErrorEscapingTests(unittest.TestCase):
+    """Server text reaches the DOM through exactly one path that was unescaped: a caught
+    error's `.message`. `chat.api()` throws `new Error(data.error)` and `server.py` echoes
+    request fields straight into `error` (`unknown capability '<name>'`, `unknown or non-git
+    repo '<repo>'`, bare `str(e)`), so an error string is request-shaped input rendered as
+    HTML. Thirteen catch blocks interpolated it raw into `innerHTML`; one already did it
+    right, which is what makes this a guard and not a style note."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    JS = os.path.join(ROOT, "web", "js")
+    # `${...}` on a line that writes inner/outerHTML — non-greedy, so one match per hole.
+    HOLE = re.compile(r"\$\{(.+?)\}")
+    WRITES_HTML = re.compile(r"(?:inner|outer)HTML\s*\+?=")
+
+    def _html_writing_lines(self):
+        for name in sorted(os.listdir(self.JS)):
+            if not name.endswith(".js"):
+                continue
+            path = os.path.join(self.JS, name)
+            with open(path, encoding="utf-8") as fh:
+                for n, line in enumerate(fh, 1):
+                    if self.WRITES_HTML.search(line):
+                        yield name, n, line.rstrip("\n")
+
+    def test_no_error_message_is_interpolated_raw_into_html(self):
+        """The ratchet the fix leaves behind: a new catch block that writes an error into
+        `innerHTML` fails here until it wraps it in `esc()`."""
+        offenders = []
+        for name, n, line in self._html_writing_lines():
+            for expr in self.HOLE.findall(line):
+                if ".message" in expr and "esc(" not in expr:
+                    offenders.append("%s:%d  ${%s}" % (name, n, expr))
+        self.assertEqual(offenders, [],
+                         "an error message goes into HTML unescaped — wrap it in esc(), or "
+                         "render it with textContent:\n  " + "\n  ".join(offenders))
+
+    def test_esc_covers_both_quote_characters(self):
+        """`'` was left out and the tree was safe only because every attribute in it happens
+        to be double-quoted — a coincidence of style, not an invariant anything enforces. One
+        single-quoted attribute would have turned that into a breakout."""
+        src = ui_src()
+        body = src[src.index("function esc(s){"):]
+        body = body[:body.index("\n")]
+        for ch, ent in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"),
+                        ('"', "&quot;"), ("'", "&#39;")):
+            self.assertIn(ent, body, "esc() no longer maps %r to %s" % (ch, ent))
+        self.assertIn("""/[&<>"']/g""", body, "esc()'s character class lost a quote")

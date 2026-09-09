@@ -21,7 +21,7 @@ function addPick(cap){
   if(recording && activeChat) activeChat.cap={name:cap.name, risk:cap.risk};
   const n=[...pipeEl.children].find(c=>c.dataset.lbl==="ROUTER"); if(!n) return;
   const box=document.createElement("div"); box.className="pick "+cap.risk;
-  box.innerHTML=`<span class="pdot"></span><span class="pkind">${cap.kind}</span> ${cap.name}`;
+  box.innerHTML=`<span class="pdot"></span><span class="pkind">${esc(cap.kind)}</span> ${esc(cap.name)}`;
   n.querySelector(".ncontent").appendChild(box);
 }
 // ---- per-stage timing ----
@@ -989,7 +989,7 @@ async function continueTemporal(text){
 
   let out;
   try { out=await api("/api/continue",{session_id:sess.id, cap:sess.cap, message:text, prev: prevMsg?String(prevMsg.text).slice(-4000):undefined, repo:sess.repo||undefined, git_run_id:sess.git_run_id||undefined, git_branch:sess.git_branch||undefined, model_override: selectedModelOverride()||undefined, effort: selectedEffort()||undefined, auto_approve: selectedAutoApprove()||undefined}); }
-  catch(e){ clearThinking(content); content.innerHTML=`<p class="err">Couldn't continue the session (${e.message}).</p>`; return finishTurn(); }
+  catch(e){ clearThinking(content); content.innerHTML=`<p class="err">Couldn't continue the session (${esc(e.message)}).</p>`; return finishTurn(); }
 
   if(out && out.rebind){
     // The model pick is on the other backend from the one that minted this session, and a
@@ -1008,7 +1008,7 @@ async function continueTemporal(text){
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: out.rebind.model,
                                         effort: selectedEffort()||undefined})).id; }
-    catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the run on ${esc(out.rebind.model)} (${e.message}).</p>`; return finishTurn(); }
+    catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the run on ${esc(out.rebind.model)} (${esc(e.message)}).</p>`; return finishTurn(); }
     recordMsg("otto", "↪ Switched to "+out.rebind.model+" — that model runs on a different backend, so this starts a fresh run (the earlier conversation is carried as context).");
     setRun(rid);
     watchLoop(rid, activeChat.id, content, null, {});
@@ -1031,7 +1031,7 @@ async function continueTemporal(text){
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: selectedModelOverride()||undefined,
                                         effort: selectedEffort()||undefined})).id; }
-    catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the handed-off task (${e.message}).</p>`; return finishTurn(); }
+    catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the handed-off task (${esc(e.message)}).</p>`; return finishTurn(); }
     recordMsg("otto", "↪ Handed off as a fresh task: "+task);
     setRun(hid);
     watchLoop(hid, activeChat.id, content, null, {});
@@ -1061,7 +1061,7 @@ async function submitTemporal(text, pinCap, pinReq, repo, qa, plan, memory, mode
   let id;
   const req = (pinCap ? (pinReq||"") : text) + (carry||"");   // pinned: request is the args after /cap; carry appends prior context
   try { id=(await api("/api/submit",{request:req, cap: pinCap?pinCap.name:undefined, repo: repo||undefined, qa: qa||undefined, plan_mode: plan||undefined, memory_enabled: memory, model_override: modelOverride||undefined, effort: effort||undefined, auto_approve: selectedAutoApprove()||undefined})).id; }
-  catch(e){ setNode(pinCap?"ROUTER":"DECOMPOSE","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start workflow (${e.message}).</p>`; return finishTurn(); }
+  catch(e){ setNode(pinCap?"ROUTER":"DECOMPOSE","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start workflow (${esc(e.message)}).</p>`; return finishTurn(); }
 
   setRun(id);
   watchLoop(id, activeChat.id, content, pinCap?{cap:pinCap}:null, pinCap?{decomposeDone:true}:{});

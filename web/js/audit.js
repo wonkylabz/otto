@@ -75,7 +75,7 @@ async function loadAudit(){
   if(AUDIT_FILTER.cap) qs.set("cap",AUDIT_FILTER.cap);
   if(AUDIT_FILTER.verified) qs.set("verified",AUDIT_FILTER.verified);
   try { data=await (await fetch("/api/audit"+(qs.toString()?"?"+qs.toString():""))).json(); }
-  catch(e){ el.innerHTML=`<p class="err">Couldn't load audit (${e.message}).</p>`; return; }
+  catch(e){ el.innerHTML=`<p class="err">Couldn't load audit (${esc(e.message)}).</p>`; return; }
   const rows=data.entries.map((e,i)=>{
     const capRaw=(e.capability||"").split(":").pop();
     const cap=(!capRaw||capRaw==="?")?"unknown":capRaw;

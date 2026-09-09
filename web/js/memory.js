@@ -257,7 +257,7 @@ async function loadMemory(){
       fetch("/api/memory/gc/status").then(r=>r.json()).catch(()=>({running:false})),
     ]);
   }
-  catch(e){ el.innerHTML=`<p class="err">Couldn't load memory (${e.message}).</p>`; return; }
+  catch(e){ el.innerHTML=`<p class="err">Couldn't load memory (${esc(e.message)}).</p>`; return; }
   // Reattach to a GC scan already running server-side — a page refresh otherwise resets GC_RUNNING
   // to its default false while the real scan (several claude -p turns, real minutes) keeps going
   // untracked on the server.

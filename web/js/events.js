@@ -49,7 +49,7 @@ async function loadEvents(){
   el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
   try { data=await (await fetch("/api/event-rules")).json(); }
-  catch(e){ el.innerHTML=`<p class="err">Couldn't load event rules (${e.message}).</p>`; return; }
+  catch(e){ el.innerHTML=`<p class="err">Couldn't load event rules (${esc(e.message)}).</p>`; return; }
   EVENT_RULES=data.rules||[]; EVENT_CAPS=data.caps||[];
   const activeRules=EVENT_RULES.filter(r=>r.enabled!==false).length;
   const whBadge = !data.enabled ? '<span class="badge warn">no secret</span>'
@@ -114,7 +114,7 @@ async function loadSlackConfig(){
   if(!host) return;
   let d;
   try { d=await (await fetch("/api/slack-config")).json(); }
-  catch(e){ host.innerHTML=`<p class="err">Couldn't load Slack config (${e.message}).</p>`; return; }
+  catch(e){ host.innerHTML=`<p class="err">Couldn't load Slack config (${esc(e.message)}).</p>`; return; }
   SLACK_CFG=d.config||{}; SLACK_CAPS=d.caps||[];
   const c=SLACK_CFG, poll=d.poll||{};
   let status, badgeCls, badgeLabel;
@@ -472,7 +472,7 @@ async function loadBoardQueue(){
   if(!host) return;
   let d;
   try { d=await (await fetch("/api/board-config")).json(); }
-  catch(e){ host.innerHTML=`<p class="err">Couldn't load board config (${e.message}).</p>`; return; }
+  catch(e){ host.innerHTML=`<p class="err">Couldn't load board config (${esc(e.message)}).</p>`; return; }
   BOARD_CFG=d.config||{}; BOARD_CAPS=d.caps||[]; BOARD_URL=d.url||"";
   const c=BOARD_CFG, poll=d.poll||{}, cols=c.columns||{};
   // The card's title IS the board, so the status line below it says only the cadence.

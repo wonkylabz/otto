@@ -40,6 +40,14 @@ changelog that restates it is a second copy of `git log`.
 - This changelog, and `docs/releasing.md`: what Otto's version number promises an operator,
   and `release.py` to cut a release from it.
 
+### Security
+
+- **Error text from the server is escaped before it reaches the page.** Thirteen of the UI's
+  catch blocks wrote a failed request's error straight into `innerHTML`, and several server
+  errors echo a field of the request back (`unknown capability '<name>'`) — so a crafted
+  request could put markup on the page of whoever triggered it. Nothing for an operator to do;
+  the API is still unauthenticated and local-only, which is what bounded this to begin with.
+
 ## [0.1.0] - 2026-09-04
 
 Initial public release.
