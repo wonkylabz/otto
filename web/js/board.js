@@ -89,7 +89,7 @@ let _boardSig=null, _healthSig=null;
 const _boardSignature=d=>JSON.stringify({t:d.temporal,ui:d.ui,items:(d.items||[]).map(it=>[
   it.id,it.run_id,it.status,it.phase,it.stage,it.verified,it.needs_human,it.pr,it.outcome,it.model,
   it.fallback_from,it.fallback_reason,it.retried_to,it.question,it.risk,it.risk_reason,it.cap,
-  it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.local,it.archived])});
+  it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.kind,it.archived])});
 async function loadBoard(silent){
   const el=document.getElementById("boardview");
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
@@ -149,15 +149,17 @@ async function loadBoard(silent){
     const isSub=/-s\d+$/.test(it.id||"");          // a swarm child workflow (parent-id + -sN)
     const repo=it.repo?`<span class="bchip" title="ran in an isolated clone of this repo">&#9095; ${esc(it.repo)}</span>`:'';
     // Execution model of the newest attempt (from the transcript meta). Long served ids like
-    // "google/gemma-4-26B-A4B-it" keep only their basename; a "local ·" prefix marks Otto's
-    // local runtime; `a → b` marks a FALLBACK (the chosen model couldn't run this attempt —
-    // reason in the tooltip; the full record lives in the Audit tab).
+    // "google/gemma-4-26B-A4B-it" keep only their basename; a "local ·" / "hosted ·" prefix
+    // says WHICH CLASS of model served it — Otto's own runtime drives both a model on this box
+    // and a frontier vendor API, and they are not the same thing to read. No kind (Claude, or a
+    // transcript predating the field) takes no prefix; `a → b` marks a FALLBACK (the chosen
+    // model couldn't run this attempt — reason in the tooltip; the full record lives in Audit).
     const mshort=(it.model||'').split('/').pop();
     const fbshort=(it.fallback_from||'').split('/').pop();
     const mtitle=it.fallback_from
       ?`chosen model '${it.fallback_from}' couldn't run this attempt — ${it.fallback_reason||'no reason recorded'}. Ran on ${it.model} instead (details in the Audit tab).`
-      :`execution model of the newest attempt${it.local?" — running on Otto's local agent runtime (no claude -p)":' — via claude -p'}`;
-    const model=it.model?`<span class="bchip ${it.local?'local':''} ${it.fallback_from?'bfell':''}" title="${esc(mtitle)}">${it.fallback_from?esc(fbshort)+' → ':''}${it.local?'local · ':''}${esc(mshort)}</span>`:'';
+      :`execution model of the newest attempt${it.kind==='local'?" — running on Otto's local agent runtime (no claude -p)":(it.kind==='hosted'?" — running on a hosted frontier model via Otto's agent runtime (no claude -p)":' — via claude -p')}`;
+    const model=it.model?`<span class="bchip ${it.kind==='local'?'local':(it.kind==='hosted'?'hosted':'')} ${it.fallback_from?'bfell':''}" title="${esc(mtitle)}">${it.fallback_from?esc(fbshort)+' → ':''}${it.kind==='local'?'local · ':(it.kind==='hosted'?'hosted · ':'')}${esc(mshort)}</span>`:'';
     const inplace=it.in_place?`<span class="bchip warn" title="edited a live checkout outside a workspace">&#9888; in-place edit</span>`:'';
     // WHICH stage of the pipeline this run is in. `phase` collapses everything before the first
     // attempt to a bare "running", so a card sat unchanged through routing, a 15-minute plan

@@ -1107,13 +1107,15 @@ class NeedsYouActionsTests(unittest.TestCase):
                                     "fallback_from": "gemma4-26b",
                                     "fallback_reason": "server rejects tool calls"}) + "\n")
             self.assertEqual(self.server._run_model("wf-7"),
-                             ("google/gemma-4", True, None, None))
+                             ("google/gemma-4", "local", None, None))
+            # No kind and no runtime: a Claude attempt, which carries no chip prefix at all —
+            # None, not "local", or the chip labels a Claude run as someone else's model.
             self.assertEqual(self.server._run_model("wf-8"),
-                             ("claude-haiku-4-5", False, "gemma4-26b",
+                             ("claude-haiku-4-5", None, "gemma4-26b",
                               "server rejects tool calls"))
-            self.assertEqual(self.server._run_model("wf-7-a1"), (None, False, None, None))
-            self.assertEqual(self.server._run_model("no-such"), (None, False, None, None))
-            self.assertEqual(self.server._run_model("../evil"), (None, False, None, None))
+            self.assertEqual(self.server._run_model("wf-7-a1"), (None, None, None, None))
+            self.assertEqual(self.server._run_model("no-such"), (None, None, None, None))
+            self.assertEqual(self.server._run_model("../evil"), (None, None, None, None))
         finally:
             claude_cli.TRANSCRIPTS = _orig
             shutil.rmtree(d, ignore_errors=True)

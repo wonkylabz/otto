@@ -4813,6 +4813,20 @@ class BoardRetentionTests(unittest.TestCase):
         self.assertEqual(later["done-1"]["cap"], "assistant")
         self.assertEqual(later["done-1"]["outcome"], "result of done-1")
 
+    def test_a_card_archived_before_the_kind_rename_keeps_its_model_label(self):
+        """The archive is served as stored, so the rows written while the chip keyed off the
+        `local` boolean hold only that field. Left alone, a run that had said "local ·" for its
+        whole life silently loses the label the moment Temporal forgets it — the one moment the
+        archived copy is the only copy. Translated on read, and only while such rows exist."""
+        stub = self._Stub("done-1", "COMPLETED", 5, 4)
+        engine.archive_board_cards([{
+            "id": stub.id, "run_id": stub.run_id, "status": "COMPLETED",
+            "end": stub.close_time.astimezone().isoformat(timespec="minutes"),
+            "model": "qwen3-coder-30b", "local": True, "archived": True}])
+        card = {c["id"]: c for c in self._board([stub])}["done-1"]
+        self.assertEqual(card["kind"], "local", "an archived local card lost its model chip")
+        self.assertNotIn("local", card, "the dead boolean was served beside the new field")
+
     def test_a_card_past_the_retention_window_is_dropped_and_pruned(self):
         stubs = [self._Stub("done-1", "COMPLETED", 5, 4)]
         self._board(stubs)
@@ -4879,7 +4893,7 @@ class BoardRetentionTests(unittest.TestCase):
         self.assertIn("archived]", chips, "the archived chip is built but never rendered")
         # The board skips its DOM rebuild on an unchanged signature, so a card that ages out of
         # Temporal between two polls would keep its now-dead link until something else changed.
-        self.assertIn("it.local,it.archived]", ui,
+        self.assertIn("it.kind,it.archived]", ui,
                       "`archived` is absent from the render signature — the flip is invisible")
 
     def test_run_sh_raises_the_namespace_retention(self):
@@ -4894,6 +4908,48 @@ class BoardRetentionTests(unittest.TestCase):
         self.assertNotIn("fi\n", sh[sh.index("# 1b)"):i],
                          "the update sits inside the start-the-server branch — an already-running "
                          "dev server keeps the 24h default")
+
+
+class BoardModelKindChipTests(unittest.TestCase):
+    """The card's model chip says WHICH CLASS of model served the attempt. Otto's own runtime
+    drives both a model on this box (`local`) and a frontier vendor API (`hosted`), and the chip
+    only knew the runtime — so every hosted model was prefixed "local ·", the exact thing the
+    board exists to tell you apart. The boolean can't be reverted silently."""
+
+    def _model_chip(self):
+        ui = ui_src()
+        i = ui.index("const model=it.model?")
+        return ui, ui[i:ui.index("\n", i)]
+
+    def test_the_chip_labels_a_hosted_model_hosted_not_local(self):
+        ui, chip = self._model_chip()
+        self.assertIn("it.kind==='hosted'?'hosted · '", chip,
+                      "the chip has no hosted prefix — a hosted model reads as local again")
+        self.assertIn("it.kind==='local'?'local · '", chip,
+                      "the local prefix must survive: local models are still labelled")
+        # `it.local` was the boolean that mislabelled hosted models; a stray reference anywhere
+        # in the UI means some path still has no way to tell the two kinds apart.
+        self.assertNotIn("it.local", ui, "a leftover it.local check survived the kind rename")
+
+    def test_the_hosted_chip_gets_a_real_style_not_a_bare_span(self):
+        """The class is what carries the accent colour (`app.css`); without it the chip renders
+        as an unstyled chip and the prefix is the only cue left."""
+        ui, chip = self._model_chip()
+        self.assertIn("it.kind==='hosted'?'hosted'", chip,
+                      "the hosted chip is built without its CSS class")
+        css = open("web/css/app.css").read()
+        i = css.index(".bchip.hosted")
+        self.assertIn(".bchip.local", css[i - 60:i + 80],
+                      "the hosted chip is styled somewhere other than beside its local twin")
+
+    def test_the_tooltip_distinguishes_the_two_runtimes(self):
+        """The chip is clipped to its basename, so the tooltip is where "no claude -p" is
+        explained — and "local agent runtime" is a lie for a vendor API."""
+        ui = ui_src()
+        i = ui.index("const mtitle=it.fallback_from")
+        block = ui[i:ui.index("const inplace=", i)]
+        self.assertIn("it.kind==='hosted'", block,
+                      "the tooltip still calls every non-Claude model a local runtime")
 
 
 class ChatViewCollapseTests(unittest.TestCase):
@@ -5869,7 +5925,11 @@ class UiAssetLayoutTests(unittest.TestCase):
     # prose box showed three of ten lines behind a scrollbar in a proportional font.
     # The comment is most of the raise and earns it — the WHY (one logical line stays
     # one visual line) is what stops the next edit re-wrapping it.
-    ASSET_MAX = 114592
+    # -> 114794 for `.bchip.hosted`: the board's model chip prefixed a hosted frontier model
+    # "local ·" because it read the RUNTIME that drove the attempt, and that runtime drives a
+    # laptop vLLM and a vendor API alike. The second class rides the accent `.bchip.local`
+    # already had (a label fix, not a new colour), and the comment says why they share it.
+    ASSET_MAX = 114794
 
     def _assets(self):
         out = {}

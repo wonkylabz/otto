@@ -346,14 +346,19 @@ def _run_detail(wid):
 
 
 def _run_model(wid):
-    """(model, is_local_runtime, fallback_from, fallback_reason) of a run's NEWEST execution
-    attempt, from its transcript's meta line — written at attempt start, so it's available
-    while the attempt is still in flight (the workflow status only learns the model after an
-    attempt returns). The fallback fields are stamped by engine.run_attempt when the CHOSEN
-    model couldn't run and Claude substituted. Best-effort file read for the board's model
-    chip; (None, False, None, None) when there's no transcript."""
+    """(model, kind, fallback_from, fallback_reason) of a run's NEWEST execution attempt, from
+    its transcript's meta line — written at attempt start, so it's available while the attempt
+    is still in flight (the workflow status only learns the model after an attempt returns).
+    `kind` is the model CLASS (`local` | `hosted`) and NOT which runtime dispatched it: Otto's
+    local runtime serves a laptop vLLM and a vendor API alike, and the chip must not call the
+    second one "local". None means Claude (which runs `claude -p` and takes no chip prefix).
+    Transcripts written before the meta line carried `kind` fall back to the old
+    `runtime == "local"` boolean, so a historical run keeps the label it had. The fallback
+    fields are stamped by engine.run_attempt when the CHOSEN model couldn't run and Claude
+    substituted. Best-effort file read for the board's model chip;
+    (None, None, None, None) when there's no transcript."""
     if not wid or not re.fullmatch(r"[A-Za-z0-9._:@-]+", wid):
-        return None, False, None, None
+        return None, None, None, None
     prefix, best, best_attempt = f"{wid}-a", None, 0
     try:
         for name in os.listdir(claude_cli.TRANSCRIPTS):
@@ -372,13 +377,17 @@ def _run_model(wid):
             plan = claude_cli.plan_transcript_path(wid)
             best = plan if os.path.exists(plan) else None
         if not best:
-            return None, False, None, None
+            return None, None, None, None
         with open(best) as f:
             meta = json.loads(f.readline() or "{}")
-        return (meta.get("model"), meta.get("runtime") == "local",
+        # A pre-`kind` transcript (and the plan preview, which writes `runtime: local` without a
+        # kind) reads as "local" — the only non-Claude backend that existed when it was written,
+        # so the fallback can only be wrong for runs that predate hosted models entirely.
+        kind = meta.get("kind") or ("local" if meta.get("runtime") == "local" else None)
+        return (meta.get("model"), kind,
                 meta.get("fallback_from"), meta.get("fallback_reason"))
     except (OSError, ValueError):
-        return None, False, None, None
+        return None, None, None, None
 
 
 async def _wf_signal(wid, sig, value):
@@ -482,6 +491,15 @@ async def _board(limit=40):
 
     cutoff = _board_cutoff()
     archived = {a["id"]: a for a in engine.archived_board_cards(since=cutoff, limit=closed_limit)}
+    # A card is served EXACTLY as it was archived, and the rows written before the model chip
+    # switched from the `local` boolean to `kind` hold only the old field — left alone, a run
+    # that had said "local ·" all its life silently loses the label the moment Temporal forgets
+    # it, which is exactly when the archived copy becomes the only copy. Translated on READ, so
+    # no migration has to reach into rows that already exist: the archive is a view cache
+    # (`audit.prune_board_cards`), and the next poll re-derives the field either way.
+    for _card in archived.values():
+        if "kind" not in _card:
+            _card["kind"] = "local" if _card.pop("local", None) else None
     out, fresh, stale = [], [], False
     for wf in rows:
         status = wf.status.name if wf.status else "RUNNING"
@@ -511,7 +529,7 @@ async def _board(limit=40):
              "cap": None, "risk": None, "phase": None, "outcome": None, "verified": None,
              "repo": None, "in_place": False, "chat_key": None, "question": None, "pr": None,
              "needs_human": None, "qa": None, "retried_to": None, "archived": False}
-        e["model"], e["local"], e["fallback_from"], e["fallback_reason"] = _run_model(wf.id)
+        e["model"], e["kind"], e["fallback_from"], e["fallback_reason"] = _run_model(wf.id)
         h = c.get_workflow_handle(wf.id, run_id=wf.run_id)
         try:
             if status == "COMPLETED":

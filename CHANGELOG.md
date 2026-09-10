@@ -42,6 +42,10 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **The swarm board no longer calls a hosted frontier model "local".** A card's model chip
+  names the class of model that served the attempt — `local ·` for a model on your own
+  endpoint, `hosted ·` for a vendor API — instead of prefixing both "local ·" because Otto's
+  own runtime drives them the same way. Finished runs keep the label they were recorded with.
 - **A killed run no longer leaves its commands running.** `claude -p`, the local runtime's Bash
   tool and each MCP server now get their own process group, and every kill path signals the
   group. Before this, a watchdog or supervisor abort firing mid `Bash(terraform apply …)` killed
