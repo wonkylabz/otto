@@ -42,14 +42,17 @@ filler up to the budget — the declaration is an explicit grant, and a briefing
 that actually score, so "fix the flaky test" offers no MCP at all instead of 25 arbitrary
 tools; Bash is still there, which is what a general cap mostly wants anyway.
 """
+import contextlib
 import json
 import os
 import re
 import selectors
+import signal
 import subprocess
 import threading
 import time
 
+import claude_cli
 import config
 import policy
 import storage
@@ -385,17 +388,34 @@ class Session:
                 return msg.get("result") or {}
 
     def close(self):
+        """Stop the server and everything it spawned.
+
+        `terminate()` signalled the wrapper only — an `npx <server>` spec is a shim whose real
+        node process is a CHILD, so the server survived its own session's close and lived for
+        the worker's lifetime. The Popen already asks for `start_new_session`, so the group is
+        there to be signalled; nothing was signalling it."""
         try:
             if self._sel:
                 self._sel.close()
             if self.proc and self.proc.poll() is None:
-                self.proc.terminate()
+                self._signal_group(signal.SIGTERM)
                 try:
                     self.proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    self.proc.kill()
+                    claude_cli.kill_tree(self.proc)
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        self.proc.wait(timeout=5)
         except Exception:  # noqa: BLE001 - teardown must never break a run
             pass
+
+    def _signal_group(self, sig):
+        """Polite first pass: the whole group, so the wrapper's child gets the chance to shut
+        down cleanly that `kill_tree`'s SIGKILL does not give it."""
+        try:
+            os.killpg(os.getpgid(self.proc.pid), sig)
+        except (OSError, AttributeError, TypeError):
+            with contextlib.suppress(OSError, AttributeError):
+                self.proc.terminate()
 
     # -- protocol --
     def list_tools(self):
@@ -464,6 +484,17 @@ class Pool:
         self.trimmed = 0         # tools dropped by the budget (never silently)
         self._route = {}         # offered name -> (Session, real tool name)
         self._sessions = []
+        try:
+            self._build(servers, allowed_tools, pol, request, max_tools, require_score)
+        except BaseException:
+            # A raise past the per-server guard (an unreadable registry, a ranking failure)
+            # leaves a half-built Pool nobody holds a reference to, so nothing can ever call
+            # its close() — every server started before the raise would run until the worker
+            # died. The object tears its own sessions down before the exception continues.
+            self.close()
+            raise
+
+    def _build(self, servers, allowed_tools, pol, request, max_tools, require_score):
         have = servable(pol)
         found = []               # (offered_name, session, real_name, spec_dict)
         for name in servers or []:
@@ -471,10 +502,18 @@ class Pool:
             if not spec:
                 self.errors[name] = "not a launchable stdio server for the local backend"
                 continue
+            # Built before the try so a `start()` that raises PAST its own Popen — an
+            # `initialize` that times out after LOCAL_MCP_STARTUP_S, or a server that exits
+            # mid-handshake — still has an object to close. It used to leave the local
+            # unbound, so the process it had already spawned lived for the worker's lifetime;
+            # a `list_tools()` failure after a good start leaked the same way, the session
+            # never having reached `self._sessions`.
+            sess = Session(name, spec)
             try:
-                sess = Session(name, spec).start()
+                sess.start()
                 tools = sess.list_tools()
             except Exception as e:  # noqa: BLE001 - a broken server is data, not a crash
+                sess.close()
                 self.errors[name] = str(e)
                 _record_catalogue(name, spec, [], failed=True)
                 continue

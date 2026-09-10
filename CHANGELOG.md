@@ -42,6 +42,18 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **A killed run no longer leaves its commands running.** `claude -p`, the local runtime's Bash
+  tool and each MCP server now get their own process group, and every kill path signals the
+  group. Before this, a watchdog or supervisor abort firing mid `Bash(terraform apply …)` killed
+  only the CLI — the command itself, and Claude Code's own MCP servers, kept running while the
+  ladder started a retry in the same workspace. **If you have been restarting the worker to
+  clear stray `npx`/`node` processes, that should stop being necessary.**
+- **A finished turn is no longer reported as a timeout.** The watchdog stayed armed while the
+  CLI was shutting down, so a turn that had completed and been billed could come back as
+  `(timed out)` with a cost of 0 — and burn a harness retry re-running work that had succeeded.
+  A `result` now outranks the watchdog; the late kill is still recorded in the transcript.
+- **An MCP server that fails to start is shut down instead of left running.** A handshake that
+  timed out, or a tool listing that failed, leaked the server process for the life of the worker.
 - **A pinned chat is no longer deleted when the history is trimmed.** The store keeps the 100
   most recent chats; the trim ranked purely by recency while the sidebar floats pins to the
   top, so a pinned thread left idle long enough dropped off the end and took its messages with

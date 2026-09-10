@@ -41,6 +41,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+import claude_cli
 import config
 import error_classifier
 import file_safety
@@ -312,13 +313,28 @@ def _t_bash(args, cwd, mode=None):
         argv, use_shell_cwd = shlex.split(cmd), True
     else:
         argv, use_shell_cwd = ["bash", "-lc", cmd], True
-    res = subprocess.run(argv, cwd=(cwd or None) if use_shell_cwd else None,
-                         capture_output=True, text=True,
-                         timeout=config.LOCAL_TOOL_TIMEOUT_S)
-    out = (res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")
+    # `subprocess.run(timeout=)` kills only the process it started, so a timed-out
+    # `bash -lc "terraform apply & ..."` left its children running while the tool result already
+    # said it had timed out. Own process group + `kill_tree`, same as the `claude -p` watchdog.
+    proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=config.LOCAL_TOOL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        claude_cli.kill_tree(proc)
+        # Reap, and drain the pipes the kill just orphaned. Bounded: a grandchild that put
+        # itself in its OWN group survives the group kill and would otherwise hold the pipe
+        # open forever, hanging the tool call instead of returning its timeout.
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise                       # the caller turns this into the tool's error text
+    out = (stdout or "") + (("\n" + stderr) if stderr else "")
     out = out.strip() or "(no output)"
-    if res.returncode != 0:
-        out += f"\n(exit code {res.returncode})"
+    if proc.returncode != 0:
+        out += f"\n(exit code {proc.returncode})"
     return out
 
 

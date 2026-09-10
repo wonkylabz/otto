@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -3501,7 +3502,7 @@ class ClaudeSteerTests(unittest.TestCase):
         self._orig_subprocess = claude_cli.subprocess
         self._orig_transcripts = claude_cli.TRANSCRIPTS
         claude_cli.TRANSCRIPTS = self.dir
-        self.popen_cmds, self.sent = [], []
+        self.popen_cmds, self.sent, self.new_sessions = [], [], []
         tests = self
 
         class _Stdin:
@@ -3530,8 +3531,10 @@ class ClaudeSteerTests(unittest.TestCase):
                 yield json.dumps(tests._RESULT) + "\n"
 
         class _FakeProc:
-            def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None):
+            def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
+                         start_new_session=False):
                 tests.popen_cmds.append(cmd)
+                tests.new_sessions.append(start_new_session)
                 _s.stdout = _Stdout() if stdin is not None else io.StringIO(
                     json.dumps(tests._RESULT) + "\n")
                 _s.stderr = io.StringIO("")
@@ -3636,7 +3639,8 @@ class ClaudeStreamTests(unittest.TestCase):
         tests = self
 
         class _FakeProc:
-            def __init__(self, cmd, stdout=None, stderr=None, text=True, cwd=None):
+            def __init__(self, cmd, stdout=None, stderr=None, text=True, cwd=None,
+                         start_new_session=False):
                 tests.popen_cmds.append(cmd)
                 self.stdout = io.StringIO("".join(tests.stream))
                 self.stderr = io.StringIO(tests.stderr_text)
@@ -4629,7 +4633,8 @@ class EffortLevelTests(unittest.TestCase):
         import types as _types
 
         class _Proc:
-            def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None):
+            def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
+                         start_new_session=False):
                 _s.stdout = io.StringIO(json.dumps(
                     {"type": "result", "result": "ok", "total_cost_usd": 0}) + "\n")
                 _s.stderr = io.StringIO("")
@@ -6942,3 +6947,269 @@ class LocalPlanModeTests(unittest.TestCase):
         self.assertIn('bash_mode = "sandbox" if sandbox_available() else "allowlist"', src)
         self.assertIn('"bash_mode": bash_mode', src)
         self.assertIn("bash_mode=bash_mode, bash_rules=bash_rules", src)
+
+
+class SubprocessLifecycleTests(unittest.TestCase):
+    """Otto starts three kinds of child process — `claude -p`, the local runtime's Bash tool,
+    and an MCP server — and every one of them had a way to outlive the thing that was supposed
+    to own it (issue #42). These are behaviour tests with real processes where the defect was
+    about real processes, and stubs only where the point is control flow."""
+
+    def _alive(self, pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def _gone_within(self, pid, seconds=5.0):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if not self._alive(pid):
+                return True
+            time.sleep(0.05)
+        return not self._alive(pid)
+
+    def _await_pid(self, marker):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if os.path.exists(marker):
+                with open(marker) as fh:
+                    text = fh.read().strip()
+                if text:
+                    return int(text)
+            time.sleep(0.02)
+        self.fail("the fixture never reported its grandchild's pid")
+
+    def _spawn_with_grandchild(self):
+        """A shell that backgrounds a long sleep and reports its pid — the shape of a `claude -p`
+        turn sitting in `Bash(terraform apply ...)`. Returns (proc, grandchild_pid)."""
+        d = tempfile.mkdtemp(prefix="otto-killtree-")
+        self.addCleanup(shutil.rmtree, d, True)
+        marker = os.path.join(d, "gc.pid")
+        proc = subprocess.Popen(
+            ["bash", "-c", f"sleep 30 & echo $! > {marker}; wait"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        gc_pid = self._await_pid(marker)
+        # Whatever the assertions do, neither process may outlive the test.
+        self.addCleanup(lambda: claude_cli.kill_tree(proc))
+        self.addCleanup(lambda: self._alive(gc_pid) and os.kill(gc_pid, signal.SIGKILL))
+        self.assertTrue(self._alive(gc_pid), "the fixture never started its grandchild")
+        return proc, gc_pid
+
+    def test_proc_kill_alone_leaves_the_grandchild_running(self):
+        """The measurement the fix is answering, kept as a test so the claim stays true rather
+        than becoming folklore: `proc.kill()` signals the shell and nothing under it."""
+        proc, gc_pid = self._spawn_with_grandchild()
+        proc.kill()
+        proc.wait(timeout=5)
+        time.sleep(0.3)
+        self.assertTrue(self._alive(gc_pid),
+                        "the premise no longer holds — proc.kill() now reaps the tree, so the "
+                        "process-group machinery may be removable")
+
+    def test_kill_tree_reaches_the_grandchild(self):
+        proc, gc_pid = self._spawn_with_grandchild()
+        claude_cli.kill_tree(proc)
+        proc.wait(timeout=5)
+        self.assertTrue(self._gone_within(gc_pid),
+                        "kill_tree left the grandchild running — a watchdog firing mid-Bash "
+                        "would leave the command running into the ladder's retry")
+
+    def test_kill_tree_survives_a_double_without_a_pid(self):
+        """Teardown must never raise. A test double has no pid and no group."""
+        class _Double:
+            pid = None                          # what the suite's fake Popens actually carry
+            killed = False
+
+            def kill(_s):
+                _s.killed = True
+        d = _Double()
+        claude_cli.kill_tree(d)
+        self.assertTrue(d.killed, "kill_tree did not fall back to kill() for a pid-less double")
+        claude_cli.kill_tree(object())          # nothing to signal at all: still no raise
+
+    def test_a_timed_out_bash_tool_kills_what_the_command_spawned(self):
+        """`subprocess.run(timeout=)` killed only `bash`. The caller still needs the
+        TimeoutExpired — it is what becomes the tool's error text."""
+        d = tempfile.mkdtemp(prefix="otto-bashtimeout-")
+        self.addCleanup(shutil.rmtree, d, True)
+        marker = os.path.join(d, "gc.pid")
+        saved = config.LOCAL_TOOL_TIMEOUT_S
+        config.LOCAL_TOOL_TIMEOUT_S = 1
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                local_runtime._t_bash({"command": f"sleep 30 & echo $! > {marker}; wait"}, d)
+        finally:
+            config.LOCAL_TOOL_TIMEOUT_S = saved
+        gc_pid = self._await_pid(marker)
+        self.addCleanup(lambda: self._alive(gc_pid) and os.kill(gc_pid, signal.SIGKILL))
+        self.assertTrue(self._gone_within(gc_pid),
+                        "the timed-out command's own child is still running")
+
+    def test_session_close_reaches_the_servers_own_child(self):
+        """An `npx <server>` spec is a shim: the node process doing the work is a CHILD of the
+        one Otto holds, so `terminate()` on the wrapper left the real server running for the
+        life of the worker even though the Popen already asked for its own session."""
+        proc, gc_pid = self._spawn_with_grandchild()
+        sess = mcp_client.Session("shim", {"command": "bash"})
+        sess.proc = proc
+        sess.close()
+        self.assertTrue(self._gone_within(gc_pid),
+                        "the MCP server's own child outlived the session that owned it")
+
+    # -- Pool: a server that fails to come up must not be left running --------
+
+    def _pool_with(self, session_cls, servers=("bad",)):
+        """Build a Pool against a stubbed Session and registry — the defect here is control
+        flow (which failures reach a close()), so a real server would only add flakiness."""
+        saved = (mcp_client.Session, mcp_client.servable, mcp_client._record_catalogue)
+        mcp_client.Session = session_cls
+        mcp_client.servable = lambda pol=None: {n: {"command": "true"} for n in servers}
+        mcp_client._record_catalogue = lambda *a, **k: None
+        self.addCleanup(lambda: setattr(mcp_client, "Session", saved[0]))
+        self.addCleanup(lambda: setattr(mcp_client, "servable", saved[1]))
+        self.addCleanup(lambda: setattr(mcp_client, "_record_catalogue", saved[2]))
+        return mcp_client.Pool(list(servers))
+
+    def _stub_session(self, fail_on):
+        tests = self
+        tests.closed = []
+
+        class _Stub:
+            def __init__(_s, name, spec):
+                _s.name = name
+
+            def start(_s):
+                if fail_on == "start":
+                    raise RuntimeError("initialize timed out")
+                return _s
+
+            def list_tools(_s):
+                if fail_on == "list_tools":
+                    raise RuntimeError("server sent garbage")
+                return [{"name": "t", "description": "d", "inputSchema": {}}]
+
+            def close(_s):
+                tests.closed.append(_s.name)
+        return _Stub
+
+    def test_a_server_that_fails_to_initialize_is_closed_not_leaked(self):
+        """`Session(name, spec).start()` bound the local only on SUCCESS, so a start that
+        raised past its own Popen — the 45s `initialize` timeout, an exit mid-handshake —
+        left a running process nothing had a handle to."""
+        pool = self._pool_with(self._stub_session("start"))
+        self.assertEqual(self.closed, ["bad"], "the half-started server was never closed")
+        self.assertIn("bad", pool.errors)
+
+    def test_a_server_that_starts_then_fails_list_tools_is_closed_too(self):
+        """Same leak, later: the session is alive but never reaches `self._sessions`, so
+        `Pool.close()` would not have found it either."""
+        self._pool_with(self._stub_session("list_tools"))
+        self.assertEqual(self.closed, ["bad"])
+
+    def test_a_pool_that_raises_while_building_closes_what_it_started(self):
+        """A raise PAST the per-server guard leaves a half-built Pool nobody holds, so nothing
+        can ever call its close(). It must tear itself down on the way out."""
+        saved_rank = mcp_client._rank
+
+        def _boom(*a, **k):
+            raise RuntimeError("ranking blew up")
+        mcp_client._rank = _boom
+        self.addCleanup(lambda: setattr(mcp_client, "_rank", saved_rank))
+        with self.assertRaises(RuntimeError):
+            self._pool_with(self._stub_session(None), servers=("good",))
+        self.assertEqual(self.closed, ["good"],
+                         "the Pool raised with a started server still running")
+
+
+class ClaudeLateExitTests(unittest.TestCase):
+    """A `result` event followed by a slow exit was reported as `(timed out)`: run_json checked
+    `timed_out` first, and the watchdog stays armed through the unbounded `proc.wait()` after
+    the stream ends. The turn was finished and BILLED, and the run answered with
+    `total_cost_usd: 0`, `is_error: True` — spending a rung of max_harness_retries on a success."""
+
+    _RESULT = {"type": "result", "subtype": "success", "is_error": False,
+               "result": "the answer", "total_cost_usd": 0.02, "session_id": "sess-1"}
+
+    def setUp(self):
+        import types
+        self.dir = tempfile.mkdtemp(prefix="otto-lateexit-")
+        self._orig_subprocess = claude_cli.subprocess
+        self._orig_transcripts = claude_cli.TRANSCRIPTS
+        claude_cli.TRANSCRIPTS = self.dir
+        tests = self
+
+        class _FakeProc:
+            """Emits a clean result, then takes longer to exit than the watchdog allows."""
+            pid = None                      # no group to signal: kill_tree falls back to kill()
+
+            def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
+                         start_new_session=False):
+                _s.stdout = io.StringIO(json.dumps(tests._RESULT) + "\n")
+                _s.stderr = io.StringIO("")
+                _s.stdin = None
+                _s._killed = threading.Event()
+
+            def poll(_s):
+                return 0 if _s._killed.is_set() else None
+
+            def wait(_s):
+                _s._killed.wait(10)         # the slow exit; the watchdog is what ends it
+                return 0
+
+            def kill(_s):
+                _s._killed.set()
+
+        claude_cli.subprocess = types.SimpleNamespace(Popen=_FakeProc, PIPE=-1)
+
+    def tearDown(self):
+        claude_cli.subprocess = self._orig_subprocess
+        claude_cli.TRANSCRIPTS = self._orig_transcripts
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_a_finished_turn_is_not_reported_as_a_timeout(self):
+        path = os.path.join(self.dir, "late.jsonl")
+        out = claude_cli.run_json("do the thing", timeout=0.2, transcript=path)
+        self.assertEqual(out["result"], "the answer")
+        self.assertFalse(out["is_error"], "a billed, finished turn came back as an error")
+        self.assertEqual(out["total_cost_usd"], 0.02, "the turn's real cost was thrown away")
+        # The kill still happened and is still recorded — it just isn't called a timeout.
+        self.assertTrue(out.get("late_exit"))
+        with open(path) as fh:
+            lines = [json.loads(x) for x in fh if x.strip()]
+        note = next(x for x in lines if x.get("type") == "otto-timeout")
+        self.assertTrue(note["after_result"],
+                        "the transcript still calls a completed turn a timeout")
+
+    def test_a_turn_with_no_result_is_still_a_timeout(self):
+        """The other half of the branch: nothing arrived, so the watchdog's verdict stands."""
+        claude_cli.subprocess.Popen = self._silent_proc()
+        out = claude_cli.run_json("do the thing", timeout=0.2)
+        self.assertEqual(out["result"], "(timed out)")
+        self.assertTrue(out["is_error"])
+        self.assertNotIn("late_exit", out)
+
+    def _silent_proc(self):
+        class _Silent:
+            pid = None
+
+            def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
+                         start_new_session=False):
+                _s.stdout = io.StringIO("")
+                _s.stderr = io.StringIO("")
+                _s.stdin = None
+                _s._killed = threading.Event()
+
+            def poll(_s):
+                return 0 if _s._killed.is_set() else None
+
+            def wait(_s):
+                _s._killed.wait(10)
+                return 0
+
+            def kill(_s):
+                _s._killed.set()
+        return _Silent
