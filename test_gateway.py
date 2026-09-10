@@ -3468,6 +3468,17 @@ class McpCredentialsAndNamingTests(unittest.TestCase):
         self.assertIn("/api/mcp/def?name=", src, "the edit form cannot load the stored def")
         self.assertIn("e.args", src, "the edit form cannot prefill the arguments")
 
+    def test_the_add_button_does_not_hand_the_click_event_to_the_form(self):
+        """`addEventListener("click", showMcpForm)` passes the MouseEvent as the form's
+        `existing` argument, so `+ MCP server` opened in EDIT mode against a truthy object with
+        no fields — a readonly, empty name box, i.e. adding was broken too. The form now also
+        checks `existing.name`, but the binding is the actual defect."""
+        src = ui_src()
+        self.assertIn('addEventListener("click",()=>showMcpForm())', src,
+                      "the add button hands its click event to showMcpForm")
+        self.assertIn("existing && existing.name", src,
+                      "showMcpForm trusts any truthy argument as a stored server")
+
     def test_the_editor_payload_is_fetched_per_server_not_carried_on_every_load(self):
         """`/api/policy` is loaded on every Admin visit and its rows ARE the activation gate,
         which shows variable names only. Values ride a separate per-server read, so opening
@@ -5350,7 +5361,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # on write — reversing this file's own "full fidelity for forensics" line, which is exactly
     # the kind of change that must not happen quietly. Bought with a measured 4/4 A/B and a
     # supervisor kill that cost 639k tokens.
-    MAX_RULES_BYTES = 73977   # fetched tier — bounded, but looser; it is not always loaded
+    # 73977 -> 74251 for the template-placeholder rule: the ONE UI defect class this session
+    # shipped, and the one every existing check is blind to — valid syntax, correct markup,
+    # green suite, dead button. It belongs next to the mascot backtick, same hazard.
+    MAX_RULES_BYTES = 74251   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

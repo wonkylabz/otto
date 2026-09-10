@@ -5863,7 +5863,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # asks slot, and the two Admin-matrix columns whose declared width forgot the cell padding.
     # -> 113_394 for the MCP activation row (issue #4): a registered-but-inactive server has to
     # show the argv it would spawn, so the command line is rendered in the row, not a tooltip.
-    ASSET_MAX = 113_394
+    # -> 113484 for the MCP row's second control: the actions column held one button, and at
+    # 48px Edit and the remove × wrapped onto two lines, which reads as a broken row.
+    ASSET_MAX = 113484
 
     def _assets(self):
         out = {}
@@ -5892,6 +5894,27 @@ class UiAssetLayoutTests(unittest.TestCase):
             self.assertLessEqual(os.path.getsize(path), self.ASSET_MAX,
                                  "%s is over the ceiling — cut it, don't raise the ratchet "
                                  "without saying why in the constant's comment" % rel)
+
+    def test_no_template_placeholder_is_left_as_live_interpolation(self):
+        """A documentation placeholder written into a template literal is CODE.
+
+        `<code>${VAR}</code>` in the MCP form's help text is not the text `${VAR}` — it is an
+        expression, and it threw `ReferenceError: VAR is not defined` the moment the function
+        ran, so the form never opened and the Edit button read as dead. `node --check` passes
+        it (the syntax is valid), a grep for the button passes it (the markup is right), and
+        the unit suite passes it (nothing executes the template). Only opening the page finds
+        it, which is why this exists.
+
+        The rule: an ALL-CAPS `${NAME}` must name something the assets actually declare. Real
+        ones (`${CAP_COLS}`) do; placeholders (`${VAR}`, `${HOME}`) do not. Comments are NOT
+        exempt — a `//` comment inside a template literal is live text like any other."""
+        src = "\n".join(open(p, encoding="utf-8").read()
+                        for p in sorted(self._assets().values()) if p.endswith(".js"))
+        declared = set(re.findall(r"\b(?:const|let|var|function)\s+([A-Z][A-Z0-9_]*)\b", src))
+        used = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)\}", src))
+        self.assertEqual(sorted(used - declared), [],
+                         "these read as documentation placeholders but are interpolated as "
+                         "expressions — escape them (&#36;{...}) or write them out in words")
 
     def test_every_script_declares_use_strict(self):
         """`"use strict"` is per-SCRIPT, not per-page. The original had one directive at the
