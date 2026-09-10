@@ -12,6 +12,7 @@ usage / session_id / is_error), so run_json's return contract is unchanged and c
 """
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -34,6 +35,29 @@ def plan_transcript_path(wid):
 def transcript_path(wid, attempt):
     """Canonical transcript location for one execution attempt of one workflow."""
     return os.path.join(TRANSCRIPTS, f"{wid}-a{attempt}.jsonl")
+
+
+def kill_tree(proc):
+    """SIGKILL the child's whole process GROUP, not just the child.
+
+    `proc.kill()` reaches `claude` alone. A watchdog firing mid `Bash(terraform apply ...)`
+    therefore left the command — and Claude Code's own MCP servers — running while the ladder
+    started a retry in the same workspace. Measured: killing a `bash -c "sleep 30; ..."` child
+    left `sleep` behind. Every child Otto kills is spawned with `start_new_session=True`, so
+    the group id IS the child's pid and no bystander shares it.
+
+    Falls back to `proc.kill()` when there is no group to signal (the process is already
+    reaped, or a test double stands in for it) — a teardown must never raise.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        return
+    except (OSError, AttributeError, TypeError):
+        pass          # no pid, no group, or already reaped — fall through to the plain kill
+    try:
+        proc.kill()
+    except (OSError, AttributeError):
+        pass
 
 
 def gc_transcripts(ttl_h=None):
@@ -195,8 +219,12 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     # `stdin` is passed ONLY when steering, so an unsteered call reaches Popen with byte-identical
     # arguments to the ones it always had — the pre-steering invocation is the well-tested one and
     # must not become a special case of the new one.
+    # `start_new_session` is what makes the kill paths able to reach the whole tree: it gives
+    # the child its own process group, so `kill_tree` can signal the group without touching
+    # the worker or its siblings.
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            cwd=cwd, **({"stdin": subprocess.PIPE} if streaming_in else {}))
+                            cwd=cwd, start_new_session=True,
+                            **({"stdin": subprocess.PIPE} if streaming_in else {}))
     send_lock = threading.Lock()
 
     def _close_stdin():
@@ -258,10 +286,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
 
     def _kill():
         timed_out.set()
-        try:
-            proc.kill()
-        except OSError:
-            pass
+        kill_tree(proc)
 
     steer_thread = None
     if steer is not None:
@@ -298,10 +323,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
             # leaking one blocked-forever daemon thread per run.
             while proc.poll() is None:
                 if abort.wait(0.5):
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
+                    kill_tree(proc)
                     return
         threading.Thread(target=_abort_watch, daemon=True).start()
 
@@ -359,7 +381,11 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
             if stderr:
                 sink.write(json.dumps({"type": "stderr", "text": stderr[:20_000]}) + "\n")
             if timed_out.is_set():
-                sink.write(json.dumps({"type": "otto-timeout", "after_s": timeout}) + "\n")
+                # `after_result` distinguishes the two cases the one line used to conflate: a
+                # turn the watchdog cut off, and a finished turn whose process was merely slow
+                # to exit. Only the first is a timeout.
+                sink.write(json.dumps({"type": "otto-timeout", "after_s": timeout,
+                                       "after_result": final is not None}) + "\n")
             sink.close()
 
     # A tool that succeeded even once was available. One that ONLY ever failed was not — and an
@@ -370,14 +396,21 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
         return {"result": f"(aborted by supervisor: {abort.reason})"[:400],
                 "is_error": True, "total_cost_usd": 0, "aborted": True,
                 "tools_used": tools_used, "tools_failed": tools_failed}
+    # A `result` event OUTRANKS the watchdog. The turn ends when that event arrives, but the
+    # watchdog stays armed through the unbounded `proc.wait()` that follows — so a child slow
+    # to exit (draining MCP servers, flushing) was reported as "(timed out)" with
+    # `total_cost_usd: 0` for a turn that had finished and been billed, and it spent a rung of
+    # `max_harness_retries` doing it. The kill is still right; calling it a timeout was not.
+    if final is not None:
+        final["tools_used"] = tools_used
+        final["tools_failed"] = tools_failed
+        if timed_out.is_set():
+            final["late_exit"] = True
+        return final
     if timed_out.is_set():
         return {"result": "(timed out)", "is_error": True, "total_cost_usd": 0,
                 "tools_used": tools_used, "tools_failed": tools_failed}
-    if final is None:
-        # The stream ended without a result event (crash, auth failure, garbage output) —
-        # same contract as the old JSONDecodeError branch: an error dict, never a raise.
-        return {"result": (tail or stderr)[:4000], "is_error": True, "total_cost_usd": 0,
-                "tools_used": tools_used, "tools_failed": tools_failed}
-    final["tools_used"] = tools_used
-    final["tools_failed"] = tools_failed
-    return final
+    # The stream ended without a result event (crash, auth failure, garbage output) —
+    # same contract as the old JSONDecodeError branch: an error dict, never a raise.
+    return {"result": (tail or stderr)[:4000], "is_error": True, "total_cost_usd": 0,
+            "tools_used": tools_used, "tools_failed": tools_failed}
