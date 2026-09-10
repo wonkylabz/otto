@@ -255,6 +255,104 @@ def _dehydrate(cfg):
     return cfg
 
 
+# --- masking a stored credential for the API (issue #27) -------------------------------
+# `api_key_env` is SUPPOSED to name an env var, but `api_key()` also accepts a literal key
+# pasted into that field, and an endpoint's header values resolve the same way. Both therefore
+# hold real credentials on a live install — and GET /api/models handed them to any client. That
+# also defeated `file_safety`'s `Read data/models.json` deny: a run with unscoped Bash could
+# curl the API for what the deny hides.
+
+MASK = "\u2022" * 4
+
+
+def mask_value(v):
+    """A stored credential rendered for a screen: the shape, never the bytes.
+
+    An env var NAME is configuration, not a secret — it is returned verbatim, or the operator
+    could not see which var an endpoint reads (nor fix a typo in it). Only a value that is NOT
+    an indirection is masked, keeping the last 4 characters so a rotated key is recognizable."""
+    v = str(v or "")
+    if not v or config.is_secret_ref(v):
+        return v
+    return MASK + v[-4:] if len(v) > 4 else MASK
+
+
+def is_masked(v):
+    """True for a value that came back from a client still wearing its mask — i.e. one the
+    client was never shown and cannot have edited."""
+    return isinstance(v, str) and v.startswith(MASK)
+
+
+def _mask_entry(d):
+    d = dict(d)
+    if d.get("api_key_env"):
+        d["api_key_env"] = mask_value(d["api_key_env"])
+    if d.get("headers"):
+        d["headers"] = {k: mask_value(v) for k, v in _norm_headers(d["headers"]).items()}
+    return d
+
+
+def masked(cfg):
+    """`cfg` with every literal credential masked — the ONE view the API may serialize. Both
+    the endpoint DEFINITIONS and the pool entries `_hydrate` copied them onto are covered."""
+    cfg = copy.deepcopy(cfg)
+    cfg["pool"] = [_mask_entry(m) for m in cfg.get("pool") or []]
+    cfg["endpoints"] = [_mask_entry(e) for e in cfg.get("endpoints") or []]
+    return cfg
+
+
+def unmask(cfg, stored=None):
+    """The inverse, applied to a config posted BACK by a client: a masked value means "keep what
+    is stored", never "the operator typed four bullets". Without it every Admin save would
+    overwrite the key with its own mask and silently 401 the endpoint.
+
+    An endpoint is matched by name, then by base_url — a rename keeps the URL, and the reference
+    from the pool is the name, so the old one is gone from the posted list. A masked value with
+    no stored match (renamed AND repointed in one save) is unrecoverable: it is dropped rather
+    than persisted as a bogus key, and named in the returned list so the caller can say so."""
+    cfg = copy.deepcopy(cfg)
+    stored = load() if stored is None else stored
+    by_name, by_url = {}, {}
+    for e in stored.get("endpoints") or []:
+        if e.get("name"):
+            by_name[e["name"]] = e
+        if e.get("base_url"):
+            by_url.setdefault(e["base_url"], e)
+    pool_by_name = {m.get("name"): m for m in stored.get("pool") or []}
+    lost = []
+
+    def _restore(d, prior, label):
+        prior = prior or {}
+        if is_masked(d.get("api_key_env")):
+            if prior.get("api_key_env"):
+                d["api_key_env"] = prior["api_key_env"]
+            else:
+                d["api_key_env"] = ""
+                lost.append(label)
+        if d.get("headers"):
+            prior_h = _norm_headers(prior.get("headers"))
+            headers = {}
+            for k, v in _norm_headers(d["headers"]).items():
+                if is_masked(v):
+                    if prior_h.get(k):
+                        v = prior_h[k]
+                    else:
+                        v = ""
+                        lost.append(f"{label} header {k}")
+                headers[k] = v
+            d["headers"] = headers
+        return d
+
+    cfg["endpoints"] = [_restore(dict(e),
+                                 by_name.get(e.get("name")) or by_url.get(e.get("base_url")),
+                                 e.get("name") or e.get("base_url") or "?")
+                        for e in cfg.get("endpoints") or []]
+    # Pool entries carry their own copies only when legacy/dangling; `_dehydrate` drops the rest.
+    cfg["pool"] = [_restore(dict(m), pool_by_name.get(m.get("name")), m.get("name") or "?")
+                   for m in cfg.get("pool") or []]
+    return cfg, lost
+
+
 def endpoints(cfg=None):
     """The configured endpoints, each with the pool entries riding on it."""
     cfg = cfg or load()

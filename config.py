@@ -708,6 +708,14 @@ def _secret_from_helper(name):
     return out.decode("utf-8", "replace").split("\n", 1)[0].strip()
 
 
+def is_secret_ref(value):
+    """True when `value` is an INDIRECTION (an env var name / helper key) rather than a
+    credential itself. The same shape test `_secret_from_helper` gates its argv on, exposed
+    because the fields accepting either — `api_key_env`, an endpoint's header values — need to
+    tell a name apart from a pasted literal before putting one on a screen (gateway.mask_value)."""
+    return bool(_SECRET_NAME_RE.match(value or ""))
+
+
 def secret(name, default=""):
     """One secret, resolved env -> OTTO_SECRET_COMMAND -> `default`."""
     val = os.environ.get(name)

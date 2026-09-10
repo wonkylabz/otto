@@ -19,6 +19,10 @@ import types
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from socketserver import ThreadingTCPServer
+
 import chats
 import claude_cli
 import config
@@ -2746,6 +2750,151 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class ModelSecretMaskingTests(unittest.TestCase):
+    """`api_key_env` accepts a LITERAL key (gateway.api_key) and an endpoint's header values
+    resolve the same way, so both hold real credentials on a live install — and GET /api/models
+    served them verbatim to any client, which also defeated file_safety's read deny on
+    data/models.json (issue #27). The API must show the shape and never the bytes, and a masked
+    value posted back must mean "keep what is stored" — or every Admin save rotates the key to
+    four bullets and the endpoint 401s."""
+
+    LITERAL = "vllm_live_9f2c1d7ab4e5"
+    HEADER = "hdr_live_0011223344"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = ThreadingTCPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd.daemon_threads = True
+        cls.base = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=5)
+        cls.httpd.server_close()
+
+    def setUp(self):
+        self._orig, self._probe = gateway._PATH, gateway.probe_models
+        self._dir = tempfile.mkdtemp(prefix="otto-mask-")
+        gateway._PATH = os.path.join(self._dir, "models.json")
+        gateway.probe_models = lambda force=False, cfg=None: {}   # no network on a page load
+        with open(gateway._PATH, "w") as f:
+            json.dump({"pool": [{"name": "claude-sonnet", "provider": "claude",
+                                 "model": "claude-sonnet-5"},
+                                {"name": "qwen", "provider": "openai", "endpoint": "gpu",
+                                 "model": "qwen3"}],
+                       "endpoints": [{"name": "gpu", "base_url": "https://gpu.x/v1",
+                                      "kind": "local", "api_key_env": self.LITERAL,
+                                      "headers": {"X-Api-Key": self.HEADER,
+                                                  "X-Tenant": "VLLM_TENANT"}}],
+                       "assign": {"execution": "claude-sonnet"}}, f)
+
+    def tearDown(self):
+        shutil.rmtree(self._dir, ignore_errors=True)
+        gateway._PATH, gateway.probe_models = self._orig, self._probe
+
+    def _get(self):
+        with urllib.request.urlopen(self.base + "/api/models", timeout=10) as r:
+            body = r.read().decode()
+        return body, json.loads(body)
+
+    def _post(self, payload):
+        req = urllib.request.Request(
+            self.base + "/api/models", method="POST",
+            data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+
+    def _stored_ep(self):
+        return next(e for e in gateway.load()["endpoints"] if e["name"] == "gpu")
+
+    def test_a_literal_key_never_appears_in_the_api_body(self):
+        body, data = self._get()
+        # The whole point: grep the RAW body, not a field — the leak was one dict away either way.
+        self.assertNotIn(self.LITERAL, body)
+        self.assertNotIn(self.HEADER, body)
+        ep = next(e for e in data["endpoints"] if e["name"] == "gpu")
+        self.assertTrue(ep["api_key_env"].startswith(gateway.MASK))
+        self.assertTrue(ep["api_key_env"].endswith("4e5"))       # last 4: a rotation is visible
+        self.assertTrue(ep["headers"]["X-Api-Key"].startswith(gateway.MASK))
+        # An env var NAME is configuration, not a credential — masking it would hide which var
+        # an endpoint reads, and a typo in one would be unfixable from the screen.
+        self.assertEqual(ep["headers"]["X-Tenant"], "VLLM_TENANT")
+        # The hydrated copy on the pool entry is the same secret by another name.
+        qwen = next(m for m in data["pool"] if m["name"] == "qwen")
+        self.assertNotIn(self.LITERAL, json.dumps(qwen))
+
+    def test_an_admin_save_round_trips_without_clobbering_the_key(self):
+        _, data = self._get()
+        data["endpoints"][0]["kind"] = "hosted"          # an ordinary edit beside the masked key
+        r = self._post({"pool": data["pool"], "assign": data["assign"],
+                        "endpoints": data["endpoints"]})
+        self.assertEqual(r["lost_keys"], [])
+        ep = self._stored_ep()
+        self.assertEqual(ep["api_key_env"], self.LITERAL)
+        self.assertEqual(ep["headers"]["X-Api-Key"], self.HEADER)
+        self.assertEqual(ep["kind"], "hosted")
+        self.assertNotIn(gateway.MASK, json.dumps(gateway.load()))
+        # And the POST's own reply is a client-facing body too.
+        self.assertNotIn(self.LITERAL, json.dumps(r))
+
+    def test_a_rename_keeps_the_key_the_client_never_saw(self):
+        # The reference from the pool is the NAME, so a renamed endpoint has no name match in
+        # the store; the URL is what identifies it.
+        _, data = self._get()
+        data["endpoints"][0]["name"] = "gpu-box"
+        for m in data["pool"]:
+            if m.get("endpoint") == "gpu":
+                m["endpoint"] = "gpu-box"
+        r = self._post({"pool": data["pool"], "assign": data["assign"],
+                        "endpoints": data["endpoints"]})
+        self.assertEqual(r["lost_keys"], [])
+        ep = next(e for e in gateway.load()["endpoints"] if e["name"] == "gpu-box")
+        self.assertEqual(ep["api_key_env"], self.LITERAL)
+
+    def test_an_operator_typed_key_still_lands(self):
+        _, data = self._get()
+        data["endpoints"][0]["api_key_env"] = "ROTATED_KEY_ENV"
+        data["endpoints"][0]["headers"]["X-Api-Key"] = "hdr_new_5566"
+        self._post({"pool": data["pool"], "assign": data["assign"],
+                    "endpoints": data["endpoints"]})
+        ep = self._stored_ep()
+        self.assertEqual(ep["api_key_env"], "ROTATED_KEY_ENV")
+        self.assertEqual(ep["headers"]["X-Api-Key"], "hdr_new_5566")
+
+    def test_an_unrecoverable_mask_is_dropped_and_reported(self):
+        # Renamed AND repointed in one save: nothing in the store matches, so the mask cannot be
+        # resolved. Storing it would be a bogus key that 401s silently — clear it and say so.
+        _, data = self._get()
+        data["endpoints"][0].update(name="elsewhere", base_url="https://other.x/v1")
+        for m in data["pool"]:
+            if m.get("endpoint") == "gpu":
+                m["endpoint"] = "elsewhere"
+        r = self._post({"pool": data["pool"], "assign": data["assign"],
+                        "endpoints": data["endpoints"]})
+        self.assertIn("elsewhere", r["lost_keys"])
+        self.assertFalse(r["ok"])
+        ep = next(e for e in gateway.load()["endpoints"] if e["name"] == "elsewhere")
+        self.assertEqual(ep["api_key_env"], "")
+        self.assertNotIn(gateway.MASK, json.dumps(gateway.load()))
+
+    def test_mask_value_tells_a_name_apart_from_a_literal(self):
+        self.assertEqual(gateway.mask_value("VLLM_KEY"), "VLLM_KEY")
+        self.assertEqual(gateway.mask_value(""), "")
+        self.assertEqual(gateway.mask_value("sk-ant-api03-abcd"), gateway.MASK + "abcd")
+        self.assertEqual(gateway.mask_value("abc"), gateway.MASK)   # too short to hint at
+        self.assertTrue(gateway.is_masked(gateway.mask_value("sk-ant-api03-abcd")))
+        self.assertFalse(gateway.is_masked("VLLM_KEY"))
+
+    def test_the_ui_never_posts_a_mask_back_as_a_saved_key(self):
+        # The other half of the round trip lives in the client: saveModels must not report
+        # "saved ✓" for a key the server told it it could not carry over.
+        src = ui_src()
+        self.assertIn("lost_keys", src)
+
+
 class ModelKindTests(unittest.TestCase):
     """Issue #18: every model added through an endpoint was classed LOCAL by the one predicate
     `provider != "claude"`, so gpt on api.openai.com got the write latch, the cross-run cap latch
@@ -5392,7 +5541,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 74251 -> 74528 for the inherited-height rule: two separate CSS rules silently replaced
     # a height the code had just set, and both were found by measuring the rendered box
     # in a browser — nothing in the CSS or the JS reads as wrong.
-    MAX_RULES_BYTES = 74528   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 74806 for the credential-masking rule (issue #27): the model store's API-key fields
+    # hold literal keys, and WHICH side of the API boundary masks them is invisible from
+    # either end — the GET looks like it is serving config, and the POST looks like it is
+    # saving what the operator typed. The leak also silently defeated a file_safety deny.
+    MAX_RULES_BYTES = 74806   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

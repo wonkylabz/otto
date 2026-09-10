@@ -691,9 +691,18 @@ function showModelForm(){
   };
 }
 
+/* MODEL_STATE holds what the GET handed us, whose literal API keys are MASKED (issue #27);
+   the server restores each one from the store on the way in. A key it could not match back is
+   the one thing that must not read as "saved ✓" — the endpoint would 401 on its next call. */
 async function saveModels(){
-  await fetch("/api/models",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(MODEL_STATE)});
-  const s=document.getElementById("saved"); if(s){ s.classList.add("show"); setTimeout(()=>s.classList.remove("show"),1200); }
+  let r={};
+  try { r=await (await fetch("/api/models",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(MODEL_STATE)})).json(); }
+  catch(e){ r={ok:false,lost_keys:["save failed: "+e.message]}; }
+  const s=document.getElementById("saved"); if(!s) return r;
+  const lost=(r&&r.lost_keys)||[];
+  if(lost.length){ s.textContent="saved, but re-enter the API key for: "+lost.join(", "); s.classList.add("warn","show"); }
+  else { s.textContent="saved \u2713"; s.classList.remove("warn"); s.classList.add("show"); setTimeout(()=>s.classList.remove("show"),1200); }
+  return r;
 }
 
 
