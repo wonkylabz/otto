@@ -5364,7 +5364,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 73977 -> 74251 for the template-placeholder rule: the ONE UI defect class this session
     # shipped, and the one every existing check is blind to — valid syntax, correct markup,
     # green suite, dead button. It belongs next to the mascot backtick, same hazard.
-    MAX_RULES_BYTES = 74251   # fetched tier — bounded, but looser; it is not always loaded
+    # 74251 -> 74528 for the inherited-height rule: two separate CSS rules silently replaced
+    # a height the code had just set, and both were found by measuring the rendered box
+    # in a browser — nothing in the CSS or the JS reads as wrong.
+    MAX_RULES_BYTES = 74528   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

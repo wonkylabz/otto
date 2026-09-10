@@ -658,6 +658,20 @@
   .aform label { font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: -4px; }
   .aform input, .aform textarea, .aform select { padding: 9px 11px; }
   .aform textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
+  /* A one-per-line list of arguments or NAME=value pairs is code, not prose: 64px shows
+     three of ten lines behind a scrollbar, and a proportional font hides where a space
+     or a stray character actually is. Lines never wrap — one logical line stays one
+     visual line, which is the contract the field is explaining. Height is set to the
+     content by `growArea`. */
+  .aform textarea.codearea { font-family: var(--mono); font-size: 12.5px;
+    white-space: pre; overflow-wrap: normal; overflow-x: auto; min-height: 96px;
+    /* Two inherited constraints fight `growArea`, both measured rather than guessed.
+       `.aform` is a flex COLUMN in a max-height modal, so a textarea SHRINKS to its
+       min-height once the form is taller than the box (style 208px, rendered 96px); and the
+       bare `textarea` rule up in the composer's styles caps every textarea in the app at
+       120px, which `.aform textarea` never overrode (style 208px, rendered 120px). The
+       modal body scrolls, this field does not, and `growArea`'s own 320px is the cap. */
+    flex: 0 0 auto; max-height: none; }
   .aform .frow { display: flex; gap: 12px; }
   .aform .frow > div { flex: 1; display: flex; flex-direction: column; gap: 8px; }
   .aform .ferr { color: var(--danger); font-size: 12px; }

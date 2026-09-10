@@ -1327,11 +1327,11 @@ function showMcpForm(existing){
     <label>Name</label><input id="mf-name" placeholder="e.g. github">
     <label>Command</label><input id="mf-cmd" placeholder="npx">
     <label>Arguments &mdash; <b>one per line</b></label>
-    <textarea id="mf-args" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea>
+    <textarea id="mf-args" class="codearea" spellcheck="false" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea>
     <p class="sub" style="margin:2px 0 0">One argument per line. A whole command line on one
       line is passed to the program as a single argument, and it will refuse it.</p>
     <label style="margin-top:10px">Environment <span class="sub">(optional, one <code>NAME=value</code> per line)</span></label>
-    <textarea id="mf-env" placeholder="GITHUB_TOKEN=MY_GITHUB_TOKEN&#10;CONFLUENCE_URL=https://example.atlassian.net/wiki"></textarea>
+    <textarea id="mf-env" class="codearea" spellcheck="false" placeholder="GITHUB_TOKEN=MY_GITHUB_TOKEN&#10;CONFLUENCE_URL=https://example.atlassian.net/wiki"></textarea>
     <p class="sub" style="margin:2px 0 0">For a credential give the <b>name</b> of an env var, or
       of a secret your <code>OTTO_SECRET_COMMAND</code> helper resolves &mdash; or
       <code>&#36;{VAR}</code>. A literal is stored as typed, in plaintext, in
@@ -1352,6 +1352,10 @@ function showMcpForm(existing){
     document.getElementById("mf-env").value=Object.entries(e.env||{}).map(([k,v])=>k+"="+v).join("\n");
     if(Object.keys(e.env||{}).length) c.querySelector(".mf-kept").hidden=false;
   }
+  // Sized AFTER the values are in and while the modal is open — `scrollHeight` is 0 on a
+  // hidden element, which would leave every field at its minimum.
+  growArea(document.getElementById("mf-args"));
+  growArea(document.getElementById("mf-env"));
   document.getElementById("mf-save").textContent=e?"Save changes":"Add MCP server";
   document.getElementById("mf-note").innerHTML=e
     ? "Saving returns this server to <b>inactive</b> \u2014 the command line you approved is not the one that would now be spawned, so activate it again from the list."
