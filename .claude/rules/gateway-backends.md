@@ -43,6 +43,8 @@
 - **Registering a server and RUNNING it are two acts** (`policy.add_mcp_def`; `McpActivationTests`) — a stored `command`+`args` is spawned as the operator, so the gate is on the DEF and BOTH doors read it (`active_mcp_config`, `mcp_client.servable`). Audited with the argv.
 - **Servable/unservable is the whole design**: a stdio server (`command`+`args`) is a subprocess we spawn. A claude.ai *connector* (Gmail/Calendar/Slack/Notion) is remote OAuth inside Claude Code's own session — nothing to spawn, no token to present. `servable()` refuses anything not stdio.
 - **A cap needing a connector must not run locally** — `mcp_client.unservable(cap)` keeps it on Claude (strict mode stops instead). The Admin Execution dropdown disables local options for such a cap.
+- **A connector blocks a local run by REQUEST, not only by declaration** (`mcp_client.connectors_named`) — the generalists declare no `tools:`, so the cap-side test is silent for the caps handed anything, and the model hunts credentials to hand-roll it (`LocalConnectorGapTests`).
+- **What the local backend CANNOT reach is declared in-context** (`mcp_client.connector_note`) — outside the stdio branch: a connector is absent either way. 4/4 without it the model plans to read `~/.netrc`; 4/4 with it, it reports the blocker (`LocalConnectorGapTests`).
 - **Two bounds, not one**: which servers = a cap's `tools:` frontmatter ∩ servable ∩ risk allowlist; how many tools = `Pool` ranks against the request, keeping at most `LOCAL_MCP_MAX_TOOLS` (25) — the full fleet is schema resent every turn, fatal on a small context window. An undeclared cap draws only the request-relevant few.
 - Tool catalogue is cached (`data/mcp-tools.json`, keyed on server-def hash) so ranking needn't spawn every server. A server that can't start is negatively cached (`LOCAL_MCP_PROBE_TTL_S`) so one dead server doesn't force a cold-cache "spawn everything" fallback, and is declared in-context (not fatal). Kill switch `OTTO_LOCAL_MCP=0`; pool closed in `run_json`'s `finally`.
 - **Still missing** (env, not code): the worker has no `AWS_*`/`aws-vault`, so `aws-mcp`/EKS auth as nobody on either backend.
@@ -62,6 +64,7 @@
 - **A deny rule covers `rm` through Bash, not just writes** (measured against a control) — which is why `data/ESTOP` is on the list: deleting it releases the global pause, handing a run the operator's only stop lever.
 - **`file_safety` is the write guard that needs no human** — the approval gate judges a plan, but `READ_TOOLS` has unscoped `Bash`. A matching deny beats an explicit allow and covers Bash redirection (`FileSafetyTests`).
 - **Otto's own runtime state is READ-denied** (`file_safety.read_denied_globs`) — `otto.db`, `data/*.json` (plaintext keys), `transcripts/`. Exempt: cwd IS Otto's checkout. `data/workspaces/**` stays readable or repo-mode dies (`ReadDenyTests`).
+- **The credential stores are READ-denied for EVERY run, Otto-cwd included** (`file_safety._secret_store_globs`) — editor history caches too: a copy of every file ever edited. `~/.aws/credentials` stays readable by decision (`ReadDenyTests`).
 - **A `Read(//path/**)` deny covers `cat` through Bash** (measured) — but local Bash is not, so `local_runtime` guards Read and filters Grep's OUTPUT, never its root: the denied set is files under `data/`, never `data/` itself.
 - **The LOCAL backend bypasses `claude -p`'s permission system entirely**, so `local_runtime._deny_guard` re-enforces the same list on its own Write/Edit. Its `Bash` is NOT covered — parsing a shell to catch `tee`/`sed -i` is protection theatre.
 - **The local PLAN pass reproduces plan mode in TWO layers** — a `bwrap` read-only root with a scratch tmpfs on /tmp (shell stays WHOLE), else `bash_refusal`'s argv allowlist. Measured: 78% of a Claude planner's Bash is composed, so argv-only is far poorer (`LocalPlanModeTests`).
@@ -73,5 +76,7 @@
 ## Execution transcripts
 
 **`system_context` is recorded beside `prompt` in the meta line** — the approved plan, the mismatch note, the output contract and recalled memory all travel that argument, so without it a transcript cannot say what the model was told (`SystemContextTranscriptTests`).
+
+- **Every transcript line is scrubbed as it is written** (`claude_cli.transcript_line`, the ONE writer for both backends) — a run handling a credential otherwise leaves it in plaintext for the whole TTL; forensics needs the shape, never the bytes (`RedactTests`).
 
 Both backends append `data/transcripts/<wid>-a<attempt>.jsonl` (TTL `TRANSCRIPT_TTL_H`). Live: `/api/progress`; full: `/api/run/detail`.

@@ -90,6 +90,20 @@ class RedactTests(unittest.TestCase):
             self.assertNotIn(key, out, f"leaked: {key}")
             self.assertIn("[redacted]", out)
 
+    def test_an_atlassian_api_token_is_scrubbed_in_the_shapes_it_actually_appears_in(self):
+        # Real format: `ATATT3x` + a 192-char base64url body WITH `=` padding (`ATCTT3x` for
+        # the scoped kind). An alnum-only body would stop at the padding — the same mistake
+        # that let every `sk-ant-…` key through. Bare, and on a curl line, are the two shapes
+        # `web-51db95a8` actually produced; the k/v pattern only ever caught the third.
+        tok = "ATATT3xFfGF0" + "Qw9zK2mV7nB4pL1sX8tR3yH6jD5gA0cE" * 5 + "aB2c=="
+        for text in (tok,
+                     f"curl -u me@x.com:{tok} https://example.atlassian.net/wiki/api/v2/pages",
+                     f"found {tok} in the history cache",
+                     f"token: {tok}"):
+            out = supervisor.redact(text)
+            self.assertNotIn(tok, out, f"leaked in: {text[:40]!r}")
+            self.assertIn("[redacted]", out)
+
     def test_a_hyphenated_resource_name_is_not_mistaken_for_a_key(self):
         # Why `sk-(ant|proj)-` is its own pattern instead of widening the legacy charset: `sk-`
         # plus a 16-char hyphenated body also matches ordinary infra names, and mangling those in
@@ -113,6 +127,32 @@ class RedactTests(unittest.TestCase):
         self.assertEqual(supervisor.redact(text), text)
         self.assertEqual(supervisor.redact("issue #63 branch otto/gh-issue-63"),
                          "issue #63 branch otto/gh-issue-63")
+
+    def test_the_transcript_line_is_scrubbed_and_still_parses(self):
+        """Both backends write through `claude_cli.transcript_line`. Scrubbing the SERIALIZED
+        line only works because `[redacted]` carries no quote, backslash or newline — assert
+        that, because a replacement that broke it would corrupt every consumer of the file
+        (progress endpoint, supervisor, the Debug drawer) rather than merely lose a line."""
+        import json as _json
+
+        import claude_cli
+        tok = "ATATT3xFfGF0" + "Qw9zK2mV7nB4pL1sX8tR3yH6jD5gA0cE" * 5 + "aB2c=="
+        line = claude_cli.transcript_line({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Bash",
+                                     "input": {"command": f"TOKEN='{tok}' curl -u x:$TOKEN u"}}]}})
+        self.assertTrue(line.endswith("\n"), "a transcript line must terminate itself")
+        self.assertNotIn(tok, line)
+        parsed = _json.loads(line)          # the whole point: still one JSON object per line
+        self.assertEqual(parsed["type"], "assistant")
+
+    def test_the_transcript_line_accepts_an_already_serialized_line(self):
+        """The `claude -p` stream loop forwards raw stdout lines, which already end in \n and
+        must not gain a second one — a blank line makes every reader's `json.loads` throw."""
+        import claude_cli
+        raw = '{"type": "system", "subtype": "init"}\n'
+        self.assertEqual(claude_cli.transcript_line(raw), raw)
+        self.assertEqual(claude_cli.transcript_line(raw.rstrip("\n")), raw)
 
     def test_compact_event_redacts_tool_result(self):
         event = {"type": "user", "message": {"content": [

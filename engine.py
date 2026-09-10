@@ -220,7 +220,15 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # in this run". Honours the fallback contract rather than inventing a third behaviour:
     # fallback ON substitutes Claude (the work lands, the audit row shows the move and why),
     # strict mode STOPS the way every other local→Claude site does.
-    mcp_blockers = mcp_client.unservable(cap) if (use_local and not resume_session) else []
+    # Two questions, because a capability can only answer the first: which servers did this
+    # cap DECLARE that we cannot serve, and which connectors does this REQUEST name? The
+    # general worker/assistant declare nothing by design, so the declaration test is silent
+    # for exactly the caps that get asked to do anything — see mcp_client.connectors_named.
+    mcp_blockers = []
+    if use_local and not resume_session:
+        mcp_blockers = mcp_client.unservable(cap)
+        mcp_blockers += [n for n in mcp_client.connectors_named(request)
+                         if n not in mcp_blockers]
     if use_local and mcp_blockers:
         why = ("needs MCP servers the local backend cannot serve (" + ", ".join(mcp_blockers)
                + ") — claude.ai connectors are OAuth'd inside Claude Code, so only the Claude "

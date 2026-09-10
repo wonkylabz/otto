@@ -19,7 +19,9 @@ Two separate controls, because they fail differently:
      unconditionally. This is the guard that holds when a prompt-level rule doesn't: the
      capability decides what to say, and no instruction survives contact with every model on
      every run. Targeted (secret-keyword k/v + known token shapes) so it doesn't mangle benign
-     ids; the on-disk transcript keeps full fidelity for forensics.
+     ids. It also runs over each on-disk transcript LINE (`claude_cli.transcript_line`): the
+     transcript is local, but a run that handles a credential writes it there in plaintext for
+     the TTL, and the forensic value is in the shape and the context, never in the bytes.
   2. Content minimization for the push path (`delivery.notify`'s `detail` gate) — a
      notification says WHAT happened and WHERE to look, not what the request said. Redaction
      only catches credential SHAPES; a request body is private whether or not it contains a
@@ -49,6 +51,12 @@ _SECRET_PATTERNS = (
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),                           # Slack
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),                            # AWS access key id
     re.compile(r"\bAIza[A-Za-z0-9_\-]{20,}"),                                # Google API key
+    # Atlassian API token (`ATATT3x…`, 192 chars; `ATCTT3x…` for the scoped kind). Body is
+    # base64url WITH `=` padding, so an alnum-only charset stops at the first one — the same
+    # mistake that let every `sk-ant-…` key through. Not hypothetical here: `web-51db95a8`
+    # reconstructed a live one out of an editor history cache and put it on a curl command
+    # line, where it is still sitting in that run's transcript.
+    re.compile(r"\bAT[AC]TT3x[A-Za-z0-9_\-=]{20,}"),                          # Atlassian
     # PEM private key block — collapse the whole body, not just the header line.
     re.compile(r"(?is)-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----"),
     # Credentials embedded in a URL: https://user:pass@host -> https://[redacted]@host. Keeping

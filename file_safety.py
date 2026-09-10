@@ -14,10 +14,11 @@ Plus one broader category: every REGISTERED project repo's live checkout (issue 
 with no cwd of its own has no business editing ANY of them in place, isolation is the point of
 repo-mode, and `allow_cwd` is the single exemption (a project capability's own designated repo).
 
-Writes are the main event. Reads are denied for ONE narrow set — Otto's own runtime state under
-`data/` — and left alone everywhere else, so a run can still inspect what it must not edit
-(`~/.aws/credentials` stays readable on purpose: "which profiles exist" is a routine question in
-this operator's work, and the write deny is what stops it being rewritten).
+Writes are the main event. Reads are denied for TWO narrow sets — Otto's own runtime state
+under `data/`, and the pure credential stores (`_secret_store_globs`) — and left alone
+everywhere else, so a run can still inspect what it must not edit (`~/.aws/credentials` stays
+readable on purpose: "which profiles exist" is a routine question in this operator's work, and
+the write deny is what stops it being rewritten).
 
 `data/` is denied to READ because it is not source, it is the service's live memory: `otto.db`
 holds every chat, memory row and audit entry across every project and Slack conversation,
@@ -204,12 +205,57 @@ def _reads_allowed_from(allow_cwd):
     return cwd == root or cwd.startswith(root + os.sep)
 
 
+def _secret_store_globs():
+    """Files that hold nothing but credentials, and the caches that hold copies of them.
+
+    Denied to READ for every run, including one entitled to Otto's own state: no task is
+    served by the bytes of a token, only by using the tool the token is already wired into.
+    That is not a hypothetical ordering of priorities — `web-51db95a8` asked a local model to
+    publish a page to Confluence, the Atlassian connector does not exist on the local backend
+    (see mcp_client), and rather than say so the model spent 24 Bash calls walking ~/.netrc,
+    the 1Password config, ~/.claude.json and Cursor's editor History until it reconstructed a
+    live Atlassian API token, then put it on a curl command line. The supervisor killed the
+    attempt; nothing else would have.
+
+    The editor history caches are the entry that matters most and the least obvious: they are
+    verbatim copies of every file the operator has edited, so a secret redacted out of its
+    real home is still sitting in one of them under a hashed directory name.
+
+    `~/.aws/credentials` is deliberately NOT here — see `denied_globs`, where the write is
+    denied and the read left open on purpose, because "which profiles exist" is a routine
+    question in this operator's work. The entries below have no such reading."""
+    home = _home()
+    return [
+        os.path.join(home, ".netrc"),
+        os.path.join(home, ".ssh", "id_*"),          # write-denied above; the bytes are the risk
+        os.path.join(home, ".gnupg", "**"),
+        # Claude Code's own OAuth material — the run that prompted this list enumerated the
+        # `claudeAiOauth` keys out of it.
+        os.path.join(home, ".claude.json"),
+        os.path.join(home, ".claude", ".credentials.json"),
+        os.path.join(home, ".config", "1Password", "**"),
+        os.path.join(home, ".op", "**"),
+        # Editor history: a copy of every version of every file, tokens included.
+        os.path.join(home, ".config", "Cursor", "User", "History", "**"),
+        os.path.join(home, ".config", "Code", "User", "History", "**"),
+    ]
+
+
+def _secret_store_globs_resolved():
+    """`_secret_store_globs` in the same both-spellings form `read_denied_globs` emits."""
+    return [*dict.fromkeys(s for g in _secret_store_globs() for s in _both_spellings(g))]
+
+
 def read_denied_globs(allow_cwd=None):
     """Paths no run may READ, as absolute globs. See the module docstring for why the set is
-    this small. Empty when the run is entitled to Otto's state (`_reads_allowed_from`)."""
-    if _reads_allowed_from(allow_cwd):
-        return []
-    out = [*_otto_state_globs(), os.path.join(_otto_root(), ".env")]
+    this small.
+
+    Two tiers, and only the first is exempted by `_reads_allowed_from`: Otto's own state is
+    denied to everyone EXCEPT a run pointed at Otto itself (the audit-runs skill), while the
+    credential stores are denied to that run too — nothing legitimately reads a token."""
+    out = [*_secret_store_globs()]
+    if not _reads_allowed_from(allow_cwd):
+        out += [*_otto_state_globs(), os.path.join(_otto_root(), ".env")]
     return [*dict.fromkeys(s for g in out for s in _both_spellings(g))]
 
 
