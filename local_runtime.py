@@ -1089,6 +1089,11 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         sink = open(transcript, "a")
         _emit(sink, None, {"type": "otto-meta", "prompt": prompt, "model": m.get("model"),
                            "cwd": cwd, "at": time.time(), "runtime": "local",
+                           # WHICH CLASS of model this endpoint serves: this runtime dispatches
+                           # both a laptop vLLM and a vendor API, and `runtime: local` alone
+                           # told the board's chip they were the same thing — a hosted frontier
+                           # model was labelled "local ·" for as long as that was the only field.
+                           "kind": gateway.model_kind(m),
                            "tools": sorted(offered_names), "bash_mode": bash_mode,
                            "effort": effort_level, "effort_sent": effort_sent,
                            "mcp": sorted(mcp_servers or []) if mcp else [],

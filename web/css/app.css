@@ -1182,7 +1182,9 @@
   .bchip { display: inline-block; max-width: 100%; font-size: 11px; color: var(--dim);
     background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
-  .bchip.local { color: var(--accent); border-color: var(--accent-line); }
+  /* The two non-Claude kinds share one accent: this is a LABEL fix (a hosted frontier model
+     was reading as "local ·"), not a new visual language — the chip's text says which. */
+  .bchip.local, .bchip.hosted { color: var(--accent); border-color: var(--accent-line); }
   .bchip.bfell { color: var(--warn); border-color: var(--warn-line); }
   .bchip.warn, a.bchip.warn { color: var(--warn); border-color: var(--warn-line); text-decoration: none; }
   a.bchip.warn:hover { border-color: var(--warn); }

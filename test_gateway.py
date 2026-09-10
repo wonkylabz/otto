@@ -1457,6 +1457,31 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertTrue(any(line and "tool_result" in line for line in lines))
         self.assertEqual(events[-1]["type"], "result")
 
+    def test_the_meta_line_records_the_model_kind_not_the_runtime(self):
+        """`runtime: local` is a TRANSPORT fact — this loop drives a model on this box and a
+        vendor API identically — so a board reading only that prefixed every hosted frontier
+        model "local ·". The meta line carries the CLASS beside it, which is what the chip
+        labels from."""
+        path = os.path.join(self.tmp, "k.jsonl")
+        self._script([{"role": "assistant", "content": "done"}])
+        local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL,
+                               cwd=self.tmp, transcript=path)
+        hosted = dict(self.MODEL, name="hosted", kind="hosted",
+                      base_url="https://api.openai.com/v1")
+        self._script([{"role": "assistant", "content": "done"}])
+        path_h = os.path.join(self.tmp, "kh.jsonl")
+        local_runtime.run_json("x", allowed_tools=[], model_entry=hosted,
+                               cwd=self.tmp, transcript=path_h)
+        for p, want in ((path, "local"), (path_h, "hosted")):
+            with open(p) as f:
+                meta = json.loads(f.readline())
+            self.assertEqual(meta["type"], "otto-meta")
+            self.assertEqual(meta["runtime"], "local", "the transport field must not change")
+            self.assertEqual(meta["kind"], want)
+        # A pool entry with no stored kind is LOCAL (the default), never claude: this loop only
+        # ever runs a non-Claude model, so a "claude" here would be a mislabel.
+        self.assertEqual(gateway.model_kind(self.MODEL), "local")
+
 
 class ThirdPartyDisclosureContractTests(unittest.TestCase):
     """The prompt half of the Slack fix: a colleague's DM is answered by a fresh run that has

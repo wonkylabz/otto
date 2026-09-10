@@ -3210,6 +3210,45 @@ class PlanVisibilityTests(unittest.TestCase):
             claude_cli.TRANSCRIPTS = orig
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_a_transcript_without_kind_still_reads_as_local(self):
+        """The chip's second return value used to be the `runtime == "local"` boolean. Every
+        transcript written before the meta line carried `kind` must keep the label it had —
+        `local` is the only non-Claude backend those runs could have used — so the rename
+        cannot turn a historical card into an unlabelled one."""
+        d = tempfile.mkdtemp(prefix="otto-kindcompat-")
+        orig = claude_cli.TRANSCRIPTS
+        claude_cli.TRANSCRIPTS = d
+        try:
+            wid = "web-kindcompat"
+            with open(claude_cli.transcript_path(wid, 1), "w") as f:
+                f.write(json.dumps({"type": "otto-meta", "model": "qwen3-coder-30b",
+                                    "runtime": "local"}) + "\n")
+            self.assertEqual(server._run_model(wid)[1], "local")
+            # A Claude transcript has neither field: kind stays None, i.e. "no prefix".
+            with open(claude_cli.transcript_path("web-nokind", 1), "w") as f:
+                f.write(json.dumps({"type": "otto-meta", "model": "claude-opus-4-8"}) + "\n")
+            self.assertIsNone(server._run_model("web-nokind")[1])
+        finally:
+            claude_cli.TRANSCRIPTS = orig
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_hosted_endpoint_is_reported_as_hosted_not_local(self):
+        """Otto's own runtime dispatches a vendor API exactly like a model on this box, so the
+        meta line's `runtime: local` says nothing about what answered. The chip read only that
+        and prefixed every hosted frontier model "local ·"; the stored `kind` is the fact."""
+        d = tempfile.mkdtemp(prefix="otto-kindhosted-")
+        orig = claude_cli.TRANSCRIPTS
+        claude_cli.TRANSCRIPTS = d
+        try:
+            wid = "web-hosted"
+            with open(claude_cli.transcript_path(wid, 1), "w") as f:
+                f.write(json.dumps({"type": "otto-meta", "model": "gpt-6-astra",
+                                    "runtime": "local", "kind": "hosted"}) + "\n")
+            self.assertEqual(server._run_model(wid)[1], "hosted")
+        finally:
+            claude_cli.TRANSCRIPTS = orig
+            shutil.rmtree(d, ignore_errors=True)
+
 
 class PlanBranchNoteTests(unittest.TestCase):
     """The preview runs from the repo's LIVE checkout, before anything is provisioned — so for a
