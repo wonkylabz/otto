@@ -629,12 +629,36 @@ function carryContextForSubmit(force){
   if((currentSession && !force) || suppressCarry) return "";
   const msgs=(activeChat && activeChat.messages) || [];
   if(!msgs.length) return "";                    // the new user message isn't recorded yet
-  const CAP=1200, MAX=4;                          // truncate each turn; keep only the recent tail
-  const lines=msgs.slice(-MAX).map(m=>{
+  // Budgeted, not a fixed turn count. A flat `slice(-4)` is the right size for a two-turn
+  // exchange and wrong for the case this exists to serve: a long brainstorm, where the four
+  // most recent turns are "yes" / "that's better" / a diagram tweak, and everything that
+  // decided the shape of the work is older than the window. Spend a CHARACTER budget from the
+  // newest turn backwards instead, so short turns are cheap and the window reaches as far as
+  // it can afford.
+  const CAP=1500, BUDGET=9000;                   // per-turn truncation; total carry
+  const fmt=m=>{
     const who=m.role==="user"?"user":"assistant";
     let t=String(m.text||"").trim(); if(t.length>CAP) t=t.slice(0,CAP)+" …[truncated]";
     return `[${who}] ${t}`;
-  });
+  };
+  const tail=[]; let spent=0;
+  for(let i=msgs.length-1;i>=0;i--){
+    const line=fmt(msgs[i]);
+    if(tail.length && spent+line.length>BUDGET) break;   // always keep at least the newest turn
+    tail.unshift(line); spent+=line.length;
+  }
+  // The OPENING message is kept even when the budget stopped short of it: it is the one turn
+  // that states what the whole conversation is about ("help me brainstorm <ticket URL>"), and
+  // a tail without it reads as a discussion of nothing. The gap is DECLARED — an elided middle
+  // presented as a continuous transcript invites the run to treat it as the whole exchange.
+  let lines=tail;
+  const dropped=msgs.length-tail.length;
+  if(dropped>0){
+    const gap=dropped-1;
+    lines=[fmt(msgs[0])]
+      .concat(gap>0?[`… [${gap} earlier turn${gap>1?"s":""} omitted from this excerpt] …`]:[])
+      .concat(tail);
+  }
   // The framing has to say what to DO with this, not just that it exists. Unstated, a run
   // re-checks current state (correct) and then quietly serves a different figure than the one
   // above it — judged a fabricated "live" pull twice on web-50af486b — or skips the check and
@@ -1026,13 +1050,18 @@ async function continueTemporal(text){
     let hid;
     // A handoff IS a fresh submit, so it carries the composer exactly like one — the settings
     // are still on screen and a run that silently ignores them reads as the picker being broken.
-    try { hid=(await api("/api/submit",{request:task, repo: selectedRepo()||undefined, qa: selectedQA()||undefined,
+    // It carries the CONVERSATION for the same reason the rebind below does: the handoff leaves
+    // a live session, and the classifier's one-line task is written to be executable with no
+    // access to this exchange. That is right for "yes, open that ticket" and wrong for turn 9
+    // of a design discussion — measured on chat 9af2f11d, where five handoffs each restarted
+    // the thread from a single sentence and every later resume was bound to the new session.
+    try { hid=(await api("/api/submit",{request:task+carryContextForSubmit(true), repo: selectedRepo()||undefined, qa: selectedQA()||undefined,
                                         plan_mode: selectedPlan()||undefined, memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: selectedModelOverride()||undefined,
                                         effort: selectedEffort()||undefined})).id; }
     catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the handed-off task (${esc(e.message)}).</p>`; return finishTurn(); }
-    recordMsg("otto", "↪ Handed off as a fresh task: "+task);
+    recordMsg("otto", "↪ Handed off as a fresh task (the earlier conversation is carried as context): "+task);
     setRun(hid);
     watchLoop(hid, activeChat.id, content, null, {});
     return;
