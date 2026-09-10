@@ -52,7 +52,7 @@ def audit_repo_changes(wid, request, changed):
 
 
 def audit_mcp_change(action, name, entry=None, actor="admin"):
-    """Audit a change to the MCP server registry: `add`, `activate` or `remove`.
+    """Audit a change to the MCP server registry: `add`, `edit`, `activate` or `remove`.
 
     Registering a command and running it are two separate acts (policy.add_mcp_def), and this is
     the durable record of both — it is the only place the exact command line that became runnable

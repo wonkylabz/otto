@@ -3362,6 +3362,92 @@ class McpCredentialsAndNamingTests(unittest.TestCase):
         self.assertEqual(self._add(name="ok", command="x", env=["A=5"])[0], 400)
         self.assertEqual(self._add(name="ok", command="x", env={"A": "5"})[0], 200)
 
+    # --- editing an existing server ------------------------------------------------
+
+    def test_an_added_server_can_be_edited_from_the_ui(self):
+        """Without this, fixing one wrong argument means deleting the server and retyping the
+        whole thing — which is how a def ends up with every argument on a single line and
+        `docker: unknown command` as the only symptom."""
+        src = ui_src()
+        self.assertIn("data-editmcp", src, "otto-source rows have no Edit control")
+        self.assertIn("function showMcpForm(existing)", src,
+                      "the form cannot be opened against an existing server")
+        self.assertIn("/api/mcp/def?name=", src, "the edit form cannot load the stored def")
+        self.assertIn("e.args", src, "the edit form cannot prefill the arguments")
+
+    def test_the_editor_payload_is_fetched_per_server_not_carried_on_every_load(self):
+        """`/api/policy` is loaded on every Admin visit and its rows ARE the activation gate,
+        which shows variable names only. Values ride a separate per-server read, so opening
+        Admin does not put them in the DOM at all."""
+        policy.add_mcp_def("srv", {"command": "docker", "args": ["run", "-i"],
+                                   "env": {"CONFLUENCE_URL": "https://example.net/wiki",
+                                           "CONFLUENCE_API_TOKEN": "a-literal-secret"}})
+        row = next(m for m in policy.all_mcps(policy.load()) if m["name"] == "srv")
+        self.assertNotIn("args", row, "the Admin payload carries the editor's fields")
+        self.assertNotIn("env_display", row)
+        self.assertEqual(row["env_keys"], ["CONFLUENCE_API_TOKEN", "CONFLUENCE_URL"])
+
+        ed = policy.mcp_editable("srv")
+        self.assertEqual((ed["command"], ed["args"]), ("docker", ["run", "-i"]))
+        self.assertEqual(ed["env"]["CONFLUENCE_URL"], "https://example.net/wiki")
+        self.assertEqual(ed["env"]["CONFLUENCE_API_TOKEN"], policy.ENV_KEPT)
+        self.assertIsNone(policy.mcp_editable("no-such-server"))
+
+    def test_a_secret_is_masked_in_the_form_and_ordinary_wiring_is_not(self):
+        """Masking on the VALUE alone made `CONFLUENCE_URL` unreadable, so the form could not
+        show the operator the one thing they most often need to fix. The KEY decides, on the
+        same vocabulary privacy scrubs k/v pairs with; a reference is always shown, since a
+        name is not a secret and seeing it is the point of the field."""
+        policy.add_mcp_def("srv", {"command": "x", "env": {
+            "CONFLUENCE_URL": "https://example.net/wiki",
+            "CONFLUENCE_USERNAME": "someone@example.com",
+            "CONFLUENCE_API_TOKEN": "a-literal-secret",
+            "GH_PAT": "another-literal-secret",
+            "TOK_REF": "${MY_TOKEN}"}})
+        shown = policy.mcp_env_display(policy.mcp_defs()["srv"])
+        self.assertEqual(shown["CONFLUENCE_URL"], "https://example.net/wiki")
+        self.assertEqual(shown["CONFLUENCE_USERNAME"], "someone@example.com")
+        self.assertEqual(shown["TOK_REF"], "${MY_TOKEN}")
+        self.assertEqual(shown["CONFLUENCE_API_TOKEN"], policy.ENV_KEPT)
+        self.assertEqual(shown["GH_PAT"], policy.ENV_KEPT, "a PAT is a token by another name")
+        self.assertNotIn("a-literal-secret", json.dumps(shown))
+
+    def test_saving_the_form_back_keeps_a_secret_it_was_never_shown(self):
+        """The round trip that must not lose anything: the form renders the mask, so saving
+        unchanged has to mean 'keep', or editing the URL would silently blank the token."""
+        policy.add_mcp_def("srv", {"command": "x", "env": {
+            "CONFLUENCE_URL": "https://old.example.net/wiki",
+            "CONFLUENCE_API_TOKEN": "a-literal-secret"}})
+        code, _ = self._add(name="srv", command="x", args=["run"], env={
+            "CONFLUENCE_URL": "https://new.example.net/wiki",
+            "CONFLUENCE_API_TOKEN": policy.ENV_KEPT})
+        self.assertEqual(code, 200)
+        env = policy.mcp_defs()["srv"]["env"]
+        self.assertEqual(env["CONFLUENCE_URL"], "https://new.example.net/wiki")
+        self.assertEqual(env["CONFLUENCE_API_TOKEN"], "a-literal-secret", "the secret was lost")
+
+    def test_a_variable_deleted_in_the_form_is_really_deleted(self):
+        """A merge that only ever adds would make a mistyped variable impossible to remove."""
+        policy.add_mcp_def("srv", {"command": "x", "env": {"KEEP": "1", "TYPO": "2"}})
+        self._add(name="srv", command="x", env={"KEEP": "1"})
+        self.assertEqual(policy.mcp_defs()["srv"]["env"], {"KEEP": "1"})
+
+    def test_an_edit_returns_the_server_to_inactive(self):
+        """The command line the human approved is not the one that would now be spawned."""
+        policy.add_mcp_def("srv", {"command": "x", "args": ["a"]})
+        policy.confirm_mcp_def("srv")
+        self.assertTrue(policy.mcp_confirmed(policy.mcp_defs()["srv"]))
+        code, out = self._add(name="srv", command="x", args=["b"])
+        self.assertEqual((code, out["confirmed"], out["edited"]), (200, False, True))
+        self.assertFalse(policy.mcp_confirmed(policy.mcp_defs()["srv"]))
+
+    def test_the_trail_tells_an_edit_from_a_first_registration(self):
+        src = self._src("server.py")
+        i = src.index("def _post_mcp_add(")
+        body = src[i:src.index("\n    def ", i + 10)]
+        self.assertIn('audit_mcp_change("edit" if existed else "add"', body,
+                      "an edit is audited as a fresh add — the row reads as a new server")
+
     def _src(self, name):
         with open(os.path.join(os.path.dirname(__file__), name),
                   encoding="utf-8", errors="surrogateescape") as f:

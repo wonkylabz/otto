@@ -1193,6 +1193,14 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/chats/get"):
             cid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             self._send(200, json.dumps(chats.get(cid) or {}))
+        elif self.path.startswith("/api/mcp/def"):
+            # ONE server, in the shape its edit form needs. Separate from /api/policy on
+            # purpose: that payload is fetched on every Admin load and feeds the activation
+            # gate, which shows variable NAMES only. Values (masked by key) travel just when
+            # the operator opens the editor for this one server. Name comes from the query and
+            # is resolved against the stored defs — nothing is echoed back that wasn't stored.
+            nm = (parse_qs(urlparse(self.path).query).get("name") or [""])[0]
+            self._send(200, json.dumps(policy.mcp_editable(nm) or {}))
         elif self.path == "/api/policy":
             # `local_blockers`: MCP servers this cap declares that the LOCAL backend can't
             # serve (claude.ai connectors), so the Execution dropdown can refuse the local
@@ -1665,15 +1673,24 @@ class Handler(BaseHTTPRequestHandler):
                 for k, v in env.items()):
             self._send(400, json.dumps({"error": "env must be name/value pairs of text"}))
             return
+        # EDITING an existing server is the same act as adding one: `add_mcp_def` overwrites and
+        # resets `confirmed`, which is exactly right — the argv changed, so the human approves
+        # the new one. Only two things differ, and both matter. A value the form sent back as
+        # the mask keeps whatever is stored (the form is never handed a literal credential to
+        # hand back), and the trail says `edit`, so the row reads as a change to something that
+        # was already running rather than a first registration.
+        existed = name in policy.mcp_defs()
         entry = {"command": cmd, "args": body.get("args", [])}
+        env = {k.strip(): v for k, v in env.items()}
+        env = policy.merge_mcp_env(name, env) if existed else env
         if env:
-            entry["env"] = {k.strip(): v for k, v in env.items()}
+            entry["env"] = env
         try:
             stored = policy.add_mcp_def(name, entry)
         except ValueError as e:          # an unusable server name — policy is the authority
             self._send(400, json.dumps({"error": str(e)})); return
-        engine.audit_mcp_change("add", name, stored)
-        self._send(200, json.dumps({"ok": True, "confirmed": False,
+        engine.audit_mcp_change("edit" if existed else "add", name, stored)
+        self._send(200, json.dumps({"ok": True, "confirmed": False, "edited": existed,
                                     "command": policy.mcp_command_line(stored)}))
 
     def _post_mcp_activate(self, body):

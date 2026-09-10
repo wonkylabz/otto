@@ -87,6 +87,63 @@ def mcp_env_keys(d):
     return sorted((d or {}).get("env") or {})
 
 
+# What the Admin form shows in place of an env value it must not reveal, and what it sends
+# back to mean "leave that one alone". A round trip through the edit form must not be able to
+# turn a credential into the six dots that stood in for it.
+ENV_KEPT = "\u2022\u2022\u2022\u2022\u2022\u2022"
+
+# A value that NAMES a credential rather than being one: `${VAR}`, `$VAR`, or a bare
+# SCREAMING_CASE identifier (which `mcp_client.env_for` resolves through the secret helper).
+# These are safe to show and are the whole point of the field, so masking them would make the
+# edit form unusable for the case it exists to serve.
+_ENV_REFERENCE = re.compile(r"^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$|^[A-Z][A-Z0-9_]{2,}$")
+
+
+def mcp_env_display(d):
+    """A def's `env` as the edit form may render it: references verbatim, literals masked.
+
+    A literal is either a secret or indistinguishable from one, and this dict lands in the
+    Admin DOM. A reference is a NAME — showing it is what lets an operator see and fix the
+    wiring, which is the whole reason this form exists."""
+    import privacy
+    def show(k, v):
+        # A reference is a NAME, never a secret — always safe, and seeing it is the point.
+        # Otherwise the KEY decides, on the same vocabulary privacy scrubs k/v pairs with:
+        # `CONFLUENCE_URL` and `CONFLUENCE_USERNAME` are wiring an operator must be able to
+        # read and fix, `CONFLUENCE_API_TOKEN` is not.
+        return (isinstance(v, str)
+                and (bool(_ENV_REFERENCE.match(v)) or not privacy.secret_named(k)))
+    return {k: (v if show(k, v) else ENV_KEPT)
+            for k, v in ((d or {}).get("env") or {}).items()}
+
+
+def mcp_editable(name):
+    """One def in the shape the edit form needs, or None. Deliberately NOT part of `all_mcps`:
+    that payload is fetched on every Admin load and its rows feed the activation gate, which
+    must show variable NAMES and never values. Env values — masked by key, but values all the
+    same — reach the browser only when the operator asks to edit this one server.
+
+    That masking is a heuristic on the key name, so a literal secret stored under a key that
+    does not read as one (`TOK`) is shown. Naming a secret is the supported way, which is why
+    the form says a literal is stored in plaintext."""
+    d = mcp_defs().get(name)
+    if not d:
+        return None
+    return {"name": name, "command": d.get("command", ""),
+            "args": list(d.get("args") or []), "env": mcp_env_display(d)}
+
+
+def merge_mcp_env(name, submitted):
+    """The env to store, given what the form sent back: every value that came back as the mask
+    keeps whatever is on the existing def.
+
+    Keyed on the stored def rather than on the submitted dict, so a key the operator DELETED in
+    the form is really deleted — a merge that only ever adds would make a mistyped variable
+    impossible to remove."""
+    stored = (mcp_defs().get(name) or {}).get("env") or {}
+    return {k: (stored.get(k, "") if v == ENV_KEPT else v) for k, v in (submitted or {}).items()}
+
+
 def add_mcp_def(name, entry):
     """Register an MCP server INACTIVE. The ONE writer for a newly added def — every path that
     accepts a command from outside (the Admin form, a profile import) goes through it, or the
