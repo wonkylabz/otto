@@ -63,10 +63,42 @@ def mcp_confirmed(d):
     return bool((d or {}).get("confirmed", True))
 
 
+# A server NAME travels into every tool id as `mcp__<name>__<tool>`, and both the risk
+# allowlist and `mcp_client.declared_servers` read that shape back by splitting on `__`. So a
+# name is not free text: `a__b` parses back as the server `a`, which exists nowhere — the def
+# spawns and not one of its tools is ever admitted, with no error anywhere to say why. Spaces
+# and dots break the same parse less visibly.
+_MCP_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def valid_mcp_name(name):
+    """Is `name` usable as the `<name>` in `mcp__<name>__<tool>`? Rejects `__` explicitly: the
+    charset allows a single underscore (`newrelic_eu` is a real server here), a doubled one is
+    the separator itself."""
+    return bool(_MCP_NAME.match(str(name or ""))) and "__" not in str(name)
+
+
+def mcp_env_keys(d):
+    """The environment variable NAMES a def will hand its subprocess — never the values.
+
+    The activation gate asks a human to approve what Otto is about to spawn, and `env` is as
+    much a part of that as the argv: a def can carry a credential (or override PATH) with
+    nothing on screen to say so."""
+    return sorted((d or {}).get("env") or {})
+
+
 def add_mcp_def(name, entry):
     """Register an MCP server INACTIVE. The ONE writer for a newly added def — every path that
     accepts a command from outside (the Admin form, a profile import) goes through it, or the
-    activation step is just a UI convention one endpoint happens to follow."""
+    activation step is just a UI convention one endpoint happens to follow.
+
+    Raises ValueError on a name that cannot round-trip through a tool id: the writer enforces
+    it rather than the endpoint, so a second caller cannot store a def that silently never
+    resolves."""
+    if not valid_mcp_name(name):
+        raise ValueError(
+            "an MCP server name must be letters, digits, '-' or '_' (no spaces, dots or '__') "
+            "— it becomes the middle of every tool id, mcp__<name>__<tool>")
     entry = dict(entry)
     entry["confirmed"] = False
     entry["added_at"] = time.time()
@@ -582,6 +614,9 @@ def all_mcps(pol, allow_refresh=False, force=False):
     # a claude.ai connector was registered outside Otto and is not ours to gate.
     out += [{"name": n, "enabled": ov.get(n, {}).get("enabled", True), "source": "otto",
              "confirmed": mcp_confirmed(d), "command": mcp_command_line(d),
+             # Keys only — the activation gate must SAY that a def carries environment, and
+             # must never render what is in it.
+             "env_keys": mcp_env_keys(d),
              "health": health.get(n), "notes": note(n)} for n, d in mcp_defs().items()]
     out += [{"name": c["name"], "display": c.get("display", c["name"]),
              "enabled": ov.get(c["name"], {}).get("enabled", True), "source": "connector",

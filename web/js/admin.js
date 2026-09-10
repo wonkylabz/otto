@@ -887,6 +887,7 @@ function renderAdmin(data, models, el, settings){
       <td><span class="nm">${esc(m.display||m.name)}</span>
         ${pending(m)?`<div class="mcppending"><span class="abadge warn">not activated</span>
           <code class="mcpcmd">${esc(m.command||"")}</code>
+          ${(m.env_keys||[]).length?`<code class="mcpcmd" title="environment variables this server is handed — names only, values are never shown">env: ${esc((m.env_keys||[]).join(", "))}</code>`:''}
           <button class="mcpbtn go" data-actmcp="${esc(m.name)}"
             title="allow Otto to spawn this exact command on runs that use this server">Activate</button>
           </div>`:''}</td>
@@ -1292,17 +1293,28 @@ function showMcpForm(){
     <label>Name</label><input id="mf-name" placeholder="e.g. github">
     <label>Command</label><input id="mf-cmd" placeholder="npx">
     <label>Arguments (one per line)</label><textarea id="mf-args" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea>
-    <p class="sub" style="margin:2px 0 0">Added servers are stored <b>inactive</b> — Otto spawns this command on your machine, so you activate it from the list below after checking the command line.</p>
+    <label style="margin-top:10px">Environment <span class="sub">(optional, one <code>NAME=value</code> per line)</span></label>
+    <textarea id="mf-env" placeholder="GITHUB_TOKEN=MY_GITHUB_TOKEN&#10;CONFLUENCE_URL=https://example.atlassian.net/wiki"></textarea>
+    <p class="sub" style="margin:2px 0 0">For a credential, give the <b>name</b> of an env var or a secret your <code>OTTO_SECRET_COMMAND</code> helper resolves (<code>GITHUB_TOKEN=MY_GITHUB_TOKEN</code>), or <code>${VAR}</code>. A literal is stored as typed, in plaintext, in <code>data/mcp-servers.json</code>.</p>
+    <p class="sub" style="margin:2px 0 0">Added servers are stored <b>inactive</b> — Otto spawns this command on your machine, so you activate it from the list below after checking the command line and the variable names.</p>
     <div class="ferr" id="mf-err"></div>
     <div class="factions"><button class="btn approve" id="mf-save">Add MCP server</button><button class="btn decline" id="mf-cancel">Cancel</button></div>
   </div>`;
   document.getElementById("mf-cancel").onclick=()=>c.innerHTML="";
   document.getElementById("mf-save").onclick=async()=>{
     const args=document.getElementById("mf-args").value.split("\n").map(s=>s.trim()).filter(Boolean);
+    // NAME=value per line. Split on the FIRST `=` only: a value is routinely a URL or a
+    // base64 secret, both of which carry their own.
+    const env={};
+    for(const line of document.getElementById("mf-env").value.split("\n")){
+      const t=line.trim(); if(!t||t.startsWith("#")) continue;
+      const i=t.indexOf("="); if(i<1) continue;
+      env[t.slice(0,i).trim()]=t.slice(i+1).trim();
+    }
     const ok=await postForm("/api/mcp/add",{
       name:document.getElementById("mf-name").value.trim(),
       command:document.getElementById("mf-cmd").value.trim(),
-      args:args,
+      args:args, env:env,
     },document.getElementById("mf-err"));
     if(ok) loadAdmin();
   };

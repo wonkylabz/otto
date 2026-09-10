@@ -1655,10 +1655,23 @@ class Handler(BaseHTTPRequestHandler):
         cmd = (body.get("command") or "").strip()
         if not name or not cmd:
             self._send(400, json.dumps({"error": "name and command are required"})); return
+        # `env` carries the credentials a stdio server needs (see mcp_client.env_for). Shape it
+        # HERE rather than trusting the client: a non-string value reaches `subprocess.Popen`'s
+        # env, which raises at spawn time — i.e. the server is registered, activated, and only
+        # then found to be unstartable, with the error a run's problem rather than the form's.
+        env = body.get("env") or {}
+        if not isinstance(env, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str) or not k.strip()
+                for k, v in env.items()):
+            self._send(400, json.dumps({"error": "env must be name/value pairs of text"}))
+            return
         entry = {"command": cmd, "args": body.get("args", [])}
-        if body.get("env"):
-            entry["env"] = body["env"]
-        stored = policy.add_mcp_def(name, entry)
+        if env:
+            entry["env"] = {k.strip(): v for k, v in env.items()}
+        try:
+            stored = policy.add_mcp_def(name, entry)
+        except ValueError as e:          # an unusable server name — policy is the authority
+            self._send(400, json.dumps({"error": str(e)})); return
         engine.audit_mcp_change("add", name, stored)
         self._send(200, json.dumps({"ok": True, "confirmed": False,
                                     "command": policy.mcp_command_line(stored)}))
