@@ -19,6 +19,7 @@ import time
 
 import config
 import file_safety
+import privacy
 
 TRANSCRIPTS = os.path.join(config.DATA_DIR, "transcripts")
 
@@ -35,6 +36,25 @@ def plan_transcript_path(wid):
 def transcript_path(wid, attempt):
     """Canonical transcript location for one execution attempt of one workflow."""
     return os.path.join(TRANSCRIPTS, f"{wid}-a{attempt}.jsonl")
+
+
+def transcript_line(event):
+    """One transcript line: serialize if needed, scrub credentials, terminate with a newline.
+
+    THE ONE WRITER for both backends (`local_runtime._emit` routes here too), because a
+    transcript records what a run actually did — including the times it handled a credential.
+    `web-51db95a8` is what that costs: the model reconstructed a live Atlassian API token out
+    of an editor history cache and passed it on a curl command line, so it landed in the tool
+    argv, in the tool result, and eleven times over in the file, readable for the whole
+    `TRANSCRIPT_TTL_H` window by anything running as this user.
+
+    Scrubbing the SERIALIZED line, not the event tree, is deliberate: a secret is as likely to
+    be inside a Bash command string as in a field of its own, and `REDACTED` contains no quote,
+    backslash or newline, so the line still parses (asserted in `TranscriptRedactionTests`).
+    `privacy.redact` is idempotent, so a line that arrives already scrubbed is unchanged."""
+    line = event if isinstance(event, str) else json.dumps(event)
+    line = privacy.redact(line)
+    return line if line.endswith("\n") else line + "\n"
 
 
 def kill_tree(proc):
@@ -273,14 +293,15 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
         # in the transcript, so Debug could not answer "what was this model actually told?".
         # Measured the hard way: a check for the mismatch note in `prompt` came back False on a
         # run that had been given one, because the note was never in that field to begin with.
-        sink.write(json.dumps({"type": "otto-meta", "prompt": prompt, "model": model,
-                               "system_context": system_context,
-                               # Same reason as system_context: effort changes what the model did,
-                               # so a transcript that cannot say which level served the run cannot
-                               # answer "was this a max-effort attempt or not?".
-                               "effort": effort,
-                               "cwd": cwd, "at": time.time(),
-                               "supervised": on_event is not None, **(meta or {})}) + "\n")
+        sink.write(transcript_line({
+            "type": "otto-meta", "prompt": prompt, "model": model,
+            "system_context": system_context,
+            # Same reason as system_context: effort changes what the model did, so a
+            # transcript that cannot say which level served the run cannot answer "was this
+            # a max-effort attempt or not?".
+            "effort": effort,
+            "cwd": cwd, "at": time.time(),
+            "supervised": on_event is not None, **(meta or {})}))
         sink.flush()
     timed_out = threading.Event()
 
@@ -303,9 +324,10 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
                     if transcript:
                         try:
                             with open(transcript, "a") as f:
-                                f.write(json.dumps({"type": "otto-steer", "at": time.time(),
-                                                    "text": instruction,
-                                                    "delivered": ok}) + "\n")
+                                f.write(transcript_line({"type": "otto-steer",
+                                                         "at": time.time(),
+                                                         "text": instruction,
+                                                         "delivered": ok}))
                         except OSError:
                             pass
                 time.sleep(0.5)
@@ -337,7 +359,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     try:
         for line in proc.stdout:
             if sink:
-                sink.write(line if line.endswith("\n") else line + "\n")
+                sink.write(transcript_line(line))
                 sink.flush()                     # live tailers (chat progress) see it now
             tail = line
             try:
@@ -379,13 +401,13 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
         stderr = (stderr_buf[0] if stderr_buf else "").strip()
         if sink:
             if stderr:
-                sink.write(json.dumps({"type": "stderr", "text": stderr[:20_000]}) + "\n")
+                sink.write(transcript_line({"type": "stderr", "text": stderr[:20_000]}))
             if timed_out.is_set():
                 # `after_result` distinguishes the two cases the one line used to conflate: a
                 # turn the watchdog cut off, and a finished turn whose process was merely slow
                 # to exit. Only the first is a timeout.
-                sink.write(json.dumps({"type": "otto-timeout", "after_s": timeout,
-                                       "after_result": final is not None}) + "\n")
+                sink.write(transcript_line({"type": "otto-timeout", "after_s": timeout,
+                                            "after_result": final is not None}))
             sink.close()
 
     # A tool that succeeded even once was available. One that ONLY ever failed was not — and an

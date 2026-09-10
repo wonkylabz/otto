@@ -217,12 +217,88 @@ def unservable(cap, pol=None):
 
     Non-empty means "this cap cannot do its job on a local model". Callers turn that into a
     refusal (`engine.run_attempt`, the Admin dropdown) so the failure lands where it can be
-    fixed, instead of 20 minutes and 1.1M tokens later."""
+    fixed, instead of 20 minutes and 1.1M tokens later.
+
+    Reads the cap's DECLARATION only, so it is silent for a cap that declares nothing — see
+    `connectors_named`, which covers the generalists this can never speak for."""
     want = declared_servers(cap)
     if not want:
         return []          # the common case — don't read two registries to learn nothing
     have = servable(pol)
     return [n for n in want if n not in have]
+
+
+def connectors(pol=None):
+    """Connected claude.ai connectors, as {name: display}. Cache-only (`discover_connectors`
+    without `allow_refresh`), so this never blocks a run on the ~8s `claude mcp list`."""
+    try:
+        found = policy.discover_connectors() or []
+    except Exception:  # noqa: BLE001 - an unreadable cache costs a guard, never the run
+        return {}
+    ov = ((pol or {}).get("mcps") or {}) if pol else {}
+    return {c["name"]: c.get("display") or c["name"] for c in found
+            if isinstance(c, dict) and c.get("name")
+            and ov.get(c["name"], {}).get("enabled", True)}
+
+
+# The words a person uses for a connector, where they are not the connector's own name.
+# Narrow on purpose: every entry here can send a run to the Claude backend, so a word has to
+# name the DESTINATION and nothing else — "email" and "docs" are absent for that reason.
+_CONNECTOR_WORDS = {
+    "claude_ai_Atlassian": ("confluence", "jira"),
+    "claude_ai_Google_Calendar": ("gcal", "calendar"),
+    "claude_ai_Google_Drive": ("gdrive", "google doc", "google docs", "google sheet",
+                               "google sheets"),
+}
+
+
+def connectors_named(request, pol=None):
+    """Connectors the REQUEST names, which the local backend therefore cannot serve.
+
+    `unservable` asks the capability, and a capability that declares nothing answers nothing —
+    but the general worker and the general assistant declare nothing BY DESIGN and can be
+    asked to do anything. That is the whole hole: `web-51db95a8` asked the worker to publish a
+    page to Confluence, went local because the cap named no servers, and the model — with no
+    Atlassian tool and nothing telling it why — spent 24 Bash calls reconstructing an API
+    token out of the operator's editor history to drive the REST API by hand, until the
+    supervisor killed it. The retry on Claude did it in four MCP calls.
+
+    Matched on whole words against the connector's own name and `_CONNECTOR_WORDS`. Biased to
+    FIRE: a false positive runs on Claude (the work lands, a little dearer), a false negative
+    is the run above."""
+    text = (request or "").lower()
+    if not text:
+        return []
+    out = []
+    for name in connectors(pol):
+        words = {w.lower() for w in _CONNECTOR_WORDS.get(name, ())}
+        # "claude_ai_Google_Calendar" -> "google calendar"; the connector's own name is a word
+        # people use ("check Notion", "post it to Slack").
+        own = re.sub(r"^claude_ai_", "", name).replace("_", " ").lower()
+        words.add(own)
+        if any(re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", text)
+               for w in words):
+            out.append(name)
+    return out
+
+
+def connector_note(pol=None):
+    """The line telling a LOCAL run which connectors exist but are out of its reach.
+
+    The declaration matters as much as the routing guard: told nothing, a model discovers the
+    gap one failed call at a time and then goes looking for a way around it. Told plainly, it
+    reports the blocker, which is a complete answer. Returns None when there is nothing to
+    say."""
+    have = connectors(pol)
+    if not have:
+        return None
+    return ("NOT reachable from this run (they are claude.ai connectors, which are OAuth'd "
+            "inside Claude Code and cannot be served here): "
+            + ", ".join(sorted(have.values()))
+            + ". If the task needs one of them, say so and STOP. Do not substitute a hand-"
+              "rolled HTTP call, and do not go looking for credentials on disk to make one "
+              "work — the run will be killed for it, and reporting the blocker is the "
+              "complete and correct answer.")
 
 
 # --- the tool catalogue (so selection doesn't have to spawn first) ---------

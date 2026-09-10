@@ -93,6 +93,12 @@ def setUpModule():
     # that exists only as a fixture, scoring 10 runs at 100% on /api/stats. The trail is immutable
     # by design, so those rows are permanent. All stores resolve through one of these three
     # aliases; classes needing their own DB re-point the same constants.
+    # Hermetic MCP tool catalogue. `mcp_client.Pool` records every server it lists (or that
+    # failed to start) here, and the pool tests spawn a fake stdio server called `fake` and a
+    # deliberately-missing one called `broken` — both of which were sitting in the developer's
+    # LIVE data/mcp-tools.json, `broken` carrying a `failed` timestamp that suppresses a real
+    # server of that name for LOCAL_MCP_PROBE_TTL_S. Same class of leak as the DB aliases.
+    mcp_client._CATALOGUE = os.path.join(tempfile.mkdtemp(prefix="otto-mcpcat-"), "mcp-tools.json")
     # Hermetic Admin stores: data/models.json (endpoints + API keys + phase assignment) and
     # data/policy.json (cap risk/enabled — the approval gate's input). This was per-class
     # opt-in like the DB aliases once were, so any class reaching a WRITER without re-pointing

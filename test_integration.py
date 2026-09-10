@@ -27,6 +27,7 @@ import delivery
 import engine
 import events
 import gateway
+import mcp_client
 import policy
 import local_runtime
 import registry
@@ -118,6 +119,12 @@ def setUpModule():
     # aliases; classes needing their own DB re-point the same constants.
     import chats, knowledge
     _tmp_db = os.path.join(tempfile.mkdtemp(prefix="otto-db-"), "otto.db")
+    # Hermetic MCP tool catalogue. `mcp_client.Pool` records every server it lists (or that
+    # failed to start) here, and the pool tests spawn a fake stdio server called `fake` and a
+    # deliberately-missing one called `broken` — both of which were sitting in the developer's
+    # LIVE data/mcp-tools.json, `broken` carrying a `failed` timestamp that suppresses a real
+    # server of that name for LOCAL_MCP_PROBE_TTL_S. Same class of leak as the DB aliases.
+    mcp_client._CATALOGUE = os.path.join(tempfile.mkdtemp(prefix="otto-mcpcat-"), "mcp-tools.json")
     engine._DB = chats._DB = knowledge._DB = _tmp_db
     _orig_gateway_load = gateway.load
     gateway.load = lambda: json.loads(json.dumps(_MODULE_CFG))

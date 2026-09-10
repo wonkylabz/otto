@@ -40,6 +40,7 @@ import os
 import threading
 import time
 
+import claude_cli
 import config
 import gateway
 import privacy
@@ -507,8 +508,9 @@ class Supervisor:
         if not self.transcript or not os.path.exists(self.transcript):
             return
         with open(self.transcript, "a") as f:
-            f.write(json.dumps({"type": "otto-supervisor", "at_s": verdict["at_s"],
-                                "verdict": verdict["verdict"], "critique": verdict["critique"]}) + "\n")
+            f.write(claude_cli.transcript_line(
+                {"type": "otto-supervisor", "at_s": verdict["at_s"],
+                 "verdict": verdict["verdict"], "critique": verdict["critique"]}))
 
     def finish(self):
         """End of the attempt: wait briefly for an in-flight checkpoint (abandoning it
