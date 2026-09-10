@@ -5727,12 +5727,16 @@ class LiveStoreIsolationTests(unittest.TestCase):
                             ("gateway._STATS_PATH", gateway._STATS_PATH),
                             ("gateway._PATH", gateway._PATH),
                             ("policy._PATH", policy._PATH),
-                            ("config._SETTINGS_PATH", config._SETTINGS_PATH)):
+                            ("config._SETTINGS_PATH", config._SETTINGS_PATH),
+                            ("mcp_client._CATALOGUE", mcp_client._CATALOGUE)):
             with self.subTest(store=label):
                 self.assertNotEqual(os.path.dirname(os.path.realpath(path)), live,
                                     f"{label} points into the real {config.DATA_DIR}")
 
-    ALIASES = ("engine._DB", "chats._DB", "knowledge._DB", "gateway._PATH", "policy._PATH")
+    ALIASES = ("engine._DB", "chats._DB", "knowledge._DB", "gateway._PATH", "policy._PATH",
+               # Not a DB, but the same leak with a sharper edge: a `failed` entry written by a
+               # test suppresses a REAL server of that name for LOCAL_MCP_PROBE_TTL_S.
+               "mcp_client._CATALOGUE")
 
     def test_the_shared_setup_redirects_every_db_alias(self):
         root = os.path.dirname(os.path.abspath(__file__))
