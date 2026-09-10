@@ -5865,7 +5865,11 @@ class UiAssetLayoutTests(unittest.TestCase):
     # show the argv it would spawn, so the command line is rendered in the row, not a tooltip.
     # -> 113484 for the MCP row's second control: the actions column held one button, and at
     # 48px Edit and the remove × wrapped onto two lines, which reads as a broken row.
-    ASSET_MAX = 113484
+    # -> 114022 for `.codearea`: an argv or NAME=value list is code, and the shared 64px
+    # prose box showed three of ten lines behind a scrollbar in a proportional font.
+    # The comment is most of the raise and earns it — the WHY (one logical line stays
+    # one visual line) is what stops the next edit re-wrapping it.
+    ASSET_MAX = 114592
 
     def _assets(self):
         out = {}
@@ -5894,6 +5898,41 @@ class UiAssetLayoutTests(unittest.TestCase):
             self.assertLessEqual(os.path.getsize(path), self.ASSET_MAX,
                                  "%s is over the ceiling — cut it, don't raise the ratchet "
                                  "without saying why in the constant's comment" % rel)
+
+    def test_a_code_textarea_escapes_the_two_heights_it_inherits(self):
+        """`growArea` sets a height; two inherited rules quietly took it away, and both were
+        found by MEASURING the rendered box, not by reading the CSS.
+
+        1. `.aform` is a flex COLUMN inside a max-height modal, so a textarea is a flex item
+           and shrinks to its min-height once the form is taller than the box (inline 208px,
+           rendered 96px).
+        2. The bare `textarea` rule written for the chat composer caps EVERY textarea in the
+           app at 120px, and `.aform textarea` never overrode it (inline 208px, rendered
+           120px).
+
+        Either one alone puts a ten-line argv back behind a scrollbar."""
+        css = "\n".join(open(p, encoding="utf-8").read()
+                        for p in sorted(self._assets().values()) if p.endswith(".css"))
+        rule = css[css.index(".aform textarea.codearea"):]
+        rule = rule[:rule.index("}") + 1]
+        self.assertIn("flex: 0 0 auto", rule,
+                      "the flex column will shrink this field back to its min-height")
+        self.assertIn("max-height: none", rule,
+                      "the composer's app-wide 120px textarea cap still applies here")
+        self.assertIn("white-space: pre", rule,
+                      "one logical line must stay one visual line — that is the field's rule")
+
+    def test_the_code_fields_are_sized_to_their_content(self):
+        """A ten-argument argv in the shared 64px prose box shows three lines behind a
+        scrollbar, which is what the operator has to read to approve what gets spawned."""
+        src = "\n".join(open(p, encoding="utf-8").read()
+                        for p in sorted(self._assets().values()) if p.endswith(".js"))
+        self.assertIn("function growArea(", src, "no content-sizing helper")
+        for field in ("mf-args", "mf-env"):
+            self.assertIn('growArea(document.getElementById("%s"))' % field, src,
+                          "%s is left at its minimum height" % field)
+        self.assertRegex(src, r'id="mf-args" class="codearea"')
+        self.assertRegex(src, r'id="mf-env" class="codearea"')
 
     def test_no_template_placeholder_is_left_as_live_interpolation(self):
         """A documentation placeholder written into a template literal is CODE.
