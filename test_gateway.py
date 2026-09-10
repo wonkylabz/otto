@@ -3861,6 +3861,95 @@ class McpActivationTests(unittest.TestCase):
         self.assertLess(pending.index("esc(m.command"), pending.index("data-actmcp="))
 
 
+class McpUserScopeSpawnTests(unittest.TestCase):
+    """The activation gate (issue #4) closed ONE of the two files whose `mcpServers` map is
+    spawned as the operator. `~/.claude.json` is the other, and it was writable by any run
+    (issue #28): append a def, and the command runs as the operator on the next run — on
+    either backend, since `claude -p` reads that file itself.
+
+    The env is the same shape of leak one layer down: `run.sh` exports Otto's `.env` into the
+    worker, and a spawned server inherited all of it."""
+
+    def test_the_file_whose_defs_are_spawned_is_write_denied(self):
+        home = os.path.expanduser("~")
+        path = os.path.join(home, ".claude.json")
+        self.assertTrue(file_safety.is_denied(path),
+                        "a run can append an mcpServers def that the next run executes")
+        # The read deny already existed for the OAuth material; it is a SEPARATE rule and
+        # never covered the write, which is exactly how this was missed.
+        self.assertTrue(file_safety.is_read_denied(path))
+        # Both spellings, or the rule crosses a symlinked home and matches nothing.
+        rules = file_safety.denied_globs()
+        self.assertTrue([g for g in rules if g.endswith(".claude.json")])
+
+    def test_the_deny_survives_the_project_cap_exemption(self):
+        """`allow_cwd` exempts a project capability's own repo — it must never reach a file
+        in the operator's home."""
+        self.assertTrue(file_safety.is_denied(os.path.expanduser("~/.claude.json"),
+                                              allow_cwd=os.path.expanduser("~")))
+
+    def test_a_spawned_server_inherits_no_otto_credential(self):
+        keep = dict(os.environ)
+        try:
+            os.environ.update({"OTTO_SLACK_USER_TOKEN": "xoxp-leak",
+                               "OTTO_EVENT_SECRET": "hmac-leak",
+                               "OTTO_SECRET_COMMAND": "pass show otto/{name}",
+                               "ANTHROPIC_API_KEY": "sk-ant-leak",
+                               "PATH": os.environ.get("PATH", "")})
+            env = mcp_client.env_for({"command": "npx", "args": ["-y", "third-party"]})
+            for var in ("OTTO_SLACK_USER_TOKEN", "OTTO_EVENT_SECRET", "ANTHROPIC_API_KEY"):
+                self.assertNotIn(var, env)
+            # The helper command is the key to every OTHER secret, vault included.
+            self.assertNotIn("OTTO_SECRET_COMMAND", env)
+            self.assertIn("PATH", env, "the strip took the environment with it")
+        finally:
+            os.environ.clear()
+            os.environ.update(keep)
+
+    def test_an_endpoint_key_named_in_the_model_store_is_stripped_too(self):
+        """The var names are the operator's own, so the denied set cannot be a constant."""
+        orig, tmp = gateway._PATH, tempfile.mkdtemp(prefix="otto-mcpenv-")
+        keep = dict(os.environ)
+        try:
+            gateway._PATH = os.path.join(tmp, "models.json")
+            with open(gateway._PATH, "w") as f:
+                json.dump({"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "x"}],
+                           "endpoints": [{"name": "gpu", "base_url": "https://gpu.x/v1",
+                                          "kind": "local", "api_key_env": "MY_VLLM_KEY",
+                                          "headers": {"X-Api-Key": "MY_HEADER_KEY"}}],
+                           "assign": {"execution": "claude-sonnet"}}, f)
+            os.environ.update({"MY_VLLM_KEY": "vllm-leak", "MY_HEADER_KEY": "hdr-leak"})
+            env = mcp_client.env_for({})
+            self.assertNotIn("MY_VLLM_KEY", env)
+            self.assertNotIn("MY_HEADER_KEY", env)
+        finally:
+            os.environ.clear()
+            os.environ.update(keep)
+            gateway._PATH = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_server_that_needs_a_credential_still_names_it(self):
+        """The strip must not break the escape hatch: a def's OWN env is applied after it, and
+        that entry is a deliberate act by the operator in the Admin form."""
+        keep = dict(os.environ)
+        try:
+            os.environ["ANTHROPIC_API_KEY"] = "sk-ant-real"
+            env = mcp_client.env_for({"env": {"ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY"}})
+            self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-ant-real")
+        finally:
+            os.environ.clear()
+            os.environ.update(keep)
+
+    def test_a_user_scope_def_is_trusted_by_decision_and_says_why(self):
+        """The third question issue #28 asked. A `~/.claude.json` def needs no activation —
+        `claude -p` spawns it regardless, so a gate here would make a server inert on one
+        backend while the other ran it. That is a DECISION, and an undocumented one reads as
+        the oversight it was next to Otto's own gated defs."""
+        doc = inspect.getdoc(mcp_client._user_servers) or ""
+        self.assertIn("activation", doc.lower())
+        self.assertIn("file_safety", doc, "the trust rests on the write deny — name it")
+
+
 class ConnectorParseTests(unittest.TestCase):
     """`claude mcp list` parsing — claude.ai connectors aren't in ~/.claude.json, so this
     is the only way Otto can discover & allowlist them (mcp__claude_ai_<Name>__…)."""
@@ -5545,7 +5634,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # hold literal keys, and WHICH side of the API boundary masks them is invisible from
     # either end — the GET looks like it is serving config, and the POST looks like it is
     # saving what the operator typed. The leak also silently defeated a file_safety deny.
-    MAX_RULES_BYTES = 74806   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 75363 for the two MCP-spawn rules (issue #28): the activation gate closed ONE of the
+    # two files whose `mcpServers` map is spawned as the operator, and the other one is not
+    # gated ON PURPOSE — an undocumented decision reads as the oversight it sat next to. The
+    # env strip is the same leak a layer down: `.env` rode into every third-party server.
+    MAX_RULES_BYTES = 75363   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
