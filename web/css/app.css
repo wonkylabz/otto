@@ -1345,7 +1345,8 @@
   .mcptable .c-health { width: 230px; }
   .mcptable .c-src { width: 96px; }
   .mcptable .c-on { width: 54px; }
-  .mcptable .c-act { width: 48px; }
+  /* two controls, not one: at 48px Edit and the remove × wrapped onto separate lines */
+  .mcptable .c-act { width: 92px; }
   .mcptable td { vertical-align: top; }
   /* Project repos table — the standing-instructions box is a column, not a second stacked row. */
   .projtable .c-repo { width: 300px; }

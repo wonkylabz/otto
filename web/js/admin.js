@@ -903,9 +903,11 @@ function renderAdmin(data, models, el, settings){
         <button class="clearbtn mn-save" data-mcpnote="${esc(m.name)}">Save</button>
       </div></td>
       <td class="c-on"><span class="switch ${m.enabled?'on':''}" data-mcp="${esc(m.name)}" title="enable / disable"></span></td>
-      <td class="c-act r">${m.source==='otto'?`<button class="mcpbtn" data-editmcp="${esc(m.name)}"
+      <td class="c-act r">${m.source==='otto'?`<span class="ctl r">
+          <button class="mcpbtn" data-editmcp="${esc(m.name)}"
             title="edit this server's command, arguments and environment">Edit</button>
-          <button class="remove" data-delmcp="${esc(m.name)}" title="remove">&times;</button>`:''}</td>
+          <button class="remove" data-delmcp="${esc(m.name)}" title="remove">&times;</button>
+        </span>`:''}</td>
     </tr>`).join("");
   const mcpTable=`<table class="ctable mcptable">
     <colgroup><col><col class="c-health"><col class="c-src"><col><col class="c-on"><col class="c-act"></colgroup>
@@ -961,7 +963,6 @@ function renderAdmin(data, models, el, settings){
       <span class="h3btns"><button class="addbtn" id="mcp-recheck" title="re-run claude mcp list (health check)">&#8635; Recheck health</button>
       <button class="addbtn" id="add-mcp">+ MCP server</button></span></h3>
       ${mcpIssues?`<div class="mcpwarn"><span class="msg"><b>${mcpIssues}</b> enabled MCP server${mcpIssues>1?'s':''} ${mcpIssues>1?'are':'is'} unreachable or ${mcpIssues>1?'need':'needs'} authentication &mdash; runs that use ${mcpIssues>1?'them':'it'} may fail. Fix ${mcpIssues>1?'them':'it'} below, then Recheck.</span></div>`:''}
-      <div id="mcp-form"></div>
       <div class="asection-body">${mcpTable}</div></div>
     <div class="asection coll collapsed" data-sect="projects"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Project repos<span class="sectcount">${(data.projects||[]).length}</span></span><button class="addbtn" id="add-project">+ project repo</button></h3>
       <div id="project-form"></div>
@@ -1149,12 +1150,15 @@ function renderAdmin(data, models, el, settings){
   // the Admin payload: `/api/policy` is loaded on every visit and its rows feed the activation
   // gate, which shows variable names only.
   el.querySelectorAll("[data-editmcp]").forEach(b=>b.addEventListener("click",async()=>{
-    let def=null;
-    try{ def=await (await fetch("/api/mcp/def?name="+encodeURIComponent(b.dataset.editmcp))).json(); }
-    catch(e){ def=null; }
-    if(!def||!def.name) return;
-    showMcpForm(def);
-    document.getElementById("mcp-form").scrollIntoView({block:"nearest"});
+    // A silent `return` here is indistinguishable from a dead button — which is exactly how
+    // this read as when the form itself threw. Say what went wrong, in the row.
+    b.disabled=true;
+    try{
+      const def=await (await fetch("/api/mcp/def?name="+encodeURIComponent(b.dataset.editmcp))).json();
+      if(!def||!def.name) throw new Error("no stored definition for this server");
+      showMcpForm(def);
+    }catch(err){ alert("Couldn't open this server for editing: "+(err.message||err)); }
+    finally{ b.disabled=false; }
   }));
   el.querySelectorAll("[data-actmcp]").forEach(b=>b.addEventListener("click",async()=>{
     b.disabled=true; b.textContent="Activating\u2026";
@@ -1211,7 +1215,7 @@ function renderAdmin(data, models, el, settings){
     finally { setTimeout(()=>{ b.disabled=false; b.textContent="Save instructions"; }, 1200); }
   }));
   document.getElementById("add-cap").addEventListener("click",()=>showCapForm());
-  document.getElementById("add-mcp").addEventListener("click",showMcpForm);
+  document.getElementById("add-mcp").addEventListener("click",()=>showMcpForm());
   document.getElementById("add-project").addEventListener("click",showProjectForm);
   wireBundle(el);
   wireModels(el);
@@ -1303,28 +1307,56 @@ function showCapForm(cap){
 }
 
 function showMcpForm(existing){
+  // The repo's shared modal, like every other config form (ui.md). It was rendered inline
+  // under the table instead, which put the form and the row it edits in two different places
+  // on a long scrolling page.
+  //
   // One form for both acts. Editing IS re-adding: the server is stored under the same name and
   // goes back to inactive, because the command line the human approved is not the one that
   // would now be spawned. The name is therefore fixed while editing — changing it would leave
   // the old def behind under the old name rather than renaming anything.
-  const e=existing||null;
-  const envLines=Object.entries((e&&e.env)||{}).map(([k,v])=>`${k}=${v}`).join("\n");
-  const c=document.getElementById("mcp-form");
+  const e=(existing && existing.name) ? existing : null;
+  const c=openFormModal(e?("<b>Edit MCP server</b><br>"+esc(e.name))
+                         :"<b>New MCP server</b><br>a stdio server Otto spawns on this machine");
+  // Values are assigned BELOW, never interpolated into attributes: a command, an argument or an
+  // env value is arbitrary operator text, and `${...}` inside a template literal is evaluated —
+  // the help text's own dollar-brace VAR example threw ReferenceError, and the form then
+  // never opened at all. (Written out in words here on purpose: a comment INSIDE a
+  // template literal is live text too, so the hazard is not comment-safe.)
   c.innerHTML=`<div class="aform">
-    <label>Name</label><input id="mf-name" placeholder="e.g. github"
-      value="${e?esc(e.name):""}"${e?" readonly title=\"a server is renamed by removing it and adding it again\"":""}>
-    <label>Command</label><input id="mf-cmd" placeholder="npx" value="${e?esc(e.command||""):""}">
-    <label>Arguments (<b>one per line</b>)</label><textarea id="mf-args" placeholder="-y&#10;@modelcontextprotocol/server-github">${e?esc(((e.args)||[]).join("\n")):""}</textarea>
-    <p class="sub" style="margin:2px 0 0">One argument per line — <code>run -i --rm image</code> on a single line is passed to the command as one argument, and it will refuse it.</p>
+    <label>Name</label><input id="mf-name" placeholder="e.g. github">
+    <label>Command</label><input id="mf-cmd" placeholder="npx">
+    <label>Arguments &mdash; <b>one per line</b></label>
+    <textarea id="mf-args" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea>
+    <p class="sub" style="margin:2px 0 0">One argument per line. A whole command line on one
+      line is passed to the program as a single argument, and it will refuse it.</p>
     <label style="margin-top:10px">Environment <span class="sub">(optional, one <code>NAME=value</code> per line)</span></label>
-    <textarea id="mf-env" placeholder="GITHUB_TOKEN=MY_GITHUB_TOKEN&#10;CONFLUENCE_URL=https://example.atlassian.net/wiki">${esc(envLines)}</textarea>
-    ${e?`<p class="sub" style="margin:2px 0 0">A value shown as <code>&bull;&bull;&bull;&bull;&bull;&bull;</code> is a stored secret — leave it to keep it, overwrite it to change it, delete the line to remove the variable.</p>`:""}
-    <p class="sub" style="margin:2px 0 0">For a credential, give the <b>name</b> of an env var or a secret your <code>OTTO_SECRET_COMMAND</code> helper resolves (<code>GITHUB_TOKEN=MY_GITHUB_TOKEN</code>), or <code>${VAR}</code>. A literal is stored as typed, in plaintext, in <code>data/mcp-servers.json</code>.</p>
-    <p class="sub" style="margin:2px 0 0">${e?"Saving returns this server to <b>inactive</b> — the command line you approved is not the one that would now be spawned, so activate it again from the list below.":"Added servers are stored <b>inactive</b> — Otto spawns this command on your machine, so you activate it from the list below after checking the command line and the variable names."}</p>
+    <textarea id="mf-env" placeholder="GITHUB_TOKEN=MY_GITHUB_TOKEN&#10;CONFLUENCE_URL=https://example.atlassian.net/wiki"></textarea>
+    <p class="sub" style="margin:2px 0 0">For a credential give the <b>name</b> of an env var, or
+      of a secret your <code>OTTO_SECRET_COMMAND</code> helper resolves &mdash; or
+      <code>&#36;{VAR}</code>. A literal is stored as typed, in plaintext, in
+      <code>data/mcp-servers.json</code>.</p>
+    <p class="sub mf-kept" hidden style="margin:2px 0 0">A value shown as
+      <code>&bull;&bull;&bull;&bull;&bull;&bull;</code> is a stored secret: leave it to keep it,
+      overwrite it to change it, delete the line to remove the variable.</p>
+    <p class="sub" style="margin:6px 0 0" id="mf-note"></p>
     <div class="ferr" id="mf-err"></div>
-    <div class="factions"><button class="btn approve" id="mf-save">${e?"Save changes":"Add MCP server"}</button><button class="btn decline" id="mf-cancel">Cancel</button></div>
+    <div class="factions"><button class="btn approve" id="mf-save"></button><button class="btn decline" id="mf-cancel">Cancel</button></div>
   </div>`;
-  document.getElementById("mf-cancel").onclick=()=>c.innerHTML="";
+  const nameEl=document.getElementById("mf-name");
+  if(e){
+    nameEl.value=e.name; nameEl.readOnly=true;
+    nameEl.title="a server is renamed by removing it and adding it again";
+    document.getElementById("mf-cmd").value=e.command||"";
+    document.getElementById("mf-args").value=((e.args)||[]).join("\n");
+    document.getElementById("mf-env").value=Object.entries(e.env||{}).map(([k,v])=>k+"="+v).join("\n");
+    if(Object.keys(e.env||{}).length) c.querySelector(".mf-kept").hidden=false;
+  }
+  document.getElementById("mf-save").textContent=e?"Save changes":"Add MCP server";
+  document.getElementById("mf-note").innerHTML=e
+    ? "Saving returns this server to <b>inactive</b> \u2014 the command line you approved is not the one that would now be spawned, so activate it again from the list."
+    : "Added servers are stored <b>inactive</b> \u2014 Otto spawns this command on your machine, so you activate it from the list after checking the command line and the variable names.";
+  document.getElementById("mf-cancel").onclick=closeFormModal;
   document.getElementById("mf-save").onclick=async()=>{
     const args=document.getElementById("mf-args").value.split("\n").map(s=>s.trim()).filter(Boolean);
     // NAME=value per line. Split on the FIRST `=` only: a value is routinely a URL or a
@@ -1336,11 +1368,11 @@ function showMcpForm(existing){
       env[t.slice(0,i).trim()]=t.slice(i+1).trim();
     }
     const ok=await postForm("/api/mcp/add",{
-      name:document.getElementById("mf-name").value.trim(),
+      name:nameEl.value.trim(),
       command:document.getElementById("mf-cmd").value.trim(),
       args:args, env:env,
     },document.getElementById("mf-err"));
-    if(ok) loadAdmin();
+    if(ok){ closeFormModal(); loadAdmin(); }
   };
 }
 
