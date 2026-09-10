@@ -138,6 +138,14 @@ def denied_globs(allow_cwd=None):
         # The file that grants tool permissions to every future run, including permission to
         # edit the things above. A run that can write here can switch this guard off.
         os.path.join(home, ".claude", "settings.json"),
+        # ... and its neighbour, which is the same self-escalation by another route (issue #28):
+        # `~/.claude.json`'s `mcpServers` map is spawned as the operator by BOTH backends —
+        # `claude -p` reads it directly, and `mcp_client._user_servers` merges it into
+        # `servable()` with no activation gate — so a run that can append a def to it hands
+        # itself arbitrary command execution on the next run. Already READ-denied for its OAuth
+        # material (`_secret_store_globs`); a read deny is a separate rule and does not cover
+        # the write.
+        os.path.join(home, ".claude.json"),
         # Otto's own secrets (OTTO_SLACK_USER_TOKEN, the event HMAC) ...
         os.path.join(root, ".env"),
         # ... its audit trail, which is immutable by design and the only durable record that a

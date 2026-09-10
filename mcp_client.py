@@ -72,6 +72,42 @@ def _expand(v):
     return os.path.expandvars(v) if isinstance(v, str) else v
 
 
+# Otto's own credential material, which a spawned server must never inherit (issue #28).
+# `run.sh` exports the repo's `.env` into the worker, so a third-party `npx -y <package>`
+# server was handed the Slack tokens, the webhook HMAC and ANTHROPIC_API_KEY simply by
+# starting. `OTTO_SECRET_COMMAND` is the worst of them: it is not a secret, it is the key to
+# every OTHER secret, vault included.
+_ENV_DENY_PREFIXES = ("OTTO_",)
+_ENV_DENY = ("ANTHROPIC_API_KEY",)
+
+
+def _model_key_env_names():
+    """The env vars the model store points at — an endpoint's `api_key_env` and any header
+    value that is a reference rather than a literal. They are named by the operator, so the
+    set cannot be a constant; a store that fails to load costs this half of the strip, never
+    the spawn."""
+    try:
+        import gateway
+        cfg = gateway.load()
+    except Exception:  # noqa: BLE001 — a broken store must not stop a server from starting
+        return set()
+    out = set()
+    for e in cfg.get("endpoints") or []:
+        for v in [e.get("api_key_env"), *(e.get("headers") or {}).values()]:
+            if v and config.is_secret_ref(v):
+                out.add(v)
+    return out
+
+
+def _inherited_env():
+    """`os.environ` minus Otto's own credentials. A server that genuinely needs one names it
+    in its OWN `env` — a deliberate act by the operator in the Admin form, and one that still
+    works, since the strip happens before the def's own entries are applied."""
+    denied = set(_ENV_DENY) | _model_key_env_names()
+    return {k: v for k, v in os.environ.items()
+            if k not in denied and not k.startswith(_ENV_DENY_PREFIXES)}
+
+
 def env_for(spec):
     """The environment a def's subprocess gets: the operator's own, plus the def's `env` with
     each VALUE resolved.
@@ -85,8 +121,11 @@ def env_for(spec):
     The Claude door (`policy.active_mcp_config`) deliberately does NOT resolve: its config is
     written to disk for `claude -p`, so resolving there would put the secret in a file. Claude
     Code expands `${VAR}` itself, which is why an env reference is the portable spelling and a
-    vault-only secret reaches the local backend alone."""
-    env = dict(os.environ)
+    vault-only secret reaches the local backend alone.
+
+    The operator's own environment is inherited MINUS Otto's credentials (`_inherited_env`) —
+    a stdio server is third-party code we spawn, and it needed no secret of ours to run."""
+    env = _inherited_env()
     for k, v in (spec.get("env") or {}).items():
         env[str(k)] = str(config.secret(v) if isinstance(v, str) and config.secret(v)
                           else _expand(v))
@@ -107,7 +146,15 @@ def _user_servers():
     `policy.discover_mcps` walks the whole file for NAMES; we need the full defs, and we
     deliberately take only the top-level `mcpServers` map. A project-scoped server is bound
     to the repo it was installed for, exactly like a project-scoped plugin skill — offering
-    one from Otto's own cwd is the trap documented in CLAUDE.md."""
+    one from Otto's own cwd is the trap documented in CLAUDE.md.
+
+    These defs need NO activation, unlike Otto's own (issue #28). The gate exists because
+    Otto's registry can be written by something other than the operator; `~/.claude.json` is
+    the operator's own `claude mcp add`, and `claude -p` spawns every def in it on the Claude
+    backend regardless of what Otto thinks — so requiring activation here would only make a
+    server inert on ONE backend while the other ran it, closing nothing. What made this file a
+    self-escalation was that a RUN could append to it, which is now a write deny in
+    `file_safety.denied_globs`. Trust the operator's file, keep runs out of it."""
     try:
         with open(os.path.expanduser("~/.claude.json")) as f:
             data = json.load(f)

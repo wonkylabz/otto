@@ -42,6 +42,8 @@
 `mcp_client.py` — stdio JSON-RPC only, stdlib.
 
 - **Registering a server and RUNNING it are two acts** (`policy.add_mcp_def`; `McpActivationTests`) — a stored `command`+`args` is spawned as the operator, so the gate is on the DEF and BOTH doors read it (`active_mcp_config`, `mcp_client.servable`). Audited with the argv.
+- **`~/.claude.json`'s defs spawn UNGATED, by decision; the FILE is write-denied instead** (`file_safety`) — `claude -p` spawns them anyway, so a local gate leaves a server inert on one backend and live on the other; a RUN appending one was the risk (`McpUserScopeSpawnTests`).
+- **A spawned server inherits the operator's env MINUS Otto's credentials** (`mcp_client._inherited_env`) — `run.sh` exports `.env` into the worker, so third-party code got the Slack tokens and `OTTO_SECRET_COMMAND`, the key to every other secret (`McpUserScopeSpawnTests`).
 - **Servable/unservable is the whole design**: a stdio server (`command`+`args`) is a subprocess we spawn. A claude.ai *connector* (Gmail/Calendar/Slack/Notion) is remote OAuth inside Claude Code's own session — nothing to spawn, no token to present. `servable()` refuses anything not stdio.
 - **A cap needing a connector must not run locally** — `mcp_client.unservable(cap)` keeps it on Claude (strict mode stops instead). The Admin Execution dropdown disables local options for such a cap.
 - **A connector blocks a local run by REQUEST, not only by declaration** (`mcp_client.connectors_named`) — the generalists declare no `tools:`, so the cap-side test is silent for the caps handed anything, and the model hunts credentials to hand-roll it (`LocalConnectorGapTests`).
