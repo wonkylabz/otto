@@ -1391,6 +1391,7 @@
     border: 1px solid var(--line); padding: 4px 9px; border-radius: var(--r-sm); }
   .saved { font-size: 12px; color: var(--ok); opacity: 0; transition: opacity .2s; margin-left: 8px; }
   .saved.show { opacity: 1; }
+  .saved.warn { color: var(--warn); }
 
   /* Tight screens: drop the informational rail first (keep the interactive Chats sidebar),
      then the sidebar only on very narrow widths. */

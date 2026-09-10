@@ -5929,7 +5929,11 @@ class UiAssetLayoutTests(unittest.TestCase):
     # "local ·" because it read the RUNTIME that drove the attempt, and that runtime drives a
     # laptop vLLM and a vendor API alike. The second class rides the accent `.bchip.local`
     # already had (a label fix, not a new colour), and the comment says why they share it.
-    ASSET_MAX = 114794
+    # -> 114832 for `.saved.warn` (issue #27): the models POST can now come back "saved, but
+    # re-enter the API key for X", and the one indicator that reports it is green by default —
+    # a warning in the ok colour reads as a success. `.warn` alone cannot do it: it is declared
+    # ABOVE `.saved` at equal specificity, so the green wins the cascade.
+    ASSET_MAX = 114832
 
     def _assets(self):
         out = {}

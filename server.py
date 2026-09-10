@@ -1056,13 +1056,15 @@ class Handler(BaseHTTPRequestHandler):
             # (unlike the MCP health check, which moved off /api/policy): only stale LOCAL entries
             # are probed and a GET /models is milliseconds — a Claude probe is a real `claude -p`
             # turn and waits for the Recheck button below.
-            self._send(200, json.dumps({"pool": cfg["pool"], "assign": cfg["assign"],
-                                        "endpoints": gateway.endpoints(cfg),
+            health = gateway.probe_models(cfg=cfg)     # needs the REAL keys — mask after
+            safe = gateway.masked(cfg)
+            self._send(200, json.dumps({"pool": safe["pool"], "assign": cfg["assign"],
+                                        "endpoints": gateway.endpoints(safe),
                                         "cap_exec": cfg.get("cap_exec", {}),
                                         "cap_local_exec": cfg.get("cap_local_exec", {}),
                                         "kinds": list(gateway.KINDS),
                                         "hosted_hosts": list(gateway.HOSTED_HOSTS),
-                                        "health": gateway.probe_models(cfg=cfg),
+                                        "health": health,
                                         "tasks": gateway.TASKS}))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
@@ -1987,13 +1989,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"hits": knowledge.recall_knowledge(body.get("query", ""))}))
 
     def _post_models(self, body):
-        """POST /api/models"""
-        cfg = gateway.load()
-        cfg["pool"] = body.get("pool", cfg.get("pool", []))
-        cfg["assign"] = body.get("assign", cfg.get("assign", {}))
-        cfg["endpoints"] = body.get("endpoints", cfg.get("endpoints", []))
+        """POST /api/models
+
+        The client is posting back the config the GET handed it, whose literal keys were masked
+        (issue #27) — so `gateway.unmask` restores each one from the store before saving, or the
+        save would overwrite the key with its own mask. `lost` names the values it could not
+        recover (an endpoint renamed AND repointed in one save); they are cleared rather than
+        stored as a bogus key, and reported so the UI can say which endpoint needs its key
+        re-entered instead of leaving it to 401."""
+        stored = gateway.load()
+        cfg = dict(stored)
+        cfg["pool"] = body.get("pool", stored.get("pool", []))
+        cfg["assign"] = body.get("assign", stored.get("assign", {}))
+        cfg["endpoints"] = body.get("endpoints", stored.get("endpoints", []))
+        cfg, lost = gateway.unmask(cfg, stored)
         gateway.save(cfg)
-        self._send(200, json.dumps({"ok": True, "endpoints": gateway.endpoints()}))
+        self._send(200, json.dumps({"ok": not lost, "lost_keys": lost,
+                                    "endpoints": gateway.endpoints(gateway.masked(gateway.load()))}))
 
     def _post_models_discover(self, body):
         """POST /api/models/discover"""
