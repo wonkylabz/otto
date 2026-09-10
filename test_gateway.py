@@ -3259,6 +3259,99 @@ class BundleTests(unittest.TestCase):
             policy.import_bundle({"not": "a bundle"})
 
 
+class LocalConnectorGapTests(unittest.TestCase):
+    """A claude.ai connector cannot exist on the LOCAL backend — there is no OAuth session to
+    present and nothing to spawn — and `engine.run_attempt` has kept such a run on Claude since
+    a briefing cap burned 1.1M tokens discovering that. It asked the CAPABILITY, though, and
+    the general worker/assistant declare no `tools:` at all, so the guard was silent for the
+    two caps that can be handed any task.
+
+    What that cost, measured on `web-51db95a8`: "publish the design doc to Confluence" routed
+    to `worker`, ran on qwen, and the model — no Atlassian tool, and nothing telling it why —
+    spent 24 Bash calls reading ~/.netrc, the 1Password config, ~/.claude.json and Cursor's
+    editor History until it had a live API token, then put it on a curl command line. 639k
+    input tokens, killed by the supervisor. The retry on Claude finished in four MCP calls."""
+
+    def setUp(self):
+        import mcp_client
+        self.m = mcp_client
+        self._orig = mcp_client.connectors
+        mcp_client.connectors = lambda pol=None: {
+            "claude_ai_Atlassian": "claude.ai Atlassian",
+            "claude_ai_Notion": "claude.ai Notion",
+            "claude_ai_Gmail": "claude.ai Gmail"}
+
+    def tearDown(self):
+        self.m.connectors = self._orig
+
+    def test_a_request_naming_a_connector_is_a_blocker(self):
+        for request, want in (
+                ("publish the design doc to Confluence at https://example.atlassian.net/wiki/y",
+                 "claude_ai_Atlassian"),
+                ("open a jira ticket for the flaky build", "claude_ai_Atlassian"),
+                ("update the Notion page with the decision", "claude_ai_Notion"),
+                ("check gmail for the vendor reply", "claude_ai_Gmail")):
+            self.assertIn(want, self.m.connectors_named(request), f"missed: {request[:40]}")
+
+    def test_an_ordinary_request_is_not_dragged_off_the_local_backend(self):
+        """Every entry in the word list can send a run to Claude, so a false positive is a
+        standing cost on unrelated work. The words have to name the DESTINATION."""
+        for request in ("fix the retry helper in workspace.py",
+                        "why is the prod cluster unhealthy",
+                        "summarise the audit trail for today",
+                        "email the team about the outage"):   # 'email' is deliberately not a word
+            self.assertEqual(self.m.connectors_named(request), [], request)
+
+    def test_a_cap_declaring_nothing_is_still_covered(self):
+        """The hole itself: `unservable` reads the cap's frontmatter and the worker has none."""
+        import types
+        cap = types.SimpleNamespace(name="worker", declared_tools=[], risk="write")
+        self.assertEqual(self.m.unservable(cap), [])
+        self.assertTrue(self.m.connectors_named("publish it to confluence"))
+
+    def test_the_engine_merges_both_questions_into_the_blocker_list(self):
+        """Grep-shaped, like the other backend-selection guards: the branch is deep inside
+        run_attempt and cannot be reached without a live model."""
+        with open(os.path.join(os.path.dirname(__file__), "engine.py"),
+                  encoding="utf-8", errors="surrogateescape") as fh:
+            src = fh.read()
+        i = src.index("mcp_blockers = mcp_client.unservable(cap)")
+        branch = src[i:i + 400]
+        self.assertIn("mcp_client.connectors_named(request)", branch,
+                      "the request half of the connector guard is not wired in")
+
+    def test_the_local_runtime_declares_what_it_cannot_reach(self):
+        """The backstop for a request whose words missed. Told nothing, a model discovers the
+        gap one failed call at a time and then goes looking for a way around it."""
+        note = self.m.connector_note()
+        self.assertIn("claude.ai Atlassian", note)
+        self.assertIn("STOP", note, "the note describes the gap without saying what to do")
+        self.assertIn("credentials", note,
+                      "the note omits the failure mode it exists to prevent")
+        # And it fires OUTSIDE the `if mcp_servers …` block: a connector is absent whether or
+        # not this cap also asked for a stdio server, and the Confluence run asked for none it
+        # could use. Measured by indentation, which is what nesting it back would change — a
+        # substring check for the enclosing `if` passes either way (it did, until this line).
+        with open(os.path.join(os.path.dirname(__file__), "local_runtime.py"),
+                  encoding="utf-8", errors="surrogateescape") as fh:
+            lines = fh.read().splitlines()
+        call = next(i for i, ln in enumerate(lines) if "mcp_client.connector_note()" in ln)
+        guard = next(i for i in range(call, -1, -1)
+                     if lines[i].strip().startswith("if ") and "LOCAL_MCP" in lines[i])
+        self.assertEqual(len(lines[guard]) - len(lines[guard].lstrip()), 4,
+                         "the note is nested inside another branch — it must be at the "
+                         "function's own level or a cap with no stdio server never hears it")
+        self.assertNotIn("mcp_servers", lines[guard])
+
+    def test_a_connector_the_operator_disabled_is_not_a_blocker(self):
+        """Admin's enable/disable is the operator saying "don't use this" — reinstating it as a
+        reason to leave the local backend would make the switch mean the opposite."""
+        self.m.connectors = self._orig
+        pol = {"mcps": {"claude_ai_Atlassian": {"enabled": False}}}
+        self.assertNotIn("claude_ai_Atlassian",
+                         self.m.connectors_named("publish to confluence", pol=pol))
+
+
 class McpActivationTests(unittest.TestCase):
     """Registering an MCP server and RUNNING it are two acts (issue #4).
 
@@ -6371,6 +6464,33 @@ class ReadDenyTests(unittest.TestCase):
             self.assertTrue(file_safety.is_read_denied(self._p(*rel)),
                             f"{os.path.join(*rel)} must not be readable by an arbitrary run")
 
+    def test_the_credential_stores_are_read_denied(self):
+        """Not Otto's state — the operator's. `web-51db95a8` is the case: a local run with no
+        Atlassian connector walked ~/.netrc, the 1Password config, ~/.claude.json and Cursor's
+        editor History until it had a live API token, then curl'd with it."""
+        home = os.path.expanduser("~")
+        for rel in [(".netrc",), (".claude.json",), (".claude", ".credentials.json"),
+                    (".config", "1Password", "1password.sqlite"),
+                    (".config", "Cursor", "User", "History", "-1e5c3bb0", "x.json"),
+                    (".ssh", "id_ed25519"), (".gnupg", "secring.gpg")]:
+            self.assertTrue(file_safety.is_read_denied(os.path.join(home, *rel)),
+                            f"{os.path.join(*rel)} is readable by any run")
+
+    def test_the_credential_deny_survives_the_otto_cwd_exemption(self):
+        """The exemption is about Otto's own state. A run reading the audit trail still has no
+        business reading a token — and that run is the one with Bash in Otto's own tree."""
+        root = os.path.dirname(os.path.abspath(config.DATA_DIR))
+        self.assertTrue(file_safety.is_read_denied(
+            os.path.join(os.path.expanduser("~"), ".netrc"), allow_cwd=root))
+
+    def test_the_aws_credentials_read_is_still_deliberately_open(self):
+        """Documented decision in `denied_globs`, not an oversight: "which profiles exist" is a
+        routine question here, and the WRITE deny is what stops the file being rewritten. Pinned
+        so the credential set above can't quietly swallow it."""
+        creds = os.path.join(os.path.expanduser("~"), ".aws", "credentials")
+        self.assertFalse(file_safety.is_read_denied(creds))
+        self.assertTrue(file_safety.is_denied(creds))
+
     def test_repo_mode_clones_stay_readable(self):
         """`data/**` would be one line and would silently disable repo-mode entirely — every
         clone lives under data/workspaces/, and a matching deny beats any allow."""
@@ -6788,10 +6908,16 @@ class LocalPlanModeTests(unittest.TestCase):
     def test_the_read_deny_masks_honour_the_cwd_EXEMPTION(self):
         """`file_safety` exempts a run whose cwd IS Otto's own checkout — otherwise Otto working
         on itself cannot read its own tree. The mask must not be stricter than the rule it
-        enforces, or repo-mode on this repo dies inside the sandbox."""
+        enforces, or repo-mode on this repo dies inside the sandbox.
+
+        The exemption covers OTTO'S STATE only. The credential stores stay masked for that run
+        too: reading Otto's own trail is a real task, reading the bytes of a token never is."""
         root = os.path.dirname(config.DATA_DIR.rstrip("/"))
-        self.assertEqual(file_safety.read_denied_globs(allow_cwd=root), [])
-        self.assertEqual(local_runtime._read_deny_mounts(cwd=root), [])
+        exempt = file_safety.read_denied_globs(allow_cwd=root)
+        state = os.path.join(config.DATA_DIR, "otto.db*")
+        self.assertNotIn(state, exempt, "Otto working on itself cannot read its own state")
+        self.assertEqual(sorted(exempt), sorted(file_safety._secret_store_globs_resolved()),
+                         "the exemption let a credential store through, or denied more than one")
         self.assertTrue(local_runtime._read_deny_mounts(cwd=None),
                         "an unanchored run got no masks at all")
 

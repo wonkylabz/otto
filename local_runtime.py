@@ -850,7 +850,7 @@ def _emit(sink, on_event, event):
     """Write one transcript event + feed the watcher — same semantics as claude_cli's
     stream loop (watcher errors are swallowed; the transcript is flushed per line)."""
     if sink:
-        sink.write(json.dumps(event) + "\n")
+        sink.write(claude_cli.transcript_line(event))   # ONE writer, ONE scrub — see there
         sink.flush()
     if on_event is not None:
         try:
@@ -1026,6 +1026,14 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                 "Unavailable this run (do NOT attempt these, work with what you have and say "
                 "in your report what you could not check): "
                 + "; ".join(f"{n} MCP ({why})" for n, why in mcp.errors.items())]))
+    # Said whether or not any stdio server was started, and whether or not this cap asked for
+    # one: a connector is missing from the local backend ALWAYS, and silence about it is what
+    # the model fills in by itself. `engine.run_attempt` keeps a run that NAMES a connector off
+    # this backend entirely; this is the backstop for the request whose words missed.
+    if config.LOCAL_MCP:
+        note = mcp_client.connector_note()
+        if note:
+            system_context = "\n\n".join(filter(None, [system_context, note]))
 
     if resume_session and is_local_session(resume_session):
         sid = resume_session
