@@ -1670,16 +1670,33 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
                   encoding="utf-8", errors="surrogateescape") as f:
             return f.read()
 
-    def _call(self, src, marker):
-        i = src.index(marker)
+    def _call(self, src, marker, start=0):
+        i = src.index(marker, start)
         return src[i:src.index("}))", i) + 3]
+
+    def _handoff_call(self, src):
+        """The handoff's re-submit, sliced from INSIDE its own branch. The bare marker finds
+        the model-rebind call above it — both re-submit `request:task+carryContextForSubmit(true)`
+        — so every "handoff" assertion here was reading the rebind call and passed with the
+        handoff's own arguments deleted. Measured by deleting them."""
+        return self._call(src, 'api("/api/submit",{request:task',
+                          src.index("if(out && out.handoff){"))
 
     def test_the_handoff_resubmit_carries_the_whole_composer(self):
         # A handoff IS a fresh submit — it re-enters /api/submit, so every setting a normal
         # submit sends must ride along or the visible composer silently doesn't apply.
-        call = self._call(ui_src(), 'api("/api/submit",{request:task')
+        call = self._handoff_call(ui_src())
         for field in ("model_override", "memory_enabled", "repo", "qa", "plan_mode", "auto_approve"):
             self.assertIn(field, call, f"the handoff re-submit drops {field}")
+
+    def test_the_handoff_carries_the_conversation_into_the_fresh_run(self):
+        # The handoff leaves a live session exactly as the rebind does, and the classifier's
+        # task line is written to be executable with NO access to the exchange it came out of.
+        # Without the carry, turn 9 of a brainstorm restarts from one sentence — and since the
+        # chat rebinds to the new session, every later turn resumes the impoverished one
+        # (chat 9af2f11d: five handoffs, five restarts).
+        self.assertIn("carryContextForSubmit(true)", self._handoff_call(ui_src()),
+                      "the handed-off run drops the conversation")
 
     def test_the_handoff_and_rebind_resubmits_carry_the_auto_approve_toggle(self):
         # Dropping it re-gates a run the human already pre-authorized on screen — the opposite
@@ -1709,10 +1726,9 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
         # Effort is one more composer control on the same three paths the model pick rides. A
         # dropped hop is invisible: the run completes, at the wrong effort, reporting success.
         src = ui_src()
-        for marker, what in (
-                ('api("/api/submit",{request:task+carryContextForSubmit(true)', "model-rebind"),
-                ('api("/api/submit",{request:task', "handoff")):
-            self.assertIn("effort:", self._call(src, marker),
+        for call, what in ((self._call(src, 'api("/api/submit",{request:task'), "model-rebind"),
+                           (self._handoff_call(src), "handoff")):
+            self.assertIn("effort:", call,
                           f"the {what} re-submit drops the effort pick")
         self.assertIn("effort: selectedEffort()",
                       self._line(src, 'api("/api/continue",{session_id'),
@@ -1868,6 +1884,21 @@ class ResumeModelRebindTests(unittest.TestCase):
         block = body[:body.index("\n}")]
         self.assertIn("re-checked with tools", block, "the carry doesn't require a re-check")
         self.assertIn("say what changed", block, "the carry doesn't require reconciliation")
+
+    def test_the_carry_is_budgeted_and_keeps_the_opening_message(self):
+        """A fixed `slice(-N)` window sizes the carry by turn COUNT, so a long conversation
+        whose recent turns are "yes" / "that's better" carries none of what decided the work.
+        Two properties: the window is spent as a character BUDGET, and the opening message —
+        the only turn that says what the exchange is about — survives an elided middle, which
+        must be declared rather than presented as a continuous transcript."""
+        html = ui_src()
+        body = html[html.index("function carryContextForSubmit("):]
+        block = body[:body.index("\n}")]
+        self.assertIn("BUDGET", block, "the carry is still sized by turn count, not by length")
+        self.assertNotIn("msgs.slice(-MAX)", block, "the fixed-count window came back")
+        self.assertIn("fmt(msgs[0])", block, "the opening message is dropped with the middle")
+        self.assertIn("omitted from this excerpt", block,
+                      "an elided middle is presented as the whole exchange")
 
     def test_carry_context_honours_the_force_flag(self):
         # The guard exists because resume carries history implicitly; the rebind path is the one
