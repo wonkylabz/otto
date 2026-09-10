@@ -52,7 +52,7 @@ def audit_repo_changes(wid, request, changed):
 
 
 def audit_mcp_change(action, name, entry=None, actor="admin"):
-    """Audit a change to the MCP server registry: `add`, `activate` or `remove`.
+    """Audit a change to the MCP server registry: `add`, `edit`, `activate` or `remove`.
 
     Registering a command and running it are two separate acts (policy.add_mcp_def), and this is
     the durable record of both — it is the only place the exact command line that became runnable
@@ -60,16 +60,21 @@ def audit_mcp_change(action, name, entry=None, actor="admin"):
     way (engine._next_wid) rather than inventing an id scheme."""
     os.makedirs(config.DATA_DIR, exist_ok=True)
     cmdline = policy.mcp_command_line(entry) if entry else ""
+    # Environment variable NAMES, never values. What became runnable is the argv AND the env
+    # it is handed — a def can carry a credential or override PATH — but this trail is
+    # immutable, so a literal secret written here could never be taken back out.
+    env_keys = policy.mcp_env_keys(entry) if entry else []
+    env_note = (" env: " + ", ".join(env_keys)) if env_keys else ""
     at = datetime.datetime.now().isoformat(timespec="seconds")
     wid = _eng()._next_wid()
     entry_row = {
         "at": at, "workflow": wid, "capability": f"{actor}:mcp-{action}",
         "risk": "write", "outcome": "ran", "cost_usd": 0,
-        "mcp": {"action": action, "name": name, "command": cmdline},
+        "mcp": {"action": action, "name": name, "command": cmdline, "env": env_keys},
     }
     _append_audit(entry_row)
     _append_content(wid, at, request=f"MCP server {action}: {name}",
-                    result=(f"`{cmdline}`" if cmdline else f"removed `{name}`"))
+                    result=(f"`{cmdline}`{env_note}" if cmdline else f"removed `{name}`"))
     trace("MCP", f"{action} {name}" + (f" -> {cmdline}" if cmdline else ""))
     return wid
 

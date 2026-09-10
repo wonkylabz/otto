@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import types
 import threading
 import time
 import unittest
@@ -3351,6 +3352,199 @@ class LocalConnectorGapTests(unittest.TestCase):
         self.assertNotIn("claude_ai_Atlassian",
                          self.m.connectors_named("publish to confluence", pol=pol))
 
+
+class McpCredentialsAndNamingTests(unittest.TestCase):
+    """Adding an MCP server was half-wired: `env` — the only way a stdio server receives a
+    credential — was accepted by the API and honoured by BOTH spawners, and the Admin form
+    never collected it, so any server needing auth was unaddable through the UI. Two things
+    ride with fixing that: what a def is handed has to be visible at the ACTIVATION gate (the
+    gate's whole claim is that a human saw what would be spawned), and a name has to survive
+    the round trip through `mcp__<name>__<tool>`."""
+
+    def setUp(self):
+        self._orig = (policy._MCPDEF, policy._PATH)
+        tmp = tempfile.mkdtemp(prefix="otto-mcpcred-")
+        policy._MCPDEF = os.path.join(tmp, "mcp-servers.json")
+        policy._PATH = os.path.join(tmp, "policy.json")
+
+    def tearDown(self):
+        policy._MCPDEF, policy._PATH = self._orig
+
+    def _add(self, **body):
+        sent = []
+
+        class H(server.Handler):
+            def __init__(self): pass
+            def _send(self, code, text): sent.append((code, json.loads(text)))
+        H()._post_mcp_add(body)
+        return sent[0]
+
+    def test_the_form_can_give_a_server_its_credentials(self):
+        """The gap itself. Both doors already honoured `env`; only the UI omitted it."""
+        src = ui_src()
+        i = src.index('postForm("/api/mcp/add"')
+        call = src[i:src.index("},document.getElementById", i)]
+        self.assertIn("env:", call, "the add form still cannot send environment")
+        self.assertIn('id="mf-env"', src, "the add form has no environment field")
+
+    def test_an_env_value_resolves_like_every_other_secret(self):
+        """env var > OTTO_SECRET_COMMAND > literal, the same order `gateway.request_headers`
+        uses — so the operator can name a secret instead of pasting one into a plaintext store.
+        A literal still works, because some values are a URL, not a credential."""
+        os.environ["OTTO_TEST_MCP_TOKEN"] = "resolved-from-env"
+        self.addCleanup(os.environ.pop, "OTTO_TEST_MCP_TOKEN", None)
+        env = mcp_client.env_for({"env": {"A": "OTTO_TEST_MCP_TOKEN",
+                                          "B": "${OTTO_TEST_MCP_TOKEN}",
+                                          "C": "https://example.atlassian.net/wiki"}})
+        self.assertEqual(env["A"], "resolved-from-env", "a secret NAME was not resolved")
+        self.assertEqual(env["B"], "resolved-from-env", "a ${VAR} reference was not expanded")
+        self.assertEqual(env["C"], "https://example.atlassian.net/wiki", "a literal was mangled")
+        self.assertIn("PATH", env, "the operator's own environment was dropped")
+
+    def test_the_claude_door_keeps_the_REFERENCE_not_the_resolved_secret(self):
+        """`active_mcp_config` is written to `data/.mcp-active.json` for `claude -p`, so
+        resolving there would write the credential to a file. Claude Code expands `${VAR}`
+        itself; the local backend is the one that resolves."""
+        policy.add_mcp_def("atl", {"command": "docker", "env": {"TOK": "MY_SECRET_NAME"}})
+        policy.confirm_mcp_def("atl")
+        cfg = policy.active_mcp_config(policy.load())["mcpServers"]["atl"]
+        self.assertEqual(cfg["env"]["TOK"], "MY_SECRET_NAME")
+
+    def test_the_activation_gate_shows_the_env_names_and_never_the_values(self):
+        """A def carrying a credential (or a PATH override) was approved with nothing on screen
+        to say it carried anything at all."""
+        policy.add_mcp_def("atl", {"command": "docker", "env": {"TOK": "s3cr3t-literal"}})
+        row = next(m for m in policy.all_mcps(policy.load()) if m["name"] == "atl")
+        self.assertEqual(row["env_keys"], ["TOK"])
+        self.assertNotIn("s3cr3t-literal", json.dumps(row), "the gate rendered a secret VALUE")
+        src = ui_src()
+        self.assertIn("env_keys", src, "the pending row never shows the environment")
+
+    def test_the_audit_row_records_the_env_names_and_never_the_values(self):
+        """The trail is the durable record of what became runnable, and it is immutable — so
+        the names belong in it and a literal value could never be taken back out."""
+        src = self._src("audit.py")
+        i = src.index("def audit_mcp_change(")
+        body = src[i:src.index("\ndef ", i + 10)]
+        self.assertIn("mcp_env_keys(", body, "the audit row omits the environment entirely")
+        self.assertNotIn('entry.get("env")', body, "the audit row reaches for env VALUES")
+
+    def test_a_name_that_cannot_round_trip_through_a_tool_id_is_refused(self):
+        """`a__b` parses back as server `a`: the def spawns and not one of its tools is ever
+        admitted, with nothing anywhere saying why."""
+        self.assertEqual(mcp_client.declared_servers(
+            types.SimpleNamespace(declared_tools=["mcp__a__b__run"])), ["a"])
+        for bad in ("a__b", "my server", "claude.ai Atlassian", "", "-leading"):
+            with self.subTest(name=bad):
+                self.assertFalse(policy.valid_mcp_name(bad))
+                self.assertEqual(self._add(name=bad, command="x")[0], 400)
+        for good in ("github", "newrelic_eu", "aws-mcp", "grafana2"):
+            with self.subTest(name=good):
+                self.assertTrue(policy.valid_mcp_name(good))
+
+    def test_the_writer_enforces_the_name_not_the_endpoint(self):
+        """`add_mcp_def` is documented as the ONE writer; a check living only in the handler is
+        a check the next caller skips."""
+        with self.assertRaises(ValueError):
+            policy.add_mcp_def("a__b", {"command": "x"})
+
+    def test_a_malformed_env_is_refused_at_the_form_not_at_spawn_time(self):
+        """A non-string value raises inside `subprocess.Popen`, i.e. after the server has been
+        registered AND activated — the error surfaces as a broken run, not a bad form."""
+        self.assertEqual(self._add(name="ok", command="x", env={"A": 5})[0], 400)
+        self.assertEqual(self._add(name="ok", command="x", env=["A=5"])[0], 400)
+        self.assertEqual(self._add(name="ok", command="x", env={"A": "5"})[0], 200)
+
+    # --- editing an existing server ------------------------------------------------
+
+    def test_an_added_server_can_be_edited_from_the_ui(self):
+        """Without this, fixing one wrong argument means deleting the server and retyping the
+        whole thing — which is how a def ends up with every argument on a single line and
+        `docker: unknown command` as the only symptom."""
+        src = ui_src()
+        self.assertIn("data-editmcp", src, "otto-source rows have no Edit control")
+        self.assertIn("function showMcpForm(existing)", src,
+                      "the form cannot be opened against an existing server")
+        self.assertIn("/api/mcp/def?name=", src, "the edit form cannot load the stored def")
+        self.assertIn("e.args", src, "the edit form cannot prefill the arguments")
+
+    def test_the_editor_payload_is_fetched_per_server_not_carried_on_every_load(self):
+        """`/api/policy` is loaded on every Admin visit and its rows ARE the activation gate,
+        which shows variable names only. Values ride a separate per-server read, so opening
+        Admin does not put them in the DOM at all."""
+        policy.add_mcp_def("srv", {"command": "docker", "args": ["run", "-i"],
+                                   "env": {"CONFLUENCE_URL": "https://example.net/wiki",
+                                           "CONFLUENCE_API_TOKEN": "a-literal-secret"}})
+        row = next(m for m in policy.all_mcps(policy.load()) if m["name"] == "srv")
+        self.assertNotIn("args", row, "the Admin payload carries the editor's fields")
+        self.assertNotIn("env_display", row)
+        self.assertEqual(row["env_keys"], ["CONFLUENCE_API_TOKEN", "CONFLUENCE_URL"])
+
+        ed = policy.mcp_editable("srv")
+        self.assertEqual((ed["command"], ed["args"]), ("docker", ["run", "-i"]))
+        self.assertEqual(ed["env"]["CONFLUENCE_URL"], "https://example.net/wiki")
+        self.assertEqual(ed["env"]["CONFLUENCE_API_TOKEN"], policy.ENV_KEPT)
+        self.assertIsNone(policy.mcp_editable("no-such-server"))
+
+    def test_a_secret_is_masked_in_the_form_and_ordinary_wiring_is_not(self):
+        """Masking on the VALUE alone made `CONFLUENCE_URL` unreadable, so the form could not
+        show the operator the one thing they most often need to fix. The KEY decides, on the
+        same vocabulary privacy scrubs k/v pairs with; a reference is always shown, since a
+        name is not a secret and seeing it is the point of the field."""
+        policy.add_mcp_def("srv", {"command": "x", "env": {
+            "CONFLUENCE_URL": "https://example.net/wiki",
+            "CONFLUENCE_USERNAME": "someone@example.com",
+            "CONFLUENCE_API_TOKEN": "a-literal-secret",
+            "GH_PAT": "another-literal-secret",
+            "TOK_REF": "${MY_TOKEN}"}})
+        shown = policy.mcp_env_display(policy.mcp_defs()["srv"])
+        self.assertEqual(shown["CONFLUENCE_URL"], "https://example.net/wiki")
+        self.assertEqual(shown["CONFLUENCE_USERNAME"], "someone@example.com")
+        self.assertEqual(shown["TOK_REF"], "${MY_TOKEN}")
+        self.assertEqual(shown["CONFLUENCE_API_TOKEN"], policy.ENV_KEPT)
+        self.assertEqual(shown["GH_PAT"], policy.ENV_KEPT, "a PAT is a token by another name")
+        self.assertNotIn("a-literal-secret", json.dumps(shown))
+
+    def test_saving_the_form_back_keeps_a_secret_it_was_never_shown(self):
+        """The round trip that must not lose anything: the form renders the mask, so saving
+        unchanged has to mean 'keep', or editing the URL would silently blank the token."""
+        policy.add_mcp_def("srv", {"command": "x", "env": {
+            "CONFLUENCE_URL": "https://old.example.net/wiki",
+            "CONFLUENCE_API_TOKEN": "a-literal-secret"}})
+        code, _ = self._add(name="srv", command="x", args=["run"], env={
+            "CONFLUENCE_URL": "https://new.example.net/wiki",
+            "CONFLUENCE_API_TOKEN": policy.ENV_KEPT})
+        self.assertEqual(code, 200)
+        env = policy.mcp_defs()["srv"]["env"]
+        self.assertEqual(env["CONFLUENCE_URL"], "https://new.example.net/wiki")
+        self.assertEqual(env["CONFLUENCE_API_TOKEN"], "a-literal-secret", "the secret was lost")
+
+    def test_a_variable_deleted_in_the_form_is_really_deleted(self):
+        """A merge that only ever adds would make a mistyped variable impossible to remove."""
+        policy.add_mcp_def("srv", {"command": "x", "env": {"KEEP": "1", "TYPO": "2"}})
+        self._add(name="srv", command="x", env={"KEEP": "1"})
+        self.assertEqual(policy.mcp_defs()["srv"]["env"], {"KEEP": "1"})
+
+    def test_an_edit_returns_the_server_to_inactive(self):
+        """The command line the human approved is not the one that would now be spawned."""
+        policy.add_mcp_def("srv", {"command": "x", "args": ["a"]})
+        policy.confirm_mcp_def("srv")
+        self.assertTrue(policy.mcp_confirmed(policy.mcp_defs()["srv"]))
+        code, out = self._add(name="srv", command="x", args=["b"])
+        self.assertEqual((code, out["confirmed"], out["edited"]), (200, False, True))
+        self.assertFalse(policy.mcp_confirmed(policy.mcp_defs()["srv"]))
+
+    def test_the_trail_tells_an_edit_from_a_first_registration(self):
+        src = self._src("server.py")
+        i = src.index("def _post_mcp_add(")
+        body = src[i:src.index("\n    def ", i + 10)]
+        self.assertIn('audit_mcp_change("edit" if existed else "add"', body,
+                      "an edit is audited as a fresh add — the row reads as a new server")
+
+    def _src(self, name):
+        with open(os.path.join(os.path.dirname(__file__), name),
+                  encoding="utf-8", errors="surrogateescape") as f:
+            return f.read()
 
 class McpActivationTests(unittest.TestCase):
     """Registering an MCP server and RUNNING it are two acts (issue #4).

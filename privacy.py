@@ -34,6 +34,11 @@ import re
 
 REDACTED = "[redacted]"
 
+# The words that mark a key as naming a credential. Shared by the k/v scrub below and by
+# `secret_named` — one list, or the two drift and the quieter one is the leak.
+_SECRET_WORDS = (r"api[_-]?key|secret|token|passw(?:or)?d|access[_-]?key|"
+                 r"private[_-]?key|client[_-]?secret|authorization|credential")
+
 _SECRET_PATTERNS = (
     # Opaque token shapes that carry the secret in the body. These run FIRST so a value like
     # `Authorization: Bearer eyJ…` is scrubbed as a token before the k/v rule below sees it.
@@ -67,11 +72,22 @@ _SECRET_PATTERNS = (
     # Secret-NAMED key/value: "api_key": "…", token=…, password: …. Last, and the only pattern
     # that keeps its group-1 prefix, so the reader still sees WHICH key was scrubbed.
     re.compile(
-        r"(?i)((?:api[_-]?key|secret|token|passw(?:or)?d|access[_-]?key|"
-        r"private[_-]?key|client[_-]?secret|authorization|credential)"
+        r"(?i)((?:" + _SECRET_WORDS + r")"
         r'["\']?\s*[:=]\s*["\']?)[^\s"\',}]+'
     ),
 )
+
+
+def secret_named(name):
+    """Does this KEY name a credential? The same vocabulary the k/v pattern above scrubs on,
+    exposed because more than one caller has to make this judgement — the MCP edit form decides
+    from it which stored env values it may render back into the Admin DOM. One list, or the two
+    drift and the quieter one is the leak."""
+    name = str(name or "")
+    # `PAT` is a KEY-only term: as a variable suffix it is a Personal Access Token, in prose it
+    # is a person's name, so it would cost false positives in the free-text scrub above.
+    return bool(re.search(r"(?i)" + _SECRET_WORDS, name)) or bool(
+        re.search(r"(?i)(?:^|_)pat$", name))
 
 # Patterns whose replacement keeps a captured prefix. Indexed rather than flagged inline so the
 # tuple above stays readable; asserted in test_core to stay in sync with the tuple's length.

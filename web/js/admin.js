@@ -887,6 +887,7 @@ function renderAdmin(data, models, el, settings){
       <td><span class="nm">${esc(m.display||m.name)}</span>
         ${pending(m)?`<div class="mcppending"><span class="abadge warn">not activated</span>
           <code class="mcpcmd">${esc(m.command||"")}</code>
+          ${(m.env_keys||[]).length?`<code class="mcpcmd" title="environment variables this server is handed — names only, values are never shown">env: ${esc((m.env_keys||[]).join(", "))}</code>`:''}
           <button class="mcpbtn go" data-actmcp="${esc(m.name)}"
             title="allow Otto to spawn this exact command on runs that use this server">Activate</button>
           </div>`:''}</td>
@@ -902,7 +903,9 @@ function renderAdmin(data, models, el, settings){
         <button class="clearbtn mn-save" data-mcpnote="${esc(m.name)}">Save</button>
       </div></td>
       <td class="c-on"><span class="switch ${m.enabled?'on':''}" data-mcp="${esc(m.name)}" title="enable / disable"></span></td>
-      <td class="c-act r">${m.source==='otto'?`<button class="remove" data-delmcp="${esc(m.name)}" title="remove">&times;</button>`:''}</td>
+      <td class="c-act r">${m.source==='otto'?`<button class="mcpbtn" data-editmcp="${esc(m.name)}"
+            title="edit this server's command, arguments and environment">Edit</button>
+          <button class="remove" data-delmcp="${esc(m.name)}" title="remove">&times;</button>`:''}</td>
     </tr>`).join("");
   const mcpTable=`<table class="ctable mcptable">
     <colgroup><col><col class="c-health"><col class="c-src"><col><col class="c-on"><col class="c-act"></colgroup>
@@ -1140,6 +1143,19 @@ function renderAdmin(data, models, el, settings){
   }));
   el.querySelectorAll("[data-delcap]").forEach(b=>b.addEventListener("click",()=>removeItem("/api/capability/remove",{name:b.dataset.delcap})));
   el.querySelectorAll("[data-delmcp]").forEach(b=>b.addEventListener("click",()=>removeItem("/api/mcp/remove",{name:b.dataset.delmcp})));
+  // Edit reopens the SAME form pre-filled. `data.mcps` is the row set this table was drawn
+  // from, so the def travels with it — no second fetch, and nothing read back off the DOM.
+  // Edit reopens the SAME form pre-filled. The def is fetched on the CLICK, not carried in
+  // the Admin payload: `/api/policy` is loaded on every visit and its rows feed the activation
+  // gate, which shows variable names only.
+  el.querySelectorAll("[data-editmcp]").forEach(b=>b.addEventListener("click",async()=>{
+    let def=null;
+    try{ def=await (await fetch("/api/mcp/def?name="+encodeURIComponent(b.dataset.editmcp))).json(); }
+    catch(e){ def=null; }
+    if(!def||!def.name) return;
+    showMcpForm(def);
+    document.getElementById("mcp-form").scrollIntoView({block:"nearest"});
+  }));
   el.querySelectorAll("[data-actmcp]").forEach(b=>b.addEventListener("click",async()=>{
     b.disabled=true; b.textContent="Activating\u2026";
     try{ await fetch("/api/mcp/activate",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -1286,23 +1302,43 @@ function showCapForm(cap){
   };
 }
 
-function showMcpForm(){
+function showMcpForm(existing){
+  // One form for both acts. Editing IS re-adding: the server is stored under the same name and
+  // goes back to inactive, because the command line the human approved is not the one that
+  // would now be spawned. The name is therefore fixed while editing — changing it would leave
+  // the old def behind under the old name rather than renaming anything.
+  const e=existing||null;
+  const envLines=Object.entries((e&&e.env)||{}).map(([k,v])=>`${k}=${v}`).join("\n");
   const c=document.getElementById("mcp-form");
   c.innerHTML=`<div class="aform">
-    <label>Name</label><input id="mf-name" placeholder="e.g. github">
-    <label>Command</label><input id="mf-cmd" placeholder="npx">
-    <label>Arguments (one per line)</label><textarea id="mf-args" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea>
-    <p class="sub" style="margin:2px 0 0">Added servers are stored <b>inactive</b> — Otto spawns this command on your machine, so you activate it from the list below after checking the command line.</p>
+    <label>Name</label><input id="mf-name" placeholder="e.g. github"
+      value="${e?esc(e.name):""}"${e?" readonly title=\"a server is renamed by removing it and adding it again\"":""}>
+    <label>Command</label><input id="mf-cmd" placeholder="npx" value="${e?esc(e.command||""):""}">
+    <label>Arguments (<b>one per line</b>)</label><textarea id="mf-args" placeholder="-y&#10;@modelcontextprotocol/server-github">${e?esc(((e.args)||[]).join("\n")):""}</textarea>
+    <p class="sub" style="margin:2px 0 0">One argument per line — <code>run -i --rm image</code> on a single line is passed to the command as one argument, and it will refuse it.</p>
+    <label style="margin-top:10px">Environment <span class="sub">(optional, one <code>NAME=value</code> per line)</span></label>
+    <textarea id="mf-env" placeholder="GITHUB_TOKEN=MY_GITHUB_TOKEN&#10;CONFLUENCE_URL=https://example.atlassian.net/wiki">${esc(envLines)}</textarea>
+    ${e?`<p class="sub" style="margin:2px 0 0">A value shown as <code>&bull;&bull;&bull;&bull;&bull;&bull;</code> is a stored secret — leave it to keep it, overwrite it to change it, delete the line to remove the variable.</p>`:""}
+    <p class="sub" style="margin:2px 0 0">For a credential, give the <b>name</b> of an env var or a secret your <code>OTTO_SECRET_COMMAND</code> helper resolves (<code>GITHUB_TOKEN=MY_GITHUB_TOKEN</code>), or <code>${VAR}</code>. A literal is stored as typed, in plaintext, in <code>data/mcp-servers.json</code>.</p>
+    <p class="sub" style="margin:2px 0 0">${e?"Saving returns this server to <b>inactive</b> — the command line you approved is not the one that would now be spawned, so activate it again from the list below.":"Added servers are stored <b>inactive</b> — Otto spawns this command on your machine, so you activate it from the list below after checking the command line and the variable names."}</p>
     <div class="ferr" id="mf-err"></div>
-    <div class="factions"><button class="btn approve" id="mf-save">Add MCP server</button><button class="btn decline" id="mf-cancel">Cancel</button></div>
+    <div class="factions"><button class="btn approve" id="mf-save">${e?"Save changes":"Add MCP server"}</button><button class="btn decline" id="mf-cancel">Cancel</button></div>
   </div>`;
   document.getElementById("mf-cancel").onclick=()=>c.innerHTML="";
   document.getElementById("mf-save").onclick=async()=>{
     const args=document.getElementById("mf-args").value.split("\n").map(s=>s.trim()).filter(Boolean);
+    // NAME=value per line. Split on the FIRST `=` only: a value is routinely a URL or a
+    // base64 secret, both of which carry their own.
+    const env={};
+    for(const line of document.getElementById("mf-env").value.split("\n")){
+      const t=line.trim(); if(!t||t.startsWith("#")) continue;
+      const i=t.indexOf("="); if(i<1) continue;
+      env[t.slice(0,i).trim()]=t.slice(i+1).trim();
+    }
     const ok=await postForm("/api/mcp/add",{
       name:document.getElementById("mf-name").value.trim(),
       command:document.getElementById("mf-cmd").value.trim(),
-      args:args,
+      args:args, env:env,
     },document.getElementById("mf-err"));
     if(ok) loadAdmin();
   };

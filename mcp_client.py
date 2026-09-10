@@ -72,6 +72,27 @@ def _expand(v):
     return os.path.expandvars(v) if isinstance(v, str) else v
 
 
+def env_for(spec):
+    """The environment a def's subprocess gets: the operator's own, plus the def's `env` with
+    each VALUE resolved.
+
+    Resolution mirrors `gateway.request_headers` exactly — env var > `OTTO_SECRET_COMMAND` >
+    the literal — so a server that needs a credential can name one instead of storing it:
+    `{"CONFLUENCE_API_TOKEN": "MY_CONFLUENCE_TOKEN"}` keeps the token in the vault, and
+    `${MY_CONFLUENCE_TOKEN}` reads it from the worker's env. A literal still works and is
+    still stored in plaintext in `data/mcp-servers.json`, which is why the Admin form says so.
+
+    The Claude door (`policy.active_mcp_config`) deliberately does NOT resolve: its config is
+    written to disk for `claude -p`, so resolving there would put the secret in a file. Claude
+    Code expands `${VAR}` itself, which is why an env reference is the portable spelling and a
+    vault-only secret reaches the local backend alone."""
+    env = dict(os.environ)
+    for k, v in (spec.get("env") or {}).items():
+        env[str(k)] = str(config.secret(v) if isinstance(v, str) and config.secret(v)
+                          else _expand(v))
+    return env
+
+
 def _is_stdio(d):
     """A def we can actually launch: a command to run, and not declared as a remote
     transport. Remote servers need auth we don't hold — see the module docstring."""
@@ -389,8 +410,7 @@ class Session:
 
     # -- transport --
     def start(self):
-        env = dict(os.environ)
-        env.update({k: str(_expand(v)) for k, v in (self.spec.get("env") or {}).items()})
+        env = env_for(self.spec)
         cmd = [str(_expand(self.spec["command"]))] + [str(_expand(a))
                                                       for a in (self.spec.get("args") or [])]
         self.proc = subprocess.Popen(
