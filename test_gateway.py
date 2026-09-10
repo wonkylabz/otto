@@ -5149,7 +5149,14 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # silence is not an answer to a question Otto itself asked. Neither is inferable from the
     # poll activity (which posts) or the reply contract (which offers the silence hatch) alone —
     # the pair only makes sense read together, so it is two rules, not one.
-    MAX_RULES_BYTES = 72908   # fetched tier — bounded, but looser; it is not always loaded
+    # 72908 -> 73977 for the connector-gap set. Three of the four are decisions no reader of
+    # either module can infer: that the cap-side connector test is SILENT for a cap declaring
+    # nothing (which is the generalists, by design), that the absence has to be SAID or the
+    # model goes looking for credentials to work around it, and that the transcript is scrubbed
+    # on write — reversing this file's own "full fidelity for forensics" line, which is exactly
+    # the kind of change that must not happen quietly. Bought with a measured 4/4 A/B and a
+    # supervisor kill that cost 639k tokens.
+    MAX_RULES_BYTES = 73977   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
