@@ -5638,7 +5638,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # two files whose `mcpServers` map is spawned as the operator, and the other one is not
     # gated ON PURPOSE — an undocumented decision reads as the oversight it sat next to. The
     # env strip is the same leak a layer down: `.env` rode into every third-party server.
-    MAX_RULES_BYTES = 75363   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 75643 for the web start-gate rule (issue #31): WHICH construct enforces the global
+    # pause is invisible from either end — a path allowlist in the dispatcher reads as the
+    # complete set, and the route it missed starts a PRE-AUTHORIZED write and dismisses the
+    # card that was the operator's only remaining signal.
+    MAX_RULES_BYTES = 75643   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

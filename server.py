@@ -72,6 +72,7 @@ _START_TIME = time.time()
 
 class PayloadTooLarge(Exception):
     """A POST body exceeded _MAX_BODY — surfaced as HTTP 413 instead of an unbounded read."""
+PAUSED_MSG = "Otto is paused — release the stop to start new work"
 TASK_QUEUE = tc.TASK_QUEUE
 TEMPORAL_UI = os.environ.get("TEMPORAL_UI_ADDR", "http://localhost:8233")
 
@@ -80,7 +81,18 @@ def _temporal_connected():
     return tc.connected()
 
 
+class Paused(Exception):
+    """Raised by `_wf_start` when the global pause is engaged. Caught in `do_POST` -> 409."""
+
+
 async def _wf_start(wid, params):
+    # The pause is enforced HERE, at the one point every web route that starts a workflow
+    # passes through. A path allowlist in do_POST only covered submit/continue, so
+    # /api/needs-you/retry launched a run under the stop — pre-authorized, since a retry
+    # that reached RUN forces approval:"auto" (#31). Raising before the start also leaves
+    # the needs-you card in place rather than dismissing a retry that never happened.
+    if estop.blocked("web"):
+        raise Paused()
     c = await tc.client()
     await c.start_workflow(OttoWorkflow.run, params, id=wid, task_queue=TASK_QUEUE)
 
@@ -1326,9 +1338,11 @@ class Handler(BaseHTTPRequestHandler):
                     estop.release()
                 self._send(200, json.dumps(estop.status()))
                 return
+            # Early exit for the two routes that do expensive work BEFORE starting anything
+            # (/api/continue runs the follow-up-handoff classifier, a model call). The
+            # `Paused` handler below is the real guard and covers every other route.
             if estop.blocked("web") and self.path in ("/api/submit", "/api/continue"):
-                self._send(409, json.dumps({"error": "Otto is paused — release the stop to start new work",
-                                            "paused": True})); return
+                self._send(409, json.dumps({"error": PAUSED_MSG, "paused": True})); return
             handler = _POST_ROUTES.get(self.path)
             if handler is None:
                 for prefix, h in _POST_PREFIXES:
@@ -1341,6 +1355,8 @@ class Handler(BaseHTTPRequestHandler):
             return handler(self, body)
         except PayloadTooLarge:
             self._send(413, json.dumps({"error": "payload too large"}))
+        except Paused:
+            self._send(409, json.dumps({"error": PAUSED_MSG, "paused": True}))
         except Exception as e:  # noqa: BLE001 - return the error to the UI
             self._send(500, json.dumps({"error": str(e)}))
 
