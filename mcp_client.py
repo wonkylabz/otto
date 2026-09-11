@@ -43,6 +43,7 @@ that actually score, so "fix the flaky test" offers no MCP at all instead of 25 
 tools; Bash is still there, which is what a general cap mostly wants anyway.
 """
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -358,7 +359,12 @@ _CATALOGUE = os.path.join(config.DATA_DIR, "mcp-tools.json")
 
 
 def _def_key(d):
-    return str(hash(json.dumps(d or {}, sort_keys=True)))
+    # sha256, NOT the builtin hash(): `hash()` of a str is salted per interpreter, so a key
+    # written by the worker never matched one computed by the server or by the next run, and
+    # this cache was dead across processes for its whole life — every run took the cold-cache
+    # branch and a failed server re-paid its startup timeout, the two things it exists to
+    # avoid (#43). Old int-shaped keys simply miss once and are rewritten.
+    return hashlib.sha256(json.dumps(d or {}, sort_keys=True).encode()).hexdigest()
 
 
 def catalogue(pol=None):
