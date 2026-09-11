@@ -3,6 +3,7 @@
 Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
 import ast
+import asyncio
 import glob
 import contextlib
 import inspect
@@ -11,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -18,6 +20,8 @@ import threading
 import time
 import unittest
 import unittest.mock
+import urllib.error
+import urllib.request
 import chats
 import claude_cli
 import config
@@ -3597,6 +3601,96 @@ class EstopIngressTests(unittest.TestCase):
         self.assertIn("PAUSED", c["detail"])
 
 
+class EstopWebStartTests(unittest.TestCase):
+    """The pause has to bite on EVERY web route that starts a workflow, not just the two the
+    dispatcher used to name. `/api/needs-you/retry` was the hole: it starts a fresh run and,
+    when the dead run had already reached RUN, forces `approval:"auto"` — so an operator who
+    had engaged the stop and clicked Retry launched a PRE-AUTHORIZED write (#31). Driven over
+    real HTTP so the 409 and the choke point are both exercised."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd.daemon_threads = True
+        cls.base = "http://127.0.0.1:%d" % cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=5)
+        cls.httpd.server_close()
+
+    def setUp(self):
+        import estop
+        self.estop = estop
+        self.dir = tempfile.mkdtemp(prefix="otto-estop-web-")
+        self._saved = estop._PATH
+        estop._PATH = os.path.join(self.dir, "ESTOP")
+        estop._LOGGED.clear()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.addCleanup(estop._LOGGED.clear)
+        self.addCleanup(setattr, estop, "_PATH", self._saved)
+
+        # Stand in for Temporal: record what would have been started, never dial out.
+        self.started, self.dismissed = [], []
+
+        class _Handle:
+            async def start_workflow(_s, *a, **k):
+                self.started.append(k.get("id"))
+
+        async def _client():
+            return _Handle()
+
+        for mod, name, val in (
+                (server, "TEMPORAL_OK", True),
+                (server.tc, "client", _client),
+                (server.tc, "run", lambda coro: asyncio.run(coro)),
+                (server, "_run_origin", lambda wid: ("do the thing", "agent:worker", None, True)),
+                (server, "_record_retry", lambda *a: None),
+                (server, "_dismiss", self.dismissed.append),
+                (server, "_wf_origin_chat_key", None),
+                (server.chats, "find_by_run_origin", lambda w: None),
+                (server.chats, "find_reattach", lambda r: None)):
+            self.addCleanup(setattr, mod, name, getattr(mod, name))
+            setattr(mod, name, val)
+
+    def _post(self, path, body):
+        req = urllib.request.Request(
+            self.base + path, method="POST", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode() or "{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode() or "{}")
+
+    def test_retry_starts_nothing_while_paused(self):
+        self.estop.engage("test")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code, body = self._post("/api/needs-you/retry", {"id": "web-dead"})
+        self.assertEqual(code, 409)
+        self.assertTrue(body.get("paused"))
+        self.assertEqual(self.started, [], "a paused retry must not start a workflow")
+
+    def test_a_refused_retry_leaves_its_card_in_place(self):
+        """Retrying dismisses the needs-you card. A retry that never started must NOT — the
+        card is the only thing telling the operator that run still needs them."""
+        self.estop.engage("test")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self._post("/api/needs-you/retry", {"id": "web-dead"})
+        self.assertEqual(self.dismissed, [], "a refused retry must leave the card alone")
+
+    def test_retry_works_once_the_stop_is_released(self):
+        """The guard is a pause, not a break: the same click must work after release."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            code, body = self._post("/api/needs-you/retry", {"id": "web-dead"})
+        self.assertEqual(code, 200)
+        self.assertEqual(self.started, [body["id"]])
+        self.assertEqual(self.dismissed, ["web-dead"])
+
+
 class EstopCoverageTests(unittest.TestCase):
     """Grep guard: a NEW ingress must not silently bypass the pause.
 
@@ -3619,6 +3713,22 @@ class EstopCoverageTests(unittest.TestCase):
         self.assertTrue(starters, "no workflow starters found — has the call shape changed?")
         missing = [n for n, ok in starters if not ok]
         self.assertEqual(missing, [], f"these start OttoWorkflow without an estop check: {missing}")
+
+    def test_the_web_choke_point_is_the_one_that_checks(self):
+        """server.py's own check is per-ROUTE, not per-file: the file-granular test above passes
+        on the word `estop` appearing anywhere, which is how /api/needs-you/retry started work
+        under the stop for as long as it did (#31). Every route funnels through `_wf_start`, so
+        the check belongs in `_wf_start` — a new route then inherits it by construction."""
+        src = inspect.getsource(server._wf_start)
+        self.assertIn("estop.blocked", src,
+                      "_wf_start is the choke point every web route starts through — it must "
+                      "consult the pause itself, not rely on a path list in do_POST")
+        self.assertLess(src.index("estop.blocked"), src.index("start_workflow"),
+                        "the check must land BEFORE the workflow is started")
+        # And nothing may reach start_workflow in server.py around it.
+        body = inspect.getsource(server).replace(src, "")
+        self.assertNotIn("start_workflow(OttoWorkflow", body,
+                         "server.py must start OttoWorkflow only through _wf_start")
 
     def test_the_workflow_backstop_is_registered_with_the_worker(self):
         """An unregistered activity fails NotFoundError, which _run_impl swallows — so a missing
