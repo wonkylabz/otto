@@ -4987,6 +4987,42 @@ class LocalMcpToolBudgetTests(unittest.TestCase):
             "fake": {"command": sys.executable, "args": [self.script, "--now-different"]}}
         self.assertNotIn("fake", mcp_client.catalogue({}))
 
+    def test_the_cache_key_is_stable_across_processes(self):
+        """THE BUG THIS EXISTS FOR: `_def_key` was `str(hash(json.dumps(...)))`, and `hash()`
+        of a str is salted per interpreter. Every key was therefore written by one process and
+        read by another that computed a different one, so `catalogue()` returned {} for the
+        whole life of the feature — measured on the live cache: 8 entries, 7 servable, 0 hits
+        in three fresh processes. Both things the cache exists to prevent happened on EVERY
+        run: the cold-cache branch spawned servers to rank them, and the negative entry for a
+        dead server (`aws-mcp`, ~45 s to time out) never applied.
+
+        In-process equality cannot see this, so the key is recomputed in a real subprocess."""
+        spec = {"command": sys.executable, "args": [self.script], "env": {"K": "v"}}
+        code = ("import sys, json; sys.path.insert(0, sys.argv[1]); import mcp_client; "
+                "print(mcp_client._def_key(json.loads(sys.argv[2])))")
+        root = os.path.dirname(os.path.abspath(__file__))
+        out = subprocess.run([sys.executable, "-c", code, root, json.dumps(spec)],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.strip(), mcp_client._def_key(spec),
+                         "a key a different process computes must match, or the cache is "
+                         "write-only: " + (out.stderr or "")[-300:])
+
+    def test_a_catalogue_written_by_one_process_is_read_by_another(self):
+        """The round trip the cache actually promises — server.py and worker.py are separate
+        processes, and so is every `claude -p` run."""
+        self._pool(request="echo")
+        code = ("import sys, json; sys.path.insert(0, sys.argv[1]); import mcp_client; "
+                "mcp_client._CATALOGUE = sys.argv[2]; "
+                "mcp_client.servable = lambda pol=None: json.loads(sys.argv[3]); "
+                "print(json.dumps(sorted(t['name'] for t in mcp_client.catalogue().get('fake', []))))")
+        root = os.path.dirname(os.path.abspath(__file__))
+        have = {"fake": {"command": sys.executable, "args": [self.script]}}
+        out = subprocess.run([sys.executable, "-c", code, root, mcp_client._CATALOGUE,
+                              json.dumps(have)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.strip(), '["boom", "echo"]',
+                         "a fresh process must see the warmed catalogue: "
+                         + (out.stderr or "")[-300:])
+
 
 class LocalMcpGuardTests(unittest.TestCase):
     """A cap needing a claude.ai connector must not run on the local backend.
@@ -5642,7 +5678,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # pause is invisible from either end — a path allowlist in the dispatcher reads as the
     # complete set, and the route it missed starts a PRE-AUTHORIZED write and dismisses the
     # card that was the operator's only remaining signal.
-    MAX_RULES_BYTES = 75643   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 75753 amending the catalogue line: "keyed on server-def hash" is the wording the
+    # broken implementation satisfied — builtin `hash()` is salted per process, so the cache
+    # was write-only for its whole life (#43) and BOTH things it exists to prevent (cold-start
+    # ranking, a dead server re-probed every run) happened anyway, silently.
+    MAX_RULES_BYTES = 75753   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
