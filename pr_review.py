@@ -167,12 +167,30 @@ def known_repos(cfg=None):
 
 # --- listing the PRs waiting on you ----------------------------------------
 
+# How long a FAILED viewer lookup is remembered. Same trade as `slack._PROBE_RETRY_S`: a
+# resolved login is cached for the process's life (it cannot change without a re-auth), a
+# failure only until it is worth retrying, so an unreachable GitHub costs one 30s `gh` call
+# per window rather than one per Events-panel load.
+_VIEWER_RETRY_S = int(os.environ.get("OTTO_PR_VIEWER_RETRY_S") or 120)
+_viewer_failed = 0.0
+
+
 def viewer():
     """The `gh` login this Otto acts as, or None. Cached per process — it cannot change
     without a re-auth, and it is read on every poll."""
-    if getattr(viewer, "_cache", None) is None:
-        rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
-        viewer._cache = out.strip() if rc == 0 and out.strip() else ""
+    # Only a RESOLVED login is cached. `_cache = ""` on failure read as "cached" to the old
+    # `is None` guard, so ONE failed `gh api user` — the worker booting before the network is
+    # up — returned None for the worker's whole life, and `_parse_search` needs a viewer to
+    # apply `skip_own`: the toggle read as on and silently did nothing (#47).
+    global _viewer_failed
+    if getattr(viewer, "_cache", None):
+        return viewer._cache
+    if time.time() - _viewer_failed < _VIEWER_RETRY_S:
+        return None
+    rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
+    viewer._cache = out.strip() if rc == 0 else ""
+    if not viewer._cache:
+        _viewer_failed = time.time()
     return viewer._cache or None
 
 

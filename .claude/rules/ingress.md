@@ -79,6 +79,7 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 
 - **Every mutating POST is origin-checked** (`server.Handler._csrf_ok`) — the API is unauthenticated by design, so without it any page the user visits can start a pinned WRITE run or approve its own gate cross-site. Absent `Origin` = allowed (curl/tests/webhooks); `/api/events/` is exempt (its HMAC is its auth); escape hatch `OTTO_ALLOWED_ORIGINS` (`test_integration.CsrfOriginGuardTests`).
 - **A web route that starts a run is gated in `_wf_start`, not by path** (`server.Paused` -> 409) — the dispatcher's allowlist named submit/continue only, so `/api/needs-you/retry` started a run under the stop, pre-authorized, and dismissed its own card (`EstopWebStartTests`).
+- **An identity lookup caches only a RESOLVED answer and rate-limits the failure** (`slack.whoami`, `pr_review.viewer`) — caching the miss goes deaf until a restart, retrying it costs 15-30s a panel load, and the window stays under the poll interval (`PrReviewViewerCacheTests`).
 
 ## Adding an ingress
 

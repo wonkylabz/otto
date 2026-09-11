@@ -253,6 +253,26 @@ def _api(method, identity=USER, **params):
 
 _ME = {}
 
+# One backoff window for BOTH identity probes below. They are the same `auth.test` call with
+# the same 15s timeout, and `/api/slack-config` makes both, for both identities, on every load
+# of a panel that reloads on every toggle and save. Env name kept for compatibility.
+_PROBE_RETRY_S = int(os.environ.get("OTTO_SLACK_SCOPE_RETRY_S") or 120)
+# The IDENTITY probe gets a much shorter window than the scope probe, because the two are
+# read by different callers. A missing scope only changes what the config card reports, but a
+# missing id makes `_poll_bot_mentions` return immediately — the bot deaf for the window. So
+# this stays strictly under the floor on `poll_seconds` (20s), which means every poll still
+# re-probes and only a BURST inside one page load is collapsed (`SlackReviewFixTests`).
+_ID_RETRY_S = int(os.environ.get("OTTO_SLACK_ID_RETRY_S") or 15)
+_FAILED = {}          # (probe, identity) -> when it last failed
+_RETRY_S = {"whoami": lambda: _ID_RETRY_S, "scopes": lambda: _PROBE_RETRY_S}
+
+
+def _backing_off(probe, identity):
+    """True while a recently-failed probe should be skipped rather than re-paid. A SUCCESS is
+    cached for the process's life (neither answer can change without a restart); only a failure
+    needs a clock — and a failure is never cached AS an answer, merely rate-limited."""
+    return time.time() - _FAILED.get((probe, identity), 0) < _RETRY_S[probe]()
+
 
 def whoami(identity=USER):
     """This identity's Slack user id (cached per identity — the bot user and the owner are two
@@ -262,10 +282,19 @@ def whoami(identity=USER):
     # for the life of the worker: `_poll_bot_mentions` returns immediately without an id, so the
     # bot goes silently deaf until a restart — the same "polls happily and answers nobody" shape
     # the scope check exists to catch. The pre-bot code retried for exactly this reason.
+    #
+    # But retrying UNCONDITIONALLY is the opposite trap: with Slack unreachable the Events panel
+    # re-paid two 15s timeouts per load (measured: 6 calls / 90s for three loads). So the retry
+    # stays — a failure must never be cached as an answer — and is merely rate-limited, the same
+    # shape `granted_scopes` already used.
     if not _ME.get(identity):
+        if _backing_off("whoami", identity):
+            return None
         got = _api("auth.test", identity=identity).get("user_id")
         if got:
             _ME[identity] = got
+        else:
+            _FAILED[("whoami", identity)] = time.time()
         return got
     return _ME[identity]
 
@@ -319,11 +348,6 @@ _OPTIONAL_SCOPES = {
 }
 
 _GRANTED = {}
-# How long a FAILED scope probe is remembered, so an unreachable Slack cannot make the Events tab
-# pay two 15s timeouts per load. A successful probe is cached for the process's life (the token
-# cannot change without a restart); a failure only until it is worth retrying.
-_SCOPE_RETRY_S = int(os.environ.get("OTTO_SLACK_SCOPE_RETRY_S") or 120)
-_FAILED = {}
 
 
 def granted_scopes(identity=USER, refresh=False):
@@ -334,7 +358,7 @@ def granted_scopes(identity=USER, refresh=False):
         _GRANTED.pop(identity, None)
     if identity in _GRANTED:
         return _GRANTED[identity]
-    if time.time() - _FAILED.get(identity, 0) < _SCOPE_RETRY_S:
+    if _backing_off("scopes", identity):
         return set()                          # a recent probe failed; do not re-block the caller
     token = _token(identity)
     out = set()
@@ -353,7 +377,7 @@ def granted_scopes(identity=USER, refresh=False):
             # load — and that panel reloads on every toggle and save (the same trap as `claude mcp
             # list` in `loadAdmin`). Short, because the fix for a real outage is a retry soon.
             trace("SLACK", f"scope check failed ({str(e)[:80]})")
-            _FAILED[identity] = time.time()
+            _FAILED[("scopes", identity)] = time.time()
             return set()
     _GRANTED[identity] = out
     return out

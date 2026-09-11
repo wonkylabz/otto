@@ -2458,22 +2458,36 @@ class SlackReviewFixTests(unittest.TestCase):
         """`auth.test` failing once must not pin `whoami` to None for the worker's life. It would
         make `_poll_bot_mentions` return immediately on every poll — the bot silently deaf until
         a restart, which is the "polls happily and answers nobody" shape the scope check exists to
-        catch, arriving by a different door."""
+        catch, arriving by a different door.
+
+        The failure is now rate-limited (#47) rather than retried on the very next call, so the
+        clock is wound forward here. That is a WINDOW, not a cache: the id is re-probed on the
+        far side of it, and the window is sized below the poll floor so a poll always re-probes."""
         calls = []
-        orig_api, orig_me = slack._api, slack._ME
+        orig = slack._api, slack._ME, slack._FAILED, slack._ID_RETRY_S
         try:
-            slack._ME = {}
+            slack._ME, slack._FAILED = {}, {}
             slack._api = lambda method, identity="user", **k: (
                 calls.append(identity) or ({"ok": False, "error": "fatal_error"}
                                            if len(calls) == 1 else
                                            {"ok": True, "user_id": "U9"}))
             self.assertIsNone(slack.whoami(slack.BOT))     # transient failure
+            slack._ID_RETRY_S = 0                          # ...one window later
             self.assertEqual(slack.whoami(slack.BOT), "U9")  # retried, and now works
             self.assertEqual(len(calls), 2)
             slack.whoami(slack.BOT)                        # ...and the success IS cached
             self.assertEqual(len(calls), 2)
         finally:
-            slack._api, slack._ME = orig_api, orig_me
+            slack._api, slack._ME, slack._FAILED, slack._ID_RETRY_S = orig
+
+    def test_the_identity_backoff_never_spans_a_poll(self):
+        """The bound that makes the rate-limit safe. A missing id makes `_poll_bot_mentions`
+        return immediately, so a window wider than the shortest possible poll would trade the
+        Events tab's 15s for a bot that skips whole polls — the very failure above."""
+        self.assertLess(slack._ID_RETRY_S, 20,
+                        "20s is the floor slack.py clamps `poll_seconds` to")
+        self.assertLess(slack._ID_RETRY_S, slack._PROBE_RETRY_S,
+                        "the identity probe is read by the poll; the scope probe is not")
 
     def test_a_decision_is_refused_once_the_run_has_left_its_gate(self):
         """The armed marker is cleared on DELIVERY, so between an owner approving on the board and
@@ -2539,11 +2553,55 @@ class SlackReviewFixTests(unittest.TestCase):
                 urllib.request.urlopen = orig_open
             self.assertEqual(len(calls), 1, "the failure must be remembered, briefly")
             # ...and it is only brief: the fix for a real outage is a retry soon.
-            self.assertLessEqual(slack._SCOPE_RETRY_S, 600)
+            self.assertLessEqual(slack._PROBE_RETRY_S, 600)
             # An unknown grant still reports as unknown, never as a clean bill of health.
             self.assertFalse(slack.scope_gaps(slack.BOT, {"bot_enabled": True})["known"])
         finally:
             slack._GRANTED, slack._FAILED, slack.BOT_TOKEN = orig
+
+    def test_a_failed_whoami_is_not_re_paid_on_every_request_either(self):
+        """The other half of the same page load. `whoami` cached only a truthy id — correct, a
+        failure must never become the answer — but retried UNCONDITIONALLY, so the identity
+        probe re-paid what the scope probe had already learned to skip: measured 6 auth.test
+        calls / 90s of timeouts for three loads of a panel that reloads on every toggle."""
+        calls = []
+        orig = slack._api, slack._ME, slack._FAILED
+        try:
+            slack._ME, slack._FAILED = {}, {}
+            slack._api = lambda m, identity=slack.USER, **k: (
+                calls.append(identity) or {"ok": False, "error": "timeout"})
+            for _ in range(3):                       # three Events-panel loads
+                self.assertIsNone(slack.whoami(slack.USER))
+                self.assertIsNone(slack.whoami(slack.BOT))
+            self.assertEqual(len(calls), 2, "one probe per identity per window, not per call")
+        finally:
+            slack._api, slack._ME, slack._FAILED = orig
+
+    def test_whoami_still_recovers_once_the_window_lapses(self):
+        """The backoff must bound the COST, never become the permanent-None it replaced: an id
+        that never resolves leaves `_poll_bot_mentions` returning immediately, so the bot polls
+        happily and answers nobody until a restart."""
+        orig = slack._api, slack._ME, slack._FAILED, slack._ID_RETRY_S
+        try:
+            slack._ME, slack._FAILED = {}, {}
+            slack._api = lambda m, identity=slack.USER, **k: {"ok": False}
+            self.assertIsNone(slack.whoami(slack.USER))
+            slack._ID_RETRY_S = 0                    # the window has lapsed
+            slack._api = lambda m, identity=slack.USER, **k: {"ok": True, "user_id": "U1"}
+            self.assertEqual(slack.whoami(slack.USER), "U1")
+        finally:
+            slack._api, slack._ME, slack._FAILED, slack._ID_RETRY_S = orig
+
+    def test_the_two_probes_do_not_share_a_backoff_slot(self):
+        """Both are `auth.test`, but they answer different questions — a failed scope read must
+        not suppress the identity lookup, or one 15s blip costs the bot its id too."""
+        orig = slack._api, slack._ME, slack._FAILED
+        try:
+            slack._ME, slack._FAILED = {}, {("scopes", slack.BOT): time.time()}
+            slack._api = lambda m, identity=slack.USER, **k: {"ok": True, "user_id": "U9"}
+            self.assertEqual(slack.whoami(slack.BOT), "U9")
+        finally:
+            slack._api, slack._ME, slack._FAILED = orig
 
     def test_stop_then_start_leaves_exactly_one_live_listener(self):
         """The whole lifecycle, because each half alone locks in a bug.
@@ -5316,6 +5374,66 @@ class PrReviewStateMachineTests(unittest.TestCase):
         run2, _ = pr_review.decide(back, st, now=100 + pr_review.RE_REQUEST_GRACE_S + 2, max_new=1)
         self.assertEqual([2], [r for _p, r in run2],
                          "the deferred PR came back as round 1 — its wid would collide")
+
+
+class PrReviewViewerCacheTests(unittest.TestCase):
+    """`pr_review.viewer` — who `gh` says we are, and what one failed lookup costs.
+
+    It is read on every poll and by `/api/pr-review-config`, and `_parse_search` needs it to
+    apply `skip_own`: with no viewer the toggle reads as on and silently keeps the operator's
+    own PRs in the queue. So a failure must expire, and must not be re-paid per call."""
+
+    def setUp(self):
+        self._run, self._cache = pr_review._run, getattr(pr_review.viewer, "_cache", None)
+        self._failed, self._retry = pr_review._viewer_failed, pr_review._VIEWER_RETRY_S
+        pr_review.viewer._cache = None
+        pr_review._viewer_failed = 0.0
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        pr_review._run, pr_review.viewer._cache = self._run, self._cache
+        pr_review._viewer_failed, pr_review._VIEWER_RETRY_S = self._failed, self._retry
+
+    def _gh(self, results):
+        """Stand in for `gh api user`, returning `results` in order."""
+        self.calls = []
+
+        def _run(cmd, timeout=None):
+            self.calls.append(cmd)
+            return results[min(len(self.calls) - 1, len(results) - 1)]
+        pr_review._run = _run
+
+    def test_one_failed_lookup_does_not_pin_the_viewer_for_the_process_life(self):
+        """THE BUG THIS EXISTS FOR: `_cache` was set to "" on failure and guarded with
+        `is None`, so the guard read "" as cached and every later call returned None — the
+        worker booting before the network was up switched `skip_own` off until a restart (#47).
+        The same shape had already been fixed once in `slack.whoami`."""
+        self._gh([(1, "", "network down"), (0, "msosas\n", "")])
+        self.assertIsNone(pr_review.viewer())
+        pr_review._VIEWER_RETRY_S = 0                 # one window later
+        self.assertEqual(pr_review.viewer(), "msosas")
+
+    def test_a_failure_is_not_re_paid_on_every_call(self):
+        """`gh api user` carries a 30s timeout and the Events panel reloads on every toggle."""
+        self._gh([(1, "", "network down")])
+        for _ in range(4):
+            self.assertIsNone(pr_review.viewer())
+        self.assertEqual(len(self.calls), 1, "the failure must be remembered, briefly")
+        self.assertLessEqual(pr_review._VIEWER_RETRY_S, 600)
+
+    def test_a_resolved_login_is_cached_for_good(self):
+        self._gh([(0, "msosas\n", "")])
+        self.assertEqual(pr_review.viewer(), "msosas")
+        self.assertEqual(pr_review.viewer(), "msosas")
+        self.assertEqual(len(self.calls), 1, "a login cannot change without a re-auth")
+
+    def test_an_empty_login_counts_as_a_failure_not_an_answer(self):
+        """rc 0 with no output is `gh` answering without answering — caching it as the viewer
+        would be the same silent `skip_own` loss by a different route."""
+        self._gh([(0, "  \n", ""), (0, "msosas\n", "")])
+        self.assertIsNone(pr_review.viewer())
+        pr_review._VIEWER_RETRY_S = 0
+        self.assertEqual(pr_review.viewer(), "msosas")
 
 
 class PrReviewShapingTests(unittest.TestCase):
