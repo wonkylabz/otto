@@ -5682,7 +5682,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # broken implementation satisfied — builtin `hash()` is salted per process, so the cache
     # was write-only for its whole life (#43) and BOTH things it exists to prevent (cold-start
     # ranking, a dead server re-probed every run) happened anyway, silently.
-    MAX_RULES_BYTES = 75753   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 76035 for the identity-cache rule (issue #47): the SAME defect had already been
+    # found and fixed once in `slack.whoami` and was sitting untouched in `pr_review.viewer`,
+    # which is what a rule is for. Both halves are non-obvious — caching a miss reads as
+    # correct caching, and retrying it reads as correct recovery.
+    MAX_RULES_BYTES = 76035   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
