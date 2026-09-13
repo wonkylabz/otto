@@ -1123,9 +1123,12 @@ class NtfyTests(unittest.TestCase):
             tests.posts.append(json.loads(req.data))
             return _FakeResp()
 
-        delivery.urllib = types.SimpleNamespace(
+        # Kept on the instance so a test that swaps in its OWN urlopen can put THIS back rather
+        # than the real stdlib module — restoring that makes the push leave the machine.
+        self._fake_urllib = types.SimpleNamespace(
             request=types.SimpleNamespace(Request=self._urllib.request.Request,
                                           urlopen=fake_urlopen))
+        delivery.urllib = self._fake_urllib
 
     def tearDown(self):
         config.NTFY_TOPIC, config.NTFY_URL = self._topic, self._url
@@ -1330,9 +1333,15 @@ class NtfyTests(unittest.TestCase):
         self.assertFalse(health["ok"])
         self.assertIn("unreachable", health["error"])
         # ... and a later success clears it, so the badge tracks the CURRENT state.
-        delivery.urllib = self._urllib
+        # setUp's recording fake, NOT self._urllib: that is the real stdlib module, so restoring
+        # it made this line POST to config.NTFY_URL — https://ntfy.sh by default — on every run
+        # of the suite, publishing to a public topic named by the test. It also made the
+        # assertion below a liveness check on a third-party host, which is what failed one
+        # ubuntu-3.13 job while the other five passed.
+        delivery.urllib = self._fake_urllib
         delivery.notify("Approval needed: y", lines=["c"], wid="web-2", kind="approval")
         self.assertTrue(delivery.health()["ok"])
+        self.assertEqual(self.posts[-1]["topic"], "my-secret-topic")   # it really did push
 
     def test_health_is_empty_when_pushes_are_off(self):
         config.NTFY_TOPIC = ""
