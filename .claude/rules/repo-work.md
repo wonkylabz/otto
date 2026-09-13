@@ -5,6 +5,7 @@
 `workspace.py` — modify code in an isolated shallow clone, never the live checkout. Fresh writes with a matching `repo_hint` auto-promote to repo mode. Pushes a branch, opens a draft PR, tears down after.
 
 - **A cap's own PR wins even when Otto's branch also has work** (`_agent_pr`, resolved up front) — a cap driving its own git and leaving the tree dirty otherwise makes two PRs. Otto's branch is still pushed.
+- **The clone's own BASE branch is never a cap PR** (`_agent_pr`, `otto.baseBranch`) — a repo whose default branch has an open PR made every run report that stranger's PR and open none of its own (`…default_branch_is_not_the_capabilitys`).
 - A cap opening its PR on **Otto's own branch** takes the other path — `gh pr create` fails `already exists`; recover via `_existing_pr_url`/stderr, never dropping `pr_url` to None (which skipped review).
 - **The approved plan reaches the PR as a comment, never a committed file** (`workspace.post_plan`) — the reviewer otherwise sees the diff, never what was approved, but that record must not outlive its review. One per PR (`otto-plan`).
 - **A resume needs the workspace for its path, not its branch** (`OttoWorkflow._resume_workspace`) — `claude -p --resume` looks history up under the creating cwd. Four tiers: chat's branch → the PR's branch → a fresh default-branch clone at the same path (only if no PR ever opened — a merged branch must dead-end, not discard commits) → not continuable. Provisioning happens *before* the gate for a resume; the deny path tears the clone down.

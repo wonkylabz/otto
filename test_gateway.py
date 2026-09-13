@@ -6010,7 +6010,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # signature may be recorded are both decisions that look right either way in the code and
     # fail silently — an unsigned timestamp reads as a freshness check while adding none, and a
     # burned signature turns a sender's legitimate retry into a 409 nobody sees.
-    MAX_RULES_BYTES = 77758   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 78_000 for the base-branch rule (issue #38): "a cap's own PR wins" and "the clone's
+    # own base branch is not a cap's PR" read as the same rule and are opposites — one repo
+    # shape (an open PR whose head IS the default branch) silently turned every run's
+    # deliverable into a colleague's PR, with no `gh pr create` and review keyed on their diff.
+    MAX_RULES_BYTES = 78000   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

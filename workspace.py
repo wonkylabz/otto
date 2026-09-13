@@ -505,6 +505,14 @@ def provision(repo, run_id, from_branch=False, branch=None):
             # resetting to the default branch first would throw away the work it's resuming.
             if not from_branch and _refresh_base(path, default):
                 trace("WORKSPACE", f"base refreshed to origin/{default}")
+        # Record the clone's BASE branch in its own git config, so `_agent_pr` (a separate
+        # activity, a separate process, only the path in hand) can tell the branch the clone
+        # arrived on from one the capability created. Without it, a repo whose default branch
+        # has an open PR (main->production, release-branch flows) resolved a stranger's PR as
+        # "opened by the capability" on EVERY run — see `_agent_pr`.
+        base = default or _current_branch(path)
+        if base:
+            _run(["git", "-C", path, "config", _BASE_CONFIG_KEY, base])
         target_branch = (branch or branch_name(run_id)) if from_branch else branch_name(run_id)
         if from_branch:
             # `branch` can arrive from client-supplied chat state (`/api/continue`'s
@@ -530,7 +538,8 @@ def provision(repo, run_id, from_branch=False, branch=None):
     _, head, _ = _run(["git", "-C", path, "rev-parse", "HEAD"])
     trace("WORKSPACE", f"provisioned {r['name']} -> {path} on {target_branch}"
           + (" (existing)" if from_branch else ""))
-    return {"path": path, "branch": target_branch, "repo": r["name"], "origin": r["origin"], "head": head}
+    return {"path": path, "branch": target_branch, "repo": r["name"], "origin": r["origin"],
+            "head": head, "base": base}
 
 
 def _dirty(path):
@@ -538,21 +547,45 @@ def _dirty(path):
     return bool(out)
 
 
-def _agent_pr(path, exclude=None):
+_BASE_CONFIG_KEY = "otto.baseBranch"
+
+
+def _clone_base(path):
+    """The branch this clone was created on, as `provision` recorded it. Read from the clone's
+    own git config rather than re-derived, because by finalize time `origin` points at the real
+    remote and the shallow clone has no `origin/HEAD` to ask."""
+    rc, out, _ = _run(["git", "-C", path, "config", "--get", _BASE_CONFIG_KEY])
+    return out.strip() if rc == 0 else ""
+
+
+def _agent_pr(path, exclude=None, base_head=None):
     """A capability may drive its OWN git — its own branch, commit, push, and `gh pr create`
     (e.g. sre-minion). That work lands on a branch OTHER than Otto's `otto/<run>`, so
     finalize's view of its own untouched branch would wrongly report "no changes to push"
     while a real PR exists. Look for an open PR whose head is a local branch the capability
-    created inside the clone; return {branch, url} for the first hit, else None."""
+    created inside the clone; return {branch, url} for the first hit, else None.
+
+    The clone's OWN base branch is excluded: a repo with an open PR whose head IS the default
+    branch (main->production, release-branch flows) would otherwise make every run report that
+    stranger's PR as its deliverable and skip `gh pr create` entirely (issue #38)."""
     if not _is_github(_git_origin(path)):
         return None
     rc, out, _ = _run(["git", "-C", path, "for-each-ref", "--format", "%(refname:short)", "refs/heads"])
     if rc != 0:
         return None
+    base = _clone_base(path)
     for b in out.splitlines():
         b = b.strip()
-        if not b or b == exclude:
+        if not b or b == exclude or b == base:
             continue
+        if not base and base_head:
+            # No recorded base (a clone provisioned before `otto.baseBranch` existed, or one
+            # where the config could not be read): fall back to the tip. A branch still sitting
+            # on the base commit was created by nobody. Only a FALLBACK — a capability can
+            # legitimately open a PR from a branch this clone holds no commits for.
+            _, tip, _ = _run(["git", "-C", path, "rev-parse", b])
+            if tip.strip() == base_head:
+                continue
         rc, url, _ = _run(["gh", "pr", "list", "--head", b, "--state", "open",
                            "--json", "url", "--jq", ".[0].url"], cwd=path)
         if rc == 0 and url.strip():
@@ -670,7 +703,7 @@ def _finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None
     # finalize then pushed `otto/<run>` and opened #357 — a byte-for-byte duplicate of #355,
     # against master, outside the stack, with the gating the whole run existed to produce
     # silently dropped. Reviewers cannot tell which one is the deliverable.
-    agent = None if existing_pr else _agent_pr(path, exclude=branch)
+    agent = None if existing_pr else _agent_pr(path, exclude=branch, base_head=base_head)
     if not otto_has_work:
         # Otto's own branch is untouched — but the capability may have run its own git and
         # opened its own PR on a different branch. Surface that instead of a bogus "no changes".
