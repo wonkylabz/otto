@@ -37,6 +37,10 @@ ID_PREFIX = "otto-"
 # OttoWorkflow and the current task queue) — this prefix only keeps the orphan GC able to sweep a
 # stale pre-rename schedule the store no longer tracks.
 _LEGACY_ID_PREFIXES = ("mosaic-",)
+# Every prefix the orphan GC may sweep. A schedule's id IS its runbook id, and runbooks have been
+# minted as `rb-*` since the rename (`runbooks.ID_PREFIX`) — sweeping only `otto-*` left the GC
+# blind to every schedule created since, which is exactly the set it exists to catch.
+_GC_ID_PREFIXES = (ID_PREFIX, runbooks.ID_PREFIX) + _LEGACY_ID_PREFIXES
 _LEGACY_STORE = os.path.join(config.DATA_DIR, "schedules.json")
 
 
@@ -216,8 +220,8 @@ async def _reconcile(store):
       * **Orphan duplicate fires** — an `otto-*` schedule left in Temporal but absent from the
         store (e.g. a half-deleted job, or a dev-era id scheme) keeps firing while being
         invisible in the UI, so the same request appears to "run multiple times". We delete any
-        `otto-*` (or pre-rename `mosaic-*`) schedule the store doesn't know about — and now also
-        any whose runbook has since had its cron removed.
+        `otto-*`, `rb-*` (or pre-rename `mosaic-*`) schedule the store doesn't know about — and
+        now also any whose runbook has since had its cron removed.
 
     The rebuild is applied *in place* via `update()`, preserving the schedule's pause state and
     run history. It also self-heals after an in-memory Temporal restart: schedules missing from
@@ -231,7 +235,7 @@ async def _reconcile(store):
         await _sync(rid, rb)
     # GC orphans: our schedules that no longer correspond to a SCHEDULED runbook.
     async for s in await c.list_schedules():
-        if s.id.startswith((ID_PREFIX,) + _LEGACY_ID_PREFIXES) and s.id not in scheduled:
+        if s.id.startswith(_GC_ID_PREFIXES) and s.id not in scheduled:
             try:
                 await c.get_schedule_handle(s.id).delete()
             except Exception:  # noqa: BLE001

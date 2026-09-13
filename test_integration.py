@@ -5416,12 +5416,23 @@ class ScheduleReconcileTests(unittest.IsolatedAsyncioTestCase):
     async def test_reconcile_deletes_orphans(self):
         import scheduler
         # otto-orphan is live in Temporal but absent from the store -> duplicate fires.
+        # rb-orphan is the same thing for a runbook: since the rename every runbook id is `rb-*`
+        # (runbooks.ID_PREFIX), and the schedule id IS the runbook id, so a GC sweeping only
+        # `otto-*` was blind to every schedule created after it.
         fake = _FakeScheduleClient({"otto-keep": _FakeSpec(["0 9 * * *"], "Pacific/Auckland"),
-                                    "otto-orphan": _FakeSpec(["*/5 * * * *"], "Pacific/Auckland")})
+                                    "otto-orphan": _FakeSpec(["*/5 * * * *"], "Pacific/Auckland"),
+                                    "rb-keep": _FakeSpec(["0 9 * * *"], "Pacific/Auckland"),
+                                    "rb-orphan": _FakeSpec(["*/5 * * * *"], "Pacific/Auckland"),
+                                    "sched-someone-elses": _FakeSpec(["*/5 * * * *"], None)})
         self._patch_client(fake)
-        await scheduler._reconcile({"otto-keep": {"request": "x", "cron": "0 9 * * *"}})
+        await scheduler._reconcile({"otto-keep": {"request": "x", "cron": "0 9 * * *"},
+                                    "rb-keep": {"request": "y", "cron": "0 9 * * *"}})
         self.assertIn("otto-orphan", fake.deleted)
+        self.assertIn("rb-orphan", fake.deleted)
         self.assertNotIn("otto-keep", fake.deleted)
+        self.assertNotIn("rb-keep", fake.deleted)
+        # A schedule that is not ours is never swept.
+        self.assertNotIn("sched-someone-elses", fake.deleted)
 
     async def test_reconcile_recreates_missing(self):
         import scheduler
