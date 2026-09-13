@@ -824,6 +824,72 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(out["pr_url"], "https://github.com/o/r/pull/355")
         self.assertTrue(out["pushed"], "Otto's branch should still be pushed so work isn't lost")
 
+    def test_a_pr_open_on_the_default_branch_is_not_the_capabilitys(self):
+        # Issue #38: a fresh clone leaves TWO local refs — the default branch it was cloned on
+        # and `otto/<run>`. `_agent_pr` excluded only Otto's, so in any repo with an open PR
+        # whose head IS the default branch (main->production, release-branch flows) every run
+        # resolved that stranger's PR as "opened by the capability": no `gh pr create`, a
+        # colleague's URL reported as the deliverable, and review/QA keyed on their diff.
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = self._git_repo(tmp)
+        self._register(tmp, repo)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+        info = self.ws.provision("src", "wf-base-pr")
+        self.assertTrue(info["base"], "provision must report the branch it cloned")
+        with open(os.path.join(info["path"], "new.txt"), "w") as f:
+            f.write("otto's own change\n")
+        real_run, real_origin = self.ws._run, self.ws._git_origin
+        self.ws._git_origin = lambda p: "https://github.com/o/r.git"
+        listed, created = [], []
+
+        def fake_run(args, **kw):
+            if args[:1] == ["gh"] and "pr" in args and "list" in args:
+                listed.append(args[args.index("--head") + 1])
+                return (0, "https://github.com/o/r/pull/1", "")   # a PR on EVERY branch asked
+            if args[:1] == ["gh"] and "pr" in args and "create" in args:
+                created.append(args)
+                return (0, "https://github.com/o/r/pull/2", "")
+            if args[:2] == ["git", "-C"] and "push" in args:
+                return (0, "", "")
+            return real_run(args, **kw)
+        self.ws._run = fake_run
+        self.addCleanup(setattr, self.ws, "_run", real_run)
+        self.addCleanup(setattr, self.ws, "_git_origin", real_origin)
+        out = self.ws.finalize("wf-base-pr", title="t", base_head=info["head"])
+        self.assertNotIn(info["base"], listed,
+                         "the clone's own base branch was probed for a capability PR")
+        self.assertEqual(len(created), 1, "Otto's own PR was skipped for a stranger's")
+        self.assertEqual(out["pr_url"], "https://github.com/o/r/pull/2")
+        self.assertEqual(out["branch"], "otto/wf-base-pr")
+
+    def test_a_branch_still_on_the_base_tip_is_not_the_capabilitys(self):
+        # Belt and braces for a clone provisioned before `otto.baseBranch` was recorded: a
+        # branch whose tip is still the base commit was created by nobody.
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = self._git_repo(tmp)
+        self._register(tmp, repo)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+        info = self.ws.provision("src", "wf-base-tip")
+        subprocess.run(["git", "-C", info["path"], "config", "--unset", "otto.baseBranch"],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", info["path"], "branch", "stale-ref", info["head"]],
+                       check=True, capture_output=True, text=True)
+        real_run, real_origin = self.ws._run, self.ws._git_origin
+        self.ws._git_origin = lambda p: "https://github.com/o/r.git"
+        self.ws._run = lambda args, **kw: (
+            (0, "https://github.com/o/r/pull/1", "")
+            if args[:1] == ["gh"] and "pr" in args and "list" in args else real_run(args, **kw))
+        self.addCleanup(setattr, self.ws, "_run", real_run)
+        self.addCleanup(setattr, self.ws, "_git_origin", real_origin)
+        self.assertIsNone(self.ws._agent_pr(info["path"], exclude=info["branch"],
+                                            base_head=info["head"]))
+
     def _finalize_with_failing_pr_create(self, create_err, pr_view_url=""):
         """finalize on a clone with real work, where `gh pr create` fails. Returns its dict."""
         tmp = tempfile.mkdtemp(prefix="otto-ws-")
