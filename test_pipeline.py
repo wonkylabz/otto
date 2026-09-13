@@ -3462,13 +3462,27 @@ class BrainstormModeTests(unittest.TestCase):
         tree = ast.parse(_read("workflows.py"))
         cls = next(n for n in ast.walk(tree)
                    if isinstance(n, ast.ClassDef) and n.name == "OttoWorkflow")
-        turn = next(m for m in cls.body
-                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and m.name == "_brainstorm_turn")
-        called = {n.args[0].id for n in ast.walk(turn)
-                  if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "execute_activity"
-                  and n.args and isinstance(n.args[0], ast.Name)}
-        self.assertEqual(called, {"run_capability", "record_attempt"},
+        def _method(name):
+            return next(m for m in cls.body
+                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and m.name == name)
+
+        def _activities(node):
+            return {n.args[0].id for n in ast.walk(node)
+                    if isinstance(n, ast.Call)
+                    and getattr(n.func, "attr", None) == "execute_activity"
+                    and n.args and isinstance(n.args[0], ast.Name)}
+        turn = _method("_brainstorm_turn")
+        called = _activities(turn)
+        # The audit write and the memory distillation it triggers live behind one helper (they
+        # were a single activity until a stalled memory call started duplicating audit rows), so
+        # the scan has to follow it or this guard silently stops seeing what the turn runs.
+        helpers = {n.func.attr for n in ast.walk(turn)
+                   if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                   and isinstance(n.func.value, ast.Name) and n.func.value.id == "self"}
+        self.assertIn("_audit_attempt", helpers, "the turn stopped auditing its attempt")
+        called |= _activities(_method("_audit_attempt"))
+        self.assertEqual(called, {"run_capability", "record_attempt", "distil_memory"},
                          "the brainstorm turn gained an activity — a judge here defeats the mode")
         # And the ladder itself hands off before spending a rung.
         ladder = next(m for m in cls.body

@@ -52,7 +52,11 @@ def record_attempt(wid, request, cap, result, cost, attempt, verdict, remember=F
     """Audit one attempt (with its verify verdict, token usage, the model that ran it, and
     which backend — plus what it fell back from, if the chosen model couldn't run). On the
     final/passing attempt also distil memory from the result — facts go to the project's
-    namespace when the run is in a project (issue #69)."""
+    namespace when the run is in a project (issue #69).
+
+    `remember=True` is honoured here only for the in-process ladder (`engine._ladder_core`).
+    The Temporal path passes `remember=False` and runs `distil_memory` as its own activity, so
+    the audit INSERT is never held open behind two 180s tier calls — see that function."""
     _audit(wid, request, cap, result, cost, attempt=attempt,
            verified=None if verdict is None else verdict.get("passed"),
            critique=None if verdict is None else verdict.get("critique"),
@@ -72,14 +76,27 @@ def record_attempt(wid, request, cap, result, cost, attempt, verdict, remember=F
             and gateway.model_kind(gateway.resolve_model(model)) != "hosted"):
         gateway.record_cap_local(cap.name, model, bool(verdict.get("passed")))
     if remember:
-        known = recent_facts(limit=40, project=project)
-        _remember(cap, request, _extract_facts(request, result, known=known), project=project,
-                  verified=None if verdict is None else verdict.get("passed"))
-        # Only a genuinely verified pass teaches a reusable approach worth recalling (a final
-        # FAILED attempt still has remember=True for fact distillation, but verdict.passed=False).
-        if verdict and verdict.get("passed"):
-            _remember_solution(cap, request, _eng()._extract_solution(request, cap, result))
+        distil_memory(request, cap, result, verdict, project=project)
     trace("AUDIT", f"trail -> {_eng()._DB}")
+
+
+def distil_memory(request, cap, result, verdict, project=None):
+    """Learn from one finished attempt: facts always, a reusable approach only on a real pass.
+
+    Deliberately NOT part of `record_attempt`'s activity any more. This is two tier calls of up
+    to 180s each (`_extract_facts`, `_extract_solution`) sitting AFTER a plain INSERT with no
+    uniqueness, inside a 120s activity that Temporal retries — so a stalled memory call timed the
+    activity out after the row was committed and the retry wrote a second row for the same
+    (wid, attempt) into a trail that is supposed to be immutable, which `scorecard` then counts
+    twice. Splitting it leaves the audit write short and alone; learning is best-effort and its
+    own retry costs nothing but a duplicate fact, which `_remember` already dedupes."""
+    known = recent_facts(limit=40, project=project)
+    _remember(cap, request, _extract_facts(request, result, known=known), project=project,
+              verified=None if verdict is None else verdict.get("passed"))
+    # Only a genuinely verified pass teaches a reusable approach worth recalling (a final
+    # FAILED attempt still has remember=True for fact distillation, but verdict.passed=False).
+    if verdict and verdict.get("passed"):
+        _remember_solution(cap, request, _eng()._extract_solution(request, cap, result))
 
 
 def _norm(fact):

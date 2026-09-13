@@ -29,7 +29,7 @@ with workflow.unsafe.imports_passed_through():
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack, pr_head_branch,
                             provision_workspace, resolve_pr_target, check_grounding,
                             interim_notice, qa_capability, reap_stuck,
-                            record_attempt, record_chat, record_skip,
+                            distil_memory, record_attempt, record_chat, record_skip,
                             recover_pr_branch, review_capability, judge_review, route_request,
                             run_capability, snapshot_repos, snapshot_settings, suggest_repo,
                             verify_capability)
@@ -328,6 +328,32 @@ class OttoWorkflow:
         t = self._times.get(label)
         if t is not None and t.get("dur") is None:
             t["dur"] = self._now_ms() - t["start"]
+
+    async def _audit_attempt(self, payload, learn=False):
+        """Audit one attempt, then — separately — learn from it.
+
+        The two used to be ONE activity via `record_attempt`'s `remember` flag, which put two
+        tier calls of up to 180s each (`_extract_facts`, `_extract_solution`) AFTER a plain audit
+        INSERT with no uniqueness, inside a 120s activity Temporal retries. A stalled memory call
+        timed the activity out once the row was committed, and the retry wrote a SECOND row for
+        the same (wid, attempt) into a trail that is supposed to be immutable — which `scorecard`
+        then counts twice. Split, the audit write is short and alone.
+
+        Learning is best-effort in both directions: it gets its own generous budget, its failure
+        is swallowed here AND in the activity (nothing a run delivers depends on what it learns),
+        and a `_RETRY` repeat is harmless because `_remember` dedupes facts."""
+        await workflow.execute_activity(
+            record_attempt, {**payload, "remember": False},
+            start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+        if not learn:
+            return
+        try:
+            await workflow.execute_activity(
+                distil_memory, {k: payload.get(k)
+                                for k in ("request", "name", "result", "verdict", "repo")},
+                start_to_close_timeout=timedelta(seconds=420), retry_policy=_RETRY)
+        except Exception:  # noqa: BLE001 - learning must never fail a delivered run
+            pass
 
     async def _resume_workspace(self, repo, git_run_id, git_branch, request=None):
         """Re-provision a repo-mode chat's isolated clone so a follow-up can be answered. Returns
@@ -1151,13 +1177,11 @@ class OttoWorkflow:
                 elif pr.get("pushed"):
                     result += f"\n\nPushed follow-up changes to the existing PR on `{pr['branch']}`."
             self._leave("RUN")
-            await workflow.execute_activity(
-                record_attempt,
+            await self._audit_attempt(
                 {"wid": out["workflow"], "request": request, "name": cap["name"],
                  "result": result, "cost": out.get("cost", 0), "attempt": 1,
                  "tokens": out.get("tokens"), "model": out.get("model"),
-                 "verdict": None, "remember": True, "repo": repo},
-                start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+                 "verdict": None, "repo": repo}, learn=True)
             # An UNATTENDED resume has no on-screen audience either (a Slack thread follow-up):
             # deliver it and finalize its Chat turn, exactly as the fresh path below does. Without
             # this the answer to a follow-up reached only the audit log.
@@ -1276,12 +1300,10 @@ class OttoWorkflow:
                 self._needs_human = {"reason": config.STRICT_STOP_REASON}
             # Record a top-level attempt row under the bare wid (steps audited under wid-sN),
             # so the run-detail view, needs-you retry, and memory extraction all find the run.
-            await workflow.execute_activity(
-                record_attempt,
+            await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": pout["result"],
                  "cost": pout.get("cost", 0), "attempt": attempt, "tokens": pout.get("tokens"),
-                 "model": None, "verdict": verdict, "remember": verdict["passed"], "repo": repo},
-                start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+                 "model": None, "verdict": verdict, "repo": repo}, learn=verdict["passed"])
         else:
             out, verdict, attempt, wid = await self._verify_ladder(
                 request, cap, cwd, repo, recall=not subtask, unattended=unattended)
@@ -1502,14 +1524,12 @@ class OttoWorkflow:
         # `remember=True`: a brainstorm is where decisions get made, which is exactly what
         # engine._is_durable_fact is biased to keep. Nothing else records this turn — there is
         # no judged attempt row behind it.
-        await workflow.execute_activity(
-            record_attempt,
+        await self._audit_attempt(
             {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],
              "cost": out.get("cost", 0), "attempt": attempt, "tokens": out.get("tokens"),
              "model": out.get("model"), "verdict": None,
              "duration_s": out.get("duration_s"), "backend": out.get("backend"),
-             "remember": True, "repo": repo},
-            start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+             "repo": repo}, learn=True)
         return out, attempt
 
     async def _verify_ladder(self, request, cap, cwd, repo, recall, unattended=False):
@@ -1671,16 +1691,14 @@ class OttoWorkflow:
                      # judge scores against is the AMENDED one. Mirrors engine._ladder_core.
                      "steers": out.get("steers")},
                     start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
-            await workflow.execute_activity(
-                record_attempt,
+            await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],
                  "cost": out.get("cost", 0), "attempt": attempt,
                  "tokens": out.get("tokens"), "model": out.get("model"), "verdict": verdict,
                  "duration_s": out.get("duration_s"), "backend": out.get("backend"),
                  "fallback_from": out.get("fallback_from"),
-                 "fallback_reason": out.get("fallback_reason"),
-                 "remember": verdict["passed"] or final, "repo": repo},
-                start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+                 "fallback_reason": out.get("fallback_reason"), "repo": repo},
+                learn=verdict["passed"] or final)
             self._verified = verdict["passed"]
             if verdict["passed"]:
                 break

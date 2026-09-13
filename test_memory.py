@@ -303,6 +303,42 @@ class MemoryTests(unittest.TestCase):
         c.risk = "read"
         return c
 
+    def test_a_retried_record_attempt_leaves_exactly_one_audit_row(self):
+        """`record_attempt` runs inside a 120s Temporal activity with `_RETRY`. The audit INSERT
+        has no uniqueness, so anything killing the activity AFTER the commit — a worker death, a
+        deadline landing between the write and the ack — made the retry write a SECOND row for
+        the same (wid, attempt) into a trail that is immutable by design, and `scorecard` sums
+        attempts from rows."""
+        cap = self._cap()
+        for _ in range(3):                                   # the activity, retried twice
+            memory.record_attempt("wf-dup-1", "ship it", cap, "done", 0.01, 1,
+                                  {"passed": True, "source": "judge"})
+        rows = [e for e in engine.iter_audit_entries() if e.get("workflow") == "wf-dup-1"]
+        self.assertEqual(len(rows), 1, f"one attempt, one row — got {len(rows)}")
+        # A genuinely different attempt, and a different outcome for the same one, still land.
+        memory.record_attempt("wf-dup-1", "ship it", cap, "done", 0.01, 2, {"passed": True})
+        engine.record_terminal("wf-dup-1", "ship it",
+                               {"kind": cap.kind, "name": cap.name}, "verify_exhausted")
+        rows = [e for e in engine.iter_audit_entries() if e.get("workflow") == "wf-dup-1"]
+        self.assertEqual(sorted(r.get("attempt") for r in rows if r.get("attempt")), [1, 2])
+        self.assertTrue(any(r.get("reason") == "verify_exhausted" for r in rows),
+                        "a terminal row carries no `attempt`, so it is never keyed or skipped")
+
+    def test_memory_distillation_is_not_part_of_the_audit_write(self):
+        """The cause, not just the symptom: two tier calls of up to 180s each sat AFTER the
+        INSERT inside that same 120s activity, so a stalled memory call was the reliable way to
+        produce the duplicate above. They are their own activity now."""
+        import activities
+        import workflows
+        self.assertTrue(hasattr(activities, "distil_memory"))
+        src = inspect.getsource(workflows.OttoWorkflow._audit_attempt)
+        self.assertIn("record_attempt", src)
+        self.assertIn("distil_memory", src)
+        # The audit write must not carry the memory work along with it any more.
+        self.assertIn('"remember": False', src)
+        # ...and a failure to LEARN must never fail a run that already delivered.
+        self.assertIn("except Exception", src)
+
     def test_a_long_fact_is_clipped_on_a_word_boundary_and_marked(self):
         """A bare slice ends a stored fact mid-word, which reads as corrupt data wherever it is
         shown and is indistinguishable from a truncation the model made itself."""

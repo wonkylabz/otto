@@ -33,7 +33,7 @@ ACTIVITIES = [
     activities.run_capability, activities.verify_capability,
     activities.qa_capability, activities.judge_qa,
     activities.review_capability, activities.judge_review,
-    activities.record_attempt, activities.record_skip,
+    activities.record_attempt, activities.record_skip, activities.distil_memory,
     activities.deliver_result, activities.interim_notice, activities.open_chat,
     activities.record_chat,
     activities.poll_board, activities.poll_pr_reviews, activities.poll_slack,
