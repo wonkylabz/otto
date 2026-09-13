@@ -31,6 +31,7 @@ import mcp_client
 import policy
 import local_runtime
 import registry
+import test_support
 from test_support import ui_src
 
 try:
@@ -82,53 +83,13 @@ _orig_pr_copy = None
 
 
 def setUpModule():
+    """Hermetic live state, plus two module-wide pins this suite needs beyond it."""
     global _orig_gateway_load, _orig_pr_copy
-    # Hermetic settings store: config.setting() resolves env > data/settings.json > code default, so
-    # a developer who flipped a knob in Admin would otherwise change what this suite tests. Point it
-    # at a path that cannot exist so every test sees the code defaults (or its own monkeypatch).
-    config._SETTINGS_PATH = os.path.join(tempfile.mkdtemp(prefix="otto-settings-"), "absent.json")
-    # Hermetic project list — `workspace.refresh_repos` git-fetches every registered checkout, so
-    # the developer's real projects.json would put the network (and their repos' refs) in the path
-    # of this suite. See the fuller note in test_core.setUpModule.
-    registry.PROJECTS_FILE = os.path.join(tempfile.mkdtemp(prefix="otto-projects-"), "absent.json")
-    # Hermetic Slack runtime state: poll_slack / deliver_result now write watched-thread records
-    # (read cursors + session ids), so an unpatched suite would mutate the developer's live
-    # data/slack-state.json — and a bogus cursor there makes a real channel deaf.
-    import slack
-    slack._STATE = os.path.join(tempfile.mkdtemp(prefix="otto-slack-"), "slack-state.json")
-    # Hermetic PR-review config + state — see the identical note in test_support.setUpModule: a
-    # stray poll marks the developer's real review queue as already-reviewed, and only a genuine
-    # re-request on GitHub would ever bring those PRs back.
-    import pr_review
-    _tmp_prrev = tempfile.mkdtemp(prefix="otto-prreview-")
-    pr_review._CFG = os.path.join(_tmp_prrev, "pr-review.json")
-    pr_review._STATE = os.path.join(_tmp_prrev, "pr-review-state.json")
-    # Hermetic push bookkeeping (dedupe keys, last-push health, gate action tokens). A test that
-    # sends a push otherwise poisons the LIVE dedupe window — the next real approval push inside
-    # config.NTFY_DEDUPE_S would be dropped as a duplicate and the phone would never ring.
-    delivery._STATE = os.path.join(tempfile.mkdtemp(prefix="otto-notify-"), "notify-state.json")
-    # Hermetic webhook replay ring — see the identical note in test_support.setUpModule. These
-    # tests POST real signed events, so an un-repointed ring burns those signatures live.
-    events._SEEN_FILE = os.path.join(tempfile.mkdtemp(prefix="otto-events-"), "event-replay.json")
-    # Hermetic gateway stats/model-health store — see the identical note in test_core.setUpModule:
-    # a suite run must not rewrite the developer's live /api/health numbers or leave a phantom
-    # "model failing" badge behind.
-    gateway._STATS_PATH = os.path.join(tempfile.mkdtemp(prefix="otto-gwstats-"), "gateway-stats.json")
-    # Hermetic stores in data/otto.db (audit, chats, memory, solutions, behaviors, knowledge).
-    # This was per-class opt-in, so any class reaching a writer without re-pointing it logged into
-    # the developer's LIVE trail: 163 phantom entries accumulated there, including a capability
-    # that exists only as a fixture, scoring 10 runs at 100% on /api/stats. The trail is immutable
-    # by design, so those rows are permanent. All stores resolve through one of these three
-    # aliases; classes needing their own DB re-point the same constants.
-    import chats, knowledge
-    _tmp_db = os.path.join(tempfile.mkdtemp(prefix="otto-db-"), "otto.db")
-    # Hermetic MCP tool catalogue. `mcp_client.Pool` records every server it lists (or that
-    # failed to start) here, and the pool tests spawn a fake stdio server called `fake` and a
-    # deliberately-missing one called `broken` — both of which were sitting in the developer's
-    # LIVE data/mcp-tools.json, `broken` carrying a `failed` timestamp that suppresses a real
-    # server of that name for LOCAL_MCP_PROBE_TTL_S. Same class of leak as the DB aliases.
-    mcp_client._CATALOGUE = os.path.join(tempfile.mkdtemp(prefix="otto-mcpcat-"), "mcp-tools.json")
-    engine._DB = chats._DB = knowledge._DB = _tmp_db
+    # One temp directory stands in for data/ and every store is re-derived from it. The full
+    # account of what a missed store costs lives on test_support.redirect_live_state(); this
+    # suite drives the real HTTP server and the real workflow, so it reaches more of them than
+    # any other — which is exactly why it must not have its own hand-maintained copy of the list.
+    test_support.redirect_live_state()
     _orig_gateway_load = gateway.load
     gateway.load = lambda: json.loads(json.dumps(_MODULE_CFG))
     # PR title/body drafting (engine.pr_copy) makes a gateway call inside finalize_workspace;
@@ -137,15 +98,6 @@ def setUpModule():
     _orig_pr_copy = engine.pr_copy
     engine.pr_copy = lambda request, summary=None: {
         "title": (request or "Otto automated change")[:120], "body": "test body"}
-    # Hermetic Admin stores: data/models.json (endpoints + API keys + phase assignment) and
-    # data/policy.json (cap risk/enabled — the approval gate's input). This was per-class
-    # opt-in like the DB aliases once were, so any class reaching a WRITER without re-pointing
-    # them rewrote the developer's live Admin config; gateway.save round-trips the file, so a
-    # stray write silently normalizes it. Classes needing their own re-point the same constants.
-    _tmp_admin = tempfile.mkdtemp(prefix="otto-admin-")
-    gateway._PATH = os.path.join(_tmp_admin, "models.json")
-    policy._PATH = os.path.join(_tmp_admin, "policy.json")
-
 
 def tearDownModule():
     gateway.load = _orig_gateway_load
