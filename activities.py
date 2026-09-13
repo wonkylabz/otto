@@ -427,6 +427,23 @@ def detect_repo_changes(payload: dict) -> dict:
     return {"changed": changed}
 
 
+def _warm_conventions(project):
+    """Derive the target repo's conventions digest HERE, inside an execution activity with a
+    40-minute ceiling, so the judge that reads it afterwards gets a cache hit.
+
+    `conventions.digest` derives on a cache miss, and it used to do so inside the judge activity
+    — which already has three confirmation samples to fit inside its own ceiling, and which the
+    docs say never derives. Best-effort: a failure here costs a cold digest in the judge, never
+    the run (issue #35)."""
+    if not project:
+        return
+    try:
+        import conventions
+        conventions.digest(project)
+    except Exception as e:  # noqa: BLE001 - warming a cache is never worth failing a run over
+        activity.logger.info(f"conventions warm-up skipped for {project}: {e}")
+
+
 @activity.defn
 @_heartbeats("run")
 def run_capability(payload: dict) -> dict:
@@ -445,6 +462,7 @@ def run_capability(payload: dict) -> dict:
         cap.risk = "read"
     mcp_tools, mcp_path = _mcp()
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
+    _warm_conventions(project)
     att = engine.run_attempt(
         payload["request"], cap,
         attempt=payload.get("attempt", 1), critique=payload.get("critique"),
@@ -556,6 +574,7 @@ def qa_capability(payload: dict) -> dict:
         return {"missing": True, "qa_cap": config.QA_CAP}
     mcp_tools, mcp_path = _mcp()
     req = engine.qa_review_request(payload["pr_url"], payload.get("repo"), payload["request"])
+    _warm_conventions(engine._resolve_project(None, payload.get("repo")))
     att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                              mcp_config_path=mcp_path, wid=payload.get("wid"))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
@@ -585,6 +604,7 @@ def review_capability(payload: dict) -> dict:
         return {"missing": True, "review_cap": config.REVIEW_CAP}
     mcp_tools, mcp_path = _mcp()
     req = engine.review_request(payload["pr_url"], payload.get("repo"), payload["request"])
+    _warm_conventions(engine._resolve_project(None, payload.get("repo")))
     att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                              mcp_config_path=mcp_path, wid=payload.get("wid"))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
