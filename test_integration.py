@@ -2238,6 +2238,55 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         # The judge is told the run is unattended (dead-end questions must FAIL verify).
         self.assertEqual(self.verify_unattended, [True])
 
+    async def test_a_workflow_error_tells_the_asker(self):
+        """Issue #98: the catch-all in `run()` was the ONE terminal path that never delivered.
+        `finalize_terminal` writes the durable row and pushes ntfy to the OWNER, and its only
+        `reply_to` branch is github_issue — so a Slack DM whose run died got the ack reaction and
+        then nothing, ever (measured: slack-b-D0BVD1F856Y-1789286622-973489, a question that
+        died pre-routing on a stale import). Every other terminal state already delivers.
+
+        Also asserts the wording: this can fire BEFORE routing, so it must not carry the
+        needs-human banner or `_failure_detail`'s internals out to a conversation."""
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, finalize_terminal, open_chat,
+                                record_attempt, record_chat, record_skip, route_request,
+                                snapshot_settings, run_capability, resolve_pr_target,
+                                check_grounding, verify_capability)
+
+        def boom(*a, **k):
+            raise RuntimeError("module 'storage' has no attribute 'ensure_columns'")
+        engine.verify = boom
+        finals = []
+        orig_final = engine.record_terminal
+        engine.record_terminal = lambda *a, **k: finals.append((a, k))
+        self.addCleanup(setattr, engine, "record_terminal", orig_final)
+        with self.assertRaises(Exception):
+            async with await _time_skipping_env() as env:
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    async with Worker(
+                        env.client, task_queue="wferrq", workflows=[OttoWorkflow],
+                        activities=[route_request, snapshot_settings, clarify_request,
+                                    run_capability, resolve_pr_target, check_grounding,
+                                    verify_capability, record_attempt, record_skip,
+                                    deliver_result, open_chat, record_chat, finalize_terminal],
+                        activity_executor=ex,
+                    ):
+                        await env.client.execute_workflow(
+                            OttoWorkflow.run,
+                            {"request": "Are you able to run a self diagnosis", "scheduled": True,
+                             "cap": {"name": "evt-write", "kind": "skill", "risk": "write"},
+                             "auto_approve": True,
+                             "reply_to": {"kind": "slack_dm", "channel": "D0BVD1F856Y"}},
+                            id="wferr-" + uuid.uuid4().hex[:8], task_queue="wferrq")
+        self.assertEqual(len(self.delivered), 1,
+                         "a run that died told the asker nothing — the documented silent DM")
+        said = self.delivered[0][1]
+        self.assertIn("couldn't run that", said)
+        self.assertNotIn("Needs human review", said)      # Otto's vocabulary, not the asker's
+        self.assertNotIn("ensure_columns", said)          # never leak the internals outward
+        self.assertTrue(finals, "the durable workflow_error row must still be written")
+
     async def test_failed_run_finalizes_chat_placeholder(self):
         """Issue #79: an unattended run that FAILS mid-execution (after _open_chat wrote the
         pending placeholder) must still finalize the Chat thread — rewriting the placeholder into
