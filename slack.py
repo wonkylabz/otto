@@ -1823,7 +1823,8 @@ async def _reconcile_schedule(cfg):
     every = timedelta(seconds=max(20, int(cfg.get("poll_seconds") or 60)))
     fresh = Schedule(
         action=ScheduleActionStartWorkflow(
-            SlackPollWorkflow.run, id="slack-poll-run", task_queue=tc.TASK_QUEUE),
+            SlackPollWorkflow.run, id="slack-poll-run", task_queue=tc.TASK_QUEUE,
+            execution_timeout=every * config.POLL_TIMEOUT_FACTOR),
         spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=every)]),
         policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
     )

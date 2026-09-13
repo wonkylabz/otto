@@ -604,7 +604,8 @@ async def _reconcile_reaper_schedule():
     every = timedelta(seconds=max(60, int(config.REAPER_SECONDS)))
     fresh = Schedule(
         action=ScheduleActionStartWorkflow(
-            ReaperWorkflow.run, id="reaper-run", task_queue=tc.TASK_QUEUE),
+            ReaperWorkflow.run, id="reaper-run", task_queue=tc.TASK_QUEUE,
+            execution_timeout=every * config.POLL_TIMEOUT_FACTOR),
         spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=every)]),
         policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
     )
