@@ -23,12 +23,14 @@ import tempfile
 import threading
 import time
 import unittest
+import board
 import chats
 import claude_cli
 import config
 import conventions
 import delivery
 import engine
+import estop
 import file_safety
 import memory
 import error_classifier
@@ -44,6 +46,7 @@ import policy
 import pr_review
 import privacy
 import registry
+import repos
 import server
 import workspace
 import runbooks
@@ -61,58 +64,106 @@ try:                                       # the Temporal layer — absent under
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
+# Every live-state path Otto derives from `config.DATA_DIR`, as (module, attribute, relative
+# name). The suite stands ONE temp directory in for `data/` and re-derives all of them from it,
+# so a store is redirected by construction rather than by someone remembering to add a fourth
+# mkdtemp. `LiveStoreIsolationTests.test_the_redirect_table_covers_every_data_dir_store` scans
+# the source for module-level DATA_DIR joins and fails if one is missing from this table, which
+# is what makes the list self-maintaining: a store added tomorrow is covered or the suite is red.
+_DATA_STORES = (
+    ("board", "_CFG", "board.json"),
+    ("claude_cli", "TRANSCRIPTS", "transcripts"),
+    ("config", "DB_PATH", "otto.db"),
+    ("conventions", "_STORE", "conventions.json"),
+    ("delivery", "_STATE", "notify-state.json"),
+    ("events", "_RULES", "event-rules.json"),
+    ("events", "_SEEN_FILE", "event-replay.json"),
+    ("gateway", "_PATH", "models.json"),
+    ("gateway", "_STATS_PATH", "gateway-stats.json"),
+    ("local_runtime", "SESSIONS", "local-sessions"),
+    ("mcp_client", "_CATALOGUE", "mcp-tools.json"),
+    ("policy", "_PATH", "policy.json"),
+    ("policy", "_CUSTOM", "capabilities.json"),
+    ("policy", "_MCPDEF", "mcp-servers.json"),
+    ("policy", "_CONN_CACHE", "mcp-connectors-cache.json"),
+    ("pr_review", "_CFG", "pr-review.json"),
+    ("pr_review", "_STATE", "pr-review-state.json"),
+    ("registry", "CUSTOM_FILE", "capabilities.json"),
+    ("registry", "PROJECTS_FILE", "projects.json"),
+    ("repos", "MANAGED", "repos"),
+    ("scheduler", "_LEGACY_STORE", "schedules.json"),
+    ("server", "_DISMISSED_PATH", "dismissed.json"),
+    ("server", "_RETRIES_PATH", "retries.json"),
+    ("slack", "_CFG", "slack.json"),
+    ("slack", "_STATE", "slack-state.json"),
+    ("workspace", "WORKSPACES", "workspaces"),
+)
+
+# Stores whose path is resolved LAZILY (on first use, from config.DATA_DIR) rather than bound at
+# import. Re-pointing DATA_DIR covers a resolver that has not run yet; clearing the cache is what
+# covers one that has — an earlier module in the same process may already have frozen the live
+# path into it. Kept beside the table above so the two are read together.
+_LAZY_STORES = (
+    ("config", "_SETTINGS_PATH", None),   # settings.json — None means "fall through to DATA_DIR"
+    ("estop", "_PATH", None),             # the ESTOP sentinel
+    ("runbooks", "_STORE", None),         # runbooks.json, via runbooks.store_path()
+)
+
+
+def redirect_live_state():
+    """Stand a fresh temp directory in for `data/` and re-point every store at it.
+
+    NOTHING in the suite may write to the developer's real data/. This used to be per-class
+    opt-in, and the cost was not hypothetical: 163 phantom rows accumulated in the LIVE audit
+    trail — which is immutable by design, so they are permanent — including a fixture-only
+    capability that scored 10 runs at 100% on /api/stats. The DB aliases were then redirected
+    module-wide, but every OTHER store stayed opt-in and two leaked the same way (issue #41):
+    the pool tests' fake stdio server sat in the live data/mcp-tools.json, its `broken` entry
+    carrying a `failed` stamp that suppresses a real server of that name for
+    LOCAL_MCP_PROBE_TTL_S, and a bundle-import test wrote fixture caps into data/capabilities.json.
+
+    The specific damage a missed store does, store by store, is why this is one call and not a
+    convention: `slack-state.json` — a bogus cursor makes a real channel deaf; `projects.json` —
+    `workspace.refresh_repos` git-fetches every registered checkout, so an unpinned run reaches
+    the network and rewrites refs inside the developer's actual repos (observed: all six fetched
+    during one run); `pr-review-state.json` — a stray poll marks their real review queue
+    already-reviewed and only a genuine re-request brings those PRs back; `notify-state.json` —
+    a test push poisons the dedupe window, so the next real approval push inside NTFY_DEDUPE_S is
+    dropped and the phone never rings; `models.json`/`policy.json` — the Admin config, which
+    gateway.save round-trips and so silently normalizes; `gateway-stats.json` — the live
+    /api/health numbers and a phantom "model failing" badge; `settings.json` — a knob the
+    developer flipped in Admin changes what the suite tests.
+
+    The temp dir stands in for `data/` and is deliberately a CHILD of a second temp dir rather
+    than the mkdtemp root itself, because `file_safety._otto_root()` is `dirname(DATA_DIR)` —
+    i.e. "Otto's own checkout". With DATA_DIR as the mkdtemp root, that resolves to the SYSTEM
+    temp dir, and two things follow: `<tmpdir>/.env` joins the deny set, and any run whose cwd is
+    under the system temp dir is treated as an Otto-introspection run, so `_reads_allowed_from`
+    exempts it and Otto's own state stops being read-denied. That is invisible on macOS, where
+    `tempfile.gettempdir()` is a per-user `/var/folders/...` path, and fires on Linux, where it is
+    the shared `/tmp` that tests legitimately use as an unrelated cwd. Mirroring the real layout
+    (`<checkout>/data`) keeps `_otto_root()` a private directory nothing else can collide with.
+
+    Returns the temp directory, for a test that wants to inspect what was written."""
+    root = os.path.join(tempfile.mkdtemp(prefix="otto-home-"), "data")
+    os.makedirs(root, exist_ok=True)
+    # config.DATA_DIR itself, because not every path is a module constant: the per-run MCP config
+    # (`engine._mcp_config_path`, `activities`' `.mcp-active.json`) and file_safety's deny globs
+    # join it at CALL time, and those are the writes no table can enumerate.
+    config.DATA_DIR = root
+    for mod, attr, rel in _DATA_STORES:
+        setattr(sys.modules[mod], attr, os.path.join(root, rel))
+    for mod, attr, value in _LAZY_STORES:
+        setattr(sys.modules[mod], attr, value)
+    # The three DB aliases are copies of config.DB_PATH taken at import, so re-pointing the
+    # constant above does not move them. All six stores in otto.db resolve through one of these.
+    engine._DB = chats._DB = knowledge._DB = config.DB_PATH
+    return root
+
+
 def setUpModule():
-    """Hermetic settings store — see the identical note in test_integration.setUpModule."""
-    config._SETTINGS_PATH = os.path.join(tempfile.mkdtemp(prefix="otto-settings-"), "absent.json")
-    # Hermetic project list, for the same reason and one sharper one: `workspace.refresh_repos`
-    # runs `git fetch` on every REGISTERED checkout, so with the developer's real projects.json in
-    # place the suite reaches the network and rewrites refs inside their actual repos (observed:
-    # all six of them fetched during one `python -m unittest` run). Tests that need repos register
-    # their own temp ones by re-pointing this same constant.
-    registry.PROJECTS_FILE = os.path.join(tempfile.mkdtemp(prefix="otto-projects-"), "absent.json")
-    # Hermetic Slack runtime state — see the identical note in test_integration.setUpModule. Classes
-    # that exercise cursors/threads re-point this same constant at their own temp file.
-    slack._STATE = os.path.join(tempfile.mkdtemp(prefix="otto-slack-"), "slack-state.json")
-    # Hermetic PR-review config + state, same reasoning as the Slack one: `decide()`'s shell
-    # writes the state file on every poll, so an un-repointed test marks the developer's real
-    # review queue as already-reviewed and those PRs are then never picked up again.
-    _tmp_prrev = tempfile.mkdtemp(prefix="otto-prreview-")
-    pr_review._CFG = os.path.join(_tmp_prrev, "pr-review.json")
-    pr_review._STATE = os.path.join(_tmp_prrev, "pr-review-state.json")
-    # Hermetic push bookkeeping (dedupe keys, last-push health, gate action tokens). A test that
-    # sends a push otherwise poisons the LIVE dedupe window — the next real approval push inside
-    # config.NTFY_DEDUPE_S would be dropped as a duplicate and the phone would never ring.
-    delivery._STATE = os.path.join(tempfile.mkdtemp(prefix="otto-notify-"), "notify-state.json")
-    # Hermetic webhook replay ring. It is on disk now (a restart used to forget every signature),
-    # so an un-repointed test that claims a signature writes into data/event-replay.json — and if
-    # a real sender ever retries with that exact body, the live ingress drops it as a duplicate.
-    events._SEEN_FILE = os.path.join(tempfile.mkdtemp(prefix="otto-events-"), "event-replay.json")
-    # Hermetic gateway stats/model-health store: every gateway call bumps counters here, and the
-    # local runtime records model health here too, so without this a plain test run rewrites the
-    # developer's live /api/health numbers (and could leave a phantom "model failing" badge).
-    gateway._STATS_PATH = os.path.join(tempfile.mkdtemp(prefix="otto-gwstats-"), "gateway-stats.json")
-    # Hermetic stores in data/otto.db (audit, chats, memory, solutions, behaviors, knowledge).
-    # This was per-class opt-in, so any class reaching a writer without re-pointing it logged into
-    # the developer's LIVE trail: 163 phantom entries accumulated there, including a capability
-    # that exists only as a fixture, scoring 10 runs at 100% on /api/stats. The trail is immutable
-    # by design, so those rows are permanent. All stores resolve through one of these three
-    # aliases; classes needing their own DB re-point the same constants.
-    # Hermetic MCP tool catalogue. `mcp_client.Pool` records every server it lists (or that
-    # failed to start) here, and the pool tests spawn a fake stdio server called `fake` and a
-    # deliberately-missing one called `broken` — both of which were sitting in the developer's
-    # LIVE data/mcp-tools.json, `broken` carrying a `failed` timestamp that suppresses a real
-    # server of that name for LOCAL_MCP_PROBE_TTL_S. Same class of leak as the DB aliases.
-    mcp_client._CATALOGUE = os.path.join(tempfile.mkdtemp(prefix="otto-mcpcat-"), "mcp-tools.json")
-    # Hermetic Admin stores: data/models.json (endpoints + API keys + phase assignment) and
-    # data/policy.json (cap risk/enabled — the approval gate's input). This was per-class
-    # opt-in like the DB aliases once were, so any class reaching a WRITER without re-pointing
-    # them rewrote the developer's live Admin config; gateway.save round-trips the file, so a
-    # stray write silently normalizes it. Classes needing their own re-point the same constants.
-    _tmp_admin = tempfile.mkdtemp(prefix="otto-admin-")
-    gateway._PATH = os.path.join(_tmp_admin, "models.json")
-    policy._PATH = os.path.join(_tmp_admin, "policy.json")
-    _tmp_db = os.path.join(tempfile.mkdtemp(prefix="otto-db-"), "otto.db")
-    engine._DB = chats._DB = knowledge._DB = _tmp_db
+    """Hermetic live state for every class in the module — see redirect_live_state()."""
+    redirect_live_state()
 
 
 class _Cap:

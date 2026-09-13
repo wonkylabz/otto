@@ -669,8 +669,10 @@ async def _board_full_result(wid):
     return {"status": status, "result": f"workflow {status.lower()}"}
 
 
-_DISMISSED_PATH = os.path.join(HERE, "data", "dismissed.json")
-_RETRIES_PATH = os.path.join(HERE, "data", "retries.json")
+# Derived from config.DATA_DIR like every other store, not from HERE — the DATA_DIR spelling is
+# what the test suite's redirect table and the .gitignore scan both key on (issue #41).
+_DISMISSED_PATH = os.path.join(config.DATA_DIR, "dismissed.json")
+_RETRIES_PATH = os.path.join(config.DATA_DIR, "retries.json")
 
 
 def _retries():

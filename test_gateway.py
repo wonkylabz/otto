@@ -31,6 +31,7 @@ import contracts
 import conventions
 import delivery
 import engine
+import estop
 import file_safety
 import memory
 import error_classifier
@@ -62,6 +63,7 @@ try:                                       # the Temporal layer — absent under
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
+import test_support
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
 
@@ -6409,50 +6411,143 @@ class FileSafetySymlinkTests(unittest.TestCase):
 
 
 class LiveStoreIsolationTests(unittest.TestCase):
-    """No test may write to the developer's real data/. Every store in data/otto.db resolves
-    through engine._DB, chats._DB or knowledge._DB, and redirection used to be per-class opt-in —
-    `WorkflowPlanModeTests` reached the workflow's terminal finalization without it. The trail is
-    immutable, so each unpinned run left permanent phantom rows in it (and a fixture-only
-    capability on the /api/stats scorecard). setUpModule now re-points all three; this asserts the
-    redirect holds, for these and for every other live-state store the suite touches."""
+    """No test may write to the developer's real data/.
 
-    def test_no_store_alias_points_at_the_real_data_dir(self):
-        live = os.path.realpath(config.DATA_DIR)
-        for label, path in (("engine._DB", engine._DB), ("chats._DB", chats._DB),
-                            ("knowledge._DB", knowledge._DB),
-                            ("registry.PROJECTS_FILE", registry.PROJECTS_FILE),
-                            ("slack._STATE", slack._STATE),
-                            ("delivery._STATE", delivery._STATE),
-                            ("gateway._STATS_PATH", gateway._STATS_PATH),
-                            ("gateway._PATH", gateway._PATH),
-                            ("policy._PATH", policy._PATH),
-                            ("config._SETTINGS_PATH", config._SETTINGS_PATH),
-                            ("mcp_client._CATALOGUE", mcp_client._CATALOGUE)):
+    Redirection used to be per-class opt-in, and `WorkflowPlanModeTests` reached the workflow's
+    terminal finalization without it: the trail is immutable, so each unpinned run left permanent
+    phantom rows in it, and a fixture-only capability ended up on the /api/stats scorecard. The
+    three DB aliases were then redirected module-wide — but every OTHER store stayed opt-in, and
+    two leaked the same way (issue #41): the pool tests' fake stdio server sat in the live
+    data/mcp-tools.json, and a bundle-import test wrote fixture caps into data/capabilities.json.
+
+    So the fixture no longer redirects a list of stores; it stands one temp directory in for
+    `data/` and re-derives every store from it (`test_support.redirect_live_state`). What is
+    ratcheted here is that the derivation table is COMPLETE — scanned out of the source rather
+    than restated, so a store added tomorrow is covered or this suite is red."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    # The REAL data/, read off the source layout — `config.DATA_DIR` is itself redirected by the
+    # time any of this runs, which is the whole point and would make it useless as the reference.
+    LIVE = os.path.realpath(os.path.join(ROOT, "data"))
+
+    def _module_level_data_stores(self):
+        """Every module-level constant joined from DATA_DIR in Otto's own source, as
+        (module, attribute, relative path). Enumerating them from the AST rather than listing
+        them is what makes this a root fix: adding a store is what puts it on this list."""
+        found = set()
+        for path in sorted(glob.glob(os.path.join(self.ROOT, "*.py"))):
+            name = os.path.basename(path)[:-3]
+            if name.startswith(("test_", "regress", "migrate_")):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for node in tree.body:                      # module level ONLY
+                if not isinstance(node, ast.Assign):
+                    continue
+                rel = self._data_join(node.value)
+                if rel is None:
+                    continue
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        found.add((name, target.id, rel))
+        return found
+
+    @staticmethod
+    def _data_join(node):
+        """A join rooted at DATA_DIR with only string literals after it -> those parts joined
+        by "/"; anything else (a computed name, a different root) -> None. Spelled out rather
+        than shown as an example, because DataDirIgnoredTests greps this same source for the
+        literal form and would read the example as a real store that is not gitignored."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "join" and node.args):
+            return None
+        first = node.args[0]
+        if not ((isinstance(first, ast.Attribute) and first.attr == "DATA_DIR")
+                or (isinstance(first, ast.Name) and first.id == "DATA_DIR")):
+            return None
+        parts = []
+        for arg in node.args[1:]:
+            if not (isinstance(arg, ast.Constant) and isinstance(arg.value, str)):
+                return None                             # a computed name, not a fixed store
+            parts.append(arg.value)
+        return "/".join(parts)
+
+    def test_the_redirect_table_covers_every_data_dir_store(self):
+        """The ratchet. A new store is redirected because it is on this list, not because
+        whoever added it remembered a fixture existed."""
+        table = {(m, a, r) for m, a, r in test_support._DATA_STORES}
+        missing = sorted(self._module_level_data_stores() - table)
+        self.assertEqual([], missing,
+                         "these stores are derived from config.DATA_DIR but are not in "
+                         "test_support._DATA_STORES, so a test writing one hits the real data/: "
+                         f"{missing}")
+
+    def test_the_table_names_stores_that_actually_exist(self):
+        """The other direction: a renamed or deleted constant must not sit in the table
+        silently redirecting nothing."""
+        stale = [f"{mod}.{attr}" for mod, attr, _ in
+                 test_support._DATA_STORES + test_support._LAZY_STORES
+                 if not hasattr(sys.modules[mod], attr)]
+        self.assertEqual([], stale, "redirect table names a constant that no longer exists")
+
+    def test_no_store_points_at_the_real_data_dir(self):
+        """The assertion the whole fixture exists for, checked against the live paths rather
+        than the mechanism — including the DB aliases, which are copies of config.DB_PATH taken
+        at import and so are NOT moved by re-pointing the constant."""
+        aliases = [("engine._DB", engine._DB), ("chats._DB", chats._DB),
+                   ("knowledge._DB", knowledge._DB), ("config.DATA_DIR", config.DATA_DIR),
+                   ("config._settings_path()", config._settings_path()),
+                   ("estop.path()", estop.path()),
+                   ("runbooks.store_path()", runbooks.store_path())]
+        aliases += [(f"{mod}.{attr}", getattr(sys.modules[mod], attr))
+                    for mod, attr, _ in test_support._DATA_STORES]
+        for label, path in aliases:
             with self.subTest(store=label):
-                self.assertNotEqual(os.path.dirname(os.path.realpath(path)), live,
-                                    f"{label} points into the real {config.DATA_DIR}")
+                real = os.path.realpath(path)
+                self.assertFalse(real == self.LIVE or real.startswith(self.LIVE + os.sep),
+                                 f"{label} points into the real data/ ({path})")
 
-    ALIASES = ("engine._DB", "chats._DB", "knowledge._DB", "gateway._PATH", "policy._PATH",
-               # Not a DB, but the same leak with a sharper edge: a `failed` entry written by a
-               # test suppresses a REAL server of that name for LOCAL_MCP_PROBE_TTL_S.
-               "mcp_client._CATALOGUE")
+    def test_the_stand_in_data_dir_has_a_checkout_of_its_own_above_it(self):
+        """The temp `data/` must be a CHILD of a private directory, never the mkdtemp root.
 
-    def test_the_shared_setup_redirects_every_db_alias(self):
-        root = os.path.dirname(os.path.abspath(__file__))
+        `file_safety._otto_root()` is `dirname(DATA_DIR)` — "Otto's own checkout". Point DATA_DIR
+        at the mkdtemp root and that becomes the SYSTEM temp dir, which silently disarms the read
+        guard: `_reads_allowed_from` exempts any run whose cwd is under Otto's root, and the
+        suite legitimately uses the system temp dir as an unrelated cwd. On macOS
+        `tempfile.gettempdir()` is a per-user `/var/folders/...` path so nothing collides; on
+        Linux it is the shared `/tmp` and `ReadDenyTests` went green while proving the opposite
+        of what it claims (PR #80 CI, ubuntu-latest 3.12/3.13/3.14).
+
+        Mirroring the real layout (`<checkout>/data`) is what keeps `_otto_root()` private."""
+        tmp = os.path.realpath(tempfile.gettempdir())
+        root = os.path.realpath(file_safety._otto_root())
+        self.assertNotEqual(root, tmp,
+                            "_otto_root() resolved to the shared temp dir — every run with a cwd "
+                            "under it is now treated as an Otto-introspection run")
+        self.assertEqual(os.path.realpath(config.DATA_DIR), os.path.join(root, "data"),
+                         "the stand-in data/ must sit under a checkout of its own, as it does live")
+        # The point of the private parent: a directory the suite hands around as an unrelated
+        # cwd must NOT unlock Otto's own state.
+        self.assertFalse(file_safety._reads_allowed_from(tmp))
+        self.assertTrue(file_safety.is_read_denied(
+            os.path.join(config.DATA_DIR, "otto.db"), allow_cwd=tmp))
+
+    def test_both_shared_setups_route_through_the_one_redirect(self):
+        """Two setUpModules used to carry hand-maintained copies of the list, and they had
+        already drifted. One call, or the drift comes straight back."""
         for mod in ("test_support.py", "test_integration.py"):
-            with open(os.path.join(root, mod)) as fh:
+            with open(os.path.join(self.ROOT, mod), encoding="utf-8") as fh:
                 setup = fh.read().split("def setUpModule(")[1].split("\ndef ")[0]
-            for alias in self.ALIASES:
-                with self.subTest(module=mod, alias=alias):
-                    self.assertIn(alias, setup, f"{mod}'s setUpModule must re-point {alias}")
+            with self.subTest(module=mod):
+                self.assertIn("redirect_live_state()", setup,
+                              f"{mod}'s setUpModule must call redirect_live_state()")
 
     def test_every_test_module_reaches_a_setup(self):
         """The split multiplied the modules that can silently write live state: a new
         test_<layer>.py that forgets the shared import runs its classes against the real
         data/ exactly as the per-class opt-in used to."""
-        root = os.path.dirname(os.path.abspath(__file__))
         orphans = []
-        for path in sorted(glob.glob(os.path.join(root, "test_*.py"))):
+        for path in sorted(glob.glob(os.path.join(self.ROOT, "test_*.py"))):
             name = os.path.basename(path)
             if name == "test_support.py":
                 continue
@@ -7245,10 +7340,23 @@ class ReadDenyTests(unittest.TestCase):
     def test_local_grep_cannot_walk_around_the_read_guard(self):
         """Guarding the grep ROOT would not hold: the denied set is files under data/, never
         data/ itself, so `grep -r <pat> data/` passes an ancestor check and prints models.json
-        anyway. The OUTPUT is what gets filtered."""
-        out = local_runtime._t_grep(
-            {"pattern": "api_key_env", "path": config.DATA_DIR}, cwd="/tmp")
-        self.assertNotIn("models.json", out)
+        anyway. The OUTPUT is what gets filtered.
+
+        The secret and the decoy are both PLANTED here. This used to grep the developer's real
+        data/ and assert the string "models.json" was absent, which made it a test of whatever
+        happened to be lying in that directory — a repo clone under data/ whose source discusses
+        models.json failed it (issue #41), and against a hermetic data/ it would instead have
+        passed while proving nothing at all."""
+        secret = "sk-ant-api03-PLANTED-BY-THE-TEST"
+        with open(self._p("models.json"), "w") as fh:
+            fh.write(json.dumps({"endpoints": [{"api_key_env": secret}]}))
+        os.makedirs(self._p("workspaces", "web-1"), exist_ok=True)
+        with open(self._p("workspaces", "web-1", "app.py"), "w") as fh:
+            fh.write(f"KEY = {secret!r}   # a repo-mode clone, which stays readable\n")
+
+        out = local_runtime._t_grep({"pattern": secret, "path": config.DATA_DIR}, cwd="/tmp")
+        self.assertNotIn("models.json", out)          # the denied file is filtered out
+        self.assertIn("app.py", out)                  # ...and the grep itself still works
 
 
 class ModelPhaseColumnWidthTests(unittest.TestCase):
@@ -7601,16 +7709,23 @@ class LocalPlanModeTests(unittest.TestCase):
         `cat data/models.json` returned the endpoint API keys — into the context of what is, on
         this path, a THIRD-PARTY model endpoint. The local plan pass had no shell at all before
         the sandbox, so this is exposure the sandbox itself introduced."""
+        # Planted, not borrowed: `data/` is hermetic now (issue #41), and a version of this
+        # that skipped when the developer happened to have no models.json was a guard that
+        # silently did not run — on CI, always.
         state = os.path.join(config.DATA_DIR, "models.json")
-        if not os.path.exists(state):
-            self.skipTest("no models.json in this data dir")
+        with open(state, "w") as fh:
+            fh.write(json.dumps({"endpoints": [{"base_url": "http://vllm/v1",
+                                                "api_key_env": "sk-ant-api03-PLANTED"}]}))
+        root = os.path.dirname(config.DATA_DIR.rstrip("/"))
+        with open(os.path.join(root, "CLAUDE.md"), "w") as fh:
+            fh.write("# Otto — repo guide\n")
+
         out = local_runtime._run_tool("Bash", {"command": f"cat {state}"}, None, {"Bash"}, None,
                                       bash_mode="sandbox")
         self.assertNotIn("base_url", out, "the sandbox handed Otto's state to the model")
         self.assertNotIn("api_key", out)
         # ...and the repo around it is still readable, or the planner has nothing to plan from.
-        readme = local_runtime._run_tool("Bash", {"command": "cat CLAUDE.md"},
-                                         os.path.dirname(config.DATA_DIR.rstrip("/")),
+        readme = local_runtime._run_tool("Bash", {"command": "cat CLAUDE.md"}, root,
                                          {"Bash"}, None, bash_mode="sandbox")
         self.assertIn("Otto", readme)
 

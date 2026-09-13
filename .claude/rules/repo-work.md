@@ -20,7 +20,7 @@
 - **Only a MANAGED clone may be hard-reset** (`repos.is_managed`) — it exists for its working TREE (`.claude/`, CLAUDE.md), so fetching refs alone serves day-one conventions forever; the same reset on the user's checkout destroys uncommitted work (`RepoUrlRegistrationTests`).
 - **Registered checkouts refresh via `git fetch`, never `git pull`** (`workspace.refresh_repos`, `OTTO_REPO_FETCH_AGE_S`=900) — the checkout is the user's own workspace, routinely dirty; `fetch` only touches refs.
 - **Repo-mode's PR base needs the same refresh** — `workspace.provision` clones `--depth 1` from the local path, so the base is the *local* default-branch ref and can be badly behind. `_refresh_base` fetches + hard-resets onto the real remote default before branching (skipped for `from_branch=True`).
-- **Tests must never touch live state** — both `setUpModule`s re-point `PROJECTS_FILE`, the `_DB` aliases and `gateway`/`policy._PATH`; unpinned, a run rewrites repo refs, Admin config, phantom rows (`LiveStoreIsolationTests`).
+- **Tests must never touch live state** — both `setUpModule`s call `redirect_live_state()`: ONE temp dir stands in for `data/`, `_DATA_STORES` re-derives every store. A hand-kept list leaked twice (`LiveStoreIsolationTests`).
 
 ## Post-PR loops
 
