@@ -32,7 +32,8 @@ from ui import say, trace
 # both modules resolve their patch-sensitive seams back through this facade at call time,
 # see audit._eng / memory._eng).
 from audit import (_schema, _conn, _audit_conn, _append_audit, _append_content, _audit,
-                   iter_audit_entries, iter_content_entries, scorecard, pr_url_from_run,
+                   iter_audit_entries, iter_content_entries, audit_entries_for,
+                   content_entries_for, needs_human_wids, scorecard, pr_url_from_run,
                    accept_run, record_terminal, record_skip, run_origin, audit_repo_changes,
                    audit_mcp_change, archive_board_cards, archived_board_cards, prune_board_cards)
 from contracts import (_TLDR_SHAPE, _SINGLE_TURN_CONTRACT, _RESUME_CONTRACT, _REPORT_FORMAT,

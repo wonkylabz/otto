@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -3283,6 +3284,54 @@ class ModelKindTests(unittest.TestCase):
         self.assertIn('kind:val("lm-kind")', ui)                  # so does the inline new-endpoint
         self.assertNotIn('local_fallback_disabled:"local failed', ui)
         self.assertNotIn("Fix the local endpoint", ui)
+
+
+class EnsureColumnsTests(unittest.TestCase):
+    """`CREATE TABLE IF NOT EXISTS` is a no-op on a live table, so a column added to a `_schema`
+    lands on fresh installs and silently NOWHERE else — and the hand-rolled PRAGMA-then-ALTER
+    that patched around it races: server.py and worker.py both connect at startup, both can see
+    the column missing, and the loser raises `duplicate column name` on a healthy install."""
+
+    def _db(self):
+        d = tempfile.mkdtemp(prefix="otto-cols-")
+        self.addCleanup(shutil.rmtree, d, True)
+        conn = storage.sqlite_connect(os.path.join(d, "t.db"))
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT)")
+        return conn
+
+    def test_adds_only_what_is_missing(self):
+        conn = self._db()
+        self.assertEqual(storage.ensure_columns(conn, "t", {"a": "TEXT", "b": "INTEGER"}), ["b"])
+        self.assertEqual(storage.ensure_columns(conn, "t", {"a": "TEXT", "b": "INTEGER"}), [])
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(t)")}
+        self.assertEqual(cols, {"id", "a", "b"})
+
+    def test_a_concurrent_adder_is_not_an_error(self):
+        # The race itself: the other connection wins between our PRAGMA and our ALTER, so the
+        # ALTER we then issue raises `duplicate column name` on a perfectly healthy install.
+        conn = self._db()
+        real = conn
+
+        class Racing:
+            def __init__(self):
+                self.raced = False
+
+            def execute(self, sql, *a):
+                if sql.startswith("ALTER TABLE") and not self.raced:
+                    self.raced = True
+                    real.execute("ALTER TABLE t ADD COLUMN b INTEGER")   # the other process
+                return real.execute(sql, *a)
+        racer = Racing()
+        self.assertEqual(storage.ensure_columns(racer, "t", {"b": "INTEGER"}), [])
+        self.assertTrue(racer.raced)
+        self.assertIn("b", {r[1] for r in conn.execute("PRAGMA table_info(t)")})
+
+    def test_a_real_sql_error_still_raises(self):
+        # Swallowing every OperationalError would hide a genuinely bad column declaration.
+        conn = self._db()
+        with self.assertRaises(sqlite3.OperationalError):
+            storage.ensure_columns(conn, "no_such_table_here", {"b": "INTEGER"})
 
 
 class JsonStoreConcurrencyTests(unittest.TestCase):

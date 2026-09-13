@@ -312,8 +312,8 @@ def _run_detail(wid):
     because it lands in a filesystem path."""
     if not wid or not re.fullmatch(r"[A-Za-z0-9._:@-]+", wid):
         return {"found": False}
-    meta_rows = [e for e in engine.iter_audit_entries() if e.get("workflow") == wid]
-    content_rows = [e for e in engine.iter_content_entries() if e.get("workflow") == wid]
+    meta_rows = engine.audit_entries_for(wid)
+    content_rows = engine.content_entries_for(wid)
     if not meta_rows and not content_rows:
         return {"found": False}
     # Content (request/result/critique) keyed by attempt; the run's request is the first seen.
@@ -638,8 +638,8 @@ def _run_result(wid):
     accepting it. Content rows are yielded oldest-first, so the last one wins (the terminal row
     for a needs-human run, else the final attempt)."""
     result = ""
-    for e in engine.iter_content_entries():
-        if e.get("workflow") == wid and e.get("result"):
+    for e in engine.content_entries_for(wid):
+        if e.get("result"):
             result = e["result"]
     return result
 
@@ -726,9 +726,7 @@ def _audit_content(wid, at="", attempt=None):
     """On-demand fetch of one audit row's full request/result text — kept OUT of /api/audit's
     payload so that endpoint stays pure operational metadata. Mirrors the /api/board/full
     lazy-load pattern: the Audit tab calls this only when a row is expanded."""
-    for e in engine.iter_content_entries():
-        if e.get("workflow") != wid:
-            continue
+    for e in engine.content_entries_for(wid):
         if at and e.get("at") != at:
             continue
         if attempt is not None and e.get("attempt") != attempt:

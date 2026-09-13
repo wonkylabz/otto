@@ -1291,7 +1291,7 @@ def reap_stuck(payload: dict) -> dict:
 
     # General sweep. The audited-wid set is built ONCE (one audit scan, not one per workflow).
     swept = []
-    audited = {e.get("workflow") for e in engine.iter_audit_entries() if e.get("needs_human")}
+    audited = engine.needs_human_wids()
     for row in _list_otto_workflows(config.REAP_WINDOW_H):
         wid, status = row.get("wid") or "", row.get("status")
         if wid.startswith("gh-issue-") or _SWARM_CHILD_RE.search(wid) or wid in audited:
