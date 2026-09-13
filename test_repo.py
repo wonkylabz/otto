@@ -1441,6 +1441,63 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(c["session_id"], "s7")
         self.assertEqual(c["title"], "do the thing")       # title preserved
 
+    def test_a_concurrent_browser_turn_is_not_lost_by_an_appending_writer(self):
+        """Issue #40: the run-recording writers used to get() the message list on one
+        connection and save() it back on another, deleting and rewriting every row. server.py
+        and worker.py write the same chat id on a reattached thread, so a turn landing in that
+        gap was erased. append_messages() does the row merge and the INSERT in ONE storage.tx,
+        so both writers' turns survive."""
+        import threading
+        chats.append_run("race", "seed", "seeded")
+        errors, n = [], 40
+
+        def browser():
+            for i in range(n):
+                try:
+                    chats.append_run("race", f"browser {i}", "ok")
+                except Exception as e:                    # noqa: BLE001 - the bug under test
+                    errors.append(repr(e))
+
+        def worker():
+            for i in range(n):
+                try:
+                    chats.start_run("race", f"worker {i}")
+                    chats.finish_run("race", "done")
+                except Exception as e:                    # noqa: BLE001
+                    errors.append(repr(e))
+
+        a, b = threading.Thread(target=browser), threading.Thread(target=worker)
+        a.start(); b.start(); a.join(); b.join()
+        self.assertEqual([], errors)
+        texts = [m["text"] for m in chats.get("race")["messages"]]
+        missing = [f"{who} {i}" for who in ("browser", "worker") for i in range(n)
+                   if f"{who} {i}" not in texts]
+        self.assertEqual([], missing, f"{len(missing)}/{2 * n} turns were lost")
+        self.assertFalse([m for m in chats.get("race")["messages"] if m.get("pending")],
+                         "a placeholder survived its own finish_run")
+
+    def test_appending_writers_keep_the_threads_identity(self):
+        # The row merge moved inside the transaction must still preserve what the old
+        # read-then-save did: title, session_id and cap survive a turn that supplies neither.
+        chats.start_run("keep-1", "first", title="first", cap={"name": "sre"})
+        chats.finish_run("keep-1", "done", session_id="s-keep", cap={"name": "sre"},
+                         repo="infra", git_run_id="web-1")
+        chats.start_run("keep-1", "second", title="ignored")
+        c = chats.get("keep-1")
+        self.assertEqual(c["title"], "first")              # a later turn never re-titles
+        self.assertEqual(c["session_id"], "s-keep")        # start_run keeps the binding
+        self.assertEqual(c["cap"], {"name": "sre"})
+        self.assertEqual((c["repo"], c["git_run_id"]), ("infra", "web-1"))
+
+    def test_message_cap_applies_to_appended_turns(self):
+        # The wholesale path trimmed to MAX_MESSAGES by slicing the list it was handed; the
+        # appending path has no list, so it trims the table instead.
+        for i in range(chats.MAX_MESSAGES // 2 + 5):
+            chats.append_run("capped", f"q{i}", f"a{i}")
+        msgs = chats.get("capped")["messages"]
+        self.assertEqual(len(msgs), chats.MAX_MESSAGES)
+        self.assertEqual(msgs[-1]["text"], f"a{chats.MAX_MESSAGES // 2 + 4}")   # newest kept
+
     def test_finish_run_without_start_falls_back_to_append(self):
         # If start_run was skipped, finish_run still records the result rather than dropping it.
         chats.finish_run("orphan-1", "result only", session_id="s8")
