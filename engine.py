@@ -532,9 +532,15 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             invocation = _invocation(cap, request)
             if critique:
                 invocation += _CRITIQUE_FOLD + critique
+            # The re-dispatch shares the ACTIVITY's ceiling with the local pass that just died,
+            # so a fresh full EXEC_TIMEOUT_S on top of a local run that burned up to
+            # LOCAL_RUN_TIMEOUT_S overruns it and Temporal kills the attempt with no result and
+            # no audit row. Spend what is left of the budget, never less than a minute — a wall
+            # is usually fast, so in practice this is the full clock (issue #34).
+            fb_timeout = max(60.0, config.EXEC_TIMEOUT_S - (time.monotonic() - started))
             out = _claude(invocation, allowed_tools=allowed, mcp_config_path=mcp_config_path,
                           model=model, system_context=sysctx, cwd=cwd,
-                          transcript=transcript_path, timeout=config.EXEC_TIMEOUT_S,
+                          transcript=transcript_path, timeout=fb_timeout,
                           on_event=sup.note if sup else None, abort=abort, meta=fb_meta,
                           setting_sources=_setting_sources(cwd), effort=effort)
     else:

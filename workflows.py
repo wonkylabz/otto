@@ -133,6 +133,22 @@ _HEARTBEAT = timedelta(minutes=3)
 # so deriving one from the environment makes a worker with a different env replay differently.
 _EXEC_CEILING = timedelta(minutes=40)
 
+# The JUDGE ceiling. A judge activity is not one model call: `judging.confirm_adverse` re-samples
+# an adverse verdict `judge_confirmations` (3) times, each bounded by LOCAL_TIMEOUT_S (60) +
+# CLAUDE_TIER_TIMEOUT_S (120), and `verify` additionally derives the repo-conventions digest on a
+# cache miss. The old 180s ceiling was one call's worth, so a judge that actually re-sampled was
+# killed by Temporal after the attempt had already executed — `_RETRY` then re-ran the whole
+# chain 3x (spend) and finally filed the run `workflow_error`. A literal, like _EXEC_CEILING:
+# activity options are replayed, so deriving one from the environment makes a worker with a
+# different env replay differently. Kept in step with the three settings by
+# `ExecutionHeartbeatTests` (issue #35).
+_JUDGE_CEILING = timedelta(minutes=10)
+
+# The PLAN-PREVIEW ceiling. `plans.plan_preview` runs a 900s agentic pass; a LOCAL preview that
+# walls late re-previews on Claude for another 900s, and `critique_plan` adds a tier call after
+# that. 17 minutes covered one pass only (issue #34).
+_PLAN_CEILING = timedelta(minutes=35)
+
 # Why a post-PR fix round never runs on the LOCAL backend. Everywhere else a failing local model
 # is covered by a Claude rung (config.LOCAL_FALLBACK): the verify ladder retries and escalates,
 # so a local death costs a rung, not the run. Both post-PR fix loops are one-shot — a single
@@ -637,11 +653,14 @@ class OttoWorkflow:
                              # The preview's cwd is the DEFAULT branch; this tells it where the
                              # code actually is and to read it with `gh pr diff`.
                              "pr": self._pr_target, "effort": self._effort},
-                            # 17min: engine.plan_preview's own timeout (900s/15min) + ~2min margin
-                            # for the critique pass after it — must stay above the preview's timeout
-                            # or the activity kills it before it can return "" cleanly.
-                            start_to_close_timeout=timedelta(minutes=17),
-                            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+                            # Must stay above the preview's OWN timeout, and above a local
+                            # wall's Claude re-preview after it, or the activity kills the pass
+                            # before it can return "" cleanly. _RETRY_EXEC, not _RETRY: this is
+                            # a full agentic pass with real spend, and a Temporal-level replay
+                            # re-ran it up to 3x — rewriting the transcript the board reads the
+                            # model off and appending three `plan_preview` audit rows.
+                            start_to_close_timeout=_PLAN_CEILING,
+                            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY_EXEC)
                         self._plan = preview.get("plan") or None
                         self._plan_concerns = preview.get("concerns") or []
                         self._plan_model = preview.get("model")
@@ -1690,7 +1709,7 @@ class OttoWorkflow:
                      # Mid-run supervisor corrections this attempt was given: the request the
                      # judge scores against is the AMENDED one. Mirrors engine._ladder_core.
                      "steers": out.get("steers")},
-                    start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+                    start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],
                  "cost": out.get("cost", 0), "attempt": attempt,
@@ -1813,7 +1832,7 @@ class OttoWorkflow:
             qa_out = await workflow.execute_activity(
                 qa_capability,
                 {"pr_url": pr_url, "repo": repo, "request": request, "wid": f"{run_id}-qa{rnd}"},
-                start_to_close_timeout=timedelta(minutes=30), heartbeat_timeout=_HEARTBEAT,
+                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
             if qa_out.get("missing"):
                 self._qa = {"state": "unavailable", "round": rnd}
@@ -1822,7 +1841,7 @@ class OttoWorkflow:
             qa_cap_name = qa_out.get("qa_cap")
             verdict = await workflow.execute_activity(
                 judge_qa, {"request": request, "result": qa_out["result"], "repo": repo},
-                start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+                start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             # Audit the QA pass as its own attempt (passed only on an outright PASS).
             # `source: "qa"` for the same reason the review loop stamps "review": this is
             # judge_qa's verdict on the PR's BEHAVIOUR, not a verify verdict on the QA
@@ -1930,7 +1949,7 @@ class OttoWorkflow:
             rev_out = await workflow.execute_activity(
                 review_capability,
                 {"pr_url": pr_url, "repo": repo, "request": request, "wid": f"{run_id}-rev{rnd}"},
-                start_to_close_timeout=timedelta(minutes=30), heartbeat_timeout=_HEARTBEAT,
+                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
             if rev_out.get("missing"):
                 self._review = {"state": "unavailable", "round": rnd}
@@ -1940,7 +1959,7 @@ class OttoWorkflow:
             review_cap_name = rev_out.get("review_cap")
             verdict = await workflow.execute_activity(
                 judge_review, {"request": request, "result": rev_out["result"], "repo": repo},
-                start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+                start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             # Audit the review pass as its own attempt (passed only on an outright clean PASS).
             # `source: "review"` is load-bearing, not a label: this verdict is judge_review's
             # opinion of THE PR, and a review that correctly finds must-fix findings is a
