@@ -181,6 +181,7 @@ async function loadAudit(){
   const clr=el.querySelector("#af-clear");
   if(clr) clr.addEventListener("click",()=>{AUDIT_FILTER={wid:"",cap:"",verified:""}; loadAudit();});
   const tokSec=el.querySelector('.asection[data-sect="au-tokens"]');
+  enhanceToggles(el,".secttoggle",".asection","collapsed");
   if(tokSec){ tokSec.querySelector(".secttoggle").addEventListener("click",()=>{
     TOK_OPEN=!tokSec.classList.toggle("collapsed");
     try { localStorage.setItem("ottoTokOpen",TOK_OPEN?"1":"0"); } catch(e){}

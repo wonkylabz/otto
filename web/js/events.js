@@ -36,6 +36,7 @@ function setIntegBadge(id,cls,label){
   b.className="badge "+cls; b.textContent=label;
 }
 function bindEventSections(el){
+  enhanceToggles(el,".secttoggle",".asection","collapsed");
   el.onclick=e=>{
     const t=e.target.closest(".secttoggle");
     if(t){ const sec=t.closest(".asection"); evSetCollapsed(sec.dataset.sect, sec.classList.toggle("collapsed")); return; }

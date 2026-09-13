@@ -6308,6 +6308,40 @@ class UiAssetLayoutTests(unittest.TestCase):
         self.assertNotIn("function ", doc, "logic came back inline")
         self.assertNotRegex(doc, r"<script>\s*\n", "an inline script block came back")
 
+    def test_css_escape_never_appears_inside_a_quoted_attribute_selector(self):
+        """`CSS.escape()` is for IDENTIFIERS. Inside `[data-x="${CSS.escape(v)}"]` it injects
+        backslashes the literal attribute value does not have, so the match silently returns
+        null the moment a value stops being `[a-z0-9-]` — and every one of these keys on a run
+        id or a filesystem path. Compare dataset values instead (`util.byData`)."""
+        bad = []
+        for rel, path in self._assets().items():
+            if not rel.endswith(".js"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                for n, line in enumerate(f, 1):
+                    if line.lstrip().startswith("//") or line.lstrip().startswith("*"):
+                        continue          # the rule is documented in prose in four places
+                    if re.search(r'="\$\{[^}]*CSS\.escape', line):
+                        bad.append(f"{rel}:{n}")
+        self.assertEqual(bad, [], "CSS.escape inside a quoted attribute selector — use byData()")
+
+    def test_every_click_only_toggle_is_reachable_by_keyboard(self):
+        """The collapsible section headers are `<span>`s with a click handler: no role, no
+        tabindex, no keydown, so they were unreachable by keyboard and announced as nothing.
+        Rewriting ~20 templates into `<button>`s would fight the flex layouts they sit in, so
+        the affordance is added once at bind time — which means every file that BINDS one has
+        to call the helper."""
+        src = {rel: open(p, encoding="utf-8").read()
+               for rel, p in self._assets().items() if rel.endswith(".js")}
+        helper = src["js/util.js"]
+        for needed in ('role","button"', 'tabindex","0"', 'aria-expanded', '"keydown"'):
+            self.assertIn(needed, helper, "enhanceToggles lost part of the affordance")
+        for rel, text in src.items():
+            if rel == "js/util.js" or ".secttoggle" not in text:
+                continue
+            self.assertIn("enhanceToggles(", text,
+                          f"{rel} binds a .secttoggle without making it keyboard-reachable")
+
     def test_no_asset_exceeds_the_ceiling(self):
         for rel, path in self._assets().items():
             self.assertLessEqual(os.path.getsize(path), self.ASSET_MAX,
