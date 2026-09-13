@@ -237,6 +237,9 @@ def _dehydrate(cfg):
     fields must never be persisted on the entry, or the next endpoint edit would leave stale
     copies behind and the models would keep dialling the old server."""
     cfg = copy.deepcopy(cfg)
+    # `dangling` is DERIVED by _normalize from the pool on every load — a persisted copy would
+    # go stale the moment the operator re-added the label it names.
+    cfg.pop("dangling", None)
     # Endpoints persist as their DEFINITION only — the read side decorates them with the models
     # riding on each (gateway.endpoints), and the Admin tab posts that decorated shape straight
     # back, so a derived `models` list would otherwise be written to disk and go stale.
@@ -442,6 +445,20 @@ def _normalize(cfg):
     # cap_exec (Claude-only) so the narrow tool-free carve-out never weakens that seam.
     cap_local = cfg.setdefault("cap_local_exec", {})
     pool_names = {m["name"] for m in pool}
+    # A pin naming a label that is no longer in the pool is SURFACED, not silently obeyed-then-
+    # ignored. `exec_model_entry` falls through such a pin to the phase-level model with no
+    # trace, so four caps (observed live, including the stock code-reviewer) ran on the
+    # default model while Admin still showed the operator's pick, and
+    # `unhealthy_models` could not attribute them to anything.
+    #
+    # cap_exec keeps the pin: a pool entry is a LABEL, so re-adding it under the same name
+    # restores the operator's intent, and dropping it loses a choice they never revoked.
+    # cap_local_exec is still pruned — `set_cap_local_exec` refuses Claude models, so a stale
+    # entry there can silently become an invalid pin rather than merely an absent one.
+    cfg["dangling"] = {
+        "cap_exec": {c: m for c, m in cap_exec.items() if m not in pool_names},
+        "cap_local_exec": {c: m for c, m in cap_local.items() if m not in pool_names},
+    }
     for cap in [c for c, mdl in cap_local.items() if mdl in removed or mdl not in pool_names]:
         cap_local.pop(cap)
     return _hydrate(cfg)
@@ -471,10 +488,21 @@ def _mutate(fn):
 
 
 def _model_for(task, cfg=None):
+    """The pool entry assigned to `task`, or the default-Claude entry if that assignment names
+    a label the pool no longer has.
+
+    The fallback used to be `pool[0]`, which live is `claude-opus` — exactly the "first entry
+    meant surprise opus" case `_default_claude`'s docstring says was fixed. A dangling phase
+    assignment is the same mistake arriving by a different door, so it lands where every other
+    fallback does: sonnet."""
     cfg = cfg or load()
     pool = cfg.get("pool") or _default_cfg()["pool"]
     name = cfg.get("assign", {}).get(task)
-    return next((m for m in pool if m["name"] == name), None) or pool[0]
+    m = next((m for m in pool if m["name"] == name), None)
+    if m:
+        return m
+    mid = _default_claude(cfg)
+    return next((m for m in pool if m.get("model") == mid), None) or pool[0]
 
 
 def _default_claude(cfg=None):
