@@ -44,10 +44,11 @@ def _schema(conn):
         stats TEXT
     )""")
     # Lightweight migration for a DB created before origin_run_id existed: CREATE TABLE IF NOT
-    # EXISTS above is a no-op on an already-live table, so a fresh column needs its own ADD COLUMN.
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(chats)")}
-    if "origin_run_id" not in cols:
-        conn.execute("ALTER TABLE chats ADD COLUMN origin_run_id TEXT")
+    # EXISTS above is a no-op on an already-live table, so a fresh column needs its own ADD
+    # COLUMN. Via storage.ensure_columns: the hand-rolled PRAGMA-then-ALTER raced, because
+    # server.py and worker.py both connect at startup and both could see the column missing —
+    # the loser then raised `duplicate column name` on an otherwise healthy install (issue #57).
+    storage.ensure_columns(conn, "chats", {"origin_run_id": "TEXT"})
     # The sidebar's sort key, and the trim's "which are the oldest" question.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_order ON chats(pinned, updated, seq)")
     conn.execute("""CREATE TABLE IF NOT EXISTS messages (

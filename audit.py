@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import re
+import sqlite3
 
 import config
 import gateway
@@ -92,6 +93,23 @@ def _schema(conn):
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_workflow ON audit(workflow)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_capability ON audit(capability)")
+    # `needs_human` is a projection of data["needs_human"] into a column, purely so the reaper's
+    # sweep can ask for the handful of rows it cares about instead of json.loads-ing the whole
+    # trail every 15s. Added through ensure_columns because `CREATE TABLE IF NOT EXISTS` above
+    # is a no-op on an existing db — a column declared there alone lands on fresh installs and
+    # silently nowhere else (issue #57).
+    if storage.ensure_columns(conn, "audit", {"needs_human": "INTEGER"}):
+        # Backfill from the rows already in the trail. Without it the reaper's "already
+        # surfaced" set reads as empty on every existing install and the first sweep after the
+        # upgrade re-files runs a human has already seen. Best-effort: an ancient SQLite with no
+        # JSON1 leaves the column NULL, which is the pre-#57 behaviour, not a broken one.
+        try:
+            conn.execute("UPDATE audit SET needs_human = 1 "
+                         "WHERE json_extract(data, '$.needs_human') IS NOT NULL")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_needs_human "
+                 "ON audit(needs_human) WHERE needs_human = 1")
     conn.execute("""CREATE TABLE IF NOT EXISTS audit_content (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         at TEXT NOT NULL,
@@ -182,6 +200,47 @@ def iter_content_entries():
         conn.close()
     for row in rows:
         yield json.loads(row["data"])
+
+
+def _rows_for(table, wid):
+    """One run's rows from `table`, oldest first, via the `workflow` index.
+
+    Both indexes have existed since the SQLite move and NO reader used them: every per-run
+    lookup scanned the whole trail and `json.loads`-ed each row, several of them on the board's
+    15s poll (issue #57). Same yielded shape as the full iterators, so a caller swaps one line."""
+    if not wid:
+        return []
+    conn = _audit_conn()
+    try:
+        rows = conn.execute(
+            f"SELECT data FROM {table} WHERE workflow = ? ORDER BY id ASC", (wid,)).fetchall()
+    finally:
+        conn.close()
+    return [json.loads(r["data"]) for r in rows]
+
+
+def audit_entries_for(wid):
+    """This run's audit (metadata) rows, oldest first."""
+    return _rows_for("audit", wid)
+
+
+def content_entries_for(wid):
+    """This run's audit-content (request/result text) rows, oldest first."""
+    return _rows_for("audit_content", wid)
+
+
+def needs_human_wids():
+    """Every workflow id that recorded a needs-human row — the reaper's "already surfaced" set.
+
+    Read off the `needs_human` column, so the sweep touches those rows only instead of decoding
+    the entire trail on every schedule fire."""
+    conn = _audit_conn()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT workflow FROM audit WHERE needs_human = 1").fetchall()
+    finally:
+        conn.close()
+    return {r["workflow"] for r in rows}
 
 
 def archive_board_cards(cards):
@@ -402,9 +461,7 @@ def pr_url_from_run(wid):
     if not wid:
         return None
     found = None
-    for e in _eng().iter_content_entries():
-        if e.get("workflow") != wid:
-            continue
+    for e in _eng().content_entries_for(wid):
         for m in _PR_URL_RE.finditer(str(e.get("result") or "")):
             found = m.group(1)
     return found
@@ -426,8 +483,10 @@ def _append_audit(entry):
     loser fails its lock upgrade, which is how a write gets silently lost."""
     verified = entry.get("verified")
     row = (entry["at"], entry["workflow"], entry.get("capability"),
-           None if verified is None else int(bool(verified)), json.dumps(entry))
-    ins = "INSERT INTO audit (at, workflow, capability, verified, data) VALUES (?, ?, ?, ?, ?)"
+           None if verified is None else int(bool(verified)),
+           1 if entry.get("needs_human") else None, json.dumps(entry))
+    ins = ("INSERT INTO audit (at, workflow, capability, verified, needs_human, data) "
+           "VALUES (?, ?, ?, ?, ?, ?)")
     conn = _audit_conn()
     try:
         if entry.get("attempt") is None:
@@ -623,9 +682,7 @@ def run_origin(wid):
 
     The ONE implementation — server._run_origin and the reaper's general sweep both read this."""
     capname, repo, reached_run = None, None, False
-    for e in _eng().iter_audit_entries():
-        if e.get("workflow") != wid:
-            continue
+    for e in _eng().audit_entries_for(wid):
         if e.get("capability"):
             capname = e["capability"]
         if e.get("repo"):
@@ -633,9 +690,7 @@ def run_origin(wid):
         if e.get("outcome") == "ran":
             reached_run = True
     request = None
-    for e in _eng().iter_content_entries():
-        if e.get("workflow") != wid:
-            continue
+    for e in _eng().content_entries_for(wid):
         if e.get("request"):
             request = e["request"]
     return request, capname, repo, reached_run

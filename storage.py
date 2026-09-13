@@ -100,6 +100,29 @@ def sqlite_connect(path):
     return conn
 
 
+def ensure_columns(conn, table, columns):
+    """Add any of `columns` ({name: "TEXT"/"INTEGER"/…}) the table does not already have.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op on a live table, so a column added to a `_schema`
+    lands on fresh installs and silently NOT on existing ones. The hand-rolled version of this
+    (PRAGMA table_info then ALTER) also races: both processes connect on startup, both see the
+    column missing, and the second raises `duplicate column name`. SQLite has no
+    `ADD COLUMN IF NOT EXISTS`, so the race is swallowed here — the only way that error can
+    arrive is another connection having just added the very column we wanted."""
+    have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    added = []
+    for name, decl in columns.items():
+        if name in have:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+            added.append(name)
+        except sqlite3.OperationalError as e:      # noqa: PERF203
+            if "duplicate column" not in str(e).lower():
+                raise
+    return added
+
+
 @contextlib.contextmanager
 def tx(conn):
     """A serialized read-modify-write critical section on a sqlite_connect() connection — the

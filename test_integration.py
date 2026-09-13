@@ -6104,9 +6104,10 @@ class ReaperSweepTests(unittest.TestCase):
         self.wfs, self.audited = [], set()
         self._orig_list = activities._list_otto_workflows
         activities._list_otto_workflows = lambda window_h, limit=500: self.wfs
-        self._orig_iter = engine.iter_audit_entries
-        engine.iter_audit_entries = lambda: [{"workflow": w, "needs_human": True}
-                                             for w in self.audited]
+        # The reaper reads the `needs_human` COLUMN now, not a decode of every audit row
+        # (issue #57) — the sweep runs on a schedule and the trail only grows.
+        self._orig_iter = engine.needs_human_wids
+        engine.needs_human_wids = lambda: set(self.audited)
         self._orig_origin = engine.run_origin
         engine.run_origin = lambda wid: (f"req for {wid}", "agent:x", None, True)
 
@@ -6124,7 +6125,7 @@ class ReaperSweepTests(unittest.TestCase):
             setattr(self.board, n, fn)
         self.activities._reap_state = self._orig_state
         self.activities._list_otto_workflows = self._orig_list
-        engine.iter_audit_entries = self._orig_iter
+        engine.needs_human_wids = self._orig_iter
         engine.run_origin = self._orig_origin
         engine.record_terminal = self._orig_terminal
         self.delivery.notify = self._orig_notify
