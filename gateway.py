@@ -831,6 +831,22 @@ def _set_health(d, name, ok, detail="", via="run"):
     return d
 
 
+def _probe_would_erase_a_wall(entry):
+    """Is this model's last outcome a REAL failure that a page-load probe must not clear?
+
+    `_set_health` is last-write-wins, and the unforced refresh fires for any local entry whose
+    last result is older than `_HEALTH_TTL` — regardless of what that result was. So a
+    `tools_unsupported`, 401 or 402 wall written by a run at t0 was erased simply by opening
+    Admin at t0+16min, while every run still walled.
+
+    The probe cannot see what it is overwriting: it is a `GET /models`, which says nothing
+    about tools, quota or auth. A run's verdict is strictly better evidence, so it stands until
+    something that could actually disprove it says otherwise — a later real call, or the
+    operator's Recheck button (`force=True`), which is the deliberate way to clear one."""
+    return (isinstance(entry, dict) and entry.get("ok") is False
+            and (entry.get("via") or "run") == "run")
+
+
 def record_health(name, ok, detail="", via="run"):
     """Standalone health write for the callers that have no counter to bump — the local
     execution runtime (an unreachable/tool-rejecting server) and test_model. Best-effort."""
@@ -1011,8 +1027,9 @@ def probe_models(force=False, cfg=None):
     """Refresh model health for the Admin view; returns the full {name: entry} map.
 
     LOCAL entries are probed whenever their last result is stale — a GET /models is
-    milliseconds and needs no inference. CLAUDE entries are probed ONLY on `force` (the
-    Recheck button): each one is a real `claude -p` turn that costs tokens and seconds, so it
+    milliseconds and needs no inference — EXCEPT when that result is a wall a run observed
+    (`_probe_would_erase_a_wall`), which the probe has no evidence to overturn. CLAUDE entries
+    are probed ONLY on `force` (the Recheck button): each one is a real `claude -p` turn that costs tokens and seconds, so it
     must never ride on a page load. An un-probed Claude entry still reports health from its
     real calls, which is the signal that matters anyway.
 
@@ -1031,7 +1048,9 @@ def probe_models(force=False, cfg=None):
         if m.get("provider") == "claude":
             if not force:
                 continue
-        elif not (force or stale):
+        elif force:
+            pass                       # Recheck: the operator asked, so nothing is skipped
+        elif not stale or _probe_would_erase_a_wall(entry):
             continue
         due.append(m["name"])
     if not due:
@@ -1580,9 +1599,19 @@ def test_model(name, cfg=None, timeout=None):
         return {"ok": ok, "ms": ms(), "detail": detail}
     try:
         if m.get("provider") == "claude":
-            out = claude_cli.run_json("Reply with exactly: OK", model=m["model"])
-            return done(not out.get("is_error"),
-                        (out.get("result", "") or "")[:40] or "no reply from claude -p")
+            # Through `_claude_complete`, so the probe inherits the tool-free flags and the
+            # CLAUDE_TIER_TIMEOUT_S budget. A bare `run_json` was a full agentic pass with the
+            # 900s execution default -- in the request thread serving /api/models, where a
+            # stalled tier call would hold the Admin page open for the whole quarter hour.
+            try:
+                text, cost = _claude_complete("Reply with exactly: OK", m["model"])
+            except Exception as e:  # noqa: BLE001 - the probe reports a verdict, never raises
+                return done(False, str(e)[:180])
+            if cost:
+                # Judge-side spend is booked by the gateway or it reaches no ledger at all: a
+                # probe is a real Claude turn, and a bare `_claude_complete` is invisible spend.
+                _bump_cost("probe", cost)
+            return done(True, (text or "")[:40] or "no reply from claude -p")
         if not m.get("base_url"):
             # A model pointing at an endpoint that no longer exists: name the endpoint, or the
             # operator sees a urlopen error against an empty URL and has nothing to go fix.

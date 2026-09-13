@@ -462,6 +462,79 @@ class ModelHealthTests(unittest.TestCase):
         gateway.probe_models()
         self.assertEqual(probed, ["local"])
 
+    def test_a_page_load_probe_never_erases_a_wall_a_run_observed(self):
+        """The regression: `_set_health` is last-write-wins and the unforced refresh fires on
+        staleness ALONE, so a `tools_unsupported`/401/402 wall written by a run at t0 was
+        cleared by opening Admin at t0+16min — while every run still walled.
+
+        A `GET /models` says nothing about tools, quota or auth, so the probe cannot disprove
+        what it would be overwriting."""
+        gateway.record_health("local", False, "the model endpoint rejects tool calls", via="run")
+        storage.mutate_json(
+            gateway._STATS_PATH,
+            lambda d: d["health"]["local"].update({"at": time.time() - gateway._HEALTH_TTL - 1}) or d,
+            default={})
+        probed = []
+        gateway.test_model = lambda name, cfg=None, timeout=None: probed.append(name)
+        gateway.probe_models()
+        self.assertEqual(probed, [], "a stale run wall must outlive a page load")
+        self.assertEqual([e["name"] for e in gateway.unhealthy_models()], ["local"])
+        self.assertIn("rejects tool calls", gateway.model_health()["local"]["detail"])
+
+    def test_recheck_is_still_the_way_to_clear_a_wall(self):
+        """The other direction, or the skip is just a permanent mute. The operator's Recheck
+        button asked for the probe, so it overrides — as does any later real call."""
+        gateway.record_health("local", False, "rejects tool calls", via="run")
+        probed = []
+        gateway.test_model = lambda name, cfg=None, timeout=None: probed.append(name)
+        gateway.probe_models(force=True)
+        self.assertIn("local", probed)
+        gateway.record_health("local", True, "served", via="run")
+        self.assertEqual(gateway.unhealthy_models(), [])
+
+    def test_a_stale_probe_failure_is_still_re_probed(self):
+        """Only a RUN verdict is protected. A probe's own stale failure has no better evidence
+        behind it, so the refresh must keep retrying it — otherwise a transient blip during one
+        page load would mute the model until someone pressed Recheck."""
+        gateway.record_health("local", False, "cannot reach", via="probe")
+        storage.mutate_json(
+            gateway._STATS_PATH,
+            lambda d: d["health"]["local"].update({"at": time.time() - gateway._HEALTH_TTL - 1}) or d,
+            default={})
+        probed = []
+        gateway.test_model = lambda name, cfg=None, timeout=None: probed.append(name)
+        gateway.probe_models()
+        self.assertEqual(probed, ["local"])
+
+    def test_the_claude_probe_runs_tool_free_on_the_tier_timeout(self):
+        """A probe must not be a full 900s agentic `claude -p` pass in the request thread that
+        serves /api/models — a stalled one holds the Admin page open for the whole budget."""
+        seen = {}
+
+        class _RecordingCli:
+            def run_json(_self, prompt, model=None, timeout=None, **kw):
+                seen.update({"timeout": timeout, **kw})
+                return {"result": "OK", "total_cost_usd": 0.002}
+        gateway.claude_cli = _RecordingCli()
+        r = gateway.test_model("claude-sonnet")
+        self.assertTrue(r["ok"])
+        self.assertEqual(seen["timeout"], config.CLAUDE_TIER_TIMEOUT_S)
+        self.assertTrue(seen["strict_mcp"])
+        self.assertEqual(seen["setting_sources"], "")
+        # A probe is a real Claude turn, so its spend reaches the ledger like any tier call.
+        self.assertEqual(gateway.stats()["tasks"]["probe"]["cost_usd"], 0.002)
+
+    def test_a_failing_claude_probe_reports_a_verdict_rather_than_raising(self):
+        """`_claude_complete` raises by design (the tiers must not parse "(timed out)" as an
+        answer); the probe's contract is the opposite — it returns {ok, detail}."""
+        class _ErrCli:
+            def run_json(_self, prompt, model=None, timeout=None, **kw):
+                return {"result": "(timed out)", "is_error": True}
+        gateway.claude_cli = _ErrCli()
+        r = gateway.test_model("claude-sonnet")
+        self.assertFalse(r["ok"])
+        self.assertEqual([e["name"] for e in gateway.unhealthy_models()], ["claude-sonnet"])
+
     def test_test_model_records_its_verdict(self):
         # The single probe seam: the per-row "test" button and probe_models() both go through it,
         # so a failed test lights the badge and a passing one clears it.
