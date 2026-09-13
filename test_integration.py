@@ -2343,6 +2343,52 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
                     out = await h.result()
         self.assertEqual(out["result"], "did the thing")
 
+    async def test_a_schedule_pinned_by_name_resolves_its_risk_at_fire_time(self):
+        """Issue #29: `scheduler._args` baked `resolve_cap()`'s {name,kind,risk} into the
+        Temporal Schedule's frozen action args, so a cap reclassified read->write in Admin kept
+        firing that runbook UNGATED. The workflow now resolves the NAME through an activity at
+        fire time — the registry's current risk is the one that decides the gate."""
+        import asyncio
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, plan_capability, record_attempt,
+                                record_skip, resolve_pinned_cap, route_request, snapshot_settings,
+                                run_capability, resolve_pr_target, check_grounding,
+                                verify_capability)
+        routed = []
+        orig_route = engine.route
+        engine.route = lambda *a, **k: routed.append(a) or self.activities._caps[0]
+        self.addCleanup(setattr, engine, "route", orig_route)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="pinq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request,
+                                plan_capability, run_capability, resolve_pr_target,
+                                check_grounding, verify_capability, record_attempt, record_skip,
+                                resolve_pinned_cap, deliver_result],
+                    activity_executor=ex,
+                ):
+                    h = await env.client.start_workflow(
+                        OttoWorkflow.run,
+                        # No `cap` dict at all — only the stored NAME, as a schedule now carries.
+                        {"request": "renew the vpn", "unattended": True, "approval": "ask",
+                         "cap_name": "evt-write"},
+                        id="pin-" + uuid.uuid4().hex[:8], task_queue="pinq")
+                    for _ in range(100):
+                        st = await h.query(OttoWorkflow.status)
+                        if st["awaiting_approval"]:
+                            break
+                        await asyncio.sleep(0.05)
+                    else:
+                        self.fail("a cap the registry calls WRITE did not arm the gate")
+                    self.assertEqual(st["cap"]["name"], "evt-write")
+                    self.assertEqual(st["cap"]["risk"], "write")
+                    await h.signal(OttoWorkflow.approve, True)
+                    out = await h.result()
+        self.assertEqual(out["result"], "did the thing")
+        self.assertEqual(routed, [], "a pinned name must still skip Router #1")
+
     async def test_gate_pushes_a_notification(self):
         """Issue #92: reaching the approval gate fires an owner push (via the notify_human
         activity -> delivery.notify) so a run blocked on approval reaches the phone."""

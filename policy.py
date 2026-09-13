@@ -186,6 +186,19 @@ def load():
     return storage.read_json(_PATH, {"capabilities": {}, "mcps": {}})
 
 
+def stamp():
+    """A cheap change token for the policy store: `(mtime_ns, size)`, or `None` when it does not
+    exist yet. Any long-lived cache of `registry.apply_policy(...)` output must key on this —
+    `runbooks._CAPS` and `activities._caps` were loaded ONCE per process and never invalidated,
+    so an operator reclassifying a cap read->write in Admin kept firing scheduled runs ungated
+    under the stale risk until the process restarted (issue #29)."""
+    try:
+        st = os.stat(_PATH)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 # --- per-server usage notes -----------------------------------------------------------------
 # A note is the operator's own instructions for driving ONE MCP server: the thing the tool
 # schemas can't say ("only ever query the EU account here", "this proxy needs region=us-east-1

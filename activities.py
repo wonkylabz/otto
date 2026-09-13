@@ -24,6 +24,7 @@ import registry
 import workspace
 
 _caps = None
+_caps_stamp = None       # the policy stamp _caps was loaded at; None = injected
 
 
 # Ceiling on waiting for an in-flight beat at teardown. Short: the only thing being waited on
@@ -93,10 +94,19 @@ def _heartbeats(what, every_s=None):
 
 
 def _capabilities():
-    global _caps
-    if _caps is None:
-        _caps = registry.load()
-        registry.apply_policy(_caps, policy.load())
+    """The worker's policy-applied catalogue, cached against `policy.stamp()` — the same key
+    `runbooks._caps` uses, and for the same reason: a cap reclassified in Admin must gate the
+    NEXT run, not the next worker restart (issue #29).
+
+    `_caps_stamp` is set ONLY by a load made here, so a catalogue injected directly (a test
+    fixture assigning `activities._caps`) leaves it None and is never silently reloaded out
+    from under the caller."""
+    global _caps, _caps_stamp
+    st = ("policy", policy.stamp())
+    if _caps is None or (_caps_stamp is not None and _caps_stamp != st):
+        caps = registry.load()
+        registry.apply_policy(caps, policy.load())
+        _caps, _caps_stamp = caps, st
     return _caps
 
 
@@ -220,6 +230,19 @@ def execute_plan(payload: dict) -> dict:
             "auth_stop": out.get("auth_stop", False),
             "auth_wall": out.get("auth_wall"),
             "harness_stop": out.get("harness_stop", False)}
+
+
+@activity.defn
+def resolve_pinned_cap(payload: dict) -> dict:
+    """A stored capability NAME -> the trusted `{name, kind, risk}` the workflow pins on, resolved
+    at FIRE time against the registry + policy. Returns `{"cap": None}` for a name that no longer
+    resolves, which auto-routes rather than failing — the same fallback the scheduler had.
+
+    The resolution deliberately does not live in the schedule's frozen action args: risk must
+    come from the registry as it is NOW, never from whoever saved the runbook (issue #29). Same
+    trusted `_cap` lookup the board and Slack ingresses already use for a pinned name."""
+    c = _cap(payload.get("name"))
+    return {"cap": {"name": c.name, "kind": c.kind, "risk": c.risk} if c else None}
 
 
 @activity.defn
