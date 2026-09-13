@@ -31,6 +31,7 @@ import mcp_client
 import policy
 import local_runtime
 import registry
+import test_support
 from test_support import ui_src
 
 try:
@@ -145,6 +146,9 @@ def setUpModule():
     _tmp_admin = tempfile.mkdtemp(prefix="otto-admin-")
     gateway._PATH = os.path.join(_tmp_admin, "models.json")
     policy._PATH = os.path.join(_tmp_admin, "policy.json")
+    # Every OTHER config.DATA_DIR-derived store, shared with test_support so the two setups
+    # cannot drift. See the note on the helper: nothing under data/ is reachable from a test.
+    test_support._repoint_remaining_stores()
 
 
 def tearDownModule():

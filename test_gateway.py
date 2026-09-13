@@ -4,6 +4,7 @@ Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
 import ast
 import glob
+import importlib
 import contextlib
 import inspect
 import io
@@ -6431,6 +6432,68 @@ class LiveStoreIsolationTests(unittest.TestCase):
             with self.subTest(store=label):
                 self.assertNotEqual(os.path.dirname(os.path.realpath(path)), live,
                                     f"{label} points into the real {config.DATA_DIR}")
+
+    # Constants the scan below finds but that are NOT live state a test can corrupt.
+    _NOT_A_STORE = {
+        # A glob is a PATTERN over data/, not a store written under it (file_safety builds its
+        # deny rules this way) — there is no such path to re-point.
+        "file_safety",
+    }
+
+    def _data_dir_constants(self):
+        """Every module-level constant derived from `config.DATA_DIR`, read out of the source.
+
+        Enumerating them here rather than listing them by hand is the whole point: the
+        per-store opt-in this replaced is exactly how `data/mcp-tools.json` ended up holding the
+        suite's fake MCP server and `data/capabilities.json` a fixture capability. A store added
+        tomorrow is covered without touching this test. Same scan `DataDirIgnoredTests` runs."""
+        root = os.path.dirname(os.path.abspath(__file__))
+        pat = re.compile(r'^(_?[A-Za-z_][A-Za-z_0-9]*)\s*=\s*os\.path\.join\(\s*config\.DATA_DIR',
+                         re.M)
+        out = []
+        for path in sorted(glob.glob(os.path.join(root, "*.py"))):
+            mod = os.path.basename(path)[:-3]
+            if mod.startswith("test_") or mod in self._NOT_A_STORE:
+                continue
+            with open(path, encoding="utf-8") as f:
+                names = set(pat.findall(f.read()))
+            if not names:
+                continue
+            m = sys.modules.get(mod) or importlib.import_module(mod)
+            for n in sorted(names):
+                if hasattr(m, n):
+                    out.append((f"{mod}.{n}", getattr(m, n)))
+        return out
+
+    def test_no_data_dir_store_at_all_survives_the_shared_setup(self):
+        """The derived half of the check above. The named list is documentation — this is what
+        makes forgetting one impossible."""
+        live = os.path.realpath(config.DATA_DIR)
+        found = self._data_dir_constants()
+        self.assertGreater(len(found), 10, "the DATA_DIR constant scan found suspiciously little")
+        leaked = []
+        for label, path in found:
+            if not isinstance(path, str):
+                continue
+            real = os.path.realpath(path)
+            if real == live or real.startswith(live + os.sep):
+                leaked.append(f"{label} -> {path}")
+        self.assertEqual(leaked, [],
+                         "these stores still point into the real data/ during a test run — "
+                         "re-point them in test_support._repoint_remaining_stores")
+
+    def test_the_lazily_resolved_stores_are_pinned_too(self):
+        """`runbooks._STORE` and `estop._PATH` start as None and resolve off `config.DATA_DIR`
+        at CALL time, so the source scan cannot see them: leaving either unset writes a runbook
+        into the developer's real store, or engages the global pause on their own Otto with
+        nothing on screen to say a test did it."""
+        import estop
+        import runbooks
+        live = os.path.realpath(config.DATA_DIR)
+        for label, path in (("runbooks._STORE", runbooks._STORE), ("estop._PATH", estop._PATH)):
+            with self.subTest(store=label):
+                self.assertTrue(path, f"{label} must be pinned, not left to resolve live")
+                self.assertNotEqual(os.path.dirname(os.path.realpath(path)), live)
 
     ALIASES = ("engine._DB", "chats._DB", "knowledge._DB", "gateway._PATH", "policy._PATH",
                # Not a DB, but the same leak with a sharper edge: a `failed` entry written by a

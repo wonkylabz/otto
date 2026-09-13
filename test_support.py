@@ -32,6 +32,7 @@ import engine
 import file_safety
 import memory
 import error_classifier
+import estop
 import events
 import gateway
 import intents
@@ -113,6 +114,53 @@ def setUpModule():
     policy._PATH = os.path.join(_tmp_admin, "policy.json")
     _tmp_db = os.path.join(tempfile.mkdtemp(prefix="otto-db-"), "otto.db")
     engine._DB = chats._DB = knowledge._DB = _tmp_db
+    _repoint_remaining_stores()
+
+
+def _repoint_remaining_stores():
+    """Every OTHER `config.DATA_DIR`-derived store, in one place.
+
+    The aliases above each earned their own note by leaking first. The rest were still
+    per-class opt-in — the exact shape that put 163 phantom rows in the live audit trail, and
+    that had already leaked twice more: the suite's fake MCP server into `data/mcp-tools.json`,
+    and a fixture capability into `data/capabilities.json` via `policy.import_bundle`.
+
+    So the rule is now the default rather than the exception: nothing under `data/` is reachable
+    from a test unless that test re-points it itself. `LiveStoreIsolationTests` derives its
+    checklist from the same scan, so a store added later cannot be forgotten."""
+    import board
+    import repos
+    d = tempfile.mkdtemp(prefix="otto-stores-")
+
+    def _p(name):
+        return os.path.join(d, name)
+
+    # Both names for data/capabilities.json — policy WRITES it, registry READS it, and
+    # `policy.import_bundle` calls `save_custom_caps` unconditionally.
+    policy._CUSTOM = registry.CUSTOM_FILE = _p("capabilities.json")
+    policy._MCPDEF = _p("mcp-servers.json")          # spawned as the operator: never live
+    policy._CONN_CACHE = _p("mcp-connectors-cache.json")
+    board._CFG = _p("board.json")
+    events._RULES = _p("event-rules.json")
+    conventions._STORE = _p("conventions.json")
+    slack._CFG = _p("slack.json")
+    scheduler._LEGACY_STORE = _p("schedules.json")
+    server._DISMISSED_PATH = _p("dismissed.json")
+    server._RETRIES_PATH = _p("retries.json")
+    # Resolved lazily off config.DATA_DIR, so it has to be pinned rather than left unset.
+    runbooks._STORE = _p("runbooks.json")
+    # The global pause. A test engaging it against the live sentinel stops the developer's own
+    # Otto from starting any work, with nothing on screen to say a test did it.
+    estop._PATH = _p("ESTOP")
+    # Directories, same rule: a transcript, a resumable local session, a clone or a workspace
+    # written by a test is live state that outlives the run.
+    for mod, attr, sub in ((claude_cli, "TRANSCRIPTS", "transcripts"),
+                           (local_runtime, "SESSIONS", "local-sessions"),
+                           (workspace, "WORKSPACES", "workspaces"),
+                           (repos, "MANAGED", "repos")):
+        path = os.path.join(d, sub)
+        os.makedirs(path, exist_ok=True)
+        setattr(mod, attr, path)
 
 
 class _Cap:
