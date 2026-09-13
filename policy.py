@@ -547,8 +547,15 @@ def discover_mcps():
 
 def _run_mcp_list():
     """Raw `claude mcp list` text. Health-checks every server (slow, with network timeouts) —
-    keep this OFF the per-run hot path; only the Admin view triggers it."""
-    res = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=60)
+    keep this OFF the per-run hot path; only the Admin view triggers it.
+
+    The health check STARTS each stdio server, so this is one of the doors issue #72 is
+    about: same narrowed environment as a run (`claude_cli.child_env`), or a panel load hands
+    third-party code the credentials a run no longer does. Deferred import — `claude_cli`
+    reaches back here through `mcp_client`."""
+    import claude_cli           # noqa: PLC0415 — see above
+    res = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=60,
+                         env=claude_cli.child_env())
     return res.stdout or ""
 
 
@@ -703,9 +710,11 @@ def reconnect_mcp(name, pol):
         return {"ok": False, "error": "unknown MCP server"}
     cli_name = row.get("display", row["name"]) if row.get("source") == "connector" else row["name"]
     try:
+        import claude_cli       # noqa: PLC0415 — deferred, see `_run_mcp_list`
         subprocess.Popen(["claude", "mcp", "login", cli_name],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+                         stderr=subprocess.DEVNULL, start_new_session=True,
+                         env=claude_cli.child_env())
     except Exception as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "cli_name": cli_name}
