@@ -281,11 +281,7 @@ async function loadMemory(){
        ${memTools("sols","Search approaches…","every capability")}
        <div id="sols-list"></div>`, openState.sols)}
     ${memSection("rules","Behaviour rules","Directives injected into runs, globally or per capability. Advisory: never changes the gate or tools.",bdata.count||0,
-      `<div class="ruleadd">
-        <textarea id="bx-rule" rows="2" placeholder="e.g. Always run the tests before opening a PR"></textarea>
-        <div class="rulerow"><select id="bx-scope">${scopeOptions('global')}</select>
-          <button class="clearbtn" id="bx-add" style="margin-left:0">Add rule</button></div>
-      </div>
+      `<div class="memhead"><button class="addbtn addnew" id="bx-add" style="margin-left:0">+ Add rule</button></div>
       ${memTools("rules","Search rules…","every scope")}
       <div id="rules-list"></div>`, openState.rules)}
     ${memSection("gc","Garbage collector","Classifies stored facts, approaches and rules and flags what looks stale or no longer true. Read-only until you pick candidates and confirm — nothing is deleted on its own.",GC.length,gcBody(),openState.gc)}`;
@@ -314,15 +310,35 @@ async function loadMemory(){
     await fetch("/api/solutions/clear",{method:"POST"}); loadMemory();
   });
   const addRule=document.getElementById("bx-add");
-  if(addRule) addRule.addEventListener("click",async()=>{
+  if(addRule) addRule.addEventListener("click",showBehaviorRuleForm);
+  wireGC();
+}
+
+/* "+ Add rule" opens the shared config-form modal. NOT `showRuleForm` — events.js already owns
+   that name for its webhook rules, and every script here shares one global scope, so the file
+   that loads last would silently answer both buttons., like every other add control in the app
+   (ui.md). The paste box used to sit open above the list, so the section led with an empty
+   textarea and mentioned how many rules were stored underneath it, in passing. */
+function showBehaviorRuleForm(){
+  const c=openFormModal("<b>New behaviour rule</b><br>a directive injected into runs &mdash; advisory, never a gate");
+  c.innerHTML=`<div class="aform">
+    <label>Rule</label>
+    <textarea id="bx-rule" rows="3" placeholder="e.g. Always run the tests before opening a PR"></textarea>
+    <label>Scope</label><select id="bx-scope">${scopeOptions('global')}</select>
+    <div class="ferr" id="bx-err"></div>
+    <div class="factions"><button class="btn approve" id="bx-save">Add rule</button>
+      <button class="btn decline" id="bx-cancel">Cancel</button></div>
+  </div>`;
+  document.getElementById("bx-rule").focus();
+  document.getElementById("bx-cancel").onclick=closeFormModal;
+  document.getElementById("bx-save").onclick=async()=>{
     const rule=(document.getElementById("bx-rule").value||"").trim();
-    if(!rule) return;
+    if(!rule){ document.getElementById("bx-err").textContent="write the rule first"; return; }
     const scope=document.getElementById("bx-scope").value||"global";
     await fetch("/api/behaviors/add",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({rule,scope})});
-    loadMemory();
-  });
-  wireGC();
+    closeFormModal(); loadMemory();
+  };
 }
 
 /* Build <option>s for a behaviour-rule scope picker: Global + each enabled capability

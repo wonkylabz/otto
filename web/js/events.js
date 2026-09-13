@@ -80,7 +80,7 @@ async function loadEvents(){
     </div>
     <div class="asection coll${closed['ev-webhooks']?' collapsed':''}" data-sect="ev-webhooks">
       <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Webhooks${whBadge}<span class="sectcount">${EVENT_RULES.length} rule${EVENT_RULES.length===1?'':'s'}</span></span>
-        <button class="addbtn" id="add-rule">+ rule</button></h3>
+        <button class="addbtn addnew" id="add-rule">+ Add event rule</button></h3>
       <div class="asection-body">
         <p class="sub" style="margin:10px 0 10px">Turn any inbound webhook into an unattended run &mdash; the first matching enabled rule runs it. <b>POST</b> to <code title="HMAC-SHA256 of the raw body in X-Otto-Signature, key OTTO_EVENT_SECRET">${esc(location.origin)}/api/events/&lt;source&gt;</code>.</p>
         ${!data.enabled?'<p class="err">Disabled — set <code>OTTO_EVENT_SECRET</code> and restart. Rules can still be authored.</p>':''}

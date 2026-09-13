@@ -418,10 +418,9 @@ function modelsSection(m){
   return `<div class="asection coll collapsed" data-sect="models"><h3><span class="secttoggle" title="collapse / expand">
       <span class="gcaret">&#9662;</span>LLM models<span class="sectcount">${m.pool.length}</span></span>
     <span class="h3btns"><button class="addbtn" id="model-recheck" title="re-test every model for reachability — Claude entries included, so this costs one claude -p turn each">&#8635; Recheck health</button>
-    <button class="addbtn" id="add-endpoint" title="an OpenAI-compatible server (vLLM / Ollama / a hosted API): set its URL, key and any extra headers once, then add its models with discover">+ add endpoint</button>
-    <button class="addbtn" id="add-model">+ add model</button></span></h3>
+    <button class="addbtn addnew" id="add-endpoint" title="an OpenAI-compatible server (vLLM / Ollama / a hosted API): set its URL, key and any extra headers once, then add its models with discover">+ Add endpoint</button>
+    <button class="addbtn addnew" id="add-model">+ Add model</button></span></h3>
     ${warn}
-    <div id="model-form"></div>
     <div class="asection-body">
     ${endpointsBlock(m)}
     <p class="sub" style="margin:2px 0 8px">One model per phase — hover a column header for what it does. The cheap phases take a local model happily.</p>
@@ -532,8 +531,9 @@ function bindKindGuess(urlId,kindId){
 }
 
 function showEndpointForm(name){
-  const c=document.getElementById("model-form");
   const e=(MODEL_STATE.endpoints||[]).find(x=>x.name===name)||{};
+  const c=openFormModal(name?("<b>Edit endpoint</b><br>"+esc(name))
+                            :"<b>New endpoint</b><br>an OpenAI-compatible server Otto can call");
   c.innerHTML=`<div class="aform">
     <label>Name</label><input id="ep-name" placeholder="e.g. gpu-box  &middot;  deepseek" value="${esc(e.name||"")}">
     <label>Base URL (OpenAI-compatible)</label><input id="ep-url" placeholder="http://localhost:11434/v1" value="${esc(e.base_url||"")}">
@@ -544,7 +544,7 @@ function showEndpointForm(name){
     <div class="factions"><button class="btn approve" id="ep-save">${name?"Save endpoint":"Add endpoint"}</button>
       <button class="btn decline" id="ep-cancel">Cancel</button></div>
   </div>`;
-  document.getElementById("ep-cancel").onclick=()=>c.innerHTML="";
+  document.getElementById("ep-cancel").onclick=closeFormModal;
   if(!name) bindKindGuess("ep-url","ep-kind");   // a NEW endpoint follows the URL until the operator picks
   document.getElementById("ep-save").onclick=async()=>{
     const err=document.getElementById("ep-err");
@@ -562,14 +562,14 @@ function showEndpointForm(name){
       // A rename must carry its models with it — the reference is the name.
       MODEL_STATE.pool.forEach(p=>{ if(p.endpoint===name) p.endpoint=nm; });
     }
-    await saveModels(); loadAdmin();
+    await saveModels(); closeFormModal(); loadAdmin();
   };
 }
 
 /* Ask an endpoint what it serves and add the picks as pool entries. The point of the whole
    feature: the URL and key are already configured, so a new model costs two clicks. */
 async function showDiscovery(epName){
-  const c=document.getElementById("model-form");
+  const c=openFormModal("<b>Add models</b><br>from the endpoint "+esc(epName));
   // Not .sub on the body: that caps width at 760px (prose measure) and a model id is not prose.
   c.innerHTML=`<div class="aform discpanel"><label>Models on <b>${esc(epName)}</b></label>
     <div id="disc-body"><span class="sub">asking the server…</span></div></div>`;
@@ -597,7 +597,7 @@ async function showDiscovery(epName){
     <div class="ferr" id="disc-err"></div>
     <div class="factions"><button class="btn approve" id="disc-add">Add selected</button>
       <button class="btn decline" id="disc-cancel">Cancel</button></div>`;
-  document.getElementById("disc-cancel").onclick=()=>c.innerHTML="";
+  document.getElementById("disc-cancel").onclick=closeFormModal;
   document.getElementById("disc-add").onclick=async()=>{
     const picks=[...body.querySelectorAll("input[type=checkbox]:checked")].map(i=>i.value);
     if(!picks.length){ document.getElementById("disc-err").textContent="nothing selected"; return; }
@@ -611,7 +611,7 @@ async function showDiscovery(epName){
       taken.add(name);
       MODEL_STATE.pool.push({name, provider:"openai", endpoint:epName, model:id});
     });
-    await saveModels(); loadAdmin();
+    await saveModels(); closeFormModal(); loadAdmin();
   };
 }
 
@@ -633,8 +633,8 @@ function parseHeaders(text){
 }
 
 function showModelForm(){
-  const c=document.getElementById("model-form");
   const eps=MODEL_STATE.endpoints||[];
+  const c=openFormModal("<b>New model</b><br>a Claude model, or one served by an OpenAI-compatible endpoint");
   c.innerHTML=`<div class="aform">
     <label>Type</label>
     <select id="lm-prov"><option value="claude">Claude (claude -p)</option><option value="openai">OpenAI-compatible endpoint (local or hosted)</option></select>
@@ -661,7 +661,7 @@ function showModelForm(){
   epSel.onchange=()=>{ newEp.style.display = epSel.value ? "none" : "flex"; };
   bindKindGuess("lm-url","lm-kind");
   if(!eps.length) epSel.value="";
-  document.getElementById("lm-cancel").onclick=()=>c.innerHTML="";
+  document.getElementById("lm-cancel").onclick=closeFormModal;
   document.getElementById("lm-save").onclick=async()=>{
     const err=document.getElementById("lm-err");
     const name=val("lm-name"), model=val("lm-model");
@@ -687,7 +687,7 @@ function showModelForm(){
         m.max_turns=n;
       }
     }
-    MODEL_STATE.pool.push(m); await saveModels(); loadAdmin();
+    MODEL_STATE.pool.push(m); await saveModels(); closeFormModal(); loadAdmin();
   };
 }
 
@@ -958,8 +958,7 @@ function renderAdmin(data, models, el, settings){
     ${settingsSection(settings)}
     <div class="asection coll collapsed" data-sect="caps"><h3><span class="secttoggle" title="collapse / expand">
         <span class="gcaret">&#9662;</span>Capabilities<span class="sectcount" title="enabled / discovered — the header counts only the enabled ones, this table lists them all">${data.capabilities.filter(c=>c.enabled).length} / ${data.capabilities.length}</span></span>
-      <button class="addbtn" id="add-cap">+ capability</button></h3>
-      <div id="cap-form"></div>
+      <button class="addbtn addnew" id="add-cap">+ Add capability</button></h3>
       <div class="asection-body">
       <div class="captools">
         <input id="cap-search" class="capsearch" type="text" placeholder="Search ${data.capabilities.length} capabilities by name or description…" autocomplete="off">
@@ -970,11 +969,10 @@ function renderAdmin(data, models, el, settings){
       <p class="capnone" id="cap-empty" hidden>No capabilities match your search.</p></div></div>
     <div class="asection coll collapsed" data-sect="mcp"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>MCP servers<span class="sectcount">${data.mcps.length}</span></span>
       <span class="h3btns"><button class="addbtn" id="mcp-recheck" title="re-run claude mcp list (health check)">&#8635; Recheck health</button>
-      <button class="addbtn" id="add-mcp">+ MCP server</button></span></h3>
+      <button class="addbtn addnew" id="add-mcp">+ Add MCP server</button></span></h3>
       ${mcpIssues?`<div class="mcpwarn"><span class="msg"><b>${mcpIssues}</b> enabled MCP server${mcpIssues>1?'s':''} ${mcpIssues>1?'are':'is'} unreachable or ${mcpIssues>1?'need':'needs'} authentication &mdash; runs that use ${mcpIssues>1?'them':'it'} may fail. Fix ${mcpIssues>1?'them':'it'} below, then Recheck.</span></div>`:''}
       <div class="asection-body">${mcpTable}</div></div>
-    <div class="asection coll collapsed" data-sect="projects"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Project repos<span class="sectcount">${(data.projects||[]).length}</span></span><button class="addbtn" id="add-project">+ project repo</button></h3>
-      <div id="project-form"></div>
+    <div class="asection coll collapsed" data-sect="projects"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Project repos<span class="sectcount">${(data.projects||[]).length}</span></span><button class="addbtn addnew" id="add-project">+ Add project repo</button></h3>
       <div class="asection-body">
       <p class="sub" style="margin:10px 0 10px">Registered by remote URL — Otto keeps its own clone unless you point at a local checkout. Skills &amp; subagents from a repo's <code>.claude/</code> dir are imported and run from its root, so the repo's <code>.mcp.json</code> resolves. Listed above as <code>&lt;repo&gt;:&lt;name&gt;</code>.</p>
       ${projectTable}</div></div>
@@ -1092,8 +1090,8 @@ function renderAdmin(data, models, el, settings){
     if(open) st[sec.dataset.sect]=1; else delete st[sec.dataset.sect];
     swrite(st);
   }));
-  // A "+ add" / recheck button in a collapsed header would otherwise reveal a form below a hidden
-  // body — expand the section so the result is actually visible.
+  // Every "+ Add" opens the shared modal now, but what it adds lands in THIS section's list, and
+  // a recheck writes its result there too — so expand the section, or both read as no-ops.
   el.querySelectorAll(".asection.coll h3 .addbtn").forEach(b=>b.addEventListener("click",()=>{
     const sec=b.closest(".asection");
     if(!sec.classList.contains("collapsed")) return;
@@ -1285,7 +1283,8 @@ async function postForm(path, body, errEl){
 
 function showCapForm(cap){
   const editing = !!(cap && cap.source==='otto');
-  const c=document.getElementById("cap-form");
+  const c=openFormModal(editing?("<b>Edit capability</b><br>"+esc(cap.name))
+                               :"<b>New capability</b><br>a prompt Otto can route a request to");
   c.innerHTML=`<div class="aform">
     <label>Name${editing?' (read-only)':''}</label><input id="cf-name" placeholder="e.g. summarize-pr" ${editing?'readonly':''}>
     <label>Description (used for routing)</label><input id="cf-desc" placeholder="what it does + when to use it">
@@ -1293,7 +1292,7 @@ function showCapForm(cap){
       <div><label>Risk</label><select id="cf-risk"><option value="read">read (auto-runs)</option><option value="write">write (needs approval)</option></select></div>
     </div>
     <label>Prompt — use {request} where the user's text goes</label>
-    <textarea id="cf-prompt" placeholder="Summarize the following GitHub PR and list risks:\n{request}"></textarea>
+    <textarea id="cf-prompt" class="prosearea" placeholder="Summarize the following GitHub PR and list risks:\n{request}"></textarea>
     <div class="ferr" id="cf-err"></div>
     <div class="factions"><button class="btn approve" id="cf-save">${editing?'Save changes':'Add capability'}</button><button class="btn decline" id="cf-cancel">Cancel</button></div>
   </div>`;
@@ -1303,7 +1302,7 @@ function showCapForm(cap){
     document.getElementById("cf-prompt").value=cap.prompt||"";
     document.getElementById("cf-risk").value=cap.risk||"write";
   }
-  document.getElementById("cf-cancel").onclick=()=>c.innerHTML="";
+  document.getElementById("cf-cancel").onclick=closeFormModal;
   document.getElementById("cf-save").onclick=async()=>{
     const ok=await postForm(editing?"/api/capability/edit":"/api/capability/add",{
       name:document.getElementById("cf-name").value.trim(),
@@ -1311,7 +1310,7 @@ function showCapForm(cap){
       risk:document.getElementById("cf-risk").value,
       prompt:document.getElementById("cf-prompt").value,
     },document.getElementById("cf-err"));
-    if(ok) loadAdmin();
+    if(ok){ closeFormModal(); loadAdmin(); }
   };
 }
 
@@ -1390,7 +1389,7 @@ function showMcpForm(existing){
 }
 
 function showProjectForm(){
-  const c=document.getElementById("project-form");
+  const c=openFormModal("<b>New project repo</b><br>a repository Otto can read, clone and work in");
   c.innerHTML=`<div class="aform">
     <label>Repo URL</label><input id="pf-url" placeholder="https://github.com/owner/repo">
     <p class="sub" style="margin:2px 0 0">GitHub or GitLab remote (<code>git@…</code> works too). Otto clones it under <code>data/repos/</code> using your <code>gh</code> login.</p>
@@ -1399,7 +1398,7 @@ function showProjectForm(){
     <div class="ferr" id="pf-err"></div>
     <div class="factions"><button class="btn approve" id="pf-save">Add project repo</button><button class="btn decline" id="pf-cancel">Cancel</button></div>
   </div>`;
-  document.getElementById("pf-cancel").onclick=()=>c.innerHTML="";
+  document.getElementById("pf-cancel").onclick=closeFormModal;
   document.getElementById("pf-save").onclick=async(e)=>{
     // The clone runs inside this request, so the button must say so — a silent multi-second
     // wait on a form with no feedback reads as a dead button and gets clicked again.
@@ -1410,7 +1409,7 @@ function showProjectForm(){
       path:document.getElementById("pf-path").value.trim(),
     },document.getElementById("pf-err"));
     btn.disabled=false; btn.textContent=was;
-    if(ok) loadAdmin();
+    if(ok){ closeFormModal(); loadAdmin(); }
   };
 }
 
