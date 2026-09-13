@@ -204,17 +204,22 @@ def execute_plan(payload: dict) -> dict:
                               wid=payload.get("wid"), project=project,
                               model_override=payload.get("model_override"),
                               replan=not authored,
-                              resolve_cap=_cap if authored else None)
+                              resolve_cap=_cap if authored else None,
+                              # The workflow's own settings snapshot — the budget the run
+                              # started under, not whatever the store says mid-plan.
+                              settings=payload.get("settings"))
     except ValueError as e:      # unresolvable per-step cap — nothing ran, so nothing is half-done
         return {"result": f"This runbook could not start: {e}", "passed": False, "cost": 0,
                 "tokens": None, "steps_run": 0, "replans": 0, "budget_stop": False,
-                "strict_stop": False, "auth_stop": False, "auth_wall": None}
+                "strict_stop": False, "auth_stop": False, "auth_wall": None,
+                "harness_stop": False}
     return {"result": out["result"], "passed": out["passed"], "cost": out["cost"],
             "tokens": out["tokens"], "steps_run": out["steps_run"],
             "replans": out["replans"], "budget_stop": out["budget_stop"],
             "strict_stop": out.get("strict_stop", False),
             "auth_stop": out.get("auth_stop", False),
-            "auth_wall": out.get("auth_wall")}
+            "auth_wall": out.get("auth_wall"),
+            "harness_stop": out.get("harness_stop", False)}
 
 
 @activity.defn

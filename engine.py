@@ -831,6 +831,9 @@ def _run_ladder(request, cap, wid, recall=False, project=None, remember=True, wr
     out = _ladder_core(request, cap, wid, recall=recall, project=project, remember=remember,
                        write_escalate=write_escalate, memory_enabled=memory_enabled,
                        model_override=model_override, budget=False)
+    # `harness_stop` and `budget_stop` ride along: a step whose ladder died in the harness is
+    # not a judgement, and dropping the flag here made `run_plan` unable to tell the caller
+    # apart from a step the judge actually failed.
     return {k: out[k] for k in
             ("result", "passed", "critique", "cost", "tokens_out", "attempts", "strict_stop",
-             "auth_stop", "auth_wall")}
+             "auth_stop", "auth_wall", "harness_stop", "budget_stop")}

@@ -762,7 +762,7 @@ def _plan_step_caps(steps, cap, project, resolve_cap):
 
 
 def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
-             replan=True, resolve_cap=None):
+             replan=True, resolve_cap=None, settings=None):
     """Execute a plan (from plan_steps, or authored by a human as a runbook) on executor `cap`,
     threading each step's output forward to the steps that declared it in `needs`. Every step runs
     through the SAME verify->retry->escalate ladder as a normal run. When a step EXHAUSTS its
@@ -800,7 +800,7 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
     store, results = {}, []
     pending = list(steps)
     replans, total_cost, spent_out, budget_stop = 0, 0, 0, False
-    strict_stop = auth_stop = False
+    strict_stop = auth_stop = harness_stop = False
     auth_wall = None
     max_par = max(1, config.PLAN_MAX_PARALLEL)
     step_caps = _plan_step_caps(steps, cap, project, resolve_cap)
@@ -813,7 +813,10 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
 
     while pending:
         # Hard cost ceiling: stop before the next wave (never on the first — spend starts at 0).
-        if config.budget_exceeded(spent_out, total_cost, hard=True):
+        # The RUN's snapshot, not the live store: the workflow enforces its own budget on a
+        # snapshot taken once, so reading the live store here let a mid-run settings edit make
+        # the two halves of one run disagree about what the ceiling was.
+        if config.budget_exceeded(spent_out, total_cost, hard=True, snapshot=settings):
             budget_stop = True
             trace("PLAN", f"{wid} hard budget ceiling reached — stopping plan for a human")
             break
@@ -850,6 +853,8 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
             if outcome.get("auth_stop"):
                 auth_stop = True
                 auth_wall = auth_wall or outcome.get("auth_wall")
+            if outcome.get("harness_stop"):
+                harness_stop = True
             if not outcome["passed"]:
                 wave_failed.append((entry, outcome["critique"]))
         for s in wave:
@@ -898,4 +903,7 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
     return {"result": result, "passed": passed, "cost": total_cost,
             "tokens": {"output": spent_out}, "steps_run": len(results),
             "replans": replans, "budget_stop": budget_stop, "strict_stop": strict_stop,
-            "auth_stop": auth_stop, "auth_wall": auth_wall}
+            "auth_stop": auth_stop, "auth_wall": auth_wall,
+            # A step whose ladder died in the harness (no judge ever read it) is not a
+            # judgement — the caller files it `harness_exhausted`, never `verify_exhausted`.
+            "harness_stop": harness_stop}
