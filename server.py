@@ -1288,38 +1288,52 @@ class Handler(BaseHTTPRequestHandler):
             self._send(413, json.dumps({"error": "payload too large"})); return
         raw = self.rfile.read(n) if n else b""
         sig = self.headers.get("X-Otto-Signature")
-        if not events.verify_sig(raw, sig):
+        ts = self.headers.get("X-Otto-Timestamp")
+        # The timestamp is REQUIRED and is covered by the MAC, so check it first: an absent or
+        # stale one means the signature could not have been minted for this moment, and saying
+        # so plainly is more useful to a sender than a generic signature failure.
+        if not events.timestamp_fresh(ts):
+            self._send(401, json.dumps({"error": "missing or stale X-Otto-Timestamp"})); return
+        if not events.verify_sig(raw, sig, ts):
             self._send(401, json.dumps({"error": "bad or missing signature"})); return
-        # Replay protection: reject a stale timestamp (if the caller sends one) and any exact
-        # re-send of an already-processed signature within the replay window.
-        if not events.timestamp_fresh(self.headers.get("X-Otto-Timestamp")):
-            self._send(401, json.dumps({"error": "stale timestamp"})); return
-        # Paused: refuse BEFORE is_replay, which BURNS the signature. Rejecting after it would
-        # make the sender's retry-after-release look like a replay and drop the event for good.
-        # 503, not 409 — a webhook sender should treat this as "try again later".
+        # Paused: refuse BEFORE claiming the signature, which would make the sender's
+        # retry-after-release look like a replay and drop the event for good. 503, not 409 — a
+        # webhook sender should treat this as "try again later".
         if estop.blocked("events"):
             self._send(503, json.dumps({"error": "Otto is paused", "paused": True})); return
-        if events.is_replay(sig):
+        if not events.claim_signature(sig):
             self._send(409, json.dumps({"error": "duplicate event (replay)"})); return
+        # From here the signature is CLAIMED. Every path that doesn't commit a run must release
+        # it, or the sender's retry with the identical body is swallowed as a duplicate for the
+        # whole replay window and the alert is simply lost (issue #32). That includes a raising
+        # _wf_start — a Temporal hiccup is exactly what a sender retries.
+        committed = False
         try:
-            payload = json.loads(raw or b"{}")
-        except ValueError:
-            self._send(400, json.dumps({"error": "invalid JSON"})); return
-        source = self.path[len("/api/events/"):].strip("/")
-        norm = events.to_request(source, payload)
-        if not norm:
-            self._send(200, json.dumps({"ignored": True})); return   # no rule matched -> no-op
-        cap = None
-        if norm.get("cap"):
-            # Resolve a pinned capability from the trusted registry (don't take risk from a rule).
-            c = next((c for c in CAPS if c.name == norm["cap"]), None)
-            if c is None:
-                self._send(400, json.dumps({"error": f"rule pins unknown capability '{norm['cap']}'"})); return
-            cap = {"name": c.name, "kind": c.kind, "risk": c.risk}
-        wid = "evt-" + uuid.uuid4().hex[:8]
-        tc.run(_wf_start(wid, {"request": norm["request"], "cap": cap, "unattended": True,
-                               "approval": norm["approval"], "reply_to": norm.get("reply_to")}))
-        self._send(202, json.dumps({"id": wid, "request": norm["request"]}))
+            try:
+                payload = json.loads(raw or b"{}")
+            except ValueError:
+                self._send(400, json.dumps({"error": "invalid JSON"})); return
+            source = self.path[len("/api/events/"):].strip("/")
+            norm = events.to_request(source, payload)
+            if not norm:
+                # No rule matched -> no-op. The claim IS released: nothing ran, and a rule the
+                # operator adds a minute later must still see the sender's next delivery.
+                self._send(200, json.dumps({"ignored": True})); return
+            cap = None
+            if norm.get("cap"):
+                # Resolve a pinned capability from the trusted registry (don't take risk from a rule).
+                c = next((c for c in CAPS if c.name == norm["cap"]), None)
+                if c is None:
+                    self._send(400, json.dumps({"error": f"rule pins unknown capability '{norm['cap']}'"})); return
+                cap = {"name": c.name, "kind": c.kind, "risk": c.risk}
+            wid = "evt-" + uuid.uuid4().hex[:8]
+            tc.run(_wf_start(wid, {"request": norm["request"], "cap": cap, "unattended": True,
+                                   "approval": norm["approval"], "reply_to": norm.get("reply_to")}))
+            committed = True
+            self._send(202, json.dumps({"id": wid, "request": norm["request"]}))
+        finally:
+            if not committed:
+                events.release_signature(sig)
 
     def do_POST(self):
         if not self._csrf_ok():

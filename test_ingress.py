@@ -6,6 +6,7 @@ import ast
 import asyncio
 import glob
 import contextlib
+import importlib
 import inspect
 import io
 import json
@@ -816,34 +817,79 @@ class EventIngressTests(unittest.TestCase):
     def setUp(self):
         self._orig = events.SECRET
         events.SECRET = "topsecret"
+        self._seen = events._SEEN_FILE
+        self._dir = tempfile.mkdtemp(prefix="otto-evt-")
+        events._SEEN_FILE = os.path.join(self._dir, "event-replay.json")
 
     def tearDown(self):
         events.SECRET = self._orig
+        events._SEEN_FILE = self._seen
+        shutil.rmtree(self._dir, ignore_errors=True)
 
-    def test_signature(self):
+    def test_signature_covers_the_timestamp(self):
         import hashlib
         import hmac
         raw = b'{"a":1}'
-        sig = hmac.new(b"topsecret", raw, hashlib.sha256).hexdigest()
-        self.assertTrue(events.verify_sig(raw, sig))
-        self.assertFalse(events.verify_sig(raw, "deadbeef"))
-        self.assertFalse(events.verify_sig(raw, None))
+        sig = hmac.new(b"topsecret", b"1700000000." + raw, hashlib.sha256).hexdigest()
+        self.assertEqual(events.sign("1700000000", raw), sig)
+        self.assertTrue(events.verify_sig(raw, sig, "1700000000"))
+        # The same body under a DIFFERENT timestamp is a different MAC — which is the whole
+        # point: a captured request cannot be re-dated to stay fresh.
+        self.assertFalse(events.verify_sig(raw, sig, "1700000001"))
+        self.assertFalse(events.verify_sig(raw, sig, None))
+        self.assertFalse(events.verify_sig(raw, "deadbeef", "1700000000"))
+        self.assertFalse(events.verify_sig(raw, None, "1700000000"))
+
+    def test_legacy_body_only_signature_is_refused(self):
+        """The pre-#5 construction MACed the body alone, so dropping the (unsigned, optional)
+        timestamp header replayed a capture forever. That signature must no longer verify."""
+        import hashlib
+        import hmac
+        raw = b'{"a":1}'
+        legacy = hmac.new(b"topsecret", raw, hashlib.sha256).hexdigest()
+        self.assertFalse(events.verify_sig(raw, legacy, "1700000000"))
+        self.assertFalse(events.verify_sig(raw, legacy, None))
 
     def test_disabled_without_secret(self):
         events.SECRET = None
         self.assertFalse(events.enabled())
-        self.assertFalse(events.verify_sig(b"x", "anything"))   # never trust when off
+        self.assertFalse(events.verify_sig(b"x", "anything", "1700000000"))   # never trust when off
 
     def test_replay_dedup_by_signature(self):
-        events._SEEN.clear()
-        self.assertFalse(events.is_replay("sigA", now=1000))    # first time -> ok
-        self.assertTrue(events.is_replay("sigA", now=1001))     # exact re-send -> replay
+        self.assertTrue(events.claim_signature("sigA", now=1000))     # first time -> ok
+        self.assertFalse(events.claim_signature("sigA", now=1001))    # exact re-send -> replay
         # A distinct event is not a replay; and after the window the old one is forgotten.
-        self.assertFalse(events.is_replay("sigB", now=1002))
-        self.assertFalse(events.is_replay("sigA", now=1000 + events.REPLAY_WINDOW_S + 1))
+        self.assertTrue(events.claim_signature("sigB", now=1002))
+        self.assertTrue(events.claim_signature("sigA", now=1000 + events.REPLAY_WINDOW_S + 1))
 
-    def test_timestamp_freshness_optional_but_enforced_when_present(self):
-        self.assertTrue(events.timestamp_fresh(None, now=1000))         # header absent -> allowed
+    def test_replay_ring_survives_a_restart(self):
+        """It used to live in a module-level dict, so a restart handed back a free replay of
+        everything captured before it."""
+        self.assertTrue(events.claim_signature("sigA", now=1000))
+        importlib.reload(events)                       # a fresh process, same data dir
+        try:
+            events.SECRET = "topsecret"
+            events._SEEN_FILE = os.path.join(self._dir, "event-replay.json")
+            self.assertFalse(events.claim_signature("sigA", now=1001))
+        finally:
+            importlib.reload(events)
+
+    def test_released_claim_lets_the_senders_retry_through(self):
+        """A claim is released on every path that does not commit a run (issue #32), so the
+        sender's retry with the identical body is accepted rather than swallowed."""
+        self.assertTrue(events.claim_signature("sigA", now=1000))
+        events.release_signature("sigA")
+        self.assertTrue(events.claim_signature("sigA", now=1001))
+
+    def test_replay_ring_is_bounded(self):
+        for i in range(events._SEEN_MAX + 50):
+            events.claim_signature(f"sig{i}", now=1000 + i)
+        stored = storage.read_json(events._SEEN_FILE, {})
+        self.assertLessEqual(len(stored), events._SEEN_MAX)
+
+    def test_timestamp_is_required_and_fresh(self):
+        self.assertFalse(events.timestamp_fresh(None, now=1000))        # absent -> REFUSED
+        self.assertFalse(events.timestamp_fresh("", now=1000))
         self.assertTrue(events.timestamp_fresh("1000", now=1000))
         self.assertFalse(events.timestamp_fresh("1", now=1000 + events.REPLAY_WINDOW_S + 5))
         self.assertFalse(events.timestamp_fresh("not-a-number", now=1000))

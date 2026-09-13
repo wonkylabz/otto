@@ -5804,7 +5804,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # a clause inside a run-on line and five add forms still rendered inline anyway, which is
     # what a clause buys; and the same-named-global rule is a MEASURED bug (Events' webhook
     # button opened Memory's behaviour-rule form), invisible to `node --check` and to every grep.
-    MAX_RULES_BYTES = 76721   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 77_483 for the webhook signing rules (issues #5, #32): what the MAC covers and when a
+    # signature may be recorded are both decisions that look right either way in the code and
+    # fail silently — an unsigned timestamp reads as a freshness check while adding none, and a
+    # burned signature turns a sender's legitimate retry into a 409 nobody sees.
+    MAX_RULES_BYTES = 77483   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

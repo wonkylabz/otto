@@ -107,6 +107,9 @@ def setUpModule():
     # sends a push otherwise poisons the LIVE dedupe window — the next real approval push inside
     # config.NTFY_DEDUPE_S would be dropped as a duplicate and the phone would never ring.
     delivery._STATE = os.path.join(tempfile.mkdtemp(prefix="otto-notify-"), "notify-state.json")
+    # Hermetic webhook replay ring — see the identical note in test_support.setUpModule. These
+    # tests POST real signed events, so an un-repointed ring burns those signatures live.
+    events._SEEN_FILE = os.path.join(tempfile.mkdtemp(prefix="otto-events-"), "event-replay.json")
     # Hermetic gateway stats/model-health store — see the identical note in test_core.setUpModule:
     # a suite run must not rewrite the developer's live /api/health numbers or leave a phantom
     # "model failing" badge behind.
@@ -170,15 +173,20 @@ def _get(base, path):
         return e.code, json.loads(e.read() or b"{}")
 
 
-def _post_event(base, source, payload, secret="itest-secret", bad_sig=False):
-    """POST a signed event; returns (status, body)."""
-    import hashlib
-    import hmac
+def _post_event(base, source, payload, secret="itest-secret", bad_sig=False, ts=None, sign_ts=True):
+    """POST a signed event; returns (status, body). The MAC covers `<timestamp>.<body>`, so the
+    two headers are minted together — `sign_ts=False` mints the legacy body-only MAC, which must
+    now be refused."""
     raw = json.dumps(payload).encode()
-    sig = "bad" if bad_sig else hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    ts = str(int(time.time())) if ts is None else str(ts)
+    if bad_sig:
+        sig = "bad"
+    else:
+        sig = events.sign(ts if sign_ts else None, raw, secret)
     req = urllib.request.Request(
         base + "/api/events/" + source, method="POST", data=raw,
-        headers={"Content-Type": "application/json", "X-Otto-Signature": sig})
+        headers={"Content-Type": "application/json", "X-Otto-Signature": sig,
+                 "X-Otto-Timestamp": ts})
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read())
@@ -688,6 +696,73 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(p["approval"], "auto")             # rule's auto_approve → auto
         self.assertEqual(p["cap"]["name"], "demo-write")    # pinned cap resolved from registry…
         self.assertEqual(p["cap"]["risk"], "write")         # …with trusted risk (not from the rule)
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "event ingress needs TEMPORAL_OK")
+    def test_event_without_a_timestamp_is_refused(self):
+        """The header is required and signed now (issue #5). A body-only MAC — the whole of the
+        old construction — replayed a capture forever by simply omitting the header."""
+        raw = json.dumps({"what": "deploy"}).encode()
+        req = urllib.request.Request(
+            self.base + "/api/events/itest", method="POST", data=raw,
+            headers={"Content-Type": "application/json",
+                     "X-Otto-Signature": events.sign(None, raw, "itest-secret")})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                st = r.status
+        except urllib.error.HTTPError as e:
+            st = e.code
+        self.assertEqual(st, 401)
+        # …and a well-formed signature under a STALE timestamp is refused too.
+        st, _ = _post_event(self.base, "itest", {"what": "deploy"},
+                            ts=int(time.time()) - events.REPLAY_WINDOW_S - 60)
+        self.assertEqual(st, 401)
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "event ingress needs TEMPORAL_OK")
+    def test_exact_replay_is_rejected_but_only_once_committed(self):
+        """Issue #32: the signature used to be burned before the request could still fail, so the
+        sender's retry after a 400/500 was swallowed as a duplicate and the alert was lost."""
+        self.started.clear()
+        ts = int(time.time())
+        # A payload unique to this test: the signature now covers (timestamp, body), so a sibling
+        # test posting the same body in the same second would collide on the replay ring.
+        body_one = {"what": "replay-probe"}
+        st, _ = _post_event(self.base, "itest", body_one, ts=ts)
+        self.assertEqual(st, 202)
+        st, body = _post_event(self.base, "itest", body_one, ts=ts)
+        self.assertEqual(st, 409)                          # byte-identical re-send -> replay
+        self.assertEqual(len(self.started), 1)
+
+        # A start that RAISES commits nothing, so the identical retry must be accepted.
+        boom = [True]
+
+        async def flaky(wid, params):
+            if boom[0]:
+                boom[0] = False
+                raise RuntimeError("temporal hiccup")
+            self.started.append({"wid": wid, "params": params})
+
+        prev, self.server._wf_start = self.server._wf_start, flaky
+        try:
+            self.started.clear()
+            ts2 = ts + 1
+            st, _ = _post_event(self.base, "itest", body_one, ts=ts2)
+            self.assertEqual(st, 500)
+            self.assertEqual(self.started, [])
+            st, _ = _post_event(self.base, "itest", body_one, ts=ts2)
+            self.assertEqual(st, 202)                      # the retry gets through
+            self.assertEqual(len(self.started), 1)
+        finally:
+            self.server._wf_start = prev
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "event ingress needs TEMPORAL_OK")
+    def test_unmatched_event_does_not_burn_the_signature(self):
+        """Nothing ran, so a rule the operator adds a minute later must still see the sender's
+        next delivery of that same body."""
+        ts = int(time.time())
+        st, body = _post_event(self.base, "no-such-source", {"what": "x"}, ts=ts)
+        self.assertEqual((st, body.get("ignored")), (200, True))
+        st, body = _post_event(self.base, "no-such-source", {"what": "x"}, ts=ts)
+        self.assertEqual((st, body.get("ignored")), (200, True))   # not a 409
 
 
 class LocalExecutionTests(unittest.TestCase):

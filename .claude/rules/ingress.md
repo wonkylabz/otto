@@ -75,6 +75,12 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 
 **Temporal Schedules** are durable and out-of-process; they fire whenever Temporal server + worker are up. Crons use server timezone (`OTTO_SCHEDULE_TZ`). `data/runbooks.json` is source-of-truth; `scheduler.reconcile()` rebuilds at startup and GCs any schedule whose runbook lost its cron. `scheduler` shadows `list()` — use `[*x]`.
 
+## Webhooks
+
+- **The webhook timestamp is INSIDE the MAC** (`events.signing_payload`) — MACing the body alone leaves the header editable, so an unsigned `X-Otto-Timestamp` bought nothing and a capture replayed forever. Both headers required; absent or stale is a 401 (`EventIngressTests`).
+- **A signature is CLAIMED, not burned** (`events.claim_signature`/`release_signature`, released on any path committing no run) — recorded before the request could still fail (bad JSON, unknown cap, a raising `_wf_start`), a sender's retry was a 409 (`HttpApiTests`).
+- **The seen-signature ring is on disk** (`events._SEEN_FILE`) — in memory, a restart forgot every signature and handed back a free replay of whatever was captured before it (`EventIngressTests`).
+
 ## Cross-ingress
 
 - **Every mutating POST is origin-checked** (`server.Handler._csrf_ok`) — the API is unauthenticated by design, so without it any page the user visits can start a pinned WRITE run or approve its own gate cross-site. Absent `Origin` = allowed (curl/tests/webhooks); `/api/events/` is exempt (its HMAC is its auth); escape hatch `OTTO_ALLOWED_ORIGINS` (`test_integration.CsrfOriginGuardTests`).

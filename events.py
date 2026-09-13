@@ -16,8 +16,14 @@ Rules live in `data/event-rules.json` (hot-editable, like `data/schedules.json`)
        "reply_to": {"kind": "webhook", "url": "https://…"} }]
 
 Security: the endpoint is disabled unless `OTTO_EVENT_SECRET` is set, and every request must
-carry a matching HMAC-SHA256 signature of the raw body. Unmatched events are ignored (no-op), so
-only operator-configured event types ever trigger work.
+carry BOTH an `X-Otto-Timestamp` (unix seconds) and an `X-Otto-Signature` holding
+
+    HMAC-SHA256(OTTO_EVENT_SECRET, f"{timestamp}.".encode() + raw_body)   # hex
+
+— the Slack/Stripe construction. Signing the timestamp is what makes it anti-replay: a captured
+request cannot be re-dated, and a request with no timestamp (or a stale one) is refused outright,
+so the signature is only good for `REPLAY_WINDOW_S` seconds. Unmatched events are ignored (no-op),
+so only operator-configured event types ever trigger work.
 """
 import hashlib
 import hmac
@@ -31,31 +37,52 @@ import storage
 
 SECRET = config.secret("OTTO_EVENT_SECRET")
 _RULES = os.path.join(config.DATA_DIR, "event-rules.json")
+# Seen-signature ring. On disk, not in memory: a restart used to forget every signature, which
+# handed an attacker (or a buggy sender) a free replay of anything captured before it.
+_SEEN_FILE = os.path.join(config.DATA_DIR, "event-replay.json")
 
-# Replay window (seconds). A valid signature seen twice within this window is treated as a replay;
-# an optional X-Otto-Timestamp header, if present, must be within this window of now.
+# Replay window (seconds). The X-Otto-Timestamp header is REQUIRED and signed, so a captured
+# request is only valid for this long; within it, a signature seen twice is a replay.
 REPLAY_WINDOW_S = int(os.environ.get("OTTO_EVENT_REPLAY_WINDOW_S", "300"))
-_SEEN = {}   # signature -> expiry epoch (in-memory replay guard; a restart forgets, acceptable)
+# Cap on the on-disk ring, so a flood of distinct signatures can't grow the file without bound.
+# Pruning by expiry normally keeps it far under this; the cap is the backstop.
+_SEEN_MAX = 5000
 
 
 def enabled():
     return bool(SECRET)
 
 
-def verify_sig(raw, signature):
-    """True if `signature` is the HMAC-SHA256 (hex) of `raw` under OTTO_EVENT_SECRET."""
+def signing_payload(timestamp, raw):
+    """The exact bytes the MAC covers: `<timestamp>.` + the raw body. The timestamp is INSIDE the
+    MAC (Slack/Stripe construction) — a MAC over the body alone leaves the header freely editable,
+    which is the same as having no freshness check at all."""
+    return f"{'' if timestamp is None else timestamp}.".encode() + (raw or b"")
+
+
+def sign(timestamp, raw, secret=None):
+    """Produce the hex signature a sender puts in X-Otto-Signature. Exists so senders, tests and
+    the docs all derive it from ONE implementation."""
+    key = secret if secret is not None else SECRET
+    return hmac.new((key or "").encode(), signing_payload(timestamp, raw), hashlib.sha256).hexdigest()
+
+
+def verify_sig(raw, signature, timestamp=None):
+    """True if `signature` is the HMAC-SHA256 (hex) of `<timestamp>.<raw>` under OTTO_EVENT_SECRET.
+
+    Freshness is NOT checked here — `timestamp_fresh` owns that; this only proves the sender knew
+    the secret AND committed to that timestamp."""
     if not SECRET:
         return False
-    expected = hmac.new(SECRET.encode(), raw or b"", hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, (signature or "").strip())
+    return hmac.compare_digest(sign(timestamp, raw), (signature or "").strip())
 
 
 def timestamp_fresh(ts_header, now=None, window=None):
-    """When an X-Otto-Timestamp header IS present, require it within `window` seconds of now
-    (blocks a captured request re-sent much later). Missing header -> True (backward-compatible;
-    the signature-dedup below still blocks exact replays). Unparseable header -> False."""
+    """Require an X-Otto-Timestamp within `window` seconds of now. A MISSING header is refused:
+    when it was optional, a replayer simply dropped it and the captured signature stayed valid
+    forever. Unparseable -> False."""
     if not ts_header:
-        return True
+        return False
     try:
         ts = float(ts_header)
     except (TypeError, ValueError):
@@ -64,19 +91,66 @@ def timestamp_fresh(ts_header, now=None, window=None):
     return abs(now - ts) <= (window or REPLAY_WINDOW_S)
 
 
-def is_replay(signature, now=None):
-    """True if this exact signature was already seen within the replay window (an exact webhook
-    replay of an already-processed request); records it and prunes expired entries otherwise.
-    Empty signature -> False (the signature check upstream already rejected it)."""
+def _prune(seen, now):
+    """Drop expired signatures, then trim to the cap (oldest expiry first)."""
+    live = {k: exp for k, exp in seen.items()
+            if isinstance(exp, (int, float)) and exp > now}
+    if len(live) > _SEEN_MAX:
+        keep = sorted(live.items(), key=lambda kv: kv[1], reverse=True)[:_SEEN_MAX]
+        live = dict(keep)
+    return live
+
+
+def claim_signature(signature, now=None):
+    """Reserve a signature for this request. True if it is the first sighting in the window (go
+    ahead), False if an identical request was already accepted (a replay).
+
+    CLAIM, not record: the caller must `release_signature` on any path that does not commit the
+    event, or a sender's legitimate retry after a 400/500 is rejected as a replay and the alert is
+    lost for the whole window. Same shape as `delivery._claim`/`_release`.
+
+    A failing store fails OPEN (treated as not-a-replay): the signed, time-bounded MAC is the real
+    anti-replay control, and a guard that can't read its own file must not take the ingress down.
+    An empty signature returns False — it never reaches here (verify_sig rejects it first), and
+    refusing is the safe answer either way.
+    """
     if not signature:
         return False
     now = time.time() if now is None else now
-    for k in [k for k, exp in _SEEN.items() if exp < now]:
-        _SEEN.pop(k, None)
-    if signature in _SEEN:
+    won = []
+
+    def fn(seen):
+        seen = _prune(seen, now)
+        if signature in seen:
+            won.append(False)
+            return seen                      # pruned; the claim itself is left standing
+        seen[signature] = now + REPLAY_WINDOW_S
+        won.append(True)
+        return seen
+
+    try:
+        storage.mutate_json(_SEEN_FILE, fn, {})
+    except Exception:  # noqa: BLE001 - the guard must never block the ingress it guards
         return True
-    _SEEN[signature] = now + REPLAY_WINDOW_S
-    return False
+    return won[0] if won else True
+
+
+def release_signature(signature):
+    """Undo a claim whose event was then rejected or failed to start, so the sender's retry with
+    the identical body is accepted rather than swallowed as a duplicate."""
+    if not signature:
+        return
+
+    def fn(seen):
+        if signature in (seen or {}):
+            seen.pop(signature, None)
+            return seen
+        return storage.UNCHANGED
+
+    try:
+        storage.mutate_json(_SEEN_FILE, fn, {})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def load_rules():

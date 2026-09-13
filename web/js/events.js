@@ -82,7 +82,7 @@ async function loadEvents(){
       <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Webhooks${whBadge}<span class="sectcount">${EVENT_RULES.length} rule${EVENT_RULES.length===1?'':'s'}</span></span>
         <button class="addbtn addnew" id="add-rule">+ Add event rule</button></h3>
       <div class="asection-body">
-        <p class="sub" style="margin:10px 0 10px">Turn any inbound webhook into an unattended run &mdash; the first matching enabled rule runs it. <b>POST</b> to <code title="HMAC-SHA256 of the raw body in X-Otto-Signature, key OTTO_EVENT_SECRET">${esc(location.origin)}/api/events/&lt;source&gt;</code>.</p>
+        <p class="sub" style="margin:10px 0 10px">Turn any inbound webhook into an unattended run &mdash; the first matching enabled rule runs it. <b>POST</b> to <code title="Send X-Otto-Timestamp (unix seconds) and X-Otto-Signature = hex HMAC-SHA256 of &lt;timestamp&gt;.&lt;raw body&gt; under OTTO_EVENT_SECRET. Both headers are required; the timestamp must be within 5 minutes.">${esc(location.origin)}/api/events/&lt;source&gt;</code>. Both <code>X-Otto-Timestamp</code> and <code>X-Otto-Signature</code> are required &mdash; sign <code>&lt;timestamp&gt;.&lt;raw body&gt;</code>.</p>
         ${!data.enabled?'<p class="err">Disabled — set <code>OTTO_EVENT_SECRET</code> and restart. Rules can still be authored.</p>':''}
         ${cards || '<p class="memempty">No rules yet.</p>'}
       </div>

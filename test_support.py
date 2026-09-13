@@ -83,6 +83,10 @@ def setUpModule():
     # sends a push otherwise poisons the LIVE dedupe window — the next real approval push inside
     # config.NTFY_DEDUPE_S would be dropped as a duplicate and the phone would never ring.
     delivery._STATE = os.path.join(tempfile.mkdtemp(prefix="otto-notify-"), "notify-state.json")
+    # Hermetic webhook replay ring. It is on disk now (a restart used to forget every signature),
+    # so an un-repointed test that claims a signature writes into data/event-replay.json — and if
+    # a real sender ever retries with that exact body, the live ingress drops it as a duplicate.
+    events._SEEN_FILE = os.path.join(tempfile.mkdtemp(prefix="otto-events-"), "event-replay.json")
     # Hermetic gateway stats/model-health store: every gateway call bumps counters here, and the
     # local runtime records model health here too, so without this a plain test run rewrites the
     # developer's live /api/health numbers (and could leave a phantom "model failing" badge).
