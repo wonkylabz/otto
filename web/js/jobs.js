@@ -132,6 +132,7 @@ function wireJobs(el){
   // Delegated + assigned as a PROPERTY (not addEventListener): loadJobs() replaces this view's
   // innerHTML on every refresh but #schedulesview itself persists, so a stacking listener would
   // toggle the section twice per click after the first poll.
+  enhanceToggles(el,".secttoggle",".asection","collapsed");
   el.onclick=e=>{
     const t=e.target.closest(".secttoggle");
     if(!t) return;

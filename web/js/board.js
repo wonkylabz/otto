@@ -224,7 +224,7 @@ async function loadBoard(silent){
   el.querySelectorAll("[data-deny]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.deny,false)));
   el.querySelectorAll("[data-clarify]").forEach(b=>b.addEventListener("click",()=>boardClarify(b.dataset.clarify,b)));
   el.querySelectorAll("[data-clarinput]").forEach(i=>i.addEventListener("keydown",e=>{
-    if(e.key==="Enter"){ e.preventDefault(); const b=el.querySelector(`[data-clarify="${CSS.escape(i.dataset.clarinput)}"]`); if(b) boardClarify(i.dataset.clarinput,b); }
+    if(e.key==="Enter"){ e.preventDefault(); const b=byData(el,"data-clarify",i.dataset.clarinput); if(b) boardClarify(i.dataset.clarinput,b); }
   }));
   el.querySelectorAll("[data-retry]").forEach(b=>b.addEventListener("click",()=>needsYouRetry(b.dataset.retry,b)));
   el.querySelectorAll("[data-accept]").forEach(b=>b.addEventListener("click",()=>needsYouAccept(b.dataset.accept,b)));
@@ -287,7 +287,7 @@ async function boardSignal(id, ok){
 // an interactive web-* run has no chat_key / "Open conversation" link back.
 async function boardClarify(id, btn){
   const card=btn.closest(".bcard");
-  const input=card&&card.querySelector(`[data-clarinput="${CSS.escape(id)}"]`);
+  const input=card&&byData(card,"data-clarinput",id);
   const answer=(input&&input.value||"").trim();
   if(!answer){ if(input) input.focus(); return; }
   btn.disabled=true; btn.textContent="Sending…"; if(input) input.disabled=true;
@@ -338,7 +338,7 @@ async function needsYouDismiss(id){
   if(!confirm("Dismiss this run? It disappears from the board (nothing about the run itself is deleted).")) return;
   try { await fetch("/api/needs-you/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}); }
   catch(e){}
-  const b=document.querySelector(`[data-dismiss="${(window.CSS&&CSS.escape)?CSS.escape(id):id}"]`);
+  const b=byData(document,"data-dismiss",id);
   if(b){ const c=b.closest(".bcard"); if(c) c.remove(); }
   loadBoard(true);
 }
@@ -416,6 +416,7 @@ async function openRunDebug(wid, capLabel, ui){
     +(r.terminal&&r.terminal.detail?`<div class="dbgsec">terminal detail</div><div class="dbgresult" style="margin-bottom:14px">${esc((r.terminal.detail||'').slice(0,2000))}</div>`:'')
     +(atts||`<p class="sub">No attempts recorded yet — the run is still in flight, or it ended before executing.</p>`);
   body.querySelectorAll("[data-dbgtoggle]").forEach(h=>h.addEventListener("click",()=>h.closest(".dbgatt").classList.toggle("open")));
+  enhanceToggles(body,"[data-dbgtoggle]",".dbgatt","open");
 }
 document.getElementById("cardModalClose").addEventListener("click",closeCardModal);
 document.getElementById("cardModal").addEventListener("click",e=>{ if(e.target.id==="cardModal") closeCardModal(); });

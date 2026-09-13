@@ -1084,6 +1084,7 @@ function renderAdmin(data, models, el, settings){
   el.querySelectorAll(".asection.coll[data-sect]").forEach(sec=>{
     if(remembered[sec.dataset.sect]) sec.classList.remove("collapsed");
   });
+  enhanceToggles(el,".secttoggle",".asection","collapsed");
   el.querySelectorAll(".secttoggle").forEach(t=>t.addEventListener("click",()=>{
     const sec=t.closest(".asection"), st=sread();
     const open=!sec.classList.toggle("collapsed");
@@ -1214,7 +1215,7 @@ function renderAdmin(data, models, el, settings){
   // per-project instructions (issue #69): set values (may contain quotes/newlines) + wire save
   el.querySelectorAll(".pi-text").forEach(t=>{ const m=(data.project_meta||{})[t.dataset.path]||{}; t.value=m.instructions||""; });
   el.querySelectorAll(".pi-save").forEach(b=>b.addEventListener("click",async()=>{
-    const ta=el.querySelector(`.pi-text[data-path="${(window.CSS&&CSS.escape)?CSS.escape(b.dataset.path):b.dataset.path}"]`);
+    const ta=byData(el,"data-path",b.dataset.path,".pi-text");
     b.disabled=true; b.textContent="Saving…";
     try { await fetch("/api/project/instructions",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({path:b.dataset.path, instructions:ta?ta.value:""})}); b.textContent="Saved ✓"; }
