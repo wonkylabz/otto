@@ -398,7 +398,7 @@ async function openRunDebug(wid, capLabel, ui){
   const atts=r.attempts.map(a=>{
     const v=a.verified===true?'<span class="dbgverd pass">✓ verify pass</span>'
       :(a.verified===false?'<span class="dbgverd fail">✗ verify fail</span>':'<span class="dbgverd none">no verify</span>');
-    const fb=a.fallback_from?` · <span title="${esc(a.fallback_reason||'')}">${esc((a.fallback_from||'').split('/').pop())} ⇢ ${esc((a.model||'').split('/').pop())}</span>`:(a.model?` · ${esc((a.model||'').split('/').pop())}`:'');
+    const fb=a.fallback_from?` · <span title="${esc((a.fallback_reason||'')+(a.fallback_detail?` (${a.fallback_detail})`:''))}">${esc((a.fallback_from||'').split('/').pop())} ⇢ ${esc((a.model||'').split('/').pop())}</span>`:(a.model?` · ${esc((a.model||'').split('/').pop())}`:'');
     const dur=a.duration_s!=null?` · ${a.duration_s}s`:'';
     const cost=a.cost_usd?` · $${(a.cost_usd).toFixed(2)}`:'';
     const openFirst=(a.verified===false)?' open':'';   // failed attempts expanded by default

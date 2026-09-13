@@ -521,6 +521,7 @@ def run_capability(payload: dict) -> dict:
             "local": att.get("local", False), "backend": att.get("backend"),
             "fallback_from": att.get("fallback_from"),
             "fallback_reason": att.get("fallback_reason"),
+            "fallback_detail": att.get("fallback_detail"),
             "local_incapable": att.get("local_incapable", False),
             "write_local": att.get("write_local", False),
             # The tools this attempt actually CALLED — the judge's real grant. Must be listed
@@ -662,6 +663,7 @@ def record_attempt(payload: dict) -> None:
                               backend=payload.get("backend"),
                               fallback_from=payload.get("fallback_from"),
                               fallback_reason=payload.get("fallback_reason"),
+                              fallback_detail=payload.get("fallback_detail"),
                               project=engine._resolve_project(cap, payload.get("repo")))
 
 

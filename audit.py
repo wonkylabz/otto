@@ -536,7 +536,8 @@ def _append_content(wid, at, request=None, result=None, attempt=None, detail=Non
 
 def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=None,
            model=None, repo=None, outcome=None, reason=None, needs_human=None, duration_s=None,
-           backend=None, fallback_from=None, fallback_reason=None, critique=None,
+           backend=None, fallback_from=None, fallback_reason=None, fallback_detail=None,
+           critique=None,
            verdict_source=None, verdict_model=None):
     at = datetime.datetime.now().isoformat(timespec="seconds")
     entry = {
@@ -573,6 +574,10 @@ def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=
     if fallback_from:
         entry["fallback_from"] = fallback_from
         entry["fallback_reason"] = fallback_reason or ""
+        # The wall's RAW text beside the summary: `fallback_reason` is one fixed string per
+        # reason, so on its own the row cannot tell a 503 from a connection refusal (issue #26).
+        if fallback_detail:
+            entry["fallback_detail"] = fallback_detail
     if tokens:
         entry["tokens"] = tokens
     # How long the attempt actually took to run — the operational signal that matters more than

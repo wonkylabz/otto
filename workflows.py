@@ -1811,7 +1811,8 @@ class OttoWorkflow:
                  "tokens": out.get("tokens"), "model": out.get("model"), "verdict": verdict,
                  "duration_s": out.get("duration_s"), "backend": out.get("backend"),
                  "fallback_from": out.get("fallback_from"),
-                 "fallback_reason": out.get("fallback_reason"), "repo": repo},
+                 "fallback_reason": out.get("fallback_reason"),
+                 "fallback_detail": out.get("fallback_detail"), "repo": repo},
                 learn=verdict["passed"] or final)
             self._verified = verdict["passed"]
             if verdict["passed"]:

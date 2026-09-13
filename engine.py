@@ -496,13 +496,15 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         # the same dead end (run web-e5248517 burned all three attempts on one HTTP 503). A
         # turn-budget or token-limit death is deliberately NOT here: that IS the model working,
         # just not finishing, and a retry folding in the critique can legitimately do better.
-        local_wall = None
+        local_wall = wall_name = None
         if not resume_session:
             # The two legacy flags share error_classifier's wording, so the endpoint is named
             # the same way whichever path reported the wall.
             if out.get("tools_unsupported"):
+                wall_name = "tools_unsupported"
                 local_wall = error_classifier.wall_message("tools_unsupported")
             elif out.get("unavailable"):
+                wall_name = "overloaded"
                 local_wall = error_classifier.wall_message("overloaded")
             elif out.get("wall_reason"):
                 # Any OTHER deterministic wall the classifier named — bad credentials, no credit,
@@ -510,6 +512,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 # `HTTP 401: …` that the ladder read as a model-quality failure and retried twice
                 # more against the same endpoint, so a wrong key cost three attempts and a
                 # needs-human banner to report itself.
+                wall_name = out["wall_reason"]
                 local_wall = error_classifier.wall_message(out["wall_reason"])
         if local_wall and not config.setting("local_fallback"):
             # Strict mode: the local backend can't serve this run, and that is the answer — don't
@@ -527,8 +530,17 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             # the explicit error; that's why `local_wall` is None for a resume.)
             model = gateway.exec_model_id(cap.name)
             backend = "claude"
-            fb_meta = {"fallback_from": exec_entry["name"], "fallback_reason": local_wall}
+            # `wall_message` is one fixed string per reason — deliberately, it is what an
+            # operator reads. The raw text beside it is what a DIAGNOSIS needs: which HTTP code,
+            # which socket error, after how many attempts (issue #26).
+            fb_meta = {"fallback_from": exec_entry["name"], "fallback_reason": local_wall,
+                       "fallback_detail": out.get("wall_detail") or ""}
             trace("RUN", f"{wid} {local_wall} — re-dispatching this attempt to Claude ({model})")
+            # The Claude pass opens the SAME transcript path `w`, so the recovery would erase the
+            # local pass that is the only record of what actually failed. Same fix the plan
+            # preview already carries; the canonical `-a<n>.jsonl` stays the pass that produced
+            # the result, which is what the board's model chip resolves from.
+            claude_cli.keep_walled_transcript(transcript_path, wall_name or "local")
             invocation = _invocation(cap, request)
             if critique:
                 invocation += _CRITIQUE_FOLD + critique
@@ -613,6 +625,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             "duration_s": duration_s, "backend": backend,
             "fallback_from": (fb_meta or {}).get("fallback_from"),
             "fallback_reason": (fb_meta or {}).get("fallback_reason"),
+            # The wall's own words, kept beside the summary — see the wall branch above.
+            "fallback_detail": (fb_meta or {}).get("fallback_detail"),
             # The local backend can't serve this cap (tool-call flags missing) — the loop
             # latches this and forces the rest of the ladder to Claude via local_disabled.
             "local_incapable": local_incapable or bool(local_disabled and fb_meta),
@@ -639,7 +653,8 @@ def _strict_stop_attempt(wid, attempt, exc, started):
             "session_id": None, "model": exc.model, "attempt": attempt, "is_error": True,
             "supervision": None, "tools_used": [], "tools_failed": [], "duration_s": time.monotonic() - started, "backend": "local",
             "local_strict_stop": True, "auth_stop": False, "fallback_from": None,
-            "fallback_reason": None, "local_incapable": False, "write_local": False}
+            "fallback_reason": None, "fallback_detail": None,
+            "local_incapable": False, "write_local": False}
 
 
 def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_escalate=True,
@@ -730,7 +745,8 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
                        tokens=att.get("tokens"), model=att.get("model"), project=project,
                        duration_s=att.get("duration_s"), backend=att.get("backend"),
                        fallback_from=att.get("fallback_from"),
-                       fallback_reason=att.get("fallback_reason"))
+                       fallback_reason=att.get("fallback_reason"),
+                       fallback_detail=att.get("fallback_detail"))
         if verdict["passed"]:
             break
         # Safe local write escalation (issue #172): a WRITE cap that ran locally and FAILED verify

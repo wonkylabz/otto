@@ -1123,6 +1123,12 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     # endpoint (observed: run web-e5248517 burned all three attempts on the same HTTP 503).
     unavailable = False
     wall_reason = None             # error_classifier.Reason value when a deterministic wall hit
+    # The wall's OWN words — which HTTP code, which socket error, how many attempts. The
+    # engine replaces this with one fixed operator-facing summary per reason, so without it
+    # nothing on disk could tell a 503 from a connection refusal from a DNS failure (issue
+    # #26). `record_health` keeps a copy but is last-write-wins per model, so the next
+    # successful call on the same run overwrites it.
+    wall_detail = None
     tools_used = set()             # tools this turn actually CALLED — the judge's real grant
     max_turns = m.get("max_turns") or config.LOCAL_RUNTIME_MAX_TURNS
     try:
@@ -1284,6 +1290,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         wall_reason = e.reason.value if hasattr(e.reason, "value") else str(e.reason)
         tools_unsupported = isinstance(e, ToolsUnsupported)
         unavailable = isinstance(e, Unavailable)
+        wall_detail = str(e)
         # Health: only "cannot serve any run" conditions light the badge, which every LocalWall
         # is by definition — a bad-but-served answer never reaches here.
         gateway.record_health(m.get("name"), False, str(e))
@@ -1309,4 +1316,4 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     return {"result": result or "", "is_error": is_error, "total_cost_usd": 0,
             "session_id": sid, "usage": dict(usage), "tools_unsupported": tools_unsupported,
             "wall_reason": wall_reason, "tools_used": sorted(tools_used), "tools_failed": [],
-            "unavailable": unavailable}
+            "unavailable": unavailable, "wall_detail": wall_detail}
