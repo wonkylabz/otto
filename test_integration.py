@@ -2279,6 +2279,40 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "chat-fail1")
         self.assertTrue(args[1].startswith("❌ **This run failed**"))
 
+    async def test_unattended_ask_waits_for_approval_then_runs(self):
+        import asyncio
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, plan_capability, record_attempt,
+                                record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
+            check_grounding, verify_capability)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="askq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request, plan_capability, run_capability, resolve_pr_target, check_grounding,
+                                verify_capability, record_attempt, record_skip, deliver_result],
+                    activity_executor=ex,
+                ):
+                    h = await env.client.start_workflow(
+                        OttoWorkflow.run,
+                        {"request": "renew the vpn", "unattended": True, "approval": "ask",
+                         "cap": {"name": "evt-write", "kind": "skill", "risk": "write"}},
+                        id="ask-" + uuid.uuid4().hex[:8], task_queue="askq")
+                    # An unattended "ask" write does NOT auto-run — it waits (shown on the Board).
+                    for _ in range(100):
+                        st = await h.query(OttoWorkflow.status)
+                        if st["awaiting_approval"]:
+                            break
+                        await asyncio.sleep(0.05)
+                    else:
+                        self.fail("unattended 'ask' write never reached awaiting_approval")
+                    # Plan-first: the gate carries the concrete operations preview, not just the cap.
+                    self.assertEqual(st["plan"], "1. do the write")
+                    await h.signal(OttoWorkflow.approve, True)   # the Board's Approve button
+                    out = await h.result()
+        self.assertEqual(out["result"], "did the thing")
+
     async def test_a_schedule_pinned_by_name_resolves_its_risk_at_fire_time(self):
         """Issue #29: `scheduler._args` baked `resolve_cap()`'s {name,kind,risk} into the
         Temporal Schedule's frozen action args, so a cap reclassified read->write in Admin kept
@@ -2324,40 +2358,6 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
                     out = await h.result()
         self.assertEqual(out["result"], "did the thing")
         self.assertEqual(routed, [], "a pinned name must still skip Router #1")
-
-    async def test_unattended_ask_waits_for_approval_then_runs(self):
-        import asyncio
-        import uuid
-        from workflows import OttoWorkflow
-        from activities import (clarify_request, deliver_result, plan_capability, record_attempt,
-                                record_skip, route_request, snapshot_settings, run_capability, resolve_pr_target,
-            check_grounding, verify_capability)
-        async with await _time_skipping_env() as env:
-            with ThreadPoolExecutor(max_workers=4) as ex:
-                async with Worker(
-                    env.client, task_queue="askq", workflows=[OttoWorkflow],
-                    activities=[route_request, snapshot_settings, clarify_request, plan_capability, run_capability, resolve_pr_target, check_grounding,
-                                verify_capability, record_attempt, record_skip, deliver_result],
-                    activity_executor=ex,
-                ):
-                    h = await env.client.start_workflow(
-                        OttoWorkflow.run,
-                        {"request": "renew the vpn", "unattended": True, "approval": "ask",
-                         "cap": {"name": "evt-write", "kind": "skill", "risk": "write"}},
-                        id="ask-" + uuid.uuid4().hex[:8], task_queue="askq")
-                    # An unattended "ask" write does NOT auto-run — it waits (shown on the Board).
-                    for _ in range(100):
-                        st = await h.query(OttoWorkflow.status)
-                        if st["awaiting_approval"]:
-                            break
-                        await asyncio.sleep(0.05)
-                    else:
-                        self.fail("unattended 'ask' write never reached awaiting_approval")
-                    # Plan-first: the gate carries the concrete operations preview, not just the cap.
-                    self.assertEqual(st["plan"], "1. do the write")
-                    await h.signal(OttoWorkflow.approve, True)   # the Board's Approve button
-                    out = await h.result()
-        self.assertEqual(out["result"], "did the thing")
 
     async def test_gate_pushes_a_notification(self):
         """Issue #92: reaching the approval gate fires an owner push (via the notify_human
