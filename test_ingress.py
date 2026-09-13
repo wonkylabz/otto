@@ -4842,7 +4842,7 @@ class EstopUiTests(unittest.TestCase):
         self.assertIn("applyEstop(h.estop)", html)      # refreshHealth, per turn
         self.assertIn("applyEstop(d.estop)", html)      # pollAdminBadge, 15s
         import server
-        src = inspect.getsource(server.Handler.do_GET)
+        src = inspect.getsource(server.Handler._dispatch_get)
         self.assertIn('"estop": estop.status()', src)
 
     def test_a_refused_submit_repaints_the_header(self):

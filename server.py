@@ -98,9 +98,12 @@ async def _wf_start(wid, params):
 
 
 async def _wf_state(wid):
-    c = await tc.client()
-    h = c.get_workflow_handle(wid)
     try:
+        # `tc.client()` belongs INSIDE the try, not above it: with Temporal unreachable it is
+        # the connect that raises, so /api/wf?id=... — polled by every open chat — died with a
+        # traceback instead of returning the "unreachable" state this function exists to return.
+        c = await tc.client()
+        h = c.get_workflow_handle(wid)
         desc = await h.describe()
     except Exception as e:  # noqa: BLE001
         # Two very different failures arrive here. A NOT_FOUND is authoritative — the id is gone
@@ -886,6 +889,24 @@ POLICY = policy.load()
 registry.apply_policy(CAPS, POLICY)
 
 
+def _set_policy(new):
+    """Swap the live policy in ONE assignment.
+
+    The server is threaded, so concurrent GETs iterate POLICY (`policy.all_mcps`,
+    `unhealthy_count`, `mcp_client.unservable`) while a POST rewrites it. Mutating the live dict
+    in place — emptying and refilling it, or assigning one key — gives a reader landing mid-write
+    an empty policy or a bare `RuntimeError: dictionary changed size during iteration`. Rebinding
+    the name is atomic: every reader sees either the whole old dict or the whole new one, and the
+    one it is already walking stays intact underneath it. That is what the grep guard in
+    `HttpApiTests` pins, so this docstring must not spell the forbidden form out.
+
+    Readers must therefore never hold POLICY across a yield point and expect it to update — they
+    don't; each reads the global once per request."""
+    global POLICY
+    POLICY = new
+    return new
+
+
 def rebuild():
     """Re-discover capabilities (after a custom one is added/removed) + re-apply policy."""
     global CAPS
@@ -967,6 +988,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_GET(self):
+        """Same error envelope do_POST has had all along.
+
+        Without it a raising GET branch produced a socketserver traceback and a closed socket,
+        which the UI reads as "Couldn't load..." with no server-side detail and no status code to
+        act on. Every GET here is a read, so there is nothing to release or roll back — the
+        envelope only has to turn the exception into a response."""
+        try:
+            self._dispatch_get()
+        except PayloadTooLarge:            # unreachable on a GET, kept so the two agree
+            self._send(413, json.dumps({"error": "payload too large"}))
+        except Exception as e:  # noqa: BLE001 - return the error to the UI
+            self._send(500, json.dumps({"error": str(e)}))
+
+    def _dispatch_get(self):
         if self.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "web", "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
@@ -1653,13 +1688,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_policy(self, body):
         """POST /api/policy"""
-        POLICY["capabilities"] = body.get("capabilities", {})
         # The panel POSTs the WHOLE policy on any toggle and only tracks `enabled`, so the
         # stored MCP notes are re-attached server-side rather than trusted from the client —
         # otherwise flipping one switch (or a stale tab doing it) erases every note.
-        POLICY["mcps"] = policy.keep_notes(policy.load().get("mcps", {}), body.get("mcps", {}))
-        policy.save(POLICY)
-        registry.apply_policy(CAPS, POLICY)   # take effect immediately
+        pol = _set_policy({**POLICY,
+                           "capabilities": body.get("capabilities", {}),
+                           "mcps": policy.keep_notes(policy.load().get("mcps", {}),
+                                                     body.get("mcps", {}))})
+        policy.save(pol)
+        registry.apply_policy(CAPS, pol)   # take effect immediately
         self._send(200, json.dumps({"ok": True}))
 
     def _post_capability_add(self, body):
@@ -1688,8 +1725,9 @@ class Handler(BaseHTTPRequestHandler):
         policy.save_custom_caps(lst)
         # Risk for custom caps is resolved by apply_policy (override > classify), so
         # persist the chosen risk as a policy override too, or the edit won't stick.
-        POLICY.setdefault("capabilities", {}).setdefault(name, {})["risk"] = cap["risk"]
-        policy.save(POLICY)
+        caps_pol = {k: dict(v) for k, v in (POLICY.get("capabilities") or {}).items()}
+        caps_pol.setdefault(name, {})["risk"] = cap["risk"]
+        policy.save(_set_policy({**POLICY, "capabilities": caps_pol}))
         rebuild()
         self._send(200, json.dumps({"ok": True}))
 
@@ -1755,13 +1793,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_mcp_note(self, body):
         """POST /api/mcp/note — operator usage guidance for one MCP server (empty text clears
-        it). Written in place via policy.set_mcp_note, then folded back into the live POLICY so
+        it). Written in place via policy.set_mcp_note, then swapped into the live POLICY so
         a later /api/policy save doesn't overwrite what we just stored."""
         name = (body.get("name") or "").strip()
         if not name or not any(m["name"] == name for m in policy.all_mcps(POLICY)):
             self._send(400, json.dumps({"error": "unknown MCP server"})); return
         saved = policy.set_mcp_note(name, body.get("notes", ""))
-        POLICY.clear(); POLICY.update(saved)
+        _set_policy(saved)
         self._send(200, json.dumps({"ok": True,
                                     "notes": (saved.get("mcps", {}).get(name) or {}).get("notes", "")}))
 

@@ -9,8 +9,10 @@ Two layers, no network and no tokens:
 
     python3 -m unittest test_integration -v
 """
+import inspect
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -360,6 +362,55 @@ class HttpApiTests(unittest.TestCase):
         cls.server.CAPS = cls._orig_caps
         for m, n, fn in cls._orig_traces:
             setattr(m, n, fn)
+
+    def test_a_raising_get_returns_a_500_envelope_not_a_dropped_socket(self):
+        """do_POST has always wrapped its dispatch; do_GET did not, so a raising branch produced
+        a socketserver traceback and a closed connection — which the UI reads as "Couldn't
+        load..." with no status code to act on and no detail anywhere."""
+        srv = self.server
+
+        def boom():
+            raise RuntimeError("health backend exploded")
+        orig, srv.gateway.unhealthy_models = srv.gateway.unhealthy_models, boom
+        self.addCleanup(setattr, srv.gateway, "unhealthy_models", orig)
+        st, body = _get(self.base, "/api/health")
+        self.assertEqual(st, 500)
+        self.assertIn("health backend exploded", body.get("error", ""))
+
+    def test_wf_state_reports_unreachable_when_the_connect_itself_fails(self):
+        """`tc.client()` sat OUTSIDE _wf_state's try, so with Temporal unreachable it was the
+        CONNECT that raised — and /api/wf?id=..., polled by every open chat, died instead of
+        returning the "unreachable" state the function was written to return. Not terminal:
+        the run may well still be executing."""
+        srv = self.server
+
+        async def refuse():
+            raise OSError("connection refused")
+        orig, srv.tc.client = srv.tc.client, refuse
+        self.addCleanup(setattr, srv.tc, "client", orig)
+        st, body = _get(self.base, "/api/wf?id=wf-does-not-matter")
+        self.assertEqual(st, 200)
+        self.assertEqual(body.get("state"), "unreachable")
+        self.assertNotEqual(body.get("state"), "failed",
+                            "a transport failure must not paint a dead pipeline over a live run")
+
+    def test_the_live_policy_is_swapped_atomically_never_mutated_in_place(self):
+        """server.py is threaded: concurrent GETs iterate POLICY while a POST rewrites it. An
+        in-place `clear()`/`update()` hands a reader landing mid-write an empty policy or a bare
+        `RuntimeError: dictionary changed size during iteration`."""
+        srv = self.server
+        src = inspect.getsource(srv)
+        self.assertNotIn("POLICY.clear()", src)
+        self.assertNotIn("POLICY.update(", src)
+        # No writer may assign INTO the live dict either — same tear, one key at a time.
+        self.assertFalse(re.search(r"^\s*POLICY\[", src, re.M))
+        self.assertFalse(re.search(r"^\s*POLICY\.setdefault\(", src, re.M))
+        # A reader already walking the old dict must be unaffected by the swap.
+        before = srv.POLICY
+        srv._set_policy({**before, "capabilities": {"x": {"risk": "read"}}})
+        self.addCleanup(srv._set_policy, before)
+        self.assertIsNot(srv.POLICY, before)
+        self.assertNotIn("x", before.get("capabilities") or {})
 
     def test_accept_endpoint_records_the_override_and_dismisses(self):
         # Route wiring over real HTTP: the button's POST must land, write the row, and hide the
