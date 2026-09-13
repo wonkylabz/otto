@@ -63,6 +63,7 @@ try:                                       # the Temporal layer — absent under
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
+import test_memory
 import test_support
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
@@ -6562,6 +6563,10 @@ class FileSafetySymlinkTests(unittest.TestCase):
         self.assertFalse(self.fs.is_denied(os.path.join(self.real, "fine.txt")))
 
 
+def _raise_no_net():
+    raise OSError("the suite must not reach the network")
+
+
 class LiveStoreIsolationTests(unittest.TestCase):
     """No test may write to the developer's real data/.
 
@@ -6683,6 +6688,44 @@ class LiveStoreIsolationTests(unittest.TestCase):
         self.assertFalse(file_safety._reads_allowed_from(tmp))
         self.assertTrue(file_safety.is_read_denied(
             os.path.join(config.DATA_DIR, "otto.db"), allow_cwd=tmp))
+
+    def test_the_suite_never_reaches_the_network(self):
+        """A unit suite that dials out is slow, flaky and occasionally indiscreet.
+
+        Two ways it did. `gateway._discover_claude` queries api.anthropic.com whenever a key
+        resolves, and `_default_cfg()` reaches it whenever `models.json` is absent — which
+        standing a temp dir in for `data/` makes always true, so the fixture pins it.
+        `NtfyTests` restored the REAL urllib mid-test and POSTed to config.NTFY_URL
+        (https://ntfy.sh) on every run, which also made the assertion after it a liveness check
+        on a third-party host — one ubuntu-3.13 job failed on it while the other five passed.
+
+        Measured with a socket guard rather than asserted in prose: 7 attempts before, 0 after."""
+        # The stub returns the same list the no-key branch does, so nothing observable moved.
+        self.assertEqual(gateway._discover_claude(),
+                         [{"name": n, "provider": "claude", "model": mid}
+                          for n, mid in gateway._KNOWN_CLAUDE])
+        # Asserted on the CALL, not on the return value: with a bogus key the real function
+        # dials out, gets a 401 and falls back to the same list, so comparing results passes
+        # either way and pins nothing. What matters is that nothing was dialled.
+        prior = os.environ.get("ANTHROPIC_API_KEY")
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-fixture-not-a-real-key"
+        dialled = []
+        real_urlopen = gateway.urllib.request.urlopen
+        gateway.urllib.request.urlopen = lambda *a, **k: dialled.append(a) or _raise_no_net()
+        try:
+            gateway._discover_claude()
+            gateway.load()                 # the path that reaches it: no models.json in data/
+        finally:
+            gateway.urllib.request.urlopen = real_urlopen
+            if prior is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            else:
+                os.environ["ANTHROPIC_API_KEY"] = prior
+        self.assertEqual(dialled, [], "model discovery reached the network during a test run")
+        # And the ntfy test must never hand the real module back mid-test (tearDown is fine).
+        body = inspect.getsource(test_memory.NtfyTests.test_a_failed_blocking_push_is_recorded)
+        self.assertNotIn("delivery.urllib = self._urllib", body,
+                         "restoring the real urllib here POSTs to ntfy.sh on every suite run")
 
     def test_both_shared_setups_route_through_the_one_redirect(self):
         """Two setUpModules used to carry hand-maintained copies of the list, and they had

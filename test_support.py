@@ -158,7 +158,26 @@ def redirect_live_state():
     # The three DB aliases are copies of config.DB_PATH taken at import, so re-pointing the
     # constant above does not move them. All six stores in otto.db resolve through one of these.
     engine._DB = chats._DB = knowledge._DB = config.DB_PATH
+    _pin_cloud_model_discovery()
     return root
+
+
+def _pin_cloud_model_discovery():
+    """Keep `gateway._discover_claude` off the network for the whole suite.
+
+    It queries `api.anthropic.com/v1/models` whenever a key resolves, and `_default_cfg()` calls
+    it — which `_normalize(None)` reaches whenever `models.json` is absent. Standing a temp dir
+    in for `data/` makes that ALWAYS true, so the suite started making real outbound requests
+    (measured: 7 per run, each with a 15s timeout to hang on). The keys sent were fixtures from
+    the MCP env-narrowing tests, which set `ANTHROPIC_API_KEY` in `os.environ` to assert what a
+    spawned server inherits — but a developer who runs the suite with a REAL key exported (run.sh
+    exports .env) sends that one instead.
+
+    The stub returns exactly what the no-key branch returns, so nothing observable changes;
+    `ResidentRuleGuardTests` pins that the key is discovery-only, and no test covers the query
+    itself. A test that wants the querying branch re-points this the way it would any seam."""
+    gateway._discover_claude = lambda: [
+        {"name": n, "provider": "claude", "model": mid} for n, mid in gateway._KNOWN_CLAUDE]
 
 
 def setUpModule():
