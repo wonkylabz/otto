@@ -19,6 +19,7 @@ import types
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from socketserver import ThreadingTCPServer
@@ -3246,10 +3247,12 @@ class JsonStoreConcurrencyTests(unittest.TestCase):
         self.assertEqual({"write"}, set(seen), "policy read was torn or raised")
 
     def test_no_shared_store_is_written_with_a_raw_json_dump(self):
-        # CLAUDE.md: "JSON state writes go through storage.mutate_json". Two documented
-        # exemptions: estop's ESTOP file (touch is a valid way to create it, no
-        # read-modify-write to protect) and local_runtime's per-session transcript.
-        exempt = {"storage.py", "estop.py", "local_runtime.py"}
+        # CLAUDE.md: "JSON state writes go through storage.mutate_json". One documented
+        # exemption: estop's ESTOP file (touch is a valid way to create it, no
+        # read-modify-write to protect). local_runtime's per-session file used to be the
+        # second one — a kill mid-write truncated it and _load_session read the wreck as an
+        # EMPTY history, so the next --resume ran with nothing (issue #40).
+        exempt = {"storage.py", "estop.py"}
         offenders = []
         for name in sorted(glob.glob("*.py")):
             if name in exempt or name.startswith(("test_", "regress")):
@@ -3260,6 +3263,22 @@ class JsonStoreConcurrencyTests(unittest.TestCase):
                         offenders.append(f"{name}:{i}")
         self.assertEqual([], offenders,
                          "raw json.dump to a shared store - use storage.write_json/mutate_json")
+
+    def test_chat_turn_writers_never_read_modify_write_the_message_list(self):
+        # CLAUDE.md: any read-modify-write must be ONE storage.tx. The three run-recording
+        # writers used to get() a chat and hand the extended list to save(), which deletes and
+        # rewrites every message — two transactions, with server.py and worker.py both writing
+        # the same chat id (issue #40). They must append instead.
+        import inspect
+        import chats
+        for fn in (chats.start_run, chats.finish_run, chats.append_run):
+            body = inspect.getsource(fn)
+            self.assertIn("append_messages(", body,
+                          f"{fn.__name__} must append, not rewrite the message list")
+            self.assertNotIn("get(cid)", body,
+                             f"{fn.__name__} reads the chat outside the write transaction")
+            self.assertNotIn("save({", body,
+                             f"{fn.__name__} rewrites every message wholesale")
 
 
 class CapExecTests(unittest.TestCase):
@@ -4728,6 +4747,34 @@ class LocalSessionModelRecordTests(unittest.TestCase):
 
     def test_a_missing_file_reads_as_none(self):
         self.assertIsNone(local_runtime.session_model("local-nothing-here"))
+
+    def test_a_kill_mid_write_never_leaves_a_truncated_history(self):
+        """Issue #40: a raw open(w) + json.dump truncates the file the instant it opens, so a
+        supervisor ENFORCE kill or a worker restart during the write left a wreck that
+        _load_session swallows as [] — the next --resume ran with NO history and said nothing
+        about it. storage.write_json writes a temp file and os.replace()s it, so the old
+        history is intact until the new one is complete."""
+        history = [{"role": "user", "content": "turn one"},
+                   {"role": "assistant", "content": "reply one"}]
+        local_runtime._save_session("local-kill", history, "qwen-box")
+
+        boom = RuntimeError("SIGKILL during the write")
+        real = json.dump
+
+        def die(*a, **k):
+            real(*a, **k)
+            raise boom
+
+        with mock.patch.object(json, "dump", die):
+            with self.assertRaises(RuntimeError):
+                local_runtime._save_session("local-kill", history + [
+                    {"role": "user", "content": "turn two"}], "qwen-box")
+
+        # The interrupted write committed nothing: the previous history is still readable.
+        self.assertEqual(local_runtime._load_session("local-kill"), history)
+        self.assertEqual(local_runtime.session_model("local-kill"), "qwen-box")
+        # And it left no half-written temp file behind in the sessions directory.
+        self.assertEqual([], [n for n in os.listdir(self.dir) if n.endswith(".tmp")])
 
 
 class WriteIntentFenceTests(unittest.TestCase):

@@ -146,89 +146,162 @@ def get(cid):
         return _chat(row, _messages(conn, cid))
 
 
+def _upsert_row(conn, cid, chat, *, keep_title=False, keep=()):
+    """Merge one chat's ROW fields (everything but its messages) under the caller's open
+    transaction. `keep` names extra fields whose None means "leave the stored value alone"
+    (on top of the ones preserved unconditionally below); `keep_title` makes an existing
+    title win over the supplied one, which is what the append_messages callers want —
+    `title` is only ever a seed for a chat that doesn't exist yet."""
+    prior = conn.execute("SELECT * FROM chats WHERE id = ?", (cid,)).fetchone()
+
+    def kept(field):
+        """A field the caller may omit to mean "leave as-is" (None = not supplied)."""
+        supplied = chat.get(field)
+        return supplied if supplied is not None else (prior[field] if prior else None)
+
+    record = {
+        "id": cid,
+        "title": _title(chat, prior, keep_title),
+        "session_id": kept("session_id") if "session_id" in keep else chat.get("session_id"),
+        # In-flight Temporal workflow id for this chat (web runs only). Set while a turn is
+        # running so a page reload / chat switch can reattach to the still-running workflow;
+        # cleared when the turn finishes. Unattached chats and unattended runs leave it null.
+        "run_id": kept("run_id") if "run_id" in keep else chat.get("run_id"),
+        # The LAST non-null run_id this chat ever had — unlike run_id, never cleared. A
+        # finished interactive web-* run has no server-side chat_key (the browser owns the
+        # conversation), so once run_id resets to null at completion there was previously NO
+        # way left to trace that workflow back to its chat — the Swarm board's Chat link
+        # depends on find_by_run_origin() finding this after the fact (user-reported: some
+        # finished board cards had no Chat button at all).
+        "origin_run_id": chat.get("run_id") or kept("origin_run_id"),
+        # Repo-mode git identity (issue #57 follow-up): `repo` is the registered repo this
+        # chat's task targets; `git_run_id` is the ORIGINAL run's workflow id, whose workspace
+        # path/branch name a later follow-up re-provisions on resume. Preserved across upserts
+        # like `labels` — a chat turn that isn't repo-mode (or a direct-path resume, which
+        # doesn't send them) must not clobber what an earlier turn established.
+        "repo": kept("repo"),
+        "git_run_id": kept("git_run_id"),
+        # Labels (e.g. ["scheduled-job"]) tag a chat's provenance; preserved across upserts
+        # unless the caller passes a new list.
+        "labels": json.dumps(chat.get("labels") if chat.get("labels") is not None
+                             else (_decode(prior["labels"]) if prior else None) or []),
+        # Sidebar pin — preserved across upserts unless the caller passes it explicitly.
+        "pinned": int(bool(chat.get("pinned")) if chat.get("pinned") is not None
+                      else bool(prior["pinned"] if prior else False)),
+        # Per-chat pipeline tallies (requests run / approvals / session cost) shown in the
+        # workflow-pipeline footer. Persisted so they survive a chat switch or page reload;
+        # preserved across upserts unless the caller passes a fresh object.
+        "stats": json.dumps(chat["stats"]) if chat.get("stats") is not None
+        else (prior["stats"] if prior else None),
+        "cap": json.dumps(chat["cap"]) if chat.get("cap") is not None
+        else ((prior["cap"] if prior else None) if "cap" in keep else None),
+        "created": (prior["created"] if prior else None) or _now(),
+        "updated": _now(),
+        # Monotonic per-save counter: the deterministic tiebreaker for ordering and trimming
+        # when several saves share one whole-second `updated` stamp.
+        "seq": (conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM chats").fetchone()[0]),
+    }
+    cols = ", ".join(record)
+    conn.execute(f"INSERT OR REPLACE INTO chats ({cols}) VALUES "
+                 f"({', '.join(':' + c for c in record)})", record)
+
+
+def _title(chat, prior, keep_title):
+    """The stored title. `keep_title` means an existing one wins — the appending writers pass
+    `title=` only as a seed for a chat that does not exist yet, and must never rename a thread
+    the user (or an earlier turn) already titled."""
+    if keep_title and prior and prior["title"]:
+        return prior["title"]
+    return (chat.get("title") or "").strip()[:80] or "Untitled"
+
+
+def _row_values(messages):
+    return [(m.get("role"), m.get("text"), m.get("ts"), int(bool(m.get("pending"))))
+            for m in messages]
+
+
+def _trim_chats(conn):
+    """Cap the store: keep the MAX_CHATS most-recent UNPINNED chats and drop the rest. A pin
+    is the user saying "don't lose this", so a pinned chat is exempt from the cap and does
+    not consume a slot — the trim ranks by recency alone, which is the sidebar's order
+    within the unpinned group it is allowed to touch."""
+    stale = [r["id"] for r in conn.execute(
+        "SELECT id FROM chats WHERE pinned = 0 "
+        "ORDER BY updated DESC, seq DESC LIMIT -1 OFFSET ?", (MAX_CHATS,))]
+    if stale:
+        marks = ", ".join("?" * len(stale))
+        conn.execute(f"DELETE FROM messages WHERE chat_id IN ({marks})", stale)
+        conn.execute(f"DELETE FROM chats WHERE id IN ({marks})", stale)
+
+
+def _trim_messages(conn, cid):
+    conn.execute("DELETE FROM messages WHERE chat_id = ? AND seq NOT IN "
+                 "(SELECT seq FROM messages WHERE chat_id = ? ORDER BY seq DESC LIMIT ?)",
+                 (cid, cid, MAX_MESSAGES))
+
+
 def save(chat):
-    """Upsert a chat by id; returns the stored id (or None if no id given). Preserves the
-    original `created`, stamps `updated`, trims messages, and caps total stored chats.
+    """Upsert a chat by id, REPLACING its message list wholesale; returns the stored id (or
+    None if no id given). Preserves the original `created`, stamps `updated`, trims messages,
+    and caps total stored chats.
 
     Runs as ONE serialized transaction (storage.tx): the prior row is read and the new one
     written under the same write lock, so a concurrent save from the other process can't
-    interleave and lose the fields this merge preserves."""
+    interleave and lose the fields this merge preserves.
+
+    Wholesale replacement is right only for a caller that OWNS the full list — the browser,
+    which holds the conversation in memory and posts it back. Anything appending a turn to a
+    thread the other process may also be writing must use append_messages() instead."""
     cid = chat.get("id")
     if not cid:
         return None
     messages = (chat.get("messages") or [])[-MAX_MESSAGES:]
     with _conn() as conn, storage.tx(conn):
-        prior = conn.execute("SELECT * FROM chats WHERE id = ?", (cid,)).fetchone()
-
-        def kept(field):
-            """A field the caller may omit to mean "leave as-is" (None = not supplied)."""
-            supplied = chat.get(field)
-            return supplied if supplied is not None else (prior[field] if prior else None)
-
-        record = {
-            "id": cid,
-            "title": (chat.get("title") or "").strip()[:80] or "Untitled",
-            "session_id": chat.get("session_id"),
-            # In-flight Temporal workflow id for this chat (web runs only). Set while a turn is
-            # running so a page reload / chat switch can reattach to the still-running workflow;
-            # cleared when the turn finishes. Unattached chats and unattended runs leave it null.
-            "run_id": chat.get("run_id"),
-            # The LAST non-null run_id this chat ever had — unlike run_id, never cleared. A
-            # finished interactive web-* run has no server-side chat_key (the browser owns the
-            # conversation), so once run_id resets to null at completion there was previously NO
-            # way left to trace that workflow back to its chat — the Swarm board's Chat link
-            # depends on find_by_run_origin() finding this after the fact (user-reported: some
-            # finished board cards had no Chat button at all).
-            "origin_run_id": chat.get("run_id") or kept("origin_run_id"),
-            # Repo-mode git identity (issue #57 follow-up): `repo` is the registered repo this
-            # chat's task targets; `git_run_id` is the ORIGINAL run's workflow id, whose workspace
-            # path/branch name a later follow-up re-provisions on resume. Preserved across upserts
-            # like `labels` — a chat turn that isn't repo-mode (or a direct-path resume, which
-            # doesn't send them) must not clobber what an earlier turn established.
-            "repo": kept("repo"),
-            "git_run_id": kept("git_run_id"),
-            # Labels (e.g. ["scheduled-job"]) tag a chat's provenance; preserved across upserts
-            # unless the caller passes a new list.
-            "labels": json.dumps(chat.get("labels") if chat.get("labels") is not None
-                                 else (_decode(prior["labels"]) if prior else None) or []),
-            # Sidebar pin — preserved across upserts unless the caller passes it explicitly.
-            "pinned": int(bool(chat.get("pinned")) if chat.get("pinned") is not None
-                          else bool(prior["pinned"] if prior else False)),
-            # Per-chat pipeline tallies (requests run / approvals / session cost) shown in the
-            # workflow-pipeline footer. Persisted so they survive a chat switch or page reload;
-            # preserved across upserts unless the caller passes a fresh object.
-            "stats": json.dumps(chat["stats"]) if chat.get("stats") is not None
-            else (prior["stats"] if prior else None),
-            "cap": json.dumps(chat["cap"]) if chat.get("cap") is not None else None,
-            "created": (prior["created"] if prior else None) or _now(),
-            "updated": _now(),
-            # Monotonic per-save counter: the deterministic tiebreaker for ordering and trimming
-            # when several saves share one whole-second `updated` stamp.
-            "seq": (conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM chats").fetchone()[0]),
-        }
-        cols = ", ".join(record)
-        conn.execute(f"INSERT OR REPLACE INTO chats ({cols}) VALUES "
-                     f"({', '.join(':' + c for c in record)})", record)
-
-        # Messages are replaced wholesale (the caller always sends the full list, and `save`
-        # rebuilding the record is exactly why set_pinned() exists as a separate path).
+        _upsert_row(conn, cid, chat)
         conn.execute("DELETE FROM messages WHERE chat_id = ?", (cid,))
         conn.executemany(
             "INSERT INTO messages (chat_id, seq, role, text, ts, pending) VALUES (?, ?, ?, ?, ?, ?)",
-            [(cid, i, m.get("role"), m.get("text"), m.get("ts"), int(bool(m.get("pending"))))
-             for i, m in enumerate(messages)])
+            [(cid, i) + v for i, v in enumerate(_row_values(messages))])
+        _trim_chats(conn)
+    return cid
 
-        # Cap the store: keep the MAX_CHATS most-recent UNPINNED chats and drop the rest. A pin
-        # is the user saying "don't lose this", so a pinned chat is exempt from the cap and does
-        # not consume a slot — the trim ranks by recency alone, which is the sidebar's order
-        # within the unpinned group it is allowed to touch.
-        stale = [r["id"] for r in conn.execute(
-            "SELECT id FROM chats WHERE pinned = 0 "
-            "ORDER BY updated DESC, seq DESC LIMIT -1 OFFSET ?", (MAX_CHATS,))]
-        if stale:
-            marks = ", ".join("?" * len(stale))
-            conn.execute(f"DELETE FROM messages WHERE chat_id IN ({marks})", stale)
-            conn.execute(f"DELETE FROM chats WHERE id IN ({marks})", stale)
+
+def append_messages(cid, messages, *, fill_pending=False, keep=(), **fields):
+    """Append turns to a chat WITHOUT reading its message list first — the whole point.
+
+    The three run-recording writers used to `get()` the thread, append to the returned list
+    and hand the result to `save()`, which deletes and rewrites every message. Those are two
+    transactions on two connections, and server.py and worker.py both write the same chat id
+    on a reattached thread: a browser turn landing in the gap was deleted by the worker's
+    rewrite (issue #40). Here the row merge, the INSERT at `MAX(seq)+1` and both trims are one
+    `storage.tx` critical section, so concurrent writers interleave turns instead of losing them.
+
+    `fill_pending` fills start_run's `_PENDING` placeholder in place with the first message
+    rather than appending it. `keep` and `**fields` go to _upsert_row (title is always
+    kept — see _title). Returns the chat id, or None if none was given."""
+    if not cid:
+        return None
+    with _conn() as conn, storage.tx(conn):
+        _upsert_row(conn, cid, dict(fields, id=cid), keep_title=True, keep=keep)
+        pending = messages
+        if fill_pending and messages:
+            # The NEWEST placeholder, not merely the trailing message: a turn appended by the
+            # other process (the browser on a reattached thread) lands after it, and leaving it
+            # unfilled strands a permanent "⏳ Otto is working on this" in the thread.
+            held = conn.execute("SELECT seq FROM messages WHERE chat_id = ? AND role = 'otto' "
+                                "AND pending = 1 ORDER BY seq DESC LIMIT 1", (cid,)).fetchone()
+            if held:
+                conn.execute("UPDATE messages SET role = ?, text = ?, ts = ?, pending = ? "
+                             "WHERE chat_id = ? AND seq = ?",
+                             _row_values(messages[:1])[0] + (cid, held["seq"]))
+                pending = messages[1:]
+        nxt = conn.execute("SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE chat_id = ?",
+                           (cid,)).fetchone()[0]
+        conn.executemany(
+            "INSERT INTO messages (chat_id, seq, role, text, ts, pending) VALUES (?, ?, ?, ?, ?, ?)",
+            [(cid, nxt + i) + v for i, v in enumerate(_row_values(pending))])
+        _trim_messages(conn, cid)
+        _trim_chats(conn)
     return cid
 
 
@@ -253,21 +326,14 @@ def start_run(cid, request, title=None, labels=None, cap=None, run_id=None):
     in. A re-firing schedule (existing chat) appends a fresh turn the same way. `run_id` is the
     live Temporal workflow id: storing it lets reopening this chat reattach to the still-running
     workflow (to answer a clarification or approve a write); finish_run() clears it at the end."""
-    if not cid:
-        return None
-    prior = get(cid)
-    messages = list((prior or {}).get("messages") or [])
-    messages.append({"role": "user", "text": str(request or ""), "ts": _now()})
-    messages.append({"role": "otto", "text": _PENDING, "pending": True, "ts": _now()})
-    return save({
-        "id": cid,
-        "title": (prior or {}).get("title") or title or str(request or "")[:80],
-        "session_id": (prior or {}).get("session_id"),
-        "cap": cap or (prior or {}).get("cap"),
-        "labels": labels,
-        "run_id": run_id,
-        "messages": messages,
-    })
+    return append_messages(
+        cid,
+        [{"role": "user", "text": str(request or ""), "ts": _now()},
+         {"role": "otto", "text": _PENDING, "pending": True, "ts": _now()}],
+        # A re-firing schedule must not re-title or un-bind the thread it is appending to, so
+        # the title seeds only a new chat and session_id/cap fall back to what is stored.
+        keep=("session_id", "cap"),
+        title=title or str(request or "")[:80], cap=cap, labels=labels, run_id=run_id)
 
 
 def finish_run(cid, result, session_id=None, cap=None, repo=None, git_run_id=None):
@@ -281,27 +347,13 @@ def finish_run(cid, result, session_id=None, cap=None, repo=None, git_run_id=Non
     no session history and returns nothing. A browser-driven chat gets them client-side, but a
     WORKFLOW-opened chat (`chat_key` — a needs-you retry, or any unattended run) has no browser,
     so without threading them here the follow-up dead-ends with an empty reply."""
-    if not cid:
-        return None
-    prior = get(cid)
-    if not prior:
-        return append_run(cid, "", result, session_id=session_id, cap=cap,
-                          repo=repo, git_run_id=git_run_id)
-    messages = list(prior.get("messages") or [])
-    if messages and messages[-1].get("role") == "otto" and messages[-1].get("pending"):
-        messages[-1] = {"role": "otto", "text": str(result or ""), "ts": _now()}
-    else:
-        messages.append({"role": "otto", "text": str(result or ""), "ts": _now()})
-    return save({
-        "id": cid,
-        "title": prior.get("title"),
-        "session_id": session_id,
-        "cap": cap,
-        "labels": prior.get("labels"),
-        "repo": repo,
-        "git_run_id": git_run_id,
-        "messages": messages,
-    })
+    # fill_pending replaces start_run's placeholder in place; with no placeholder (start_run
+    # was skipped, or the chat does not exist at all) the result is simply appended, so the
+    # run's answer is recorded either way.
+    return append_messages(
+        cid, [{"role": "otto", "text": str(result or ""), "ts": _now()}],
+        fill_pending=True,
+        session_id=session_id, cap=cap, repo=repo, git_run_id=git_run_id)
 
 
 def append_run(cid, request, result, title=None, session_id=None, cap=None, labels=None,
@@ -310,23 +362,13 @@ def append_run(cid, request, result, title=None, session_id=None, cap=None, labe
     creating it on the first call. Used by scheduled/event runs that have no browser to
     record their own turns: the first run opens a chat keyed by `cid` (e.g. the schedule id),
     later runs append to it. `title`/`labels` are set on creation and preserved afterward."""
-    if not cid:
-        return None
-    prior = get(cid)
-    messages = list((prior or {}).get("messages") or [])
-    messages.append({"role": "user", "text": str(request or ""), "ts": _now()})
-    messages.append({"role": "otto", "text": str(result or ""), "ts": _now()})
-    return save({
-        "id": cid,
+    return append_messages(
+        cid,
+        [{"role": "user", "text": str(request or ""), "ts": _now()},
+         {"role": "otto", "text": str(result or ""), "ts": _now()}],
         # Keep the chat's original title once created; otherwise seed from `title`/request.
-        "title": (prior or {}).get("title") or title or str(request or "")[:80],
-        "session_id": session_id,
-        "cap": cap,
-        "labels": labels,
-        "repo": repo,
-        "git_run_id": git_run_id,
-        "messages": messages,
-    })
+        title=title or str(request or "")[:80],
+        session_id=session_id, cap=cap, labels=labels, repo=repo, git_run_id=git_run_id)
 
 
 def git_identity(session_id):

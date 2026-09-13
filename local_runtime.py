@@ -47,6 +47,7 @@ import error_classifier
 import file_safety
 import gateway
 import mcp_client
+import storage
 from ui import trace
 
 SESSIONS = os.path.join(config.DATA_DIR, "local-sessions")
@@ -82,7 +83,9 @@ def gc_sessions(ttl_h=None):
     for name in os.listdir(SESSIONS):
         p = os.path.join(SESSIONS, name)
         try:
-            if name.endswith(".json") and os.path.getmtime(p) < cutoff:
+            # `.json.lock` is storage.mutate_json's sidecar for the file of the same name —
+            # swept on the same TTL, or the directory keeps one lock per session forever.
+            if name.endswith((".json", ".json.lock")) and os.path.getmtime(p) < cutoff:
                 os.unlink(p)
         except OSError:
             pass
@@ -906,10 +909,15 @@ def _load_session(sid):
 
 
 def _save_session(sid, messages, model=None):
+    """Persist a local session's history ATOMICALLY (issue #40). A raw open(..., "w") leaves a
+    truncated file when the write is interrupted — a supervisor ENFORCE kill or a worker restart
+    mid-turn — and `_load_session` swallows the resulting ValueError and returns [], so the next
+    `--resume` silently runs with NO history and no sign anything was lost. storage.write_json
+    fsyncs a temp file and os.replace()s it, so a reader sees the old history or the new one."""
     try:
         os.makedirs(SESSIONS, exist_ok=True)
-        with open(session_path(sid), "w") as f:
-            json.dump({"messages": messages, "at": time.time(), "model": model}, f)
+        storage.write_json(session_path(sid),
+                           {"messages": messages, "at": time.time(), "model": model})
     except OSError:
         pass   # a lost session only costs resumability, never the run
 
