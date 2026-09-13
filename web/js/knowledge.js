@@ -28,15 +28,10 @@ async function loadKnowledge(){
       <p class="sub">Docs retrieved and injected on every fresh run. <b>Memory</b> is what Otto learned; this is what you told it.</p></div>
     <div class="kbar">
       <span class="memstat"><b>${d.count||0}</b> document${d.count===1?'':'s'}</span>
-      <button class="clearbtn kaddbtn" id="k-toggle">${empty?'':'+ Add document'}</button>
+      <button class="addbtn addnew kaddbtn" id="k-add">+ Add document</button>
     </div>
     ${staleBanner}
-    ${docs || `<div class="kempty"><b>No documents yet</b>Paste a runbook, a doc or any reference text below — Otto retrieves the relevant snippets and injects them into every fresh run.</div>`}
-    <div class="kadd" id="k-form"${empty?'':' hidden'}>
-      <input id="k-title" placeholder="Document title (e.g. AWS VPN renewal runbook)">
-      <textarea id="k-text" rows="6" placeholder="Paste the document text…"></textarea>
-      <div class="rulerow"><button class="clearbtn" id="k-add" style="margin-left:0">Add document</button></div>
-    </div>
+    ${docs || `<div class="kempty"><b>No documents yet</b>Add a runbook, a doc or any reference text — Otto retrieves the relevant snippets and injects them into every fresh run.</div>`}
     <div class="phead sec"><h2>Retrieval settings</h2>
       <p class="sub">Ranked by meaning with an embedding model, else keyword overlap. Higher threshold = fewer, closer snippets.</p></div>
     <div class="ksettings">
@@ -48,27 +43,8 @@ async function loadKnowledge(){
       <p class="sub">See which snippets a request would pull in.</p></div>
     <div class="kprev"><input id="k-q" placeholder="e.g. how do I renew the client VPN certificate?"><button class="clearbtn" id="k-prev" style="margin-left:0">Preview</button></div>
     <div id="k-hits"></div>`;
-  const kToggle=document.getElementById("k-toggle"), kForm=document.getElementById("k-form");
-  if(kToggle&&kForm){
-    // hidden on an empty store: the empty panel is already the invitation, so a second
-    // "+ Add document" beside it would be two calls to action for one job
-    kToggle.hidden = !kToggle.textContent.trim();
-    kToggle.addEventListener("click",()=>{
-      const show=kForm.hasAttribute("hidden");
-      kForm.toggleAttribute("hidden",!show);
-      kToggle.textContent = show?"Cancel":"+ Add document";
-      if(show) document.getElementById("k-title").focus();
-    });
-  }
   const addBtn=document.getElementById("k-add");
-  if(addBtn) addBtn.addEventListener("click",async()=>{
-    const title=(document.getElementById("k-title").value||"").trim();
-    const text=(document.getElementById("k-text").value||"").trim();
-    if(!text) return;
-    addBtn.disabled=true; addBtn.textContent="Adding…";
-    try { await fetch("/api/knowledge/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,text})}); }
-    finally { loadKnowledge(); }
-  });
+  if(addBtn) addBtn.addEventListener("click",showDocForm);
   el.querySelectorAll(".ruledel").forEach(b=>b.addEventListener("click",async()=>{
     await fetch("/api/knowledge/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.id})});
     loadKnowledge();
@@ -103,4 +79,30 @@ async function loadKnowledge(){
     const hits=(r.hits||[]).map(h=>`<div class="event"><div class="approach">${esc(h.text)}</div><div class="esrc">${esc(h.title)} · score ${h.score}</div></div>`).join("");
     document.getElementById("k-hits").innerHTML=hits || '<p class="memempty">No snippet clears the threshold for that query.</p>';
   });
+}
+
+/* "+ Add document" opens the shared config-form modal, like every other add control in the app
+   (ui.md). It used to toggle a paste box open inline, which pushed the document list and the
+   retrieval settings down the page while you typed into it. */
+function showDocForm(){
+  const c=openFormModal("<b>New document</b><br>reference text Otto retrieves into every fresh run");
+  c.innerHTML=`<div class="aform">
+    <label>Title</label><input id="k-title" placeholder="e.g. AWS VPN renewal runbook">
+    <label>Text</label><textarea id="k-text" class="prosearea" placeholder="Paste the document text…"></textarea>
+    <div class="ferr" id="k-err"></div>
+    <div class="factions"><button class="btn approve" id="kf-save">Add document</button>
+      <button class="btn decline" id="kf-cancel">Cancel</button></div>
+  </div>`;
+  document.getElementById("k-title").focus();
+  document.getElementById("kf-cancel").onclick=closeFormModal;
+  const save=document.getElementById("kf-save");
+  save.onclick=async()=>{
+    const title=(document.getElementById("k-title").value||"").trim();
+    const text=(document.getElementById("k-text").value||"").trim();
+    // Silence read as a dead button: the old inline form just returned on empty text.
+    if(!text){ document.getElementById("k-err").textContent="paste the document text first"; return; }
+    save.disabled=true; save.textContent="Adding…";
+    try { await fetch("/api/knowledge/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,text})}); }
+    finally { closeFormModal(); loadKnowledge(); }
+  };
 }

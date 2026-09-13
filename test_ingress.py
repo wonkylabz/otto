@@ -3904,9 +3904,9 @@ class KnowledgeTabWidthTests(unittest.TestCase):
         """`.kprev` is a flex row of input + button. At full width `width: 100%` makes the input
         the entire row on its own and pushes Preview past the shared right edge.
 
-        Read as a CASCADE, not as one rule: the input's width is set once in a shared
-        `.kadd input, .kprev input` rule and overridden in `.kprev input`, so matching the first
-        selector that mentions it reads the value that loses."""
+        Read as a CASCADE, not as one rule: the input's width is set to 100% in the first
+        `.kprev input` rule and overridden in the second, so matching the first selector that
+        mentions it reads the value that loses."""
         html = self._html()
         bodies = [b for sel, b in re.findall(r"\n  ([^{\n]*)\{([^}]*)\}", html)
                   if ".kprev input" in sel]
@@ -3922,6 +3922,77 @@ class KnowledgeTabWidthTests(unittest.TestCase):
         self.assertEqual("auto", widths[-1].strip(),
                          "the LAST width declaration wins, and it is not `auto` — the input "
                          "fills the row and pushes the Preview button past the shared edge")
+
+
+class AddControlModalTests(unittest.TestCase):
+    """Every control that CREATES something opens the shared config-form modal.
+
+    Five of them used to render their form inline instead — under an Admin section header, or
+    open on the page above the list it adds to — so "add" meant two different interactions
+    depending on which tab you were on, and on Knowledge and Memory the empty paste box was the
+    first thing the tab showed. The modal was already here (`openFormModal`) and already used by
+    the edit/configure controls; this pins the add half to it too."""
+
+    # id -> the label it must carry. One spelling ("+ Add <thing>"), because these sit in
+    # headers beside `edit`/`discover`/`recheck` controls that share `.addbtn`'s geometry.
+    CONTROLS = {
+        "add-endpoint": "+ Add endpoint",
+        "add-model": "+ Add model",
+        "add-cap": "+ Add capability",
+        "add-mcp": "+ Add MCP server",
+        "add-project": "+ Add project repo",
+        "add-rule": "+ Add event rule",
+        "add-job": "+ Add runbook",
+        "k-add": "+ Add document",
+        "bx-add": "+ Add rule",
+    }
+    # The functions those controls open, each of which must call openFormModal.
+    FORMS = ("showEndpointForm", "showDiscovery", "showModelForm", "showCapForm",
+             "showProjectForm", "showMcpForm", "showRuleForm", "showJobForm",
+             "showDocForm", "showBehaviorRuleForm")
+
+    def _src(self):
+        return ui_src()
+
+    def test_every_add_control_is_the_same_button_with_the_same_label(self):
+        src = self._src()
+        for cid, label in self.CONTROLS.items():
+            m = re.search(r'<button class="([^"]*)" id="%s"[^>]*>([^<]*)</button>' % cid, src)
+            self.assertIsNotNone(m, f'no add control renders id="{cid}"')
+            self.assertIn("addbtn", m.group(1), f"{cid} is not an .addbtn")
+            self.assertIn("addnew", m.group(1),
+                          f"{cid} is missing `addnew` — it reads as an edit/filter button")
+            self.assertEqual(label, m.group(2).strip(),
+                             f"{cid}'s label drifted from the one spelling")
+
+    def test_every_add_form_opens_the_shared_modal(self):
+        """Body-level check, not a grep for the word: a function can mention the modal in a
+        comment while still writing into an inline container."""
+        src = self._src()
+        for fn in self.FORMS:
+            m = re.search(r"\n(?:async )?function %s\(([^)]*)\)\{(.*?)\n\}\n" % fn, src, re.S)
+            self.assertIsNotNone(m, f"{fn} is gone or reshaped")
+            self.assertIn("openFormModal(", m.group(2),
+                          f"{fn} renders its form somewhere other than the shared modal")
+
+    def test_no_inline_add_form_container_is_left_behind(self):
+        """An orphan container is not dead markup: `.asection.coll.collapsed > *:not(h3)` and
+        the section's add-button handler both still reason about a form living under a header."""
+        src = self._src()
+        for cid in ("model-form", "cap-form", "project-form", "k-form"):
+            self.assertNotIn('id="%s"' % cid, src,
+                             f"#{cid} is still in the markup — the form moved, the slot did not")
+
+    def test_no_two_scripts_define_the_same_form_function(self):
+        """Measured, not theoretical: a second `showRuleForm` (Memory's behaviour rules, beside
+        the webhook rules events.js already had) meant the file loading LAST answered both
+        buttons, and Events' "+ Add event rule" opened the behaviour-rule form. Classic
+        `<script src>` with no modules: every one of these is a global on one window."""
+        names = re.findall(r"\nfunction (show\w+)\(", self._src())
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        self.assertEqual([], dupes,
+                         "two scripts define the same global form function, and the later tag "
+                         f"silently wins: {dupes}")
 
 
 class SubsectionIndentTests(unittest.TestCase):
@@ -6161,7 +6232,13 @@ class UiAssetLayoutTests(unittest.TestCase):
     # re-enter the API key for X", and the one indicator that reports it is green by default —
     # a warning in the ok colour reads as a success. `.warn` alone cannot do it: it is declared
     # ABOVE `.saved` at equal specificity, so the green wins the cascade.
-    ASSET_MAX = 114832
+    # -> 115176 for the "add" standardization: `.addbtn.addnew` (one tint for every control
+    # that CREATES something, so it reads apart from the `edit`/`discover`/filter buttons
+    # sharing `.addbtn`'s geometry) and `.aform textarea.prosearea`. The knowledge and
+    # behaviour-rule paste boxes moved into the shared modal, so `.kadd`/`.ruleadd` came OUT —
+    # this raise is the net. The comment naming the two inherited constraints `.prosearea`
+    # overrides is most of it, and is what stops the next edit dropping them (see `.codearea`).
+    ASSET_MAX = 115176
 
     def _assets(self):
         out = {}

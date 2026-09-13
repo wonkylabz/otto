@@ -51,7 +51,7 @@ async function loadJobs(silent){
         <b>${esc(data.tz||'UTC')}</b>.</p></div>
     ${warn}
     <div class="memhead"><span class="memstat"><b>${_jobs.length}</b> runbook${_jobs.length===1?'':'s'}</span>
-      <button class="clearbtn" id="add-job" style="margin-left:auto;color:var(--accent)">+ runbook</button></div>
+      <button class="addbtn addnew" id="add-job" style="margin-left:auto">+ Add runbook</button></div>
     ${_jobs.length ? `
       ${jobSection("rb-ondemand", "On demand",
         "Run these yourself. A runbook with parameters asks for them at the moment you click Run.",

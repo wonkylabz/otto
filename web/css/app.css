@@ -594,9 +594,9 @@
   .asection.coll h3:hover .secttoggle { color: var(--text); }
   .secttoggle .gcaret { color: var(--accent); }
   .asection.coll.collapsed .secttoggle .gcaret { transform: rotate(-90deg); }
-  /* Everything but the header, not just .asection-body: the add-forms (#cap-form, #mcp-form,
-     #project-form) and the MCP warning are siblings of the body, so a body-only rule left an
-     open "+ MCP server" form standing under a section that says it is collapsed. */
+  /* Everything but the header, not just .asection-body: the MCP/model warnings are siblings of
+     the body, so a body-only rule leaves a warning standing under a collapsed section. (The
+     add-forms that used to sit here too are all in the shared modal now.) */
   .asection.coll.collapsed > *:not(h3) { display: none; }
   /* A collapsed section still has to say what's inside it. */
   .sectcount { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--dim);
@@ -653,6 +653,12 @@
     color: var(--accent); background: transparent; border: 1px solid var(--line); border-radius: var(--r-sm);
     padding: 4px 10px; cursor: pointer; }
   .addbtn:hover { border-color: var(--accent); }
+  /* Every "add an entity" control is the same button wherever it lives — an Admin section
+     header, the Events webhook header, the Jobs bar, Knowledge, Memory's rules — and every one
+     of them opens the shared config-form modal. The tint is what separates a creating control
+     from the `edit` / `discover` / filter buttons sharing `.addbtn`'s geometry. */
+  .addbtn.addnew { background: var(--accent-soft); border-color: var(--accent-soft); font-weight: 600; }
+  .addbtn.addnew:hover { border-color: var(--accent); }
   .aform { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 15px;
     margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
   .aform label { font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: -4px; }
@@ -672,6 +678,10 @@
        120px, which `.aform textarea` never overrode (style 208px, rendered 120px). The
        modal body scrolls, this field does not, and `growArea`'s own 320px is the cap. */
     flex: 0 0 auto; max-height: none; }
+  /* A prose field a form is mostly ABOUT (a capability prompt, a knowledge document) fights the
+     same two inherited constraints as `.codearea`: the composer's app-wide `textarea` 120px cap
+     and `.aform`'s flex column shrinking it to min-height. Same overrides, proportional font. */
+  .aform textarea.prosearea { min-height: 190px; flex: 0 0 auto; max-height: none; }
   .aform .frow { display: flex; gap: 12px; }
   .aform .frow > div { flex: 1; display: flex; flex-direction: column; gap: 8px; }
   .aform .ferr { color: var(--danger); font-size: 12px; }
@@ -865,9 +875,6 @@
     margin-bottom: 7px; white-space: pre-wrap; word-break: break-word; }
   .rscope { font-family: var(--mono); font-size: 11px; color: var(--text); border: 1px solid var(--line);
     border-radius: 5px; padding: 2px 6px; }
-  .ruleadd { margin: 0 0 18px; }
-  .ruleadd textarea { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
-    border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 12px; font: inherit; font-size: 13.5px; resize: vertical; }
   .rulerow { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
   .rulerow select { padding: 6px 10px; }
   .rulecard { background: var(--surface); border: 1px solid var(--warn-line); border-radius: var(--r-md); padding: 12px 14px; margin: 6px 0; }
@@ -885,20 +892,16 @@
      column. The inputs used to stop at 760px while the headings, empty state, settings row and
      section rules ran the full width (measured: 760 vs 1305 at a 1506px window), which left the
      forms looking half-drawn and this tab looking narrower than its siblings. */
-  .kadd { margin: 14px 0 18px; }
-  .kadd[hidden] { display: none; }
-  /* store first, action second: with the form permanently open the page led with a 200px paste
-     box and said "0 documents" underneath it in passing. */
+  /* store first, action second: the paste box used to live open on the page, which led the tab
+     with a 200px textarea and said "0 documents" underneath it in passing. It is a modal now. */
   .kbar { display: flex; align-items: baseline; gap: 12px; margin: 0 0 12px; }
   .kbar .kaddbtn { margin-left: auto; }
   /* An empty store's most important message should not be its quietest. */
   .kempty { border: 1px dashed var(--line-strong); border-radius: var(--r-md);
     padding: 26px 22px; text-align: center; color: var(--dim); font-size: 13px; }
   .kempty b { display: block; color: var(--text); font-size: 14px; font-weight: 600; margin-bottom: 4px; }
-  .kadd input, .kprev input { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
+  .kprev input { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
     border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 12px; font: inherit; font-size: 13.5px; margin-bottom: 8px; }
-  .kadd textarea { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
-    border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 12px; font: inherit; font-size: 13.5px; resize: vertical; }
   .kdoc { font-size: 14px; color: var(--text); }
   .kwarn { font-size: 11px; color: var(--warn); border: 1px solid var(--warn-line);
     border-radius: var(--r-sm); padding: 1px 6px; margin-left: 6px; white-space: nowrap; }

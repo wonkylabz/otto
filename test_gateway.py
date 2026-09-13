@@ -5800,7 +5800,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # found and fixed once in `slack.whoami` and was sitting untouched in `pr_review.viewer`,
     # which is what a rule is for. Both halves are non-obvious — caching a miss reads as
     # correct caching, and retrying it reads as correct recovery.
-    MAX_RULES_BYTES = 76315   # fetched tier — bounded, but looser; it is not always loaded
+    # -> 76721 for the two add-control rules: "every form is in the shared modal" had lived as
+    # a clause inside a run-on line and five add forms still rendered inline anyway, which is
+    # what a clause buys; and the same-named-global rule is a MEASURED bug (Events' webhook
+    # button opened Memory's behaviour-rule form), invisible to `node --check` and to every grep.
+    MAX_RULES_BYTES = 76721   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
