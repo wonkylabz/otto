@@ -2750,3 +2750,171 @@ class ClaudeSeamSignatureTests(unittest.TestCase):
             engine._claude("p", steer="SENTINEL", abort="A", model="m")
         self.assertEqual(seen.get("steer"), "SENTINEL",
                          "_claude accepted steer= but dropped it before run_json")
+
+
+class ClaudeMdBudgetTests(unittest.TestCase):
+    """CLAUDE.md's economy rules were style advice with no failing signal, so the file grew
+    ~2KB/day and was hand-purged roughly weekly (122K→35K, 144K→44K, 59K→47K). Line COUNT
+    stayed near-flat across a purge cycle while individual rules ballooned past 600 chars —
+    nominal compliance with "one line of rule", which is why the old wording never bit.
+
+    The docs are now two tiers: CLAUDE.md is RESIDENT (loaded into every session, so its bytes
+    are a per-run tax) and `.claude/rules/*.md` are FETCHED (paid only by a session that edits
+    that layer). Each tier has its own ceiling, because a single ceiling on the resident file
+    alone turns the rules dir into an evasion hatch — the same growth, relocated.
+
+    MAX_OVER_CAP spans BOTH tiers for the same reason: moving a 500-char rule out of CLAUDE.md
+    must not launder it into compliance.
+
+    All three ceilings are ratchets, not targets: they carry no headroom, so adding a rule fails
+    the suite until something is deleted or merged. Raising one is an explicit constant edit
+    that shows up in the diff — which is the whole point, since the alternative is silent
+    growth that only a human re-reading the file catches."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    PATH = os.path.join(ROOT, "CLAUDE.md")
+    RULES_DIR = os.path.join(ROOT, ".claude", "rules")
+    DOCS_DIR = os.path.join(ROOT, "docs")
+    # Each ceiling is a ratchet: raising one is a deliberate constant edit that shows
+    # up in the diff. The history of every bump is in git log, not here.
+    MAX_BYTES = 8110          # resident tier — the per-session tax
+    MAX_RULES_BYTES = 77758   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULE_CHARS = 280
+    MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
+
+    def _rule_files(self):
+        return sorted(glob.glob(os.path.join(self.RULES_DIR, "*.md")))
+
+    def _all_files(self):
+        return [self.PATH] + self._rule_files()
+
+    def _lines(self):
+        """(path, lineno, text) across both tiers."""
+        out = []
+        for path in self._all_files():
+            with open(path, encoding="utf-8") as f:
+                out += [(path, n, t) for n, t in enumerate(f.read().splitlines(), 1)]
+        return out
+
+    def _rules_bytes(self):
+        return sum(os.path.getsize(p) for p in self._rule_files())
+
+    def test_the_resident_file_stays_within_its_byte_budget(self):
+        size = os.path.getsize(self.PATH)
+        self.assertLessEqual(
+            size, self.MAX_BYTES,
+            f"CLAUDE.md is {size} bytes, over its {self.MAX_BYTES}-byte budget by "
+            f"{size - self.MAX_BYTES}. It is loaded into EVERY session — move the rule into "
+            f"the right .claude/rules/ file, or delete/merge one. If the resident set genuinely "
+            f"needs more room, raise MAX_BYTES here and say why in the commit.")
+
+    def test_the_rules_dir_stays_within_its_byte_budget(self):
+        size = self._rules_bytes()
+        self.assertLessEqual(
+            size, self.MAX_RULES_BYTES,
+            f".claude/rules/ totals {size} bytes, over its {self.MAX_RULES_BYTES}-byte budget "
+            f"by {size - self.MAX_RULES_BYTES}. The fetched tier is cheaper than the resident "
+            f"one, not free — a judge still digests it. Delete or merge before adding.")
+
+    def test_no_rule_outgrows_the_line_cap(self):
+        over = [(p, n, len(t)) for p, n, t in self._lines() if len(t) > self.MAX_RULE_CHARS]
+        worst = ", ".join(f"{os.path.basename(p)}:L{n}={c}"
+                          for p, n, c in sorted(over, key=lambda x: -x[2])[:5])
+        self.assertLessEqual(
+            len(over), self.MAX_OVER_CAP,
+            f"{len(over)} lines exceed {self.MAX_RULE_CHARS} chars (cap {self.MAX_OVER_CAP}); "
+            f"longest: {worst}. A rule that long is two rules, or it is carrying the incident "
+            f"narrative that belongs in its commit message.")
+
+    def test_the_ceilings_match_files_that_actually_exist(self):
+        # A ratchet nobody can trip is worse than no ratchet: if the constants ever drift far
+        # above the files, the assertions above pass vacuously and the budget is decoration.
+        size = os.path.getsize(self.PATH)
+        self.assertGreater(size, 0)
+        self.assertLessEqual(
+            self.MAX_BYTES - size, 2_000,
+            f"MAX_BYTES ({self.MAX_BYTES}) has drifted {self.MAX_BYTES - size} bytes above the "
+            f"real file ({size}) — re-ratchet it down after a purge or the budget stops binding.")
+        rules = self._rules_bytes()
+        self.assertGreater(rules, 0, ".claude/rules/ is empty — the split is the whole point.")
+        self.assertLessEqual(
+            self.MAX_RULES_BYTES - rules, 4_000,
+            f"MAX_RULES_BYTES ({self.MAX_RULES_BYTES}) has drifted "
+            f"{self.MAX_RULES_BYTES - rules} bytes above the real total ({rules}) — re-ratchet.")
+
+    def test_every_rules_file_is_reachable_from_the_resident_file(self):
+        # A rules file nothing points at is never fetched, so its rules bind nobody. The
+        # pointer table in CLAUDE.md is the only path a session has to find it.
+        with open(self.PATH, encoding="utf-8") as f:
+            resident = f.read()
+        for path in self._rule_files():
+            rel = os.path.relpath(path, self.ROOT)
+            self.assertIn(rel, resident,
+                          f"{rel} exists but CLAUDE.md never names it — an unreferenced rules "
+                          f"file is invisible to a session that would need it.")
+
+    def test_every_docs_pointer_in_the_resident_file_resolves(self):
+        # The referenced tier only works if the pointer does. A rule moved to docs/ and then
+        # renamed is worse than one deleted: the resident file still promises it exists.
+        with open(self.PATH, encoding="utf-8") as f:
+            resident = f.read()
+        named = set(re.findall(r"docs/[A-Za-z0-9_.-]+\.md", resident))
+        self.assertTrue(named, "the resident file points at no docs/ file — re-point this test")
+        for rel in sorted(named):
+            self.assertTrue(os.path.exists(os.path.join(self.ROOT, rel)),
+                            f"CLAUDE.md points at {rel}, which does not exist")
+
+    def test_the_referenced_tier_is_invisible_to_the_conventions_digest(self):
+        # That invisibility IS the tier. docs/ holds how-to-run-it material no judge could act
+        # on; feeding it to the digest would put "re-run systemd/install.sh" in the ranked pool
+        # competing with real conventions, which is the tax the move was meant to remove.
+        rels = conventions._source_paths(self.ROOT)
+        leaked = [r for r in rels if r.replace(os.sep, "/").startswith("docs/")]
+        self.assertEqual(leaked, [],
+                         f"conventions now digests {leaked} — either move that content into "
+                         ".claude/rules/ where a judge can use it, or narrow _SOURCE_GLOBS.")
+
+    def test_the_conventions_digest_reads_the_rules_dir(self):
+        # The judge sees only what conventions._SOURCES/_SOURCE_GLOBS name. Moving rules out
+        # of CLAUDE.md without extending that tuple silently drops their enforcement.
+        rels = conventions._source_paths(self.ROOT)
+        self.assertIn("CLAUDE.md", rels)
+        for path in self._rule_files():
+            self.assertIn(os.path.relpath(path, self.ROOT), rels,
+                          "conventions._SOURCE_GLOBS does not reach .claude/rules/ — every "
+                          "rule moved there is invisible to every judge.")
+
+
+
+    DOC_GLOBS = ("CLAUDE.md", "CONTRIBUTING.md", os.path.join(".claude", "rules", "*.md"),
+                 os.path.join("docs", "*.md"))
+
+    def _doc_files(self):
+        out = []
+        for pat in self.DOC_GLOBS:
+            out += sorted(glob.glob(os.path.join(self.ROOT, pat)))
+        return out
+
+    def test_every_test_pointer_in_the_docs_resolves(self):
+        # A rule citing its guard test is how an editor checks whether they broke it. Three
+        # pointers named test_core for classes living in test_gateway/test_pipeline, and a
+        # pointer at a class that is not there reads exactly like one at a class that is —
+        # the reader greps once, finds nothing, and concludes the guard was deleted.
+        classes = {}
+        for path in sorted(glob.glob(os.path.join(self.ROOT, "test_*.py"))):
+            mod = os.path.basename(path)[:-3]
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read(), filename=path)
+            classes[mod] = {n.name for n in tree.body if isinstance(n, ast.ClassDef)}
+        bad = []
+        for path in self._doc_files():
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            for n, line in enumerate(text.splitlines(), 1):
+                for mod, cls in re.findall(r"\b(test_[a-z_]+)\.([A-Za-z0-9_]*Tests)\b", line):
+                    if cls not in classes.get(mod, ()):
+                        where = next((m for m, cs in classes.items() if cls in cs), None)
+                        hint = f" (it lives in {where}.py)" if where else " (no such class)"
+                        bad.append(f"{os.path.relpath(path, self.ROOT)}:{n} -> {mod}.{cls}{hint}")
+        self.assertEqual(bad, [], "docs point at test classes that do not resolve:\n" +
+                                  "\n".join(bad))
