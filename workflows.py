@@ -525,6 +525,36 @@ class OttoWorkflow:
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
             except Exception:  # noqa: BLE001 - finalizer is best-effort; never mask the original error
                 pass
+            # TELL THE ASKER. `finalize_terminal` above writes the durable row and pushes ntfy to
+            # the OWNER, and its only `reply_to` branch is `github_issue` — a Slack/webhook/PR
+            # target is read for context lines and then dropped. So every other ingress died in
+            # total silence: the asker got the ack reaction and then nothing, ever (measured on
+            # `slack-b-D0BVD1F856Y-1789286622-973489`, a DM question whose run died pre-routing).
+            # This is the same omission the gate-decline branch already fixed on its own side of
+            # the gate, with the same three symptoms — and because DELIVERY is what calls
+            # `record_conversation_session`, skipping it also leaves the Slack conversation's
+            # in-flight flag set until `is_busy`'s derived backstop notices the run is gone.
+            #
+            # The wording has to stand on its own: this can fire BEFORE routing, so `self._cap`
+            # is None and `self._audience` may never have been resolved. It therefore says only
+            # that the request did not run and that the owner has been told — never
+            # `_NEEDS_HUMAN_BANNER`'s text and never `_failure_detail(e)`, which is Otto's own
+            # vocabulary and can carry internals (memory-privacy.md: a run note never rides out
+            # to a conversation). Its own try/except, so a failing delivery cannot mask the
+            # original exception (issue #98).
+            if params.get("reply_to"):
+                try:
+                    await workflow.execute_activity(
+                        deliver_result,
+                        {"reply_to": params["reply_to"],
+                         "result": (f"Sorry — something went wrong on my side and I couldn't "
+                                    f"run that. Nothing was done. {config.OWNER_NAME} has been "
+                                    f"told and can pick it up."),
+                         "cap": self._cap,
+                         "run_id": workflow.info().workflow_id, "session_id": None},
+                        start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                except Exception:  # noqa: BLE001 - best-effort; never mask the original error
+                    pass
             # Finalize the Chat thread on the failure path too (issue #79): _open_chat wrote a
             # pending "working…" placeholder at the start of an unattended run; without this a
             # mid-run failure never reaches the success-path _record_chat and orphans that

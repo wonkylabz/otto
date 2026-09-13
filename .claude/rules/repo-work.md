@@ -39,7 +39,7 @@
 
 Errored and timed-out turns are failed attempts → retry → escalate. Verify-exhausted, QA-fail, and budget-hit → `needs_human` → Blocked. Exception: repo-mode with an open PR is advisory-only (Finished, "⚠ unverified"). Delivery is atomic + idempotent (`<!-- otto-run:<id> -->`).
 
-- **Every terminal state writes its own audit row** — `/api/needs-you` reads live Temporal visibility, NOT the trail, so a run that skips `record_terminal` vanishes when history ages out. Needs-human states finalize via `finalize_terminal` (`WorkflowNeedsHumanTests`).
+- **Every terminal state writes an audit row AND tells `reply_to`** — needs-you reads live visibility, not the trail, so a skipped `record_terminal` vanishes; `finalize_terminal` pushes to the OWNER only, so a skipped `deliver_result` is silent (`…tells_the_asker`).
 - **A TERMINATE/CANCEL/TIMED_OUT delivers no exception into the workflow**, so its `except Exception` never fires — `server._wf_terminate` writes the row itself, recovering cap/request via `engine.run_origin` (the ONE impl; `server._run_origin` delegates).
 - **The Reaper is the backstop** (`ReaperWorkflow`, `reaper` schedule) — `reap_stuck` sweeps board cards and every other OttoWorkflow; a dead or stuck-past-TTL run with no needs-human row gets one, idempotent via the audit trail, bounded by `OTTO_REAP_WINDOW_H` so a first sweep can't flood needs-you. Swarm children (`-s<N>`) are skipped — the parent's row is the signal. Its ntfy line reports run COUNTS by ingress, never raw wids (a `slack-*` wid holds a channel id).
 
