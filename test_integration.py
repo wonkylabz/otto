@@ -2279,6 +2279,36 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "chat-fail1")
         self.assertTrue(args[1].startswith("❌ **This run failed**"))
 
+    async def test_an_unattended_skip_tells_the_asker(self):
+        """Issue #37: `approval: "skip"` audits the denial and returns — it never delivered.
+        The decline branch deliberately delivers "both endings" for exactly this reason: the
+        asker got an ack and then silence forever, and for Slack `pending_at` clears only on
+        DELIVERY, so that conversation answered nothing for the whole stale window afterwards."""
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, record_attempt, record_skip,
+                                route_request, snapshot_settings, run_capability, resolve_pr_target,
+                                check_grounding, verify_capability)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="skipq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request, run_capability,
+                                resolve_pr_target, check_grounding, verify_capability,
+                                record_attempt, record_skip, deliver_result],
+                    activity_executor=ex,
+                ):
+                    out = await env.client.execute_workflow(
+                        OttoWorkflow.run,
+                        {"request": "renew the vpn", "unattended": True, "approval": "skip",
+                         "cap": {"name": "evt-write", "kind": "skill", "risk": "write"},
+                         "reply_to": {"kind": "webhook", "url": "https://example.invalid/hook"}},
+                        id="skip-" + uuid.uuid4().hex[:8], task_queue="skipq")
+        self.assertIn("skipped", out["result"])
+        self.assertEqual(len(self.delivered), 1,
+                         "an approval-skip with a reply_to told the asker nothing")
+        self.assertIn("skipped", self.delivered[0][1])
+
     async def test_unattended_ask_waits_for_approval_then_runs(self):
         import asyncio
         import uuid
@@ -2312,6 +2342,52 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
                     await h.signal(OttoWorkflow.approve, True)   # the Board's Approve button
                     out = await h.result()
         self.assertEqual(out["result"], "did the thing")
+
+    async def test_a_schedule_pinned_by_name_resolves_its_risk_at_fire_time(self):
+        """Issue #29: `scheduler._args` baked `resolve_cap()`'s {name,kind,risk} into the
+        Temporal Schedule's frozen action args, so a cap reclassified read->write in Admin kept
+        firing that runbook UNGATED. The workflow now resolves the NAME through an activity at
+        fire time — the registry's current risk is the one that decides the gate."""
+        import asyncio
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, plan_capability, record_attempt,
+                                record_skip, resolve_pinned_cap, route_request, snapshot_settings,
+                                run_capability, resolve_pr_target, check_grounding,
+                                verify_capability)
+        routed = []
+        orig_route = engine.route
+        engine.route = lambda *a, **k: routed.append(a) or self.activities._caps[0]
+        self.addCleanup(setattr, engine, "route", orig_route)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="pinq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request,
+                                plan_capability, run_capability, resolve_pr_target,
+                                check_grounding, verify_capability, record_attempt, record_skip,
+                                resolve_pinned_cap, deliver_result],
+                    activity_executor=ex,
+                ):
+                    h = await env.client.start_workflow(
+                        OttoWorkflow.run,
+                        # No `cap` dict at all — only the stored NAME, as a schedule now carries.
+                        {"request": "renew the vpn", "unattended": True, "approval": "ask",
+                         "cap_name": "evt-write"},
+                        id="pin-" + uuid.uuid4().hex[:8], task_queue="pinq")
+                    for _ in range(100):
+                        st = await h.query(OttoWorkflow.status)
+                        if st["awaiting_approval"]:
+                            break
+                        await asyncio.sleep(0.05)
+                    else:
+                        self.fail("a cap the registry calls WRITE did not arm the gate")
+                    self.assertEqual(st["cap"]["name"], "evt-write")
+                    self.assertEqual(st["cap"]["risk"], "write")
+                    await h.signal(OttoWorkflow.approve, True)
+                    out = await h.result()
+        self.assertEqual(out["result"], "did the thing")
+        self.assertEqual(routed, [], "a pinned name must still skip Router #1")
 
     async def test_gate_pushes_a_notification(self):
         """Issue #92: reaching the approval gate fires an owner push (via the notify_human
@@ -3854,6 +3930,52 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(out["swarm"]), 2)           # one part per sub-task
         self.assertEqual(self.merge_audience, [None])    # no reply target -> operator report
 
+    async def test_a_dead_child_names_its_cause_and_needs_a_human(self):
+        """Issue #37: the parent rendered `(sub-task failed: ChildWorkflowError)` — Temporal's
+        WRAPPER type, never the cause `_failure_detail` exists to unwrap — and then finished Done
+        with needs_human=None, so the board said success while the child's own needs-human row
+        sat on the Needs-you dashboard."""
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, classify_request, finalize_terminal,
+                                merge_results, plan_swarm, record_attempt, record_skip,
+                                route_request, snapshot_settings, run_capability, resolve_pr_target,
+                                check_grounding, verify_capability)
+        finals = []
+        orig_final = engine.record_terminal
+        engine.record_terminal = lambda *a, **k: finals.append((a, k))
+        self.addCleanup(setattr, engine, "record_terminal", orig_final)
+
+        def boom(request, cap, **kwargs):
+            if request == "sub B":
+                raise RuntimeError("child exploded on purpose")
+            return {"workflow": kwargs.get("wid") or "wf-sw", "result": f"did[{request}]",
+                    "cost": 0.0, "session_id": "s", "model": "m", "attempt": 1}
+        engine.run_attempt = boom
+        engine.verify = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("child exploded"))
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                async with Worker(
+                    env.client, task_queue="swfq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, plan_swarm, merge_results,
+                                clarify_request, classify_request, run_capability,
+                                resolve_pr_target, check_grounding, verify_capability,
+                                record_attempt, record_skip, finalize_terminal],
+                    activity_executor=ex,
+                ):
+                    out = await env.client.execute_workflow(
+                        OttoWorkflow.run,
+                        {"request": "do sub A and sub B", "unattended": True, "auto_approve": True},
+                        id="swarmf-" + uuid.uuid4().hex[:8], task_queue="swfq")
+        self.assertTrue(out.get("needs_human"),
+                        "a swarm that lost a sub-task finished clean")
+        self.assertEqual(out["needs_human"]["reason"], "swarm_child_failed")
+        self.assertTrue(finals, "no durable terminal row for the failed swarm")
+        dead = [p for p in out["swarm"] if "sub-task failed" in (p.get("result") or "")]
+        self.assertEqual(len(dead), 1)
+        self.assertNotIn("ChildWorkflowError)", dead[0]["result"],
+                         "the wrapper type is not the cause")
+
     async def test_swarm_answering_a_person_shapes_the_MERGE_not_the_children(self):
         """The merge is what gets DELIVERED, so that's where the audience applies. A child's output
         is only ever read by the merge, so it stays report-shaped — giving children the conversational
@@ -3962,7 +4084,8 @@ class WorkflowPlanModeTests(unittest.IsolatedAsyncioTestCase):
                                 route_request, snapshot_settings, run_capability, resolve_pr_target,
             check_grounding, verify_capability)
         engine.plan_steps = lambda request, cap, force_claude=True: steps
-        engine.run_plan = lambda request, cap, steps, **k: plan_result
+        engine.run_plan = (plan_result if callable(plan_result)
+                           else (lambda request, cap, steps, **k: plan_result))
         async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
@@ -3999,6 +4122,25 @@ class WorkflowPlanModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["needs_human"], {"reason": "verify_exhausted"})
         self.assertIn("Needs human review", out["result"])
         self.assertEqual(self.ladder_ran, [])
+
+    async def test_a_dead_plan_activity_is_a_harness_death_not_a_verdict(self):
+        """Issue #37: on an ActivityError the workflow fabricated `verdict={"passed": False}`
+        with no `source`, so a dead worker or a blown ceiling was filed `verify_exhausted` — a
+        judge's FAIL — when no judge ever read it. `scorecard` counts judge verdicts only."""
+        def boom(*a, **k):
+            raise RuntimeError("the plan executor died")
+        out = await self._run(self._steps(2), boom)
+        self.assertFalse(out["verified"])
+        self.assertEqual(out["needs_human"], {"reason": "harness_exhausted"})
+        self.assertIn("died in the harness", out["result"])
+
+    async def test_a_plan_step_that_died_in_the_harness_is_reported_as_one(self):
+        """`_run_ladder` dropped `harness_stop` from its return, so a plan whose step died in
+        the harness was indistinguishable from one the judge failed."""
+        out = await self._run(self._steps(2), {
+            "result": "partial work", "passed": False, "cost": 0, "tokens": {"output": 0},
+            "steps_run": 1, "replans": 0, "budget_stop": False, "harness_stop": True})
+        self.assertEqual(out["needs_human"], {"reason": "harness_exhausted"})
 
     async def test_plan_off_takes_ladder_without_calling_planner(self):
         config.PLAN_MODE = "off"                          # workflow-side gate blocks the plan call
@@ -6104,9 +6246,10 @@ class ReaperSweepTests(unittest.TestCase):
         self.wfs, self.audited = [], set()
         self._orig_list = activities._list_otto_workflows
         activities._list_otto_workflows = lambda window_h, limit=500: self.wfs
-        self._orig_iter = engine.iter_audit_entries
-        engine.iter_audit_entries = lambda: [{"workflow": w, "needs_human": True}
-                                             for w in self.audited]
+        # The reaper reads the `needs_human` COLUMN now, not a decode of every audit row
+        # (issue #57) — the sweep runs on a schedule and the trail only grows.
+        self._orig_iter = engine.needs_human_wids
+        engine.needs_human_wids = lambda: set(self.audited)
         self._orig_origin = engine.run_origin
         engine.run_origin = lambda wid: (f"req for {wid}", "agent:x", None, True)
 
@@ -6124,7 +6267,7 @@ class ReaperSweepTests(unittest.TestCase):
             setattr(self.board, n, fn)
         self.activities._reap_state = self._orig_state
         self.activities._list_otto_workflows = self._orig_list
-        engine.iter_audit_entries = self._orig_iter
+        engine.needs_human_wids = self._orig_iter
         engine.run_origin = self._orig_origin
         engine.record_terminal = self._orig_terminal
         self.delivery.notify = self._orig_notify

@@ -22,6 +22,7 @@ TASK_QUEUE = os.environ.get("OTTO_TASK_QUEUE", "otto")
 # test_core.test_worker_registers_every_activity guards against drift.
 ACTIVITIES = [
     activities.route_request, activities.clarify_request,
+    activities.resolve_pinned_cap,
     activities.classify_request, activities.classify_followup,
     activities.plan_capability, activities.suggest_repo,
     activities.plan_swarm, activities.merge_results,

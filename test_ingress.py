@@ -75,29 +75,26 @@ class CronTests(unittest.TestCase):
         self.assertFalse(scheduler.cron_valid("nope"))
         self.assertFalse(scheduler.cron_valid("0 9 * *"))   # only 4 fields
 
-    def test_schedule_pins_capability_in_workflow_args(self):
+    def test_schedule_pins_the_capability_NAME_not_its_risk(self):
         # A pinned cap must ride in the workflow args so a scheduled run skips Router #1 (the fix
-        # for a project skill silently falling back to the assistant). The runbook stores only the
-        # NAME — the {name,kind,risk} dict is resolved from the trusted registry at fire time — so
-        # a name the registry can't resolve yields no `cap` key at all (auto-route), never a
-        # half-trusted dict built from the store.
+        # for a project skill silently falling back to the assistant) — but as a NAME only.
+        # Issue #29: a Schedule's action args are frozen at creation, so resolving {name,kind,risk}
+        # here baked the risk in: reclassifying that cap read->write in Admin kept firing this
+        # runbook UNGATED until the server restarted and _reconcile rewrote the schedule. The
+        # workflow resolves the name through `resolve_pinned_cap` at fire time instead.
         if not scheduler.tc.OK:
             self.skipTest("temporalio not installed")
-        cap = {"name": "productivity-tracker:daily-summary", "kind": "skill", "risk": "read"}
-        import runbooks
-        orig = runbooks.resolve_cap
-        runbooks.resolve_cap = lambda n: cap if n == cap["name"] else None
-        try:
-            s = scheduler._schedule("otto-x", {"name": "d", "request": "daily-summary",
-                                               "cron": "30 17 * * 1-5", "auto_approve": True,
-                                               "cap": cap["name"]})
-            args = s.action.args[0]
-            self.assertEqual(args["cap"], cap)
-            self.assertEqual(args["request"], "daily-summary")
-            self.assertNotIn("cap", scheduler._schedule(
-                "otto-y", {"name": "r", "request": "r", "cron": "0 9 * * *"}).action.args[0])
-        finally:
-            runbooks.resolve_cap = orig
+        s = scheduler._schedule("otto-x", {"name": "d", "request": "daily-summary",
+                                           "cron": "30 17 * * 1-5", "auto_approve": True,
+                                           "cap": "productivity-tracker:daily-summary"})
+        args = s.action.args[0]
+        self.assertEqual(args["cap_name"], "productivity-tracker:daily-summary")
+        self.assertNotIn("cap", args, "a risk resolved at save time is a risk from months ago")
+        self.assertEqual(args["request"], "daily-summary")
+        bare = scheduler._schedule(
+            "otto-y", {"name": "r", "request": "r", "cron": "0 9 * * *"}).action.args[0]
+        self.assertNotIn("cap", bare)          # no cap -> auto-route
+        self.assertNotIn("cap_name", bare)
 
     def test_tz_env_override(self):
         # Cron times fire in this zone; the env override wins over host detection.
@@ -264,11 +261,11 @@ class RunbookCapResolutionTests(unittest.TestCase):
     def setUp(self):
         cap = registry.Capability("skill", "vpn-renew", "renews certs")
         cap.risk = "write"
-        self._orig = runbooks._CAPS
-        runbooks._CAPS = [cap]
+        self._orig = (runbooks._CAPS, runbooks._CAPS_STAMP)
+        runbooks._CAPS, runbooks._CAPS_STAMP = [cap], None
 
     def tearDown(self):
-        runbooks._CAPS = self._orig
+        runbooks._CAPS, runbooks._CAPS_STAMP = self._orig
 
     def test_resolves_to_the_registrys_risk(self):
         self.assertEqual(runbooks.resolve_cap("vpn-renew"),
@@ -281,6 +278,42 @@ class RunbookCapResolutionTests(unittest.TestCase):
 
     def test_tolerates_a_kind_prefixed_name(self):
         self.assertEqual(runbooks.resolve_cap("skill:vpn-renew")["name"], "vpn-renew")
+
+    def test_a_reclassified_cap_is_re_resolved_without_a_restart(self):
+        # Issue #29: `_CAPS` was loaded ONCE per process and `refresh_caps()` had zero callers,
+        # so after an operator flipped a cap read->write in Admin the registry said write and
+        # `resolve_cap` went on saying read for the life of the worker — a scheduled runbook
+        # pinned to it kept firing ungated. The cache now keys on the policy store's stamp.
+        import policy
+        import registry
+        tmp = tempfile.mkdtemp(prefix="otto-pol-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, "policy.json")
+        self.addCleanup(setattr, policy, "_PATH", policy._PATH)
+        policy._PATH = path
+
+        def _cap(risk):
+            c = registry.Capability("skill", "vpn-renew", "renews certs")
+            c.risk = risk
+            return c
+        loads = []
+        self.addCleanup(setattr, registry, "load", registry.load)
+        self.addCleanup(setattr, registry, "apply_policy", registry.apply_policy)
+        registry.load = lambda: [_cap(risk=loads[-1] if loads else "read")]
+        registry.apply_policy = lambda caps, pol: caps
+
+        runbooks._CAPS, runbooks._CAPS_STAMP = None, None
+        loads.append("read")
+        with open(path, "w") as f:
+            f.write('{"capabilities": {}}')
+        self.assertEqual(runbooks.resolve_cap("vpn-renew")["risk"], "read")
+
+        loads.append("write")                       # Admin reclassified it...
+        time.sleep(0.01)
+        with open(path, "w") as f:                  # ...which rewrites policy.json
+            f.write('{"capabilities": {"vpn-renew": {"risk": "write"}}}')
+        self.assertEqual(runbooks.resolve_cap("vpn-renew")["risk"], "write",
+                         "the cached catalogue outlived the policy edit that changed it")
 
 
 class RouteTests(unittest.TestCase):

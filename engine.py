@@ -32,7 +32,8 @@ from ui import say, trace
 # both modules resolve their patch-sensitive seams back through this facade at call time,
 # see audit._eng / memory._eng).
 from audit import (_schema, _conn, _audit_conn, _append_audit, _append_content, _audit,
-                   iter_audit_entries, iter_content_entries, scorecard, pr_url_from_run,
+                   iter_audit_entries, iter_content_entries, audit_entries_for,
+                   content_entries_for, needs_human_wids, scorecard, pr_url_from_run,
                    accept_run, record_terminal, record_skip, run_origin, audit_repo_changes,
                    audit_mcp_change, archive_board_cards, archived_board_cards, prune_board_cards)
 from contracts import (_TLDR_SHAPE, _SINGLE_TURN_CONTRACT, _RESUME_CONTRACT, _REPORT_FORMAT,
@@ -531,9 +532,15 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             invocation = _invocation(cap, request)
             if critique:
                 invocation += _CRITIQUE_FOLD + critique
+            # The re-dispatch shares the ACTIVITY's ceiling with the local pass that just died,
+            # so a fresh full EXEC_TIMEOUT_S on top of a local run that burned up to
+            # LOCAL_RUN_TIMEOUT_S overruns it and Temporal kills the attempt with no result and
+            # no audit row. Spend what is left of the budget, never less than a minute — a wall
+            # is usually fast, so in practice this is the full clock (issue #34).
+            fb_timeout = max(60.0, config.EXEC_TIMEOUT_S - (time.monotonic() - started))
             out = _claude(invocation, allowed_tools=allowed, mcp_config_path=mcp_config_path,
                           model=model, system_context=sysctx, cwd=cwd,
-                          transcript=transcript_path, timeout=config.EXEC_TIMEOUT_S,
+                          transcript=transcript_path, timeout=fb_timeout,
                           on_event=sup.note if sup else None, abort=abort, meta=fb_meta,
                           setting_sources=_setting_sources(cwd), effort=effort)
     else:
@@ -824,6 +831,9 @@ def _run_ladder(request, cap, wid, recall=False, project=None, remember=True, wr
     out = _ladder_core(request, cap, wid, recall=recall, project=project, remember=remember,
                        write_escalate=write_escalate, memory_enabled=memory_enabled,
                        model_override=model_override, budget=False)
+    # `harness_stop` and `budget_stop` ride along: a step whose ladder died in the harness is
+    # not a judgement, and dropping the flag here made `run_plan` unable to tell the caller
+    # apart from a step the judge actually failed.
     return {k: out[k] for k in
             ("result", "passed", "critique", "cost", "tokens_out", "attempts", "strict_stop",
-             "auth_stop", "auth_wall")}
+             "auth_stop", "auth_wall", "harness_stop", "budget_stop")}

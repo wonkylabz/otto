@@ -325,7 +325,7 @@ def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, tra
                   + (f" — session fork {fork}" if fork else ""))
     try:
         out = local_runtime.run_json(invocation, allowed_tools=config.PLAN_TOOLS,
-                                     model_entry=entry, timeout=900, resume_session=fork,
+                                     model_entry=entry, timeout=config.PLAN_TIMEOUT_S, resume_session=fork,
                                      cwd=cwd, effort=effort, transcript=transcript)
     finally:
         if fork:
@@ -423,9 +423,9 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
                   + _pr_branch_note(pr) + _PLAN_INSTRUCTION)
     trace("PLAN", f"preview for [{cap.kind}] {cap.name}  cwd={cwd or '-'}"
                   f"{' (resume)' if resume_session else ''}")
-    # 900s (15min): raised from 600s after a real ticket (ci#66) timed out at the old
-    # ceiling with nothing to show for it — `plan_capability`'s activity timeout must stay above
-    # this (workflows.py) or the activity kills the preview before it ever gets to return "".
+    # config.PLAN_TIMEOUT_S (900s/15min) bounds ONE pass — `plan_capability`'s activity ceiling
+    # (workflows._PLAN_CEILING) must stay above two of them plus the critique, or the activity
+    # kills the preview before it ever gets to return "".
     # The preview is a real agentic pass; capture it like an attempt. Without a transcript the
     # board's model chip has nothing to read and stays blank for the entire (up to 15-minute)
     # phase, and the tool calls it makes to reach a plan cannot be reviewed afterwards at all.
@@ -442,7 +442,7 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     def _on_claude():
         return (gateway.preview_model_id(), None,
                 _eng()._claude(invocation, allowed_tools=config.PLAN_TOOLS,
-                               model=gateway.preview_model_id(), cwd=cwd, timeout=900,
+                               model=gateway.preview_model_id(), cwd=cwd, timeout=config.PLAN_TIMEOUT_S,
                                permission_mode="plan", resume_session=resume_session,
                                setting_sources=_setting_sources(cwd), effort=effort,
                                transcript=transcript))
@@ -762,7 +762,7 @@ def _plan_step_caps(steps, cap, project, resolve_cap):
 
 
 def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
-             replan=True, resolve_cap=None):
+             replan=True, resolve_cap=None, settings=None):
     """Execute a plan (from plan_steps, or authored by a human as a runbook) on executor `cap`,
     threading each step's output forward to the steps that declared it in `needs`. Every step runs
     through the SAME verify->retry->escalate ladder as a normal run. When a step EXHAUSTS its
@@ -800,7 +800,7 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
     store, results = {}, []
     pending = list(steps)
     replans, total_cost, spent_out, budget_stop = 0, 0, 0, False
-    strict_stop = auth_stop = False
+    strict_stop = auth_stop = harness_stop = False
     auth_wall = None
     max_par = max(1, config.PLAN_MAX_PARALLEL)
     step_caps = _plan_step_caps(steps, cap, project, resolve_cap)
@@ -813,7 +813,10 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
 
     while pending:
         # Hard cost ceiling: stop before the next wave (never on the first — spend starts at 0).
-        if config.budget_exceeded(spent_out, total_cost, hard=True):
+        # The RUN's snapshot, not the live store: the workflow enforces its own budget on a
+        # snapshot taken once, so reading the live store here let a mid-run settings edit make
+        # the two halves of one run disagree about what the ceiling was.
+        if config.budget_exceeded(spent_out, total_cost, hard=True, snapshot=settings):
             budget_stop = True
             trace("PLAN", f"{wid} hard budget ceiling reached — stopping plan for a human")
             break
@@ -850,6 +853,8 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
             if outcome.get("auth_stop"):
                 auth_stop = True
                 auth_wall = auth_wall or outcome.get("auth_wall")
+            if outcome.get("harness_stop"):
+                harness_stop = True
             if not outcome["passed"]:
                 wave_failed.append((entry, outcome["critique"]))
         for s in wave:
@@ -898,4 +903,7 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
     return {"result": result, "passed": passed, "cost": total_cost,
             "tokens": {"output": spent_out}, "steps_run": len(results),
             "replans": replans, "budget_stop": budget_stop, "strict_stop": strict_stop,
-            "auth_stop": auth_stop, "auth_wall": auth_wall}
+            "auth_stop": auth_stop, "auth_wall": auth_wall,
+            # A step whose ladder died in the harness (no judge ever read it) is not a
+            # judgement — the caller files it `harness_exhausted`, never `verify_exhausted`.
+            "harness_stop": harness_stop}

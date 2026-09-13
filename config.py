@@ -947,6 +947,12 @@ LOCAL_EXEC_MAX_TOKENS = int(os.environ.get("OTTO_LOCAL_EXEC_MAX_TOKENS", "32768"
 # activity, so there is no reason the local one should stop 200s earlier. It used to be a bare
 # `timeout=900` default that engine.run_attempt never overrode, invisible to every env knob.
 LOCAL_RUN_TIMEOUT_S = float(os.environ.get("OTTO_LOCAL_RUN_TIMEOUT_S", str(EXEC_TIMEOUT_S)))
+# Wall clock for ONE plan-preview pass (plans.plan_preview, both backends). Raised from 600s
+# after a real ticket (ci#66) timed out at the old ceiling with nothing to show for it. Named
+# here rather than left as a literal in plans.py because workflows._PLAN_CEILING has to cover
+# TWO of these (a walled local preview re-previews on Claude inside the same activity) plus the
+# critique call after them, and a literal at the call site is invisible to that guard.
+PLAN_TIMEOUT_S = float(os.environ.get("OTTO_PLAN_TIMEOUT_S", "900"))
 # Local agent runtime (local_runtime.py — full tool-driving execution on a non-Claude model,
 # local vLLM or a remote OpenAI-compatible API like DeepSeek alike): per-run turn budget
 # (model call + tool round = one turn) and per-tool-call timeout.

@@ -824,6 +824,72 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(out["pr_url"], "https://github.com/o/r/pull/355")
         self.assertTrue(out["pushed"], "Otto's branch should still be pushed so work isn't lost")
 
+    def test_a_pr_open_on_the_default_branch_is_not_the_capabilitys(self):
+        # Issue #38: a fresh clone leaves TWO local refs — the default branch it was cloned on
+        # and `otto/<run>`. `_agent_pr` excluded only Otto's, so in any repo with an open PR
+        # whose head IS the default branch (main->production, release-branch flows) every run
+        # resolved that stranger's PR as "opened by the capability": no `gh pr create`, a
+        # colleague's URL reported as the deliverable, and review/QA keyed on their diff.
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = self._git_repo(tmp)
+        self._register(tmp, repo)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+        info = self.ws.provision("src", "wf-base-pr")
+        self.assertTrue(info["base"], "provision must report the branch it cloned")
+        with open(os.path.join(info["path"], "new.txt"), "w") as f:
+            f.write("otto's own change\n")
+        real_run, real_origin = self.ws._run, self.ws._git_origin
+        self.ws._git_origin = lambda p: "https://github.com/o/r.git"
+        listed, created = [], []
+
+        def fake_run(args, **kw):
+            if args[:1] == ["gh"] and "pr" in args and "list" in args:
+                listed.append(args[args.index("--head") + 1])
+                return (0, "https://github.com/o/r/pull/1", "")   # a PR on EVERY branch asked
+            if args[:1] == ["gh"] and "pr" in args and "create" in args:
+                created.append(args)
+                return (0, "https://github.com/o/r/pull/2", "")
+            if args[:2] == ["git", "-C"] and "push" in args:
+                return (0, "", "")
+            return real_run(args, **kw)
+        self.ws._run = fake_run
+        self.addCleanup(setattr, self.ws, "_run", real_run)
+        self.addCleanup(setattr, self.ws, "_git_origin", real_origin)
+        out = self.ws.finalize("wf-base-pr", title="t", base_head=info["head"])
+        self.assertNotIn(info["base"], listed,
+                         "the clone's own base branch was probed for a capability PR")
+        self.assertEqual(len(created), 1, "Otto's own PR was skipped for a stranger's")
+        self.assertEqual(out["pr_url"], "https://github.com/o/r/pull/2")
+        self.assertEqual(out["branch"], "otto/wf-base-pr")
+
+    def test_a_branch_still_on_the_base_tip_is_not_the_capabilitys(self):
+        # Belt and braces for a clone provisioned before `otto.baseBranch` was recorded: a
+        # branch whose tip is still the base commit was created by nobody.
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = self._git_repo(tmp)
+        self._register(tmp, repo)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+        info = self.ws.provision("src", "wf-base-tip")
+        subprocess.run(["git", "-C", info["path"], "config", "--unset", "otto.baseBranch"],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", info["path"], "branch", "stale-ref", info["head"]],
+                       check=True, capture_output=True, text=True)
+        real_run, real_origin = self.ws._run, self.ws._git_origin
+        self.ws._git_origin = lambda p: "https://github.com/o/r.git"
+        self.ws._run = lambda args, **kw: (
+            (0, "https://github.com/o/r/pull/1", "")
+            if args[:1] == ["gh"] and "pr" in args and "list" in args else real_run(args, **kw))
+        self.addCleanup(setattr, self.ws, "_run", real_run)
+        self.addCleanup(setattr, self.ws, "_git_origin", real_origin)
+        self.assertIsNone(self.ws._agent_pr(info["path"], exclude=info["branch"],
+                                            base_head=info["head"]))
+
     def _finalize_with_failing_pr_create(self, create_err, pr_view_url=""):
         """finalize on a clone with real work, where `gh pr create` fails. Returns its dict."""
         tmp = tempfile.mkdtemp(prefix="otto-ws-")
@@ -1039,15 +1105,17 @@ class PrBranchRecoveryTests(unittest.TestCase):
             {"workflow": "web-1",
              "result": "**Updated PR** on `otto/web-1`: https://github.com/o/r/pull/12"},
         ]
-        orig = engine.iter_content_entries
-        engine.iter_content_entries = lambda: iter(entries)
+        # The per-run lookup goes through the `workflow` index now (issue #57), so the seam is
+        # the wid-scoped reader — the filtering this used to do in Python is the SQL WHERE.
+        orig = engine.content_entries_for
+        engine.content_entries_for = lambda wid: [e for e in entries if e["workflow"] == wid]
         try:
             self.assertEqual(engine.pr_url_from_run("web-1"), "https://github.com/o/r/pull/12")
             self.assertEqual(engine.pr_url_from_run("web-2"), "https://github.com/o/other/pull/99")
             self.assertIsNone(engine.pr_url_from_run("web-3"))
             self.assertIsNone(engine.pr_url_from_run(None))
         finally:
-            engine.iter_content_entries = orig
+            engine.content_entries_for = orig
 
     def test_pr_url_from_run_ignores_unopened_mention(self):
         """A run that only CITES a blocking/related PR as context — never opening or pushing to
@@ -1110,6 +1178,47 @@ class AuditTests(unittest.TestCase):
 
     def _restore(self, orig):
         engine._DB = orig
+
+    def test_a_per_run_lookup_reads_only_that_runs_rows(self):
+        # Issue #57: every per-run reader scanned the whole trail and json.loads-ed each row,
+        # several of them on the board's 15s poll, while `idx_audit_workflow` sat unused.
+        cap = self._cap()
+        orig = self._isolate()
+        try:
+            engine._audit("wf-a", "ask a", cap, "res a", 0.0, attempt=1)
+            engine._audit("wf-b", "ask b", cap, "res b", 0.0, attempt=1)
+            engine._audit("wf-a", "ask a", cap, "res a2", 0.0, attempt=2)
+            self.assertEqual([e["workflow"] for e in engine.audit_entries_for("wf-a")],
+                             ["wf-a", "wf-a"])
+            self.assertEqual([e.get("result") for e in engine.content_entries_for("wf-a")],
+                             ["res a", "res a2"])           # oldest first, as the scan yielded
+            self.assertEqual(engine.audit_entries_for("wf-ghost"), [])
+            self.assertEqual(engine.content_entries_for(None), [])
+        finally:
+            self._restore(orig)
+
+    def test_a_needs_human_row_is_findable_without_decoding_the_trail(self):
+        # The reaper's "already surfaced" set ran on every schedule fire and decoded the whole
+        # audit table to answer it. The flag is a column now — and the backfill matters, or the
+        # first sweep after the upgrade re-files runs a human has already seen.
+        import sqlite3
+        cap = self._cap()
+        orig = self._isolate()
+        try:
+            engine._audit("wf-ok", "fine", cap, "done", 0.0, attempt=1)
+            engine.record_terminal("wf-stuck", "stuck", cap, reason="verify_exhausted")
+            self.assertEqual(engine.needs_human_wids(), {"wf-stuck"})
+
+            # Simulate an install that predates the column: drop it and re-open.
+            conn = sqlite3.connect(engine._DB)
+            conn.execute("DROP INDEX IF EXISTS idx_audit_needs_human")
+            conn.execute("ALTER TABLE audit DROP COLUMN needs_human")
+            conn.commit()
+            conn.close()
+            self.assertEqual(engine.needs_human_wids(), {"wf-stuck"},
+                             "the column was not backfilled from the rows already in the trail")
+        finally:
+            self._restore(orig)
 
     def test_content_split_keeps_audit_operational_and_content_full(self):
         # audit.log carries no chat-shaped content (request/result); that lives in the

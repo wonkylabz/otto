@@ -9,4 +9,4 @@ temporalio==1.30.0
 # runtime: it is soft-imported, so an install that predates it (or skips this line) simply falls
 # back to the 60s poll with a status line saying so, exactly like temporalio's absence in tests.
 # Pinned for the same reason as above.
-websockets==13.1
+websockets==17.0.1

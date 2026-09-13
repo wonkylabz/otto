@@ -24,6 +24,7 @@ import registry
 import workspace
 
 _caps = None
+_caps_stamp = None       # the policy stamp _caps was loaded at; None = injected
 
 
 # Ceiling on waiting for an in-flight beat at teardown. Short: the only thing being waited on
@@ -93,10 +94,19 @@ def _heartbeats(what, every_s=None):
 
 
 def _capabilities():
-    global _caps
-    if _caps is None:
-        _caps = registry.load()
-        registry.apply_policy(_caps, policy.load())
+    """The worker's policy-applied catalogue, cached against `policy.stamp()` — the same key
+    `runbooks._caps` uses, and for the same reason: a cap reclassified in Admin must gate the
+    NEXT run, not the next worker restart (issue #29).
+
+    `_caps_stamp` is set ONLY by a load made here, so a catalogue injected directly (a test
+    fixture assigning `activities._caps`) leaves it None and is never silently reloaded out
+    from under the caller."""
+    global _caps, _caps_stamp
+    st = ("policy", policy.stamp())
+    if _caps is None or (_caps_stamp is not None and _caps_stamp != st):
+        caps = registry.load()
+        registry.apply_policy(caps, policy.load())
+        _caps, _caps_stamp = caps, st
     return _caps
 
 
@@ -204,17 +214,35 @@ def execute_plan(payload: dict) -> dict:
                               wid=payload.get("wid"), project=project,
                               model_override=payload.get("model_override"),
                               replan=not authored,
-                              resolve_cap=_cap if authored else None)
+                              resolve_cap=_cap if authored else None,
+                              # The workflow's own settings snapshot — the budget the run
+                              # started under, not whatever the store says mid-plan.
+                              settings=payload.get("settings"))
     except ValueError as e:      # unresolvable per-step cap — nothing ran, so nothing is half-done
         return {"result": f"This runbook could not start: {e}", "passed": False, "cost": 0,
                 "tokens": None, "steps_run": 0, "replans": 0, "budget_stop": False,
-                "strict_stop": False, "auth_stop": False, "auth_wall": None}
+                "strict_stop": False, "auth_stop": False, "auth_wall": None,
+                "harness_stop": False}
     return {"result": out["result"], "passed": out["passed"], "cost": out["cost"],
             "tokens": out["tokens"], "steps_run": out["steps_run"],
             "replans": out["replans"], "budget_stop": out["budget_stop"],
             "strict_stop": out.get("strict_stop", False),
             "auth_stop": out.get("auth_stop", False),
-            "auth_wall": out.get("auth_wall")}
+            "auth_wall": out.get("auth_wall"),
+            "harness_stop": out.get("harness_stop", False)}
+
+
+@activity.defn
+def resolve_pinned_cap(payload: dict) -> dict:
+    """A stored capability NAME -> the trusted `{name, kind, risk}` the workflow pins on, resolved
+    at FIRE time against the registry + policy. Returns `{"cap": None}` for a name that no longer
+    resolves, which auto-routes rather than failing — the same fallback the scheduler had.
+
+    The resolution deliberately does not live in the schedule's frozen action args: risk must
+    come from the registry as it is NOW, never from whoever saved the runbook (issue #29). Same
+    trusted `_cap` lookup the board and Slack ingresses already use for a pinned name."""
+    c = _cap(payload.get("name"))
+    return {"cap": {"name": c.name, "kind": c.kind, "risk": c.risk} if c else None}
 
 
 @activity.defn
@@ -427,6 +455,23 @@ def detect_repo_changes(payload: dict) -> dict:
     return {"changed": changed}
 
 
+def _warm_conventions(project):
+    """Derive the target repo's conventions digest HERE, inside an execution activity with a
+    40-minute ceiling, so the judge that reads it afterwards gets a cache hit.
+
+    `conventions.digest` derives on a cache miss, and it used to do so inside the judge activity
+    — which already has three confirmation samples to fit inside its own ceiling, and which the
+    docs say never derives. Best-effort: a failure here costs a cold digest in the judge, never
+    the run (issue #35)."""
+    if not project:
+        return
+    try:
+        import conventions
+        conventions.digest(project)
+    except Exception as e:  # noqa: BLE001 - warming a cache is never worth failing a run over
+        activity.logger.info(f"conventions warm-up skipped for {project}: {e}")
+
+
 @activity.defn
 @_heartbeats("run")
 def run_capability(payload: dict) -> dict:
@@ -445,6 +490,7 @@ def run_capability(payload: dict) -> dict:
         cap.risk = "read"
     mcp_tools, mcp_path = _mcp()
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
+    _warm_conventions(project)
     att = engine.run_attempt(
         payload["request"], cap,
         attempt=payload.get("attempt", 1), critique=payload.get("critique"),
@@ -556,6 +602,7 @@ def qa_capability(payload: dict) -> dict:
         return {"missing": True, "qa_cap": config.QA_CAP}
     mcp_tools, mcp_path = _mcp()
     req = engine.qa_review_request(payload["pr_url"], payload.get("repo"), payload["request"])
+    _warm_conventions(engine._resolve_project(None, payload.get("repo")))
     att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                              mcp_config_path=mcp_path, wid=payload.get("wid"))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
@@ -585,6 +632,7 @@ def review_capability(payload: dict) -> dict:
         return {"missing": True, "review_cap": config.REVIEW_CAP}
     mcp_tools, mcp_path = _mcp()
     req = engine.review_request(payload["pr_url"], payload.get("repo"), payload["request"])
+    _warm_conventions(engine._resolve_project(None, payload.get("repo")))
     att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                              mcp_config_path=mcp_path, wid=payload.get("wid"))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
@@ -1291,7 +1339,7 @@ def reap_stuck(payload: dict) -> dict:
 
     # General sweep. The audited-wid set is built ONCE (one audit scan, not one per workflow).
     swept = []
-    audited = {e.get("workflow") for e in engine.iter_audit_entries() if e.get("needs_human")}
+    audited = engine.needs_human_wids()
     for row in _list_otto_workflows(config.REAP_WINDOW_H):
         wid, status = row.get("wid") or "", row.get("status")
         if wid.startswith("gh-issue-") or _SWARM_CHILD_RE.search(wid) or wid in audited:

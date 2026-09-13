@@ -107,9 +107,13 @@ def _args(rid, rb, values=None, unattended=True):
             # already tagged with and what the sidebar filters on — re-tagging them all as
             # runbooks would churn history to say something the cron field already says.
             "chat_labels": ["scheduled-job"] if rb.get("cron") else ["runbook"]}
-    pinned = runbooks.resolve_cap(r["cap"])
-    if pinned:
-        args["cap"] = pinned          # trusted {name,kind,risk}; a name we can't resolve auto-routes
+    # The NAME only. A schedule's action args are frozen at creation, so resolving the cap here
+    # baked its RISK into the Temporal Schedule: an operator reclassifying that cap read->write
+    # in Admin kept firing this runbook ungated until the server restarted AND `_reconcile`
+    # rewrote the schedule. The workflow resolves it through `resolve_pinned_cap` at fire time
+    # (issue #29) — same trusted registry lookup, just later.
+    if (r["cap"] or "").strip():
+        args["cap_name"] = r["cap"].strip()
     if r["steps"]:
         args["steps"] = r["steps"]
     if r["doc"]:

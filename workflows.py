@@ -25,6 +25,7 @@ with workflow.unsafe.imports_passed_through():
     from activities import (clarify_request, classify_followup, classify_request,
                             cleanup_workspace, deliver_result, detect_repo_changes,
                             estop_check, execute_plan, finalize_terminal, finalize_workspace, judge_qa,
+                            resolve_pinned_cap,
                             merge_results, notify_human, plan_capability, plan_swarm, open_chat,
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack, pr_head_branch,
                             provision_workspace, resolve_pr_target, check_grounding,
@@ -133,6 +134,22 @@ _HEARTBEAT = timedelta(minutes=3)
 # so deriving one from the environment makes a worker with a different env replay differently.
 _EXEC_CEILING = timedelta(minutes=40)
 
+# The JUDGE ceiling. A judge activity is not one model call: `judging.confirm_adverse` re-samples
+# an adverse verdict `judge_confirmations` (3) times, each bounded by LOCAL_TIMEOUT_S (60) +
+# CLAUDE_TIER_TIMEOUT_S (120), and `verify` additionally derives the repo-conventions digest on a
+# cache miss. The old 180s ceiling was one call's worth, so a judge that actually re-sampled was
+# killed by Temporal after the attempt had already executed — `_RETRY` then re-ran the whole
+# chain 3x (spend) and finally filed the run `workflow_error`. A literal, like _EXEC_CEILING:
+# activity options are replayed, so deriving one from the environment makes a worker with a
+# different env replay differently. Kept in step with the three settings by
+# `ExecutionHeartbeatTests` (issue #35).
+_JUDGE_CEILING = timedelta(minutes=10)
+
+# The PLAN-PREVIEW ceiling. `plans.plan_preview` runs a 900s agentic pass; a LOCAL preview that
+# walls late re-previews on Claude for another 900s, and `critique_plan` adds a tier call after
+# that. 17 minutes covered one pass only (issue #34).
+_PLAN_CEILING = timedelta(minutes=35)
+
 # Why a post-PR fix round never runs on the LOCAL backend. Everywhere else a failing local model
 # is covered by a Claude rung (config.LOCAL_FALLBACK): the verify ladder retries and escalates,
 # so a local death costs a rung, not the run. Both post-PR fix loops are one-shot — a single
@@ -177,6 +194,12 @@ _NEEDS_HUMAN_BANNER = {
     "claude_usage_limit": "⛔ **Stopped — Claude's usage limit is spent.** Not a capability "
                           "failure and not a crash: the subscription hit its cap. The body "
                           "below names the reset time; retry after it.",
+    "swarm_child_failed": "⚠️ **Needs human review** — one or more sub-tasks of this swarm died "
+                          "in the harness, so the merged answer below was synthesized from a "
+                          "hole. The failed sub-task(s) are named in the record.",
+    "delivery_failed": "⚠️ **Needs human review** — the result was produced but could not be "
+                       "delivered to its reply target. It is recorded here; nobody downstream "
+                       "has seen it.",
     "claude_model_unavailable": "⛔ **Stopped — Claude cannot serve the configured model.** Not "
                                 "a capability failure: the model named in Admin → Models does "
                                 "not exist or this subscription has no access to it.",
@@ -591,6 +614,22 @@ class OttoWorkflow:
                                   "wid": workflow.info().workflow_id},
                     start_to_close_timeout=timedelta(seconds=30), retry_policy=_RETRY)
                 skipped = f"skipped — {cap['name']} is a write (approval off)"
+                # Tell the ASKER, exactly as the decline branch below does. This returned in
+                # silence: a webhook rule with `approval: skip` and a `reply_to` never heard
+                # back, and for Slack it is the documented deaf-DM case — `pending_at` clears
+                # only on DELIVERY, so skipping it leaves that conversation answering nothing
+                # for the whole stale window. A conversation audience never saw an approval
+                # card, so it must not be told about one (`_shape_result`).
+                said = skipped
+                if self._audience == contracts.CONVERSATION_AUDIENCE:
+                    said = (f"That needs {config.OWNER_NAME}'s approval and approvals are off "
+                            f"for this, so I haven't done anything.")
+                if reply_to:
+                    await workflow.execute_activity(
+                        deliver_result,
+                        {"reply_to": reply_to, "result": said, "cap": cap,
+                         "run_id": workflow.info().workflow_id, "session_id": None},
+                        start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                 await self._record_chat(params, request, skipped, None, cap)
                 return {"result": skipped, "session_id": None, "cap": cap,
                         "times": self._times}, request
@@ -637,11 +676,14 @@ class OttoWorkflow:
                              # The preview's cwd is the DEFAULT branch; this tells it where the
                              # code actually is and to read it with `gh pr diff`.
                              "pr": self._pr_target, "effort": self._effort},
-                            # 17min: engine.plan_preview's own timeout (900s/15min) + ~2min margin
-                            # for the critique pass after it — must stay above the preview's timeout
-                            # or the activity kills it before it can return "" cleanly.
-                            start_to_close_timeout=timedelta(minutes=17),
-                            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+                            # Must stay above the preview's OWN timeout, and above a local
+                            # wall's Claude re-preview after it, or the activity kills the pass
+                            # before it can return "" cleanly. _RETRY_EXEC, not _RETRY: this is
+                            # a full agentic pass with real spend, and a Temporal-level replay
+                            # re-ran it up to 3x — rewriting the transcript the board reads the
+                            # model off and appending three `plan_preview` audit rows.
+                            start_to_close_timeout=_PLAN_CEILING,
+                            heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY_EXEC)
                         self._plan = preview.get("plan") or None
                         self._plan_concerns = preview.get("concerns") or []
                         self._plan_model = preview.get("model")
@@ -853,6 +895,14 @@ class OttoWorkflow:
                     self._discussion = True
         else:
             pinned = params.get("cap")
+            if not pinned and params.get("cap_name"):
+                # A runbook/schedule pins by NAME (its args are frozen at schedule-creation
+                # time, so a risk resolved there is a risk from whenever the operator last
+                # saved it). Resolve against the live registry + policy instead.
+                pinned = (await workflow.execute_activity(
+                    resolve_pinned_cap, {"name": params["cap_name"]},
+                    start_to_close_timeout=timedelta(seconds=60),
+                    retry_policy=_RETRY)).get("cap")
 
             # Swarm planning: a fresh, un-pinned request that isn't already a sub-task may
             # decompose into several INDEPENDENT capability runs that execute in parallel as
@@ -1192,6 +1242,11 @@ class OttoWorkflow:
                                      "session_id": out.get("session_id")},
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                 if delivered and delivered.get("failed"):
+                    # The row alone was not enough: with neither field set the board read the
+                    # run as a clean success while Needs-you showed a row for it.
+                    self._needs_human = {"reason": "delivery_failed",
+                                         "detail": delivered.get("status", "")}
+                    self._terminal = dict(self._needs_human)
                     await workflow.execute_activity(
                         finalize_terminal,
                         {"wid": out["workflow"], "request": request, "cap": cap,
@@ -1201,6 +1256,9 @@ class OttoWorkflow:
             await self._record_chat(params, request, result, out.get("session_id"), cap)
             return {"result": result, "session_id": out.get("session_id"),
                     "cap": cap, "attempts": 1, "verified": None, "chat_key": chat_key,
+                    # None on the normal path; set when delivery failed above, so the board and
+                    # Needs-you agree about how this turn ended.
+                    "needs_human": self._terminal,
                     # Carried into the RESULT, not just the live status query: a turn this short
                     # can finish before the browser polls once, and a reload after it lands reads
                     # only this dict — where a downgraded turn would otherwise render as
@@ -1268,42 +1326,8 @@ class OttoWorkflow:
 
         self._enter("RUN")
         if plan_list:
-            # Execute the whole plan in ONE activity (engine.run_plan: per-step verify ladder +
-            # bounded re-plan + synthesis). Coarser durability than the per-attempt ladder — a
-            # worker crash re-runs the plan — but each step is audited as it goes and plan
-            # execution is local/cheap (acceptable v1 cut; _RETRY_EXEC surfaces a lost activity
-            # rather than silently re-running mid-plan, issue #91).
-            self._attempt = 1
-            try:
-                pout = await workflow.execute_activity(
-                    execute_plan,
-                    {"request": request, "name": cap["name"], "steps": plan_list, "wid": wid,
-                     "model_override": self._model_override, "authored": authored,
-                     "repo": repo},
-                    start_to_close_timeout=timedelta(minutes=90),
-                    heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY_EXEC)
-            except exceptions.ActivityError:
-                pout = {"result": "(plan execution failed — the worker died or the run timed out)",
-                        "passed": False, "cost": 0, "tokens": None, "steps_run": 0,
-                        "budget_stop": False}
-            self._account(pout)
-            out = {"result": pout["result"], "session_id": None, "workflow": wid}
-            verdict = {"passed": bool(pout.get("passed"))}
-            attempt = pout.get("steps_run") or 1
-            self._verified = verdict["passed"]
-            if pout.get("budget_stop"):
-                self._needs_human = {"reason": "budget_exceeded"}
-            elif pout.get("auth_stop"):
-                self._needs_human = {
-                    "reason": error_classifier.claude_wall_reason(pout.get("auth_wall"))}
-            elif pout.get("strict_stop"):
-                self._needs_human = {"reason": config.STRICT_STOP_REASON}
-            # Record a top-level attempt row under the bare wid (steps audited under wid-sN),
-            # so the run-detail view, needs-you retry, and memory extraction all find the run.
-            await self._audit_attempt(
-                {"wid": wid, "request": request, "name": cap["name"], "result": pout["result"],
-                 "cost": pout.get("cost", 0), "attempt": attempt, "tokens": pout.get("tokens"),
-                 "model": None, "verdict": verdict, "repo": repo}, learn=verdict["passed"])
+            out, verdict, attempt = await self._execute_plan_run(
+                request, cap, plan_list, authored, repo, wid)
         else:
             out, verdict, attempt, wid = await self._verify_ladder(
                 request, cap, cwd, repo, recall=not subtask, unattended=unattended)
@@ -1440,6 +1464,12 @@ class OttoWorkflow:
             # A failed/partial delivery would otherwise lose the result silently — record a durable
             # terminal row so it surfaces on the Needs-you dashboard.
             if delivered and delivered.get("failed"):
+                # Same pair as every other terminal state. The banner is not re-applied here —
+                # `_shape_result` has already run and the result is already out (or not) — but
+                # the board and the run's own result must agree that this needed a human.
+                self._needs_human = {"reason": "delivery_failed",
+                                     "detail": delivered.get("status", "")}
+                self._terminal = dict(self._needs_human)
                 await workflow.execute_activity(
                     finalize_terminal,
                     {"wid": wid, "request": request, "cap": cap, "reason": "delivery_failed",
@@ -1531,6 +1561,60 @@ class OttoWorkflow:
              "duration_s": out.get("duration_s"), "backend": out.get("backend"),
              "repo": repo}, learn=True)
         return out, attempt
+
+    async def _execute_plan_run(self, request, cap, plan_list, authored, repo, wid):
+        """Run a dependency-ordered PLAN (plan-then-execute, or a runbook's authored graph) in
+        one activity, and turn its outcome into the same `(out, verdict, attempt)` triple the
+        verify ladder returns. A pure extraction from `_run_impl` — same commands, same order.
+        Sets `_verified`, `_needs_human` and `_harness_stop` on the way through."""
+        # Execute the whole plan in ONE activity (engine.run_plan: per-step verify ladder +
+        # bounded re-plan + synthesis). Coarser durability than the per-attempt ladder — a
+        # worker crash re-runs the plan — but each step is audited as it goes and plan
+        # execution is local/cheap (acceptable v1 cut; _RETRY_EXEC surfaces a lost activity
+        # rather than silently re-running mid-plan, issue #91).
+        self._attempt = 1
+        try:
+            pout = await workflow.execute_activity(
+                execute_plan,
+                {"request": request, "name": cap["name"], "steps": plan_list, "wid": wid,
+                 "model_override": self._model_override, "authored": authored,
+                 "repo": repo,
+                 # The run's settings snapshot, so the plan's between-wave budget check and
+                 # the workflow's own use the same ceiling for the life of the run.
+                 "settings": self._settings},
+                start_to_close_timeout=timedelta(minutes=90),
+                heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY_EXEC)
+        except exceptions.ActivityError:
+            # A dead worker or a blown activity ceiling. NOT a judgement — no judge ever
+            # read this — so it is filed `harness_exhausted`, never `verify_exhausted`.
+            pout = {"result": "(plan execution failed — the worker died or the run timed out)",
+                    "passed": False, "cost": 0, "tokens": None, "steps_run": 0,
+                    "budget_stop": False, "harness_stop": True}
+        self._account(pout)
+        out = {"result": pout["result"], "session_id": None, "workflow": wid}
+        # `source` says WHO decided, the same way the verify ladder's verdicts do: without
+        # it `scorecard` counts a harness death as a judge's FAIL, and the run is filed
+        # under the wrong ending.
+        harness_died = bool(pout.get("harness_stop")) and not pout.get("passed")
+        self._harness_stop |= harness_died
+        verdict = {"passed": bool(pout.get("passed")),
+                   **({"source": "harness"} if harness_died else {})}
+        attempt = pout.get("steps_run") or 1
+        self._verified = verdict["passed"]
+        if pout.get("budget_stop"):
+            self._needs_human = {"reason": "budget_exceeded"}
+        elif pout.get("auth_stop"):
+            self._needs_human = {
+                "reason": error_classifier.claude_wall_reason(pout.get("auth_wall"))}
+        elif pout.get("strict_stop"):
+            self._needs_human = {"reason": config.STRICT_STOP_REASON}
+        # Record a top-level attempt row under the bare wid (steps audited under wid-sN),
+        # so the run-detail view, needs-you retry, and memory extraction all find the run.
+        await self._audit_attempt(
+            {"wid": wid, "request": request, "name": cap["name"], "result": pout["result"],
+             "cost": pout.get("cost", 0), "attempt": attempt, "tokens": pout.get("tokens"),
+             "model": None, "verdict": verdict, "repo": repo}, learn=verdict["passed"])
+        return out, verdict, attempt
 
     async def _verify_ladder(self, request, cap, cwd, repo, recall, unattended=False):
         """verify -> retry -> escalate for ONE task. Lives in the workflow (deterministic); every
@@ -1690,7 +1774,7 @@ class OttoWorkflow:
                      # Mid-run supervisor corrections this attempt was given: the request the
                      # judge scores against is the AMENDED one. Mirrors engine._ladder_core.
                      "steers": out.get("steers")},
-                    start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+                    start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],
                  "cost": out.get("cost", 0), "attempt": attempt,
@@ -1813,7 +1897,7 @@ class OttoWorkflow:
             qa_out = await workflow.execute_activity(
                 qa_capability,
                 {"pr_url": pr_url, "repo": repo, "request": request, "wid": f"{run_id}-qa{rnd}"},
-                start_to_close_timeout=timedelta(minutes=30), heartbeat_timeout=_HEARTBEAT,
+                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
             if qa_out.get("missing"):
                 self._qa = {"state": "unavailable", "round": rnd}
@@ -1822,7 +1906,7 @@ class OttoWorkflow:
             qa_cap_name = qa_out.get("qa_cap")
             verdict = await workflow.execute_activity(
                 judge_qa, {"request": request, "result": qa_out["result"], "repo": repo},
-                start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+                start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             # Audit the QA pass as its own attempt (passed only on an outright PASS).
             # `source: "qa"` for the same reason the review loop stamps "review": this is
             # judge_qa's verdict on the PR's BEHAVIOUR, not a verify verdict on the QA
@@ -1930,7 +2014,7 @@ class OttoWorkflow:
             rev_out = await workflow.execute_activity(
                 review_capability,
                 {"pr_url": pr_url, "repo": repo, "request": request, "wid": f"{run_id}-rev{rnd}"},
-                start_to_close_timeout=timedelta(minutes=30), heartbeat_timeout=_HEARTBEAT,
+                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
             if rev_out.get("missing"):
                 self._review = {"state": "unavailable", "round": rnd}
@@ -1940,7 +2024,7 @@ class OttoWorkflow:
             review_cap_name = rev_out.get("review_cap")
             verdict = await workflow.execute_activity(
                 judge_review, {"request": request, "result": rev_out["result"], "repo": repo},
-                start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+                start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             # Audit the review pass as its own attempt (passed only on an outright clean PASS).
             # `source: "review"` is load-bearing, not a label: this verdict is judge_review's
             # opinion of THE PR, and a review that correctly finds must-fix findings is a
@@ -2077,9 +2161,14 @@ class OttoWorkflow:
 
         parts = []
         swarm_cost = 0
+        failed_children = []
         for child, res in zip(self._children, results):
             if isinstance(res, BaseException):
-                result = f"(sub-task failed: {type(res).__name__})"
+                # `type(res).__name__` is "ChildWorkflowError" — Temporal's wrapper, never the
+                # cause. That is the exact placeholder `_failure_detail` exists to unwrap, and
+                # it was the whole record the merge (and the reader) got of a dead sub-task.
+                result = f"(sub-task failed: {_failure_detail(res)})"
+                failed_children.append(child["id"])
             elif isinstance(res, dict):
                 result = res.get("result")
                 swarm_cost += res.get("cost", 0) or 0
@@ -2094,20 +2183,42 @@ class OttoWorkflow:
 
         cap = {"name": "swarm", "kind": "swarm", "risk": "read"}
         self._cap = cap
+        if failed_children:
+            # A swarm that lost a sub-task is not a clean finish: the merge is synthesized from
+            # a hole. Without this the parent finished Done with needs_human=None while the
+            # child's own needs-human row sat on the Needs-you dashboard.
+            self._needs_human = {"reason": "swarm_child_failed",
+                                 "detail": ", ".join(failed_children)}
+            self._terminal = dict(self._needs_human)
+            # Every terminal state writes its OWN audit row, or the run vanishes from
+            # /api/needs-you when Temporal visibility ages out.
+            await workflow.execute_activity(
+                finalize_terminal,
+                {"wid": workflow.info().workflow_id, "request": request, "cap": cap,
+                 "reason": "swarm_child_failed", "detail": self._needs_human["detail"],
+                 "reply_to": params.get("reply_to"), "repo": params.get("repo"),
+                 "unattended": unattended},
+                start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+        record = result
+        if self._needs_human:
+            record = _NEEDS_HUMAN_BANNER["swarm_child_failed"] + "\n\n" + result
         # Unattended swarms (scheduled/event) have no on-screen audience — deliver + record.
         if params.get("reply_to"):
             await workflow.execute_activity(
                 deliver_result, {"reply_to": params["reply_to"], "result": result, "cap": cap},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
-        await self._record_chat(params, request, result, None, cap)
-        # Same opt-in clean-finish push as the single-cap tail — once for the whole swarm.
-        await self._notify(f"Otto finished: swarm ({len(parts)} sub-tasks)",
-                           cap=cap, reply_to=params.get("reply_to"), unattended=unattended,
-                           detail=request,
-                           tags=["white_check_mark"], kind="complete", priority="default",
-                           wid=workflow.info().workflow_id)
-        return {"result": result, "session_id": None, "cap": cap, "attempts": 1,
+        await self._record_chat(params, request, record, None, cap)
+        # Same opt-in clean-finish push as the single-cap tail — once for the whole swarm, and
+        # only when it actually finished clean: the finalizer above already pushed otherwise.
+        if not self._needs_human:
+            await self._notify(f"Otto finished: swarm ({len(parts)} sub-tasks)",
+                               cap=cap, reply_to=params.get("reply_to"), unattended=unattended,
+                               detail=request,
+                               tags=["white_check_mark"], kind="complete", priority="default",
+                               wid=workflow.info().workflow_id)
+        return {"result": record, "session_id": None, "cap": cap, "attempts": 1,
                 "verified": None, "swarm": parts, "chat_key": self._chat_key,
+                "needs_human": self._terminal,
                 "cost": swarm_cost, "times": self._times}
 
     async def _open_chat(self, params, request):

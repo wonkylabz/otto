@@ -277,6 +277,44 @@ class DoctorTests(unittest.TestCase):
         disabled[0].enabled = False
         self.assertEqual(doctor.check_config_caps(disabled)["status"], "warn")
 
+    def test_socket_mode_names_the_missing_package(self):
+        # Issue #59: slack_socket soft-imports `websockets` and degrades to the 60s poll with a
+        # trace line. An operator who set the app token gets poll latency and no diagnosis, and
+        # the doctor — the one place that exists to make a silent degradation loud — said nothing.
+        import doctor
+        import slack_socket
+        self.addCleanup(setattr, slack_socket, "APP_TOKEN", slack_socket.APP_TOKEN)
+        self.addCleanup(setattr, slack_socket, "OK", slack_socket.OK)
+
+        slack_socket.APP_TOKEN = ""
+        self.assertEqual(doctor.check_socket_mode()["status"], "ok")   # not configured: fine
+
+        slack_socket.APP_TOKEN = "xapp-1-A-B-c"
+        slack_socket.OK = False
+        c = doctor.check_socket_mode()
+        self.assertEqual(c["status"], "warn")
+        self.assertIn("websockets", c["detail"])
+        self.assertIn("requirements.txt", c["hint"])                   # actionable, not a flag
+
+        slack_socket.OK = True
+        self.assertEqual(doctor.check_socket_mode()["status"], "ok")
+
+    def test_every_doctor_check_is_wired_into_run_checks(self):
+        # A check nobody calls is the same silence it was written to break.
+        import ast
+        import doctor
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "doctor.py")
+        with open(src) as fh:
+            tree = ast.parse(fh.read())
+        defined = {n.name for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name.startswith("check_")}
+        run = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "run_checks")
+        called = {n.func.id for n in ast.walk(run)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        self.assertEqual(defined - called, set(),
+                         "doctor checks that run_checks never calls")
+
     def test_models_check_probes_only_used_local_models(self):
         import doctor
         probed = []
@@ -2778,7 +2816,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # Each ceiling is a ratchet: raising one is a deliberate constant edit that shows
     # up in the diff. The history of every bump is in git log, not here.
     MAX_BYTES = 8110          # resident tier — the per-session tax
-    MAX_RULES_BYTES = 77758   # fetched tier — bounded, but looser; it is not always loaded
+    # 77_758 -> 78_000 for the base-branch rule (#38, PR #92): "a cap's own PR wins" and
+    # "the clone's own base branch is not a cap's PR" read as the same rule and are
+    # opposites — one repo shape silently made every run's deliverable a colleague's PR.
+    MAX_RULES_BYTES = 78000   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

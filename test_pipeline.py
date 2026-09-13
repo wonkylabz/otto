@@ -3097,6 +3097,74 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         # And the beat has to be comfortably inside the window it feeds.
         self.assertLess(config.HEARTBEAT_EVERY_S * 3, workflows._HEARTBEAT.total_seconds())
 
+    # Which activity runs under which ceiling, and the inner clock each one must outlive. An
+    # activity killed by Temporal before its own watchdog fires loses the work that already
+    # happened: no result, no audit row, and (on _RETRY_EXEC) the whole run filed workflow_error.
+    _CEILINGS = {
+        "run_capability": "_EXEC_CEILING",
+        "qa_capability": "_EXEC_CEILING",
+        "review_capability": "_EXEC_CEILING",
+        "execute_plan": None,             # a whole multi-step plan, its own 90min ceiling
+        "plan_capability": "_PLAN_CEILING",
+        "verify_capability": "_JUDGE_CEILING",
+        "judge_qa": "_JUDGE_CEILING",
+        "judge_review": "_JUDGE_CEILING",
+    }
+
+    def _ceiling_sites(self):
+        """{activity name: [ceiling expression source, ...]} across workflows.py."""
+        import ast
+        src = self._src("workflows.py")
+        tree = ast.parse(src)
+        out = {}
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "execute_activity" and n.args
+                    and isinstance(n.args[0], ast.Name)):
+                continue
+            t = {k.arg: k.value for k in n.keywords}.get("start_to_close_timeout")
+            if t is not None:
+                out.setdefault(n.args[0].id, []).append(ast.get_source_segment(src, t))
+        return out
+
+    def test_every_judge_and_exec_activity_uses_its_named_ceiling(self):
+        # Issue #34/#35: three exec-class activities and all three judges carried a literal
+        # `timedelta(...)` at the call site, each one tighter than the clock it wrapped —
+        # qa/review at 30min around a 38min EXEC_TIMEOUT_S, the judges at 180s around three
+        # confirmation samples. A literal at the call site is invisible to the tests below.
+        sites = self._ceiling_sites()
+        bad = []
+        for name, want in self._CEILINGS.items():
+            if want is None:
+                continue
+            for expr in sites.get(name, []):
+                if expr != want:
+                    bad.append(f"{name}: {expr} (want {want})")
+        self.assertEqual(bad, [], f"activities not on their named ceiling: {bad}")
+
+    def test_the_judge_ceiling_covers_every_confirmation_sample(self):
+        # `confirm_adverse` re-samples an adverse verdict judge_confirmations times, each call
+        # bounded by LOCAL_TIMEOUT_S + CLAUDE_TIER_TIMEOUT_S, and `verify` derives the repo
+        # conventions digest on a cache miss. The ceiling has to cover all of it, or the judge
+        # is killed after the attempt it was judging already ran.
+        worst = config.JUDGE_CONFIRMATIONS * (config.LOCAL_TIMEOUT_S + config.CLAUDE_TIER_TIMEOUT_S)
+        ceiling = workflows._JUDGE_CEILING.total_seconds()
+        self.assertGreaterEqual(
+            ceiling, worst,
+            f"_JUDGE_CEILING ({ceiling}s) is under the worst-case confirmation chain ({worst}s) "
+            f"— raise it, or lower judge_confirmations / the tier timeouts")
+        self.assertGreaterEqual(ceiling - worst, 60,
+                                "no budget left for the conventions digest derivation")
+
+    def test_the_plan_ceiling_covers_a_walled_local_preview(self):
+        # A LOCAL preview that walls late re-previews on Claude inside the SAME activity, then
+        # critiques the result: 900 + 900 + a tier call. 17 minutes covered one pass.
+        ceiling = workflows._PLAN_CEILING.total_seconds()
+        worst = 2 * config.PLAN_TIMEOUT_S + config.CLAUDE_TIER_TIMEOUT_S
+        self.assertGreaterEqual(
+            ceiling, worst,
+            f"_PLAN_CEILING ({ceiling}s) is under a walled local preview's worst case ({worst}s)")
+
     def test_no_execution_activity_can_be_replayed_for_duplicate_spend(self):
         # _RETRY_EXEC (max_attempts=1) exists precisely so a lost activity is never silently
         # re-run: duplicate subscription spend, duplicate side effects, no audit row. The resume
@@ -3104,7 +3172,8 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         # would notice the duplicate.
         import ast
         tree = ast.parse(self._src("workflows.py"))
-        EXEC = {"run_capability", "qa_capability", "review_capability", "execute_plan"}
+        EXEC = {"run_capability", "qa_capability", "review_capability", "execute_plan",
+                "plan_capability"}
         bad = []
         for n in ast.walk(tree):
             if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
