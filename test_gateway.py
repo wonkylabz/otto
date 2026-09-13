@@ -3950,6 +3950,120 @@ class McpUserScopeSpawnTests(unittest.TestCase):
         self.assertIn("file_safety", doc, "the trust rests on the write deny — name it")
 
 
+class ClaudeCliEnvStripTests(unittest.TestCase):
+    """The OTHER door onto the same leak (issue #72).
+
+    #28 narrowed the environment of a stdio server Otto spawns itself. `claude -p` was still
+    spawned with no `env=` at all — and it launches MCP servers of its own (Otto's via
+    `--mcp-config`, plus every def in `~/.claude.json`, since `--strict-mcp-config` is set only
+    on tool-free calls), so a run on the Claude backend handed a third-party `npx -y <package>`
+    server exactly what a run on the local backend no longer does.
+
+    The exemption is the half that has to keep working: the Claude door cannot resolve a def's
+    values on Otto's side (they are written to a file), so the operator's portable spelling is
+    `${VAR}`, expanded by Claude Code out of the CLI's OWN environment. A blanket strip breaks
+    that silently — the server starts, without its credential."""
+
+    def setUp(self):
+        self._env = dict(os.environ)
+        self._defs, self._tmp = policy._MCPDEF, tempfile.mkdtemp(prefix="otto-mcpdef-")
+        policy._MCPDEF = os.path.join(self._tmp, "mcp-servers.json")
+        self._raw, mcp_client._user_mcp_raw = mcp_client._user_mcp_raw, lambda: {}
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+        policy._MCPDEF = self._defs
+        mcp_client._user_mcp_raw = self._raw
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_the_cli_is_spawned_with_an_explicit_narrowed_environment(self):
+        os.environ.update({"OTTO_SLACK_BOT_TOKEN": "xoxb-leak",
+                           "OTTO_SECRET_COMMAND": "pass show otto/{name}",
+                           "ANTHROPIC_API_KEY": "sk-ant-leak"})
+        seen = {}
+
+        def fake_popen(cmd, **kw):
+            seen.update(kw)
+            raise RuntimeError("stop")
+
+        orig = claude_cli.subprocess.Popen
+        claude_cli.subprocess.Popen = fake_popen
+        try:
+            with self.assertRaises(RuntimeError):
+                claude_cli.run_json("hi", allowed_tools=["Bash"])
+        finally:
+            claude_cli.subprocess.Popen = orig
+        env = seen.get("env")
+        self.assertIsInstance(env, dict, "no env= passed: the CLI inherits the worker's own")
+        for var in ("OTTO_SLACK_BOT_TOKEN", "OTTO_SECRET_COMMAND", "ANTHROPIC_API_KEY"):
+            self.assertNotIn(var, env, var)
+        # The subscription credential lives in ~/.claude, reached through HOME — a strip that
+        # takes the environment with it stops every run instead of protecting one.
+        self.assertIn("PATH", env)
+        self.assertIn("HOME", env)
+
+    def test_an_endpoint_key_named_in_the_model_store_is_stripped_too(self):
+        orig, tmp = gateway._PATH, tempfile.mkdtemp(prefix="otto-cliedenv-")
+        try:
+            gateway._PATH = os.path.join(tmp, "models.json")
+            with open(gateway._PATH, "w") as f:
+                json.dump({"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "x"}],
+                           "endpoints": [{"name": "gpu", "base_url": "https://gpu.x/v1",
+                                          "kind": "local", "api_key_env": "MY_VLLM_KEY"}],
+                           "assign": {"execution": "claude-sonnet"}}, f)
+            os.environ["MY_VLLM_KEY"] = "vllm-leak"
+            self.assertNotIn("MY_VLLM_KEY", mcp_client.claude_env())
+        finally:
+            gateway._PATH = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_var_an_activated_def_names_still_reaches_the_cli(self):
+        """`${VAR}` is expanded by Claude Code itself, so the name must survive the strip."""
+        os.environ["OTTO_SLACK_BOT_TOKEN"] = "xoxb-leak"
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-real"
+        policy.save_mcp_defs({"confluence": {"command": "npx", "args": ["-y", "mcp-confluence"],
+                                             "confirmed": True,
+                                             "env": {"CONFLUENCE_TOKEN": "${ANTHROPIC_API_KEY}"}}})
+        env = mcp_client.claude_env()
+        self.assertEqual(env.get("ANTHROPIC_API_KEY"), "sk-ant-real")
+        # The exemption is per-NAME, not an amnesty: everything else still goes.
+        self.assertNotIn("OTTO_SLACK_BOT_TOKEN", env)
+
+    def test_an_inert_def_does_not_widen_the_environment(self):
+        """Registering a def and running it are two acts (`policy.mcp_confirmed`) — an
+        unactivated one reaches no CLI, so it must not re-admit a credential either."""
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-real"
+        policy.save_mcp_defs({"pending": {"command": "npx", "args": ["-y", "x"],
+                                          "confirmed": False,
+                                          "env": {"T": "${ANTHROPIC_API_KEY}"}}})
+        self.assertNotIn("ANTHROPIC_API_KEY", mcp_client.claude_env())
+
+    def test_a_reference_outside_the_env_map_counts(self):
+        """A remote def carries its credential in `headers`, an stdio one can carry it on
+        `args` — the reference is the operator's act wherever it is written."""
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-real"
+        mcp_client._user_mcp_raw = lambda: {"remote": {"type": "http", "url": "https://x/mcp",
+                                                       "headers": {"A": "Bearer ${ANTHROPIC_API_KEY}"}}}
+        self.assertEqual(mcp_client.claude_env().get("ANTHROPIC_API_KEY"), "sk-ant-real")
+
+    def test_a_broken_store_costs_the_exemption_not_the_run(self):
+        def boom():
+            raise OSError("unreadable")
+        mcp_client._user_mcp_raw = boom
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-real"
+        env = mcp_client.claude_env()
+        self.assertNotIn("ANTHROPIC_API_KEY", env, "a failed read must not fail OPEN")
+        self.assertIn("PATH", env)
+
+    def test_the_health_check_door_is_narrowed_too(self):
+        """`claude mcp list` STARTS every server to report its health, so an Admin panel load
+        is the same spawn as a run — and it is off the run path, which is how it gets missed."""
+        src = inspect.getsource(policy._run_mcp_list)
+        self.assertIn("child_env()", src)
+        self.assertIn("child_env()", inspect.getsource(policy.reconnect_mcp))
+
+
 class ConnectorParseTests(unittest.TestCase):
     """`claude mcp list` parsing — claude.ai connectors aren't in ~/.claude.json, so this
     is the only way Otto can discover & allowlist them (mcp__claude_ai_<Name>__…)."""
@@ -4093,7 +4207,7 @@ class ClaudeSteerTests(unittest.TestCase):
 
         class _FakeProc:
             def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
-                         start_new_session=False):
+                         start_new_session=False, env=None):
                 tests.popen_cmds.append(cmd)
                 tests.new_sessions.append(start_new_session)
                 _s.stdout = _Stdout() if stdin is not None else io.StringIO(
@@ -4201,7 +4315,7 @@ class ClaudeStreamTests(unittest.TestCase):
 
         class _FakeProc:
             def __init__(self, cmd, stdout=None, stderr=None, text=True, cwd=None,
-                         start_new_session=False):
+                         start_new_session=False, env=None):
                 tests.popen_cmds.append(cmd)
                 self.stdout = io.StringIO("".join(tests.stream))
                 self.stderr = io.StringIO(tests.stderr_text)
@@ -5231,7 +5345,7 @@ class EffortLevelTests(unittest.TestCase):
 
         class _Proc:
             def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
-                         start_new_session=False):
+                         start_new_session=False, env=None):
                 _s.stdout = io.StringIO(json.dumps(
                     {"type": "result", "result": "ok", "total_cost_usd": 0}) + "\n")
                 _s.stderr = io.StringIO("")
@@ -5686,7 +5800,7 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # found and fixed once in `slack.whoami` and was sitting untouched in `pr_review.viewer`,
     # which is what a rule is for. Both halves are non-obvious — caching a miss reads as
     # correct caching, and retrying it reads as correct recovery.
-    MAX_RULES_BYTES = 76035   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 76315   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 
@@ -7814,7 +7928,7 @@ class ClaudeLateExitTests(unittest.TestCase):
             pid = None                      # no group to signal: kill_tree falls back to kill()
 
             def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
-                         start_new_session=False):
+                         start_new_session=False, env=None):
                 _s.stdout = io.StringIO(json.dumps(tests._RESULT) + "\n")
                 _s.stderr = io.StringIO("")
                 _s.stdin = None
@@ -7864,7 +7978,7 @@ class ClaudeLateExitTests(unittest.TestCase):
             pid = None
 
             def __init__(_s, cmd, stdout=None, stderr=None, text=True, cwd=None, stdin=None,
-                         start_new_session=False):
+                         start_new_session=False, env=None):
                 _s.stdout = io.StringIO("")
                 _s.stderr = io.StringIO("")
                 _s.stdin = None

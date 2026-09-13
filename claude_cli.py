@@ -57,6 +57,22 @@ def transcript_line(event):
     return line if line.endswith("\n") else line + "\n"
 
 
+def child_env():
+    """The environment every `claude` subprocess is spawned with (issue #72).
+
+    NOT `os.environ`. `claude -p` launches MCP servers of its own — Otto's via `--mcp-config`
+    and every def in the operator's `~/.claude.json`, since `--strict-mcp-config` is set only
+    on tool-free calls — so whatever the CLI inherits, third-party `npx -y <package>` code
+    inherits too. `run.sh` exports the repo's gitignored `.env` into the worker, which made
+    that exactly the leak issue #28 closed on the local backend and no more.
+
+    The strip itself lives in `mcp_client` with its local-backend twin, so there is one list
+    of what counts as Otto's credential material. Imported at call time: `mcp_client` imports
+    THIS module, so the dependency can only run one way at import time."""
+    import mcp_client            # noqa: PLC0415 — deferred, mcp_client imports claude_cli
+    return mcp_client.claude_env()
+
+
 def kill_tree(proc):
     """SIGKILL the child's whole process GROUP, not just the child.
 
@@ -243,7 +259,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     # the child its own process group, so `kill_tree` can signal the group without touching
     # the worker or its siblings.
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            cwd=cwd, start_new_session=True,
+                            cwd=cwd, start_new_session=True, env=child_env(),
                             **({"stdin": subprocess.PIPE} if streaming_in else {}))
     send_lock = threading.Lock()
 

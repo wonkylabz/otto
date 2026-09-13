@@ -80,6 +80,8 @@ def _expand(v):
 # every OTHER secret, vault included.
 _ENV_DENY_PREFIXES = ("OTTO_",)
 _ENV_DENY = ("ANTHROPIC_API_KEY",)
+# `$VAR` / `${VAR}`, the two spellings `os.path.expandvars` and Claude Code both honour.
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _model_key_env_names():
@@ -100,13 +102,73 @@ def _model_key_env_names():
     return out
 
 
-def _inherited_env():
+def _inherited_env(keep=()):
     """`os.environ` minus Otto's own credentials. A server that genuinely needs one names it
     in its OWN `env` — a deliberate act by the operator in the Admin form, and one that still
-    works, since the strip happens before the def's own entries are applied."""
-    denied = set(_ENV_DENY) | _model_key_env_names()
+    works, since the strip happens before the def's own entries are applied.
+
+    `keep` re-admits names the operator has already pointed a def at by `${VAR}` — the same
+    deliberate act, one step removed, for the door that cannot resolve on our side
+    (`claude_env`)."""
+    denied = (set(_ENV_DENY) | _model_key_env_names()) - set(keep)
     return {k: v for k, v in os.environ.items()
-            if k not in denied and not k.startswith(_ENV_DENY_PREFIXES)}
+            if k in set(keep) or (k not in denied and not k.startswith(_ENV_DENY_PREFIXES))}
+
+
+def _env_refs(value, out):
+    """Collect `$VAR` / `${VAR}` names out of one def value, recursing into lists and dicts."""
+    if isinstance(value, str):
+        out.update(m.group(1) or m.group(2) for m in _ENV_REF_RE.finditer(value))
+    elif isinstance(value, dict):
+        for v in value.values():
+            _env_refs(v, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _env_refs(v, out)
+
+
+def claude_env_refs():
+    """Env var names the defs `claude -p` can spawn reference as `${VAR}`.
+
+    The Claude door does NOT resolve a def's values on our side — `policy.active_mcp_config`
+    writes the config to disk, so resolving there would put the secret in a file, and Claude
+    Code expands `${VAR}` itself out of ITS OWN environment (`env_for`'s docstring). That
+    makes an env reference the portable spelling Otto's Admin form documents — and a blanket
+    strip would break it silently, the server simply starting without its credential.
+
+    So the reference is what exempts a name: every value of every def that actually reaches
+    the CLI — the ACTIVATED half of Otto's registry (an inert def must not widen the
+    environment of every run), plus the operator's own `~/.claude.json`, which `claude -p`
+    reads whether Otto passes it or not — and not only the `env` map — a remote entry's `headers`
+    and an `args` entry carry credentials in the same spelling. A source that fails to load
+    costs the exemption, never the run: the strip is the safe direction."""
+    out = set()
+    for source in (_user_mcp_raw,
+                   lambda: (policy.active_mcp_config(policy.load()) or {}).get("mcpServers")):
+        try:
+            _env_refs(source() or {}, out)
+        except Exception:  # noqa: BLE001 — a broken store must not cost the run
+            pass
+    return out
+
+
+def claude_env():
+    """The environment `claude -p` itself is spawned with (issue #72).
+
+    #28 shut the LOCAL door: a stdio server Otto spawns gets `_inherited_env`, not the
+    worker's own. The CLI was still spawned with no `env=` at all, so it inherited everything
+    `run.sh` exported out of `.env` — and handed it on to every MCP server IT launches, ours
+    via `--mcp-config` and the user's out of `~/.claude.json` (`--strict-mcp-config` is set
+    only on tool-free calls). Same leak, the other backend.
+
+    Nothing in the CLI's own configuration travels by env here: Otto passes every one of its
+    choices on argv, and the subscription credential lives in `~/.claude`, reached via `HOME`,
+    which the strip keeps. `ANTHROPIC_API_KEY` goes with the rest — Otto's auth is the
+    subscription by doctrine (CLAUDE.md), the key only ever auto-discovered the cloud model
+    list in the WORKER, and a `claude -p` turn was measured returning a normal result with it
+    stripped. An operator who genuinely needs the CLI to see a stripped name re-admits it the
+    documented way: name it in a def's `env`."""
+    return _inherited_env(keep=claude_env_refs())
 
 
 def env_for(spec):
@@ -156,12 +218,18 @@ def _user_servers():
     server inert on ONE backend while the other ran it, closing nothing. What made this file a
     self-escalation was that a RUN could append to it, which is now a write deny in
     `file_safety.denied_globs`. Trust the operator's file, keep runs out of it."""
+    return {n: d for n, d in _user_mcp_raw().items() if _is_stdio(d)}
+
+
+def _user_mcp_raw():
+    """The user's top-level `mcpServers` map, unfiltered — `_user_servers` narrows it to what
+    the LOCAL backend can launch, `claude_env_refs` needs every def the CLI reads."""
     try:
         with open(os.path.expanduser("~/.claude.json")) as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
-    return {n: d for n, d in (data.get("mcpServers") or {}).items() if _is_stdio(d)}
+    return data.get("mcpServers") or {}
 
 
 def servable(pol=None):
