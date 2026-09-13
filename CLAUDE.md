@@ -44,7 +44,7 @@ Read the layer's rules file before editing it — each carries the invariants th
 
 Two cross-layer invariants that don't live in any one of them:
 
-- **The verify→retry→escalate loop is written ONCE, in `engine._ladder_core`** (adapters `_run_ladder`, `execute`). `OttoWorkflow._verify_ladder` is a deliberate third mirror — workflow code is deterministic, so it can't merge in. Change one, mirror the other (`test_core.LadderJudgeContextTests`).
+- **The verify→retry→escalate loop is written ONCE, in `engine._ladder_core`** (adapters `_run_ladder`, `execute`). `OttoWorkflow._verify_ladder` is a deliberate third mirror — workflow code is deterministic, so it can't merge in. Change one, mirror the other (`test_pipeline.LadderJudgeContextTests`).
 - **Five ingresses normalize into one `OttoWorkflow`.** The split that matters everywhere: **interactive** (clarify, wait for approval) vs **unattended** (deliver to `reply_to`).
 
 ## Conventions & gotchas
@@ -54,7 +54,7 @@ These bind any edit, in any layer.
 - **Auth: Claude subscription via `claude -p` — never require an API key.** `ANTHROPIC_API_KEY` only auto-discovers the cloud model list (`ResidentRuleGuardTests`).
 - **Runtime settings store** (`config._SETTING_SPECS`, `data/settings.json`, Admin → Runtime settings) — knobs meant to change without a restart. Read via `config.setting(name)`, precedence env > store > code default. `save_settings` stores only the diff.
 - **Workflow code must never call `config.setting()`** — the store is mutable, so a replay could branch differently than history recorded. `OttoWorkflow` takes ONE snapshot via `snapshot_settings` and reads it through `self._setting(...)`. Every in-test Temporal `Worker` must register `snapshot_settings` or it silently falls back to import-time defaults (`ResidentRuleGuardTests`).
-- **Every secret resolves through `config.secret(name)`** — env > the `OTTO_SECRET_COMMAND` helper > unset. A bare `os.environ` read is invisible to the helper: the secret stays in the vault and the feature it gates is silently off (`test_core.SecretProviderTests`).
+- **Every secret resolves through `config.secret(name)`** — env > the `OTTO_SECRET_COMMAND` helper > unset. A bare `os.environ` read is invisible to the helper: the secret stays in the vault and the feature it gates is silently off (`test_gateway.SecretProviderTests`).
 - **`OTTO_SECRET_COMMAND` is env-only, never in `_SETTING_SPECS`** — a shell command settable over this unauthenticated API leaves `_csrf_ok` as the only thing between a page the user visits and code execution as them (`ResidentRuleGuardTests`).
 - **Run ids never collide across processes** — Temporal uses the real workflow id for audit+transcripts+board correlation; anything without one mints `wf-<6hex>-NNNN` via `engine._next_wid()`. Never mint an id any other way.
 - **`data/` is gitignored runtime state** — never commit anything under it except `.gitkeep`. The audit trail is immutable, never cleared by "clear memory" (`ResidentRuleGuardTests`).
