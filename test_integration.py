@@ -536,6 +536,41 @@ class HttpApiTests(unittest.TestCase):
             (chats_mod._DB, self.server._DISMISSED_PATH, self.server._wf_terminate,
              self.server.tc.run, self.server.TEMPORAL_OK) = saved
 
+    def test_a_failure_never_ships_under_http_200(self):
+        """Two routes answered `{"error": …}` with status 200. `fetch` resolves on a 200, and
+        every client loader goes straight to `.json()` then `d.items or []`, so the failure
+        rendered as an EMPTY board and a terminate that never happened removed its own card
+        (`board.boardTerminate` deletes it on a resolved promise). Issue #48."""
+        import asyncio
+        saved = (self.server._wf_terminate, self.server.tc.run, self.server.TEMPORAL_OK,
+                 self.server._board_full_result, self.server._board)
+
+        async def boom(*a, **k):
+            raise RuntimeError("workflow execution already completed")
+
+        self.server._wf_terminate = boom
+        self.server._board_full_result = boom
+        self.server._board = boom
+        self.server.tc.run = lambda coro: asyncio.run(coro)
+        self.server.TEMPORAL_OK = True
+        try:
+            st, body = _post(self.base, "/api/wf/terminate", {"id": "web-dead"})
+            self.assertEqual(st, 409, "a failed terminate still answered 200")
+            self.assertIn("already completed", body.get("error", ""))
+
+            st, body = _get(self.base, "/api/board/full?id=web-dead")
+            self.assertEqual(st, 502, "a failed result read still answered 200")
+            self.assertIn("error", body)
+
+            # A failed board read is not an EMPTY board, and under 200 they are the same
+            # document to every client.
+            st, body = _get(self.base, "/api/board")
+            self.assertEqual(st, 502, "a failed board read still answered 200 with items: []")
+            self.assertIn("error", body)
+        finally:
+            (self.server._wf_terminate, self.server.tc.run, self.server.TEMPORAL_OK,
+             self.server._board_full_result, self.server._board) = saved
+
     # --- follow-up handoff (Temporal branch): a follow-up that DELEGATES a new task must NOT
     # resume the bound session (the PM-implements-the-code failure, PR #194) — the server
     # returns the extracted standalone task and the client re-submits it fresh.

@@ -2819,7 +2819,13 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 77_758 -> 78_000 for the base-branch rule (#38, PR #92): "a cap's own PR wins" and
     # "the clone's own base branch is not a cap's PR" read as the same rule and are
     # opposites — one repo shape silently made every run's deliverable a colleague's PR.
-    MAX_RULES_BYTES = 78000   # fetched tier — bounded, but looser; it is not always loaded
+    # 78_000 -> 78271 for the postJSON rule (#48, PR #101): 51 of 58 mutating fetches were
+    # hand-rolled and reported nothing on a refusal. The helper is only load-bearing if the
+    # next hand-rolled one is caught, and the guard test is what catches it — so the rule
+    # naming it has to exist somewhere a UI session reads. The dir is over-budget by design
+    # (issue #56 is the prune); this raise is deliberately visible rather than funded by
+    # quietly compressing an unrelated rule, which would make that audit harder.
+    MAX_RULES_BYTES = 78271   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

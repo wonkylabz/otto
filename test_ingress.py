@@ -6285,7 +6285,10 @@ class UiAssetLayoutTests(unittest.TestCase):
     ROOT = os.path.dirname(os.path.abspath(__file__))
     WEB = os.path.join(ROOT, "web")
     # index.html holds the head, the markup shell and the tags — no rule, no style, no logic.
-    INDEX_MAX = 14_009
+    # -> 14_256 for the `#toasts` container (issue #48). It has to live in the SHELL, beside
+    # the pause bar: every tab is a view swap inside <main>, so a notice docked in a view
+    # unmounts exactly when someone switches away while waiting for a save.
+    INDEX_MAX = 14_256
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:
@@ -6317,7 +6320,10 @@ class UiAssetLayoutTests(unittest.TestCase):
     # behaviour-rule paste boxes moved into the shared modal, so `.kadd`/`.ruleadd` came OUT —
     # this raise is the net. The comment naming the two inherited constraints `.prosearea`
     # overrides is most of it, and is what stops the next edit dropping them (see `.codearea`).
-    ASSET_MAX = 115176
+    # -> 116433 for `.toasts`/`.toast` (issue #48): 51 mutating POSTs reported nothing on a
+    # refusal, and most of them are a switch or a row action with no inline status element
+    # to write into — so the one shared surface is what makes reporting them possible at all.
+    ASSET_MAX = 116433
 
     def _assets(self):
         out = {}
@@ -6374,6 +6380,50 @@ class UiAssetLayoutTests(unittest.TestCase):
                 continue
             self.assertIn("enhanceToggles(", text,
                           f"{rel} binds a .secttoggle without making it keyboard-reachable")
+
+    def test_no_mutating_fetch_is_hand_rolled_past_the_helper(self):
+        """51 of 58 POST/DELETE sites read `fetch(P,{method:"POST",…})` followed straight by
+        `loadX()` — no `res.ok`, no message. A 400 from validation, a 409 from the global pause
+        or a 403 from `_csrf_ok` therefore looked exactly like a save: the re-render painted the
+        old value back and the operator had no way to know the write never landed.
+
+        `util.postJSON` is the one place that can hold "a refused write is reported", so a
+        hand-rolled mutating fetch anywhere else is that bug coming back. `util.js` itself is
+        exempt — it IS the helper (and describes the old shape in its own comment)."""
+        bad = []
+        for rel, path in self._assets().items():
+            if not rel.endswith(".js") or rel == "js/util.js":
+                continue
+            with open(path, encoding="utf-8") as f:
+                for n, line in enumerate(f, 1):
+                    if re.search(r'method:\s*"(POST|DELETE|PUT|PATCH)"', line):
+                        bad.append(f"{rel}:{n}")
+        self.assertEqual(bad, [], "hand-rolled mutating fetch — use postJSON/postOr/postForm")
+
+    def test_the_post_helper_fails_on_a_bad_status_AND_on_an_error_under_200(self):
+        """Both halves are load-bearing and neither implies the other. `fetch` resolves on a 500
+        exactly as it does on a 200, so only `res.ok` catches a refusal; and two routes answered
+        `{"error": …}` under 200 (that is now fixed server-side, but the client must not have to
+        know which routes those are). It THROWS rather than returning a sentinel — a falsy
+        return is precisely what the 51 migrated sites already ignored."""
+        src = open(self._assets()["js/util.js"], encoding="utf-8").read()
+        body = src[src.index("async function postJSON("):]
+        body = body[:body.index("\nfunction toast(")]
+        self.assertIn("!res.ok || data.error", body, "postJSON stopped checking one of the two")
+        self.assertIn("throw", body, "postJSON must throw — a sentinel is what was ignored before")
+        # The parsed body rides on the error: chat.api reads `paused` off a REFUSED reply to
+        # repaint the header, and without it that caller goes back to a hand-rolled fetch.
+        self.assertIn("err.data", body, "the refusal's payload no longer reaches the caller")
+
+    def test_the_refusal_notice_lives_outside_main(self):
+        """Same reason the pause bar and the mascot do: every tab is a view swap inside <main>,
+        so a toast docked in a view unmounts the moment the user switches away — and switching
+        away is exactly what someone does while waiting for a save."""
+        doc = self._index()
+        self.assertIn('id="toasts"', doc, "the toast container is not in the shell")
+        # The opening TAG, not the first mention: the shell comments talk about `<main>`.
+        self.assertLess(doc.index('id="toasts"'), doc.index("\n<main>"),
+                        "the toast container moved inside <main> — a tab switch unmounts it")
 
     def test_no_asset_exceeds_the_ceiling(self):
         for rel, path in self._assets().items():

@@ -149,8 +149,10 @@ async function persistChat(){
   if(currentSession){ activeChat.session_id=currentSession.id; activeChat.cap=currentSession.cap;
     activeChat.repo=currentSession.repo||null; activeChat.git_run_id=currentSession.git_run_id||null;
     activeChat.git_branch=currentSession.git_branch||null; }
-  try { await fetch("/api/chats/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(activeChat)}); loadChatList(); }
-  catch(e){}
+  // Autosave, fired on every turn: a toast per failure would bury the screen, so this one
+  // reports to the console only — the chat list simply will not have moved.
+  try { await postJSON("/api/chats/save", activeChat); loadChatList(); }
+  catch(e){ console.error("chat autosave failed:", e.message); }
 }
 // Shared driver for a running workflow's on-screen view. Reattach-safe: it bails the instant
 // a newer watcher starts or the user switches away from `chatId` (the workflow keeps running;
@@ -443,7 +445,10 @@ try { applyHistCollapsed(localStorage.getItem(HIST_COLLAPSED_KEY)==="1"); } catc
 
 async function loadChatList(){
   const el=document.getElementById("histlist"); if(!el) return;
-  let data; try { data=await (await fetch("/api/chats")).json(); } catch(e){ return; }
+  // A failed read used to paint an EMPTY chat list, which reads as "my chats are gone".
+  let data;
+  try { data=await getJSON("/api/chats"); }
+  catch(e){ el.innerHTML=`<p class="err">Couldn't load your chats (${esc(e.message)}).</p>`; return; }
   const items=data.chats||[];
   const present=new Set(items.map(c=>c.id));
   const running=new Set(items.filter(c=>c.run_id).map(c=>c.id));
@@ -479,12 +484,12 @@ async function loadChatList(){
   }));
   el.querySelectorAll("[data-pinchat]").forEach(b=>b.addEventListener("click",async e=>{
     e.stopPropagation();
-    await fetch("/api/chats/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.pinchat, pinned:b.dataset.pinned!=="1"})});
+    await postOr("/api/chats/pin",{id:b.dataset.pinchat, pinned:b.dataset.pinned!=="1"},"pinning that chat");
     loadChatList();
   }));
   el.querySelectorAll("[data-delchat]").forEach(b=>b.addEventListener("click",async e=>{
     e.stopPropagation();
-    await fetch("/api/chats/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.delchat})});
+    if(!await postOr("/api/chats/delete",{id:b.dataset.delchat},"deleting that chat")) return;
     if(activeChat&&activeChat.id===b.dataset.delchat) newChat(); else loadChatList();
   }));
 }
@@ -740,17 +745,18 @@ function failCurrent(detail){
   setNode(n?n.dataset.lbl:"RUN","failed",detail);
 }
 
+/* `postJSON` plus the one thing the chat needs on top of it. A refused-because-paused reply is
+   the fastest signal that the pause was engaged elsewhere (CLI, another tab, `touch data/ESTOP`),
+   so paint it NOW rather than leaving the header claiming Otto is running for up to one 15s poll
+   while the error says otherwise. Re-read rather than synthesising a state here, so the strip
+   shows the real reason instead of blanking it — that reason is often the only clue to who
+   paused it and why. */
 async function api(path, body){
-  const res = await fetch(path, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
-  const data = await res.json();
-  // A refused-because-paused reply is the fastest signal that the pause was engaged elsewhere
-  // (CLI, another tab, `touch data/ESTOP`). Paint it now rather than leaving the header claiming
-  // Otto is running for up to one 15s poll while the error says otherwise.
-  // Re-read rather than synthesising a state here, so the strip shows the real reason instead of
-  // blanking it — the reason is often the only clue to who paused it and why.
-  if (data && data.paused) fetch("/api/estop").then(r=>r.json()).then(applyEstop).catch(()=>{});
-  if (!res.ok || data.error) throw new Error(data.error || ("HTTP "+res.status));
-  return data;
+  try { return await postJSON(path, body); }
+  catch(e){
+    if(e.data && e.data.paused) fetch("/api/estop").then(r=>r.json()).then(applyEstop).catch(()=>{});
+    throw e;
+  }
 }
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
@@ -915,15 +921,15 @@ async function toggleEstop(){
   const want=!ESTOP_ON;
   ESTOP_BUSY=true; if(b) b.disabled=true; if(l) l.textContent=want?"pausing…":"resuming…";
   try{
-    const r=await fetch("/api/estop",{method:"POST",headers:{"Content-Type":"application/json"},
-                                     body:JSON.stringify({engaged:want,reason:want?"paused from the Otto header":""})});
-    const st=await r.json();
+    const st=await postJSON("/api/estop",{engaged:want,reason:want?"paused from the Otto header":""});
     ESTOP_BUSY=false; if(b) b.disabled=false;
     applyEstop(st);
   }catch(e){
-    // Failed to reach the backend: do NOT assume the toggle took. Re-read the real state, so a
-    // button reading "Paused" always means the sentinel is actually there.
+    // Refused, or the backend is unreachable: do NOT assume the toggle took. Re-read the real
+    // state, so a button reading "Paused" always means the sentinel is actually there — and say
+    // so, because this is the one control whose whole value is knowing it landed.
     ESTOP_BUSY=false; if(b) b.disabled=false;
+    toast((want?"Pausing":"Resuming")+" Otto failed: "+e.message);
     try{ applyEstop(await (await fetch("/api/estop")).json()); }catch(_){ }
   }
 }

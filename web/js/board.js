@@ -94,7 +94,9 @@ async function loadBoard(silent){
   const el=document.getElementById("boardview");
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
-  try { data=await (await fetch("/api/board")).json(); }
+  // getJSON, not a bare fetch: a 500 resolves like a 200, so `data.temporal` came back falsy
+  // and a failed read rendered as the "start Otto with ./run.sh" panel — the wrong diagnosis.
+  try { data=await getJSON("/api/board"); }
   catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load the board (${esc(e.message)}).</p>`; return; }
   if(!data.temporal){
     el.innerHTML=`<div class="phead"><h1>Swarm board</h1><p class="sub">Needs Temporal — start Otto with <code>./run.sh</code>.</p></div>`;
@@ -277,8 +279,10 @@ async function loadBoardHealth(){
   box.innerHTML=html;
 }
 async function boardSignal(id, ok){
-  try { await fetch("/api/wf/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,signal:"approve",value:ok})}); }
-  catch(e){}
+  // A swallowed failure here is the worst of the set: the run stays parked at its gate while
+  // the repaint tells you it was released, and the next thing anyone sees is a run that "hung".
+  await postOr("/api/wf/signal",{id,signal:"approve",value:ok},
+               ok?"approving this run":"declining this run");
   loadBoard(true);
 }
 // Answer an awaiting-clarification run straight from the board. Sends the provide_clarification
@@ -291,8 +295,8 @@ async function boardClarify(id, btn){
   const answer=(input&&input.value||"").trim();
   if(!answer){ if(input) input.focus(); return; }
   btn.disabled=true; btn.textContent="Sending…"; if(input) input.disabled=true;
-  try { await fetch("/api/wf/signal",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,signal:"clarify",value:answer})}); }
-  catch(e){ btn.disabled=false; btn.textContent="Send"; if(input) input.disabled=false; alert("Couldn't send the answer: "+e.message); return; }
+  try { await postJSON("/api/wf/signal",{id,signal:"clarify",value:answer}); }
+  catch(e){ btn.disabled=false; btn.textContent="Send"; if(input) input.disabled=false; toast("Couldn't send the answer: "+e.message); return; }
   loadBoard(true);   // repaint: the run leaves "Awaiting your input" and resumes under Running
 }
 /* "Needs review" card actions (#116): a dead/unverified run has no other way to act on it from
@@ -304,21 +308,16 @@ async function needsYouRetry(id,btn){
   // (retrying IS acknowledging it). Remove the card from the column the moment the server
   // confirms — a card that lingers after a click reads as "did that even work?".
   if(btn){ btn.disabled=true; btn.textContent="Retrying…"; }
-  let r;
-  try {
-    r=await (await fetch("/api/needs-you/retry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})).json();
-    if(r.error){ alert("Couldn't retry: "+r.error); if(btn){ btn.disabled=false; btn.textContent="Retry"; } return; }
-  } catch(e){ alert("Couldn't retry: "+e.message); if(btn){ btn.disabled=false; btn.textContent="Retry"; } return; }
+  try { await postJSON("/api/needs-you/retry",{id}); }
+  catch(e){ toast("Couldn't retry: "+e.message); if(btn){ btn.disabled=false; btn.textContent="Retry"; } return; }
   if(btn){ const c=btn.closest(".bcard"); if(c) c.remove(); }
   loadBoard(true);   // repaint: the retried run appears under Running with its new id
 }
 async function boardTerminate(id,btn){
   if(!confirm("Terminate this run? It stops immediately — no cleanup, no result — and the card disappears. This can't be undone (you can Retry the same request later from the audit trail).")) return;
   if(btn){ btn.disabled=true; btn.textContent="Terminating…"; }
-  let r={};
-  try { r=await (await fetch("/api/wf/terminate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})).json(); }
-  catch(e){ r={error:e.message}; }
-  if(r.error){ alert("Couldn't terminate: "+r.error); if(btn){ btn.disabled=false; btn.textContent="Terminate"; } return; }
+  try { await postJSON("/api/wf/terminate",{id}); }
+  catch(e){ toast("Couldn't terminate: "+e.message); if(btn){ btn.disabled=false; btn.textContent="Terminate"; } return; }
   if(btn){ const c=btn.closest(".bcard"); if(c) c.remove(); }
   loadBoard(true);
 }
@@ -327,17 +326,14 @@ async function boardTerminate(id,btn){
    itself. The server records it (scorecard false-fail rate + solutions) and dismisses the card. */
 async function needsYouAccept(id,btn){
   if(btn){ btn.disabled=true; btn.textContent="Accepting\u2026"; }
-  let r={};
-  try { r=await (await fetch("/api/needs-you/accept",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})).json(); }
-  catch(e){ r={error:e.message}; }
-  if(r.error){ alert("Couldn't accept: "+r.error); if(btn){ btn.disabled=false; btn.textContent="Accept"; } return; }
+  try { await postJSON("/api/needs-you/accept",{id}); }
+  catch(e){ toast("Couldn't accept: "+e.message); if(btn){ btn.disabled=false; btn.textContent="Accept"; } return; }
   if(btn){ const c=btn.closest(".bcard"); if(c) c.remove(); }
   loadBoard(true);
 }
 async function needsYouDismiss(id){
   if(!confirm("Dismiss this run? It disappears from the board (nothing about the run itself is deleted).")) return;
-  try { await fetch("/api/needs-you/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}); }
-  catch(e){}
+  if(!await postOr("/api/needs-you/dismiss",{id},"dismissing this run")) return;
   const b=byData(document,"data-dismiss",id);
   if(b){ const c=b.closest(".bcard"); if(c) c.remove(); }
   loadBoard(true);

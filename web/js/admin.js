@@ -43,11 +43,9 @@ async function convRefresh(path){
   const cell=document.querySelector(sel);
   if(cell) cell.innerHTML=`<span class="sub"><span class="spin"></span> deriving…</span>`;
   try{
-    const r=await fetch("/api/conventions/refresh",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({path})});
-    const s=await r.json();
+    const s=await postJSON("/api/conventions/refresh",{path});
     if(s && s.path) CONV_STATE[path]=s;
-  }catch(e){ /* leave the old state; the cell repaints from CONV_STATE below */ }
+  }catch(e){ toast("deriving conventions failed: "+e.message); }  // old state stands; the cell repaints below
   finally{
     CONV_BUSY.delete(path);
     // Re-query: the panel may have re-rendered under us while the derivation was in flight.
@@ -104,10 +102,9 @@ async function refreshMcpHealth(rendered){
   const key=rows=>(rows||[]).map(m=>`${m.name}:${m.health||""}`).join("|");
   let moved=false;
   try{
-    const d=await (await fetch("/api/mcp/recheck",{method:"POST",
-      headers:{"Content-Type":"application/json"},body:JSON.stringify({force:false})})).json();
+    const d=await postJSON("/api/mcp/recheck",{force:false});
     moved=!!(d.mcps && key(d.mcps)!==key(rendered));
-  }catch(e){}
+  }catch(e){ toast("MCP health check failed: "+e.message); }
   // Restore before deciding: on the re-render path loadAdmin() replaces this button anyway, but
   // relying on that leaves the label stuck at "Checking…" the moment that stops being true.
   if(btn){ btn.disabled=false; btn.textContent=label; }
@@ -454,7 +451,7 @@ function wireModels(el){
     const name=b.dataset.testmodel, res=el.querySelector(`[data-tres="${name}"]`);
     res.className="tres"; res.textContent="…";
     try {
-      const r=await (await fetch("/api/models/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})})).json();
+      const r=await postJSON("/api/models/test",{name});
       res.className="tres "+(r.ok?"ok":"bad");
       res.textContent=r.ok?`✓ ${r.ms||0}ms`:`✗ ${r.detail||"failed"}`;
       res.title=r.detail||"";
@@ -472,9 +469,9 @@ function wireModels(el){
   if(recheck) recheck.addEventListener("click",async()=>{
     recheck.disabled=true; const was=recheck.textContent; recheck.textContent="checking…";
     try{
-      const r=await (await fetch("/api/models/recheck",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
+      const r=await postJSON("/api/models/recheck",{});
       MODEL_HEALTH=r.health||{};
-    } catch(e){}
+    } catch(e){ toast("model health check failed: "+e.message); }
     recheck.disabled=false; recheck.textContent=was;
     loadAdmin();
   });
@@ -575,8 +572,7 @@ async function showDiscovery(epName){
     <div id="disc-body"><span class="sub">asking the server…</span></div></div>`;
   let r;
   try {
-    r=await (await fetch("/api/models/discover",{method:"POST",headers:{"Content-Type":"application/json"},
-                                                 body:JSON.stringify({endpoint:epName})})).json();
+    r=await postJSON("/api/models/discover",{endpoint:epName});
   } catch(err){ r={ok:false,detail:err.message}; }
   const body=document.getElementById("disc-body");
   if(!body) return;
@@ -696,8 +692,10 @@ function showModelForm(){
    the one thing that must not read as "saved ✓" — the endpoint would 401 on its next call. */
 async function saveModels(){
   let r={};
-  try { r=await (await fetch("/api/models",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(MODEL_STATE)})).json(); }
-  catch(e){ r={ok:false,lost_keys:["save failed: "+e.message]}; }
+  // A REFUSED save has to read as a refusal, not as "saved, but re-enter a key": the warn line
+  // is the success indicator's warning state, and the models were not written at all.
+  try { r=await postJSON("/api/models", MODEL_STATE); }
+  catch(e){ toast("saving the models failed: "+e.message); return {ok:false, error:e.message}; }
   const s=document.getElementById("saved"); if(!s) return r;
   const lost=(r&&r.lost_keys)||[];
   if(lost.length){ s.textContent="saved, but re-enter the API key for: "+lost.join(", "); s.classList.add("warn","show"); }
@@ -1054,15 +1052,13 @@ function renderAdmin(data, models, el, settings){
   // policy save — these are few, consequential, and each one is a deliberate act.
   const saveSetting=async(name,value,ctl)=>{
     try{
-      const r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
-                                           body:JSON.stringify({settings:{[name]:value}})});
-      const j=await r.json();
+      const j=await postJSON("/api/settings",{settings:{[name]:value}});
       const row=ctl.closest(".setrow"), tag=row&&row.querySelector(".settag");
       const s=(j.settings||{})[name];
       if(tag) tag.innerHTML=(s&&s.stored)?`<span class="srctag" title="changed from the code default (${esc(String(s.default))})">edited</span>`:"";
       const saved=document.getElementById("saved");
       if(saved){ saved.classList.add("show"); setTimeout(()=>saved.classList.remove("show"),1200); }
-    }catch(e){ alert("Couldn't save setting: "+e.message); }
+    }catch(e){ toast("Couldn't save setting: "+e.message); }
   };
   el.querySelectorAll('.switch[data-setting]').forEach(s=>s.addEventListener("click",()=>{
     if(s.classList.contains("locked")) return;     // env-pinned: the click would be discarded
@@ -1180,23 +1176,21 @@ function renderAdmin(data, models, el, settings){
   }));
   el.querySelectorAll("[data-actmcp]").forEach(b=>b.addEventListener("click",async()=>{
     b.disabled=true; b.textContent="Activating\u2026";
-    try{ await fetch("/api/mcp/activate",{method:"POST",headers:{"Content-Type":"application/json"},
-                                          body:JSON.stringify({name:b.dataset.actmcp})}); }catch(e){}
+    await postOr("/api/mcp/activate",{name:b.dataset.actmcp},"activating that MCP server");
     loadAdmin();
   }));
   const recheck=document.getElementById("mcp-recheck");
   if(recheck) recheck.addEventListener("click",async()=>{
     recheck.disabled=true; const t=recheck.textContent; recheck.textContent="Checking…";
-    try{ await fetch("/api/mcp/recheck",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}); }catch(e){}
+    await postOr("/api/mcp/recheck",{},"the MCP health check");
     loadAdmin();   // re-renders from the now-fresh cached health
   });
   el.querySelectorAll("[data-reconnect]").forEach(b=>b.addEventListener("click",async()=>{
     b.disabled=true; b.textContent="Opening…";
     let d={};
-    try{ d=await (await fetch("/api/mcp/reconnect",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name:b.dataset.reconnect})})).json(); }catch(e){ d={error:e.message}; }
+    try{ d=await postJSON("/api/mcp/reconnect",{name:b.dataset.reconnect}); }catch(e){ d={error:e.message}; }
     if(d.ok){ b.textContent="Finish in browser →"; b.title="Complete sign-in in the browser window, then click Recheck health"; }
-    else { b.disabled=false; b.textContent="Reconnect"; alert("Couldn't start reconnect: "+(d.error||"unknown error")); }
+    else { b.disabled=false; b.textContent="Reconnect"; toast("Couldn't start reconnect: "+(d.error||"unknown error")); }
   }));
   // MCP usage notes: values set from JS (quotes/newlines), and the textarea is found by walking
   // the cells rather than an attribute selector — CSS.escape() is for identifiers, and a quoted
@@ -1210,14 +1204,12 @@ function renderAdmin(data, models, el, settings){
     const ta=mnBox(b.dataset.mcpnote), name=b.dataset.mcpnote;
     b.disabled=true; b.textContent="Saving…";
     try{
-      const r=await (await fetch("/api/mcp/note",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({name, notes:ta?ta.value:""})})).json();
-      if(r.error) throw new Error(r.error);
+      const r=await postJSON("/api/mcp/note",{name, notes:ta?ta.value:""});
       // Keep the render source in step, so a re-render of this table shows what was saved.
       if(ta) ta.value=r.notes||"";
       const row=data.mcps.find(m=>m.name===name); if(row) row.notes=r.notes||"";
       b.textContent="Saved ✓";
-    }catch(e){ b.textContent="Save failed"; }
+    }catch(e){ b.textContent="Save failed"; toast("saving that note failed: "+e.message); }
     finally{ setTimeout(()=>{ b.disabled=false; b.textContent="Save"; },1200); }
   }));
   bindConv(el);
@@ -1227,9 +1219,9 @@ function renderAdmin(data, models, el, settings){
   el.querySelectorAll(".pi-save").forEach(b=>b.addEventListener("click",async()=>{
     const ta=byData(el,"data-path",b.dataset.path,".pi-text");
     b.disabled=true; b.textContent="Saving…";
-    try { await fetch("/api/project/instructions",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({path:b.dataset.path, instructions:ta?ta.value:""})}); b.textContent="Saved ✓"; }
-    catch(e){ b.textContent="Save failed"; }
+    try { await postJSON("/api/project/instructions",{path:b.dataset.path, instructions:ta?ta.value:""});
+          b.textContent="Saved ✓"; }
+    catch(e){ b.textContent="Save failed"; toast("saving those instructions failed: "+e.message); }
     finally { setTimeout(()=>{ b.disabled=false; b.textContent="Save instructions"; }, 1200); }
   }));
   document.getElementById("add-cap").addEventListener("click",()=>showCapForm());
@@ -1258,11 +1250,9 @@ function wireBundle(el){
     let bundle;
     try { bundle=JSON.parse(await f.text()); }
     catch(e){ setBundleMsg("not valid JSON", true); return; }
-    let res, data;
-    try { res=await fetch("/api/bundle/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(bundle)});
-          data=await res.json(); }
+    let data;
+    try { data=await postJSON("/api/bundle/import", bundle); }
     catch(e){ setBundleMsg("import failed: "+e.message, true); return; }
-    if(!res.ok||data.error){ setBundleMsg("import failed: "+(data.error||res.status), true); return; }
     const caps=(data.capabilities_added||[]).length, mcps=(data.mcps_added||[]).length;
     const renamed=[...(data.capabilities_renamed||[]),...(data.mcps_renamed||[])];
     let msg=`imported ${caps} capability(ies) + ${mcps} MCP server(s)`;
@@ -1281,15 +1271,15 @@ function setBundleMsg(text, bad){
 
 async function removeItem(path, body){
   if(!confirm(`Remove "${body.name||body.path}"?`)) return;
-  await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  await postOr(path, body, `removing "${body.name||body.path}"`);
   loadAdmin();
 }
 
+/* A form save that reports into the form's OWN error slot rather than the toast: the modal is
+   still open and the typed values are still there, so that is where the reader is looking. */
 async function postForm(path, body, errEl){
-  const res=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  const data=await res.json();
-  if(!res.ok||data.error){ errEl.textContent=data.error||("HTTP "+res.status); return false; }
-  return true;
+  try { await postJSON(path, body); return true; }
+  catch(e){ errEl.textContent=e.message; return false; }
 }
 
 function showCapForm(cap){
@@ -1435,23 +1425,22 @@ async function setCapBackend(sel){
   const mode=i<0?"":v.slice(0,i), model=i<0?"":v.slice(i+1);   // a pool name may contain "|"
   const cap=sel.dataset.cap;
   sel.classList.toggle("set",!!v);
-  const post=(path,model)=>fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({name:cap,model:model})});
+  const post=(path,model)=>postJSON(path,{name:cap,model:model});
   try {
     await post("/api/models/capexec", mode==="exec"?model:"");
     await post("/api/models/caplocal", mode==="toolfree"?model:"");
-  } catch(e){}
+  } catch(e){ toast("setting the execution backend failed: "+e.message); return; }
   const st=POLICY_STATE&&POLICY_STATE.capabilities[cap];
   if(st && st.tool_free!==(mode==="toolfree")){ st.tool_free=(mode==="toolfree"); queueSave(); }
   const sv=document.getElementById("saved"); if(sv){ sv.classList.add("show"); setTimeout(()=>sv.classList.remove("show"),1200); }
 }
 async function saveAdmin(){
   try {
-    await fetch("/api/policy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(POLICY_STATE)});
+    await postJSON("/api/policy", POLICY_STATE);
     const s=document.getElementById("saved"); if(s){ s.classList.add("show"); setTimeout(()=>s.classList.remove("show"),1200); }
     // Recount through applyCaps rather than inline, so this path and the initial load can't
     // drift apart on what "enabled" means (this one used truthiness, applyCaps used
     // `!==false` — they disagree the moment a cap arrives without the field).
     applyCaps(Object.values(POLICY_STATE.capabilities));
-  } catch(e){}
+  } catch(e){ toast("saving the policy failed: "+e.message); }
 }

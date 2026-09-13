@@ -140,13 +140,13 @@ function wireJobs(el){
     jobSetCollapsed(sec.dataset.sect, sec.classList.toggle("collapsed"));
   };
   el.querySelectorAll("[data-togglejob]").forEach(s=>s.addEventListener("click",async()=>{
-    await fetch("/api/runbooks/toggle",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id:s.dataset.togglejob,enabled:!s.classList.contains("on")})});
+    await postOr("/api/runbooks/toggle",{id:s.dataset.togglejob,enabled:!s.classList.contains("on")},
+                 "toggling that runbook");
     loadJobs();
   }));
   el.querySelectorAll("[data-deljob]").forEach(b=>b.addEventListener("click",async()=>{
     if(!confirm("Remove this runbook?")) return;
-    await fetch("/api/runbooks/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.deljob})});
+    await postOr("/api/runbooks/remove",{id:b.dataset.deljob},"removing that runbook");
     loadJobs();
   }));
   el.querySelectorAll("[data-runjob]").forEach(b=>b.addEventListener("click",()=>{
@@ -166,17 +166,12 @@ function wireJobs(el){
 async function startJob(id, values, btn, errEl){
   _triggering[id]=true;
   if(btn) btn.outerHTML=`<span class="runspin"><span class="spin"></span>running…</span>`;  // instant feedback
-  let d={};
-  try {
-    const r=await fetch("/api/runbooks/run",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id, values})});
-    d=await r.json();
-    if(!r.ok||d.error){
-      delete _triggering[id];
-      if(errEl){ errEl.textContent=d.error||"failed"; return false; }
-      alert(d.error||"failed to start"); loadJobs(true); return false;
-    }
-  } catch(e){ delete _triggering[id]; loadJobs(true); return false; }
+  try { await postJSON("/api/runbooks/run",{id, values}); }
+  catch(e){
+    delete _triggering[id];
+    if(errEl){ errEl.textContent=e.message; return false; }
+    toast("Couldn't start that runbook: "+e.message); loadJobs(true); return false;
+  }
   pollTrigger(id, 0);
   return true;
 }
@@ -348,9 +343,8 @@ function showJobForm(job){
     if(editing) payload.id=job.id;
     const err=document.getElementById("jf-err");
     if(!payload.name){ err.textContent="name is required"; return; }
-    const r=await fetch(editing?"/api/runbooks/edit":"/api/runbooks/add",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify(payload)});
-    const d=await r.json(); if(!r.ok||d.error){ err.textContent=d.error||"failed"; return; }
+    try { await postJSON(editing?"/api/runbooks/edit":"/api/runbooks/add", payload); }
+    catch(e){ err.textContent=e.message; return; }
     closeFormModal(); loadJobs();
   };
 }

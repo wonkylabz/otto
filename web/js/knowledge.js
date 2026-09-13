@@ -46,19 +46,19 @@ async function loadKnowledge(){
   const addBtn=document.getElementById("k-add");
   if(addBtn) addBtn.addEventListener("click",showDocForm);
   el.querySelectorAll(".ruledel").forEach(b=>b.addEventListener("click",async()=>{
-    await fetch("/api/knowledge/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.id})});
+    await postOr("/api/knowledge/delete",{id:b.dataset.id},"deleting that document");
     loadKnowledge();
   }));
   const embedSel=document.getElementById("k-embed");
   if(embedSel) embedSel.addEventListener("change",async()=>{
-    await fetch("/api/knowledge/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({embed_model:embedSel.value})});
+    await postOr("/api/knowledge/settings",{embed_model:embedSel.value},"saving the embedding model");
     loadKnowledge();   // reflect the model change (re-embed prompt / stale badges)
   });
   const reBtn=document.getElementById("k-reembed"), reMsg=document.getElementById("k-reembed-msg");
   if(reBtn) reBtn.addEventListener("click",async()=>{
     reBtn.disabled=true; reBtn.textContent="Re-embedding…";
     try {
-      const r=await (await fetch("/api/knowledge/reembed",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
+      const r=await postJSON("/api/knowledge/reembed",{});
       const res=r.result||{};
       if(reMsg) reMsg.textContent=`Embedded ${res.embedded||0}/${res.chunks||0} chunk${res.chunks===1?'':'s'}${res.embedded<res.chunks?' — some still failed; check the model is reachable.':' ✓'}`;
     } catch(e){ if(reMsg) reMsg.textContent="Re-embed failed: "+e.message; }
@@ -68,14 +68,14 @@ async function loadKnowledge(){
   if(thrEl){
     thrEl.addEventListener("input",()=>{ thrV.textContent=(+thrEl.value).toFixed(2); });
     thrEl.addEventListener("change",async()=>{
-      await fetch("/api/knowledge/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({threshold:+thrEl.value})});
+      await postOr("/api/knowledge/settings",{threshold:+thrEl.value},"saving the threshold");
     });
   }
   const prevBtn=document.getElementById("k-prev");
   if(prevBtn) prevBtn.addEventListener("click",async()=>{
     const q=(document.getElementById("k-q").value||"").trim(); if(!q) return;
-    let r; try { r=await (await fetch("/api/knowledge/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:q})})).json(); }
-    catch(e){ return; }
+    let r; try { r=await postJSON("/api/knowledge/preview",{query:q}); }
+    catch(e){ toast("preview failed: "+e.message); return; }
     const hits=(r.hits||[]).map(h=>`<div class="event"><div class="approach">${esc(h.text)}</div><div class="esrc">${esc(h.title)} · score ${h.score}</div></div>`).join("");
     document.getElementById("k-hits").innerHTML=hits || '<p class="memempty">No snippet clears the threshold for that query.</p>';
   });
@@ -102,7 +102,13 @@ function showDocForm(){
     // Silence read as a dead button: the old inline form just returned on empty text.
     if(!text){ document.getElementById("k-err").textContent="paste the document text first"; return; }
     save.disabled=true; save.textContent="Adding…";
-    try { await fetch("/api/knowledge/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,text})}); }
-    finally { closeFormModal(); loadKnowledge(); }
+    // The old `finally` closed the modal whatever happened, so a refused add was indistinguishable
+    // from an accepted one — with the pasted text gone. Keep the form up and say why instead.
+    try { await postJSON("/api/knowledge/add",{title,text}); }
+    catch(e){
+      document.getElementById("k-err").textContent=e.message;
+      save.disabled=false; save.textContent="Add document"; return;
+    }
+    closeFormModal(); loadKnowledge();
   };
 }

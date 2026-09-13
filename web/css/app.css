@@ -1494,3 +1494,20 @@
   .sysnote { margin: 10px auto; max-width: 640px; text-align: center; font-size: 12px;
     color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn-line);
     border-radius: var(--r-md); padding: 6px 12px; }
+
+/* Refused-save notices (util.toast). Bottom-RIGHT, clear of the mascot's home corner and of
+   the composer: a strip at the top competes with the pause bar, which is the one banner that
+   must never be mistaken for something transient. */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: flex;
+          flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
+.toast { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px;
+         max-width: min(420px, calc(100vw - 32px)); padding: 9px 10px 9px 12px;
+         border-radius: 8px; font-size: 12.5px; line-height: 1.45;
+         border: 1px solid var(--warn); background: var(--bg-2); color: var(--text);
+         box-shadow: 0 6px 20px rgba(0,0,0,.28); animation: toastin .18s ease-out; }
+.toast.ok { border-color: var(--ok); }
+.toast.going { opacity: 0; transform: translateY(4px); transition: opacity .18s, transform .18s; }
+.toast .tclose { flex: 0 0 auto; background: none; border: 0; color: var(--text-2);
+                 cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
+.toast .tclose:hover { color: var(--text); }
+@keyframes toastin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
