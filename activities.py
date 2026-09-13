@@ -618,6 +618,29 @@ def record_attempt(payload: dict) -> None:
 
 
 @activity.defn
+def distil_memory(payload: dict) -> None:
+    """Learn from one finished attempt — its OWN activity, deliberately.
+
+    Folded into `record_attempt` this was two tier calls of up to 180s each running AFTER a
+    plain INSERT with no uniqueness, inside a 120s activity Temporal retries: a stalled memory
+    call timed the activity out once the row was committed, and the retry wrote a SECOND row for
+    the same (wid, attempt) into a trail that is supposed to be immutable — which `scorecard`
+    then counts twice.
+
+    Best-effort by design: nothing a run delivers depends on it, so a failure here must never
+    fail the attempt. Its own retry is harmless — `_remember` dedupes facts and
+    `_remember_solution` is keyed per approach."""
+    cap = _cap(payload["name"])
+    if not cap:
+        return
+    try:
+        engine.distil_memory(payload["request"], cap, payload["result"], payload.get("verdict"),
+                             project=engine._resolve_project(cap, payload.get("repo")))
+    except Exception as e:  # noqa: BLE001 - learning is advisory; a run must not die for it
+        activity.logger.warning("memory distillation failed: %s", e)
+
+
+@activity.defn
 def interim_notice(payload: dict) -> dict:
     """Tell the asker something WHILE the run is still going — currently: that it has parked on
     an approval gate they cannot see.

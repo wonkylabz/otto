@@ -411,14 +411,37 @@ def pr_url_from_run(wid):
 
 
 def _append_audit(entry):
+    """Append one audit row — at most ONE per (workflow, attempt, outcome).
+
+    The trail is immutable by design and `scorecard` sums attempts from rows, so a duplicate is
+    not a cosmetic problem: it inflates a capability's attempt count forever. The activity that
+    writes these is retried by Temporal, and anything that can kill it AFTER the commit (a worker
+    death, a deadline that lands between the write and the ack) produces exactly that duplicate.
+    Splitting memory distillation out of `record_attempt` removed the cause we measured; this is
+    the property itself, held where the row is written rather than at one caller.
+
+    Only ATTEMPT rows are keyed — terminal rows carry no `attempt`, and several legitimately
+    repeat (a retried run records `ran` again under a new wid). Read-modify-write, so it takes
+    `storage.tx`'s BEGIN IMMEDIATE: with BEGIN DEFERRED two writers both read "absent" and the
+    loser fails its lock upgrade, which is how a write gets silently lost."""
     verified = entry.get("verified")
+    row = (entry["at"], entry["workflow"], entry.get("capability"),
+           None if verified is None else int(bool(verified)), json.dumps(entry))
+    ins = "INSERT INTO audit (at, workflow, capability, verified, data) VALUES (?, ?, ?, ?, ?)"
     conn = _audit_conn()
     try:
-        conn.execute(
-            "INSERT INTO audit (at, workflow, capability, verified, data) VALUES (?, ?, ?, ?, ?)",
-            (entry["at"], entry["workflow"], entry.get("capability"),
-             None if verified is None else int(bool(verified)), json.dumps(entry)))
-        conn.commit()
+        if entry.get("attempt") is None:
+            conn.execute(ins, row)
+            conn.commit()
+            return
+        with storage.tx(conn):
+            dup = any(
+                json.loads(r["data"]).get("attempt") == entry["attempt"]
+                and json.loads(r["data"]).get("outcome") == entry.get("outcome")
+                for r in conn.execute("SELECT data FROM audit WHERE workflow = ?",
+                                      (entry["workflow"],)).fetchall())
+            if not dup:
+                conn.execute(ins, row)
     finally:
         conn.close()
 
