@@ -347,7 +347,8 @@ def _run_detail(wid):
         attempts.append({
             "attempt": a, "at": e.get("at"), "model": e.get("model"),
             "backend": e.get("backend"), "fallback_from": e.get("fallback_from"),
-            "fallback_reason": e.get("fallback_reason"), "cost_usd": e.get("cost_usd"),
+            "fallback_reason": e.get("fallback_reason"),
+            "fallback_detail": e.get("fallback_detail"), "cost_usd": e.get("cost_usd"),
             "tokens": e.get("tokens"), "duration_s": e.get("duration_s"),
             "verified": e.get("verified"), "critique": c.get("critique"),
             "result": c.get("result"), "events": events, "events_truncated": truncated})

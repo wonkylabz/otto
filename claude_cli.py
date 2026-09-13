@@ -38,6 +38,29 @@ def transcript_path(wid, attempt):
     return os.path.join(TRANSCRIPTS, f"{wid}-a{attempt}.jsonl")
 
 
+def keep_walled_transcript(transcript, wall):
+    """Move a walled local pass's transcript aside before a Claude re-dispatch truncates it.
+
+    Both writers open the SAME path `w` (`local_runtime.run_json`, `run_json` below), so a
+    recovery erased its own evidence: `/api/run/detail` showed a clean Claude-written result and
+    nothing anywhere said the chosen model had failed. The wall itself only ever reached a trace
+    line in a worker log under /tmp, which a service restart wipes.
+
+    A sibling name, not the canonical one — `server._run_model` resolves a run's model BY reading
+    the canonical transcript, and that must stay the pass that produced the result. The suffix is
+    unparseable as an attempt number, so nothing enumerating attempts picks it up.
+
+    THE ONE impl: the plan preview (`plans`) and the execution ladder (`engine.run_attempt`) hit
+    the same wall through the same two writers, so which layer noticed it must not change whether
+    the evidence survives."""
+    if not transcript or not os.path.exists(transcript):
+        return
+    try:
+        os.replace(transcript, transcript.replace(".jsonl", f"-walled-{wall}.jsonl"))
+    except OSError:  # noqa: BLE001 - keeping evidence must never break the run
+        pass
+
+
 def transcript_line(event):
     """One transcript line: serialize if needed, scrub credentials, terminate with a newline.
 

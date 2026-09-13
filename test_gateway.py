@@ -1798,10 +1798,11 @@ class LocalToolIncapableLadderTests(unittest.TestCase):
             "base_url": "http://x/v1", "model": "gemma"}
         gateway.escalation_model_id = lambda cfg=None: "claude-opus-4-8"
         gateway.exec_model_id = lambda cap_name=None: "claude-haiku"
-        self.claude_models = []
+        self.claude_models, self.claude_calls = [], []
 
         def fake_claude(prompt, model=None, **kw):
             self.claude_models.append(model)
+            self.claude_calls.append(kw)
             return {"result": "done on claude", "total_cost_usd": 0.02,
                     "session_id": "s", "usage": {"output_tokens": 9}}
         engine._claude = fake_claude
@@ -1837,6 +1838,62 @@ class LocalToolIncapableLadderTests(unittest.TestCase):
         self.assertTrue(att["local_incapable"], "an unreachable endpoint must latch the ladder")
         self.assertEqual(att["backend"], "claude")
         self.assertIn("unreachable", att["fallback_reason"])
+
+    def test_the_wall_keeps_its_own_words_beside_the_operator_summary(self):
+        # `wall_message` is ONE fixed string per reason, by design — it is what an operator reads.
+        # Storing only that made the audit row unable to tell a 503 from a connection refusal from
+        # a DNS failure, and the diagnosis had to be reconstructed from /tmp/otto-worker.log, which
+        # a service restart wipes (issue #26). `record_health` keeps a copy but is last-write-wins
+        # per model, so the next successful call on the same run overwrites it.
+        raw = "cannot reach the local model server after 4 attempts ([Errno 111] Connection refused)"
+        local_runtime.run_json = lambda *a, **k: {
+            "result": f"(local runtime error: {raw})", "is_error": True, "unavailable": True,
+            "wall_detail": raw, "total_cost_usd": 0, "session_id": None, "usage": {}}
+        att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        self.assertEqual(att["fallback_detail"], raw)
+        # The summary stays the summary — the detail is beside it, never folded into it.
+        self.assertIn("unreachable", att["fallback_reason"])
+        self.assertNotIn("Errno 111", att["fallback_reason"])
+
+    def test_a_successful_local_attempt_carries_no_wall_detail(self):
+        # The field only ever means "this is what walled": a non-empty one on a healthy attempt
+        # would put a stale reason in the audit row and on the Audit tab's fallback tooltip.
+        local_runtime.run_json = lambda *a, **k: {
+            "result": "done locally", "is_error": False, "total_cost_usd": 0,
+            "session_id": None, "usage": {}}
+        att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        self.assertFalse(att["fallback_detail"])
+        self.assertFalse(att["fallback_reason"])
+
+    def test_the_walled_local_transcript_is_KEPT_not_overwritten_by_the_redispatch(self):
+        # Both backends open the SAME `-a<n>.jsonl` path `w`, so the Claude recovery erased the
+        # only record of what it recovered FROM: run `runbook-rb-e0f48559-b44005` left one
+        # transcript and it was the Claude pass. Same fix the plan preview already carries.
+        canonical = claude_cli.transcript_path("w-walltrans", 1)
+        os.makedirs(os.path.dirname(canonical), exist_ok=True)
+        with open(canonical, "w") as f:
+            f.write('{"type": "otto-meta", "runtime": "local", "model": "gemma-local"}\n')
+        kept = canonical.replace(".jsonl", "-walled-overloaded.jsonl")
+        try:
+            local_runtime.run_json = lambda *a, **k: {
+                "result": "(local runtime error: HTTP 503)", "is_error": True,
+                "unavailable": True, "wall_detail": "HTTP 503", "total_cost_usd": 0,
+                "session_id": None, "usage": {}}
+            engine.run_attempt("brief me", self.cap, attempt=1, wid="w-walltrans")
+            self.assertTrue(os.path.exists(kept), "the local wall's transcript was erased")
+            with open(kept) as f:
+                self.assertIn("gemma-local", f.read())
+            # The CANONICAL path stays the pass that produced the result — `server._run_model`
+            # resolves the board's model chip by reading exactly that file.
+            self.assertEqual(self.claude_calls[0]["transcript"], canonical)
+            # And the sibling name must not read as an attempt number to anything enumerating
+            # attempts, or the run grows a phantom one.
+            self.assertRaises(ValueError, int,
+                              os.path.basename(kept)[len("w-walltrans-a"):-len(".jsonl")])
+        finally:
+            for path in (canonical, kept):
+                if os.path.exists(path):
+                    os.unlink(path)
 
     def test_the_local_backend_gets_the_same_wall_clock_as_the_claude_one(self):
         # run_attempt never passed a timeout, so every local run fell to run_json's bare 900s

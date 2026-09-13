@@ -103,7 +103,9 @@ async function loadAudit(){
     // The chosen model couldn't run this attempt and another substituted — its own column (not
     // crammed into Model, which used to overflow the cell and clip mid-word — user-reported) so
     // "did this fall back?" is a column to scan, not text to parse out of the model name.
-    const fellTitle=e.fallback_from?esc(`fell back — chosen model '${e.fallback_from}' could not run this attempt: ${e.fallback_reason||'no reason recorded'}. Ran on ${e.model||'unknown'} instead.`):"";
+    // `fallback_reason` is one fixed summary per wall; `fallback_detail` is the endpoint's own
+  // words (which HTTP code, which socket error), which is what tells a 503 from a refusal.
+  const fellTitle=e.fallback_from?esc(`fell back — chosen model '${e.fallback_from}' could not run this attempt: ${e.fallback_reason||'no reason recorded'}.${e.fallback_detail?` (${e.fallback_detail})`:''} Ran on ${e.model||'unknown'} instead.`):"";
     const model=e.model?`<span class="amodel ${e.fallback_from?'fell':''}" title="${fellTitle||esc(e.model)}">${esc((e.backend==='local'?'⌂ ':'')+auTier(e.model))}</span>`:`<span class="anone">—</span>`;
     return `<tr class="arec ${denied?'denied':''}" data-i="${i}" role="button" tabindex="0" title="Inspect this action">
       <td class="c-when awhen" title="${esc(e.at||'')}">${esc(shortWhen(e.at))}</td>
