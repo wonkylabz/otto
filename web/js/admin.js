@@ -722,10 +722,20 @@ function renderAdmin(data, models, el, settings){
   // resolves it, and tool-free only counts where the engine honours it (read risk, issue #42).
   const capBackend=c=> capExec[c.name] ? "exec|"+capExec[c.name]
     : (capLocal[c.name] && c.tool_free && c.risk==='read' ? "toolfree|"+capLocal[c.name] : "");
+  // Pins naming a pool label that no longer exists (gateway._normalize derives these). The
+  // engine falls through such a pin to the phase-level model with no trace, so without a row
+  // of its own the select just snaps to "default" and the operator never learns their pick
+  // stopped being used — which is the whole bug. The glyph in the option text is the signal:
+  // css/app.css is at its ratchet, and a rule here would have to out-specify `.capexec`.
+  const dangling=(models.dangling||{}).cap_exec||{};
   const execSelect=c=>{
     const cur=capBackend(c);
     const opt=(v,label,tip,off)=>`<option value="${esc(v)}" ${cur===v?'selected':''} ${off?'disabled':''} title="${esc(tip)}">${esc(label)}</option>`;
-    let opts=opt("","default","runs on the phase-level execution model via claude -p — full skills/agents/MCP fidelity");
+    const gone=dangling[c.name];
+    let opts=gone
+      ? `<option value="" selected disabled title="${esc("this capability is pinned to '"+gone+"', which is no longer in the model pool, so every run silently uses the phase-level execution model instead. Re-add that model under the same name, or pick another option here.")}">${esc("\u26a0 missing: "+gone)}</option>`
+      : '';
+    opts+=opt("","default","runs on the phase-level execution model via claude -p — full skills/agents/MCP fidelity");
     if(claudeModels.length)
       opts+=`<optgroup label="Claude · claude -p">`+claudeModels.map(p=>
         opt("exec|"+p.name,mshort(p),"pin this capability to "+p.name+" instead of the phase-level execution model")).join("")+`</optgroup>`;
@@ -774,7 +784,7 @@ function renderAdmin(data, models, el, settings){
         +`${esc(latched.join(', '))} after three failed verifications in a row. Clear to give the `
         +`local backend another chance on the next run.">latched \u21ba</button>`
       : '';
-    return `<select class="capexec ${cur?'set':''}" data-cap="${esc(c.name)}" title="which model runs this capability, and on which backend">${opts}</select>${clearBtn}`;
+    return `<select class="capexec ${cur&&!gone?'set':''}" data-cap="${esc(c.name)}" title="which model runs this capability, and on which backend">${opts}</select>${clearBtn}`;
   };
   // Per-capability reliability scorecard (issue #102), aggregated from the audit trail — shown
   // right beside the exec dropdown so a "downgrade this cap to a local model" decision has

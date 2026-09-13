@@ -1074,6 +1074,11 @@ class Handler(BaseHTTPRequestHandler):
                                         "endpoints": gateway.endpoints(safe),
                                         "cap_exec": cfg.get("cap_exec", {}),
                                         "cap_local_exec": cfg.get("cap_local_exec", {}),
+                                        # Pins naming a pool label that no longer exists. They
+                                        # are silently ignored at dispatch, so Admin has to say
+                                        # so — otherwise the panel shows the operator's pick
+                                        # while every run uses the default model.
+                                        "dangling": cfg.get("dangling", {}),
                                         "kinds": list(gateway.KINDS),
                                         "hosted_hosts": list(gateway.HOSTED_HOSTS),
                                         "health": health,

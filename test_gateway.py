@@ -399,10 +399,10 @@ class ModelHealthTests(unittest.TestCase):
         # The pin that bites hardest and is easiest to forget: a cap with cap_exec set to a dead
         # endpoint runs EVERY attempt against it (observed live: sre-pm on an unreachable local
         # model), while the phase assignments look perfectly healthy.
-        self.cfg["assign"] = {"execution": "claude-sonnet"}
+        self.cfg["assign"] = {"routing": "local", "execution": "claude-sonnet"}
         self.cfg["cap_exec"] = {"sre-pm": "local"}
         self._fail_local()
-        gateway.complete("routing", "x")     # routing still resolves to local via _model_for
+        gateway.complete("routing", "x")     # routing runs on local, and local is down
         broken = gateway.unhealthy_models()
         self.assertEqual(broken[0]["caps"], ["sre-pm"])
 
@@ -2433,6 +2433,62 @@ class ModelMigrationTests(unittest.TestCase):
         finally:
             shutil.rmtree(os.path.dirname(gateway._PATH), ignore_errors=True)
             gateway._PATH = orig
+
+    def _cfg_file(self, cfg):
+        import json, os, tempfile
+        orig = gateway._PATH
+        gateway._PATH = os.path.join(tempfile.mkdtemp(prefix="otto-mig-"), "models.json")
+        self.addCleanup(setattr, gateway, "_PATH", orig)
+        self.addCleanup(shutil.rmtree, os.path.dirname(gateway._PATH), True)
+        with open(gateway._PATH, "w") as f:
+            json.dump(cfg, f)
+
+    POOL = [{"name": "claude-opus", "provider": "claude", "model": "claude-opus-5"},
+            {"name": "claude-sonnet", "provider": "claude", "model": "claude-sonnet-4-6"},
+            {"name": "local", "provider": "openai", "base_url": "http://x/v1", "model": "q"}]
+
+    def test_a_cap_pinned_to_a_deleted_label_is_reported_not_silently_ignored(self):
+        """`exec_model_entry` falls through an unknown cap_exec pin to the phase-level model
+        with no trace, so four caps (observed live) ran on the default while Admin still showed
+        the operator's pick, and `unhealthy_models` could not attribute them to anything."""
+        self._cfg_file({"pool": self.POOL, "assign": {"execution": "claude-sonnet"},
+                        "cap_exec": {"pinned-cap": "gone-label", "ok-cap": "claude-opus"}})
+        cfg = gateway.load()
+        self.assertEqual(cfg["dangling"]["cap_exec"], {"pinned-cap": "gone-label"})
+        # The pin itself is KEPT: a pool entry is a label, so re-adding it under the same name
+        # restores an intent the operator never revoked.
+        self.assertEqual(cfg["cap_exec"]["pinned-cap"], "gone-label")
+        self.assertEqual(gateway.exec_model_entry("ok-cap", cfg)["name"], "claude-opus")
+
+    def test_the_dangling_report_is_derived_never_persisted(self):
+        """Stored, it would go stale the moment the operator re-added the label it names."""
+        self._cfg_file({"pool": self.POOL, "assign": {"execution": "claude-sonnet"},
+                        "cap_exec": {"pinned-cap": "gone-label"}})
+        cfg = gateway.load()
+        self.assertIn("dangling", cfg)
+        self.assertNotIn("dangling", gateway._dehydrate(cfg))
+        gateway.save(cfg)
+        with open(gateway._PATH) as f:
+            self.assertNotIn("dangling", json.load(f))
+
+    def test_a_dangling_phase_assignment_falls_to_sonnet_not_pool_zero(self):
+        """`pool[0]` live is claude-opus — the "first entry meant surprise opus" case
+        `_default_claude`'s docstring says was fixed, arriving by a different door."""
+        self._cfg_file({"pool": self.POOL,
+                        "assign": {"execution": "gone-label", "routing": "claude-opus"}})
+        cfg = gateway.load()
+        self.assertEqual(gateway._model_for("execution", cfg)["name"], "claude-sonnet")
+        self.assertEqual(cfg["dangling"]["cap_exec"], {})
+        # An assignment that still resolves is untouched — the fallback is not a repoint.
+        self.assertEqual(gateway._model_for("routing", cfg)["name"], "claude-opus")
+
+    def test_the_models_api_surfaces_dangling_pins(self):
+        """Admin has to be able to SAY so, or the panel keeps showing a pick no run uses."""
+        import server
+        src = inspect.getsource(server.Handler._dispatch_get
+                                if hasattr(server.Handler, "_dispatch_get")
+                                else server.Handler.do_GET)
+        self.assertIn('"dangling": cfg.get("dangling"', src)
 
     def test_load_prunes_fable(self):
         import json, os, tempfile
