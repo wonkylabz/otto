@@ -134,8 +134,19 @@ def redirect_live_state():
     /api/health numbers and a phantom "model failing" badge; `settings.json` — a knob the
     developer flipped in Admin changes what the suite tests.
 
+    The temp dir stands in for `data/` and is deliberately a CHILD of a second temp dir rather
+    than the mkdtemp root itself, because `file_safety._otto_root()` is `dirname(DATA_DIR)` —
+    i.e. "Otto's own checkout". With DATA_DIR as the mkdtemp root, that resolves to the SYSTEM
+    temp dir, and two things follow: `<tmpdir>/.env` joins the deny set, and any run whose cwd is
+    under the system temp dir is treated as an Otto-introspection run, so `_reads_allowed_from`
+    exempts it and Otto's own state stops being read-denied. That is invisible on macOS, where
+    `tempfile.gettempdir()` is a per-user `/var/folders/...` path, and fires on Linux, where it is
+    the shared `/tmp` that tests legitimately use as an unrelated cwd. Mirroring the real layout
+    (`<checkout>/data`) keeps `_otto_root()` a private directory nothing else can collide with.
+
     Returns the temp directory, for a test that wants to inspect what was written."""
-    root = tempfile.mkdtemp(prefix="otto-data-")
+    root = os.path.join(tempfile.mkdtemp(prefix="otto-home-"), "data")
+    os.makedirs(root, exist_ok=True)
     # config.DATA_DIR itself, because not every path is a module constant: the per-run MCP config
     # (`engine._mcp_config_path`, `activities`' `.mcp-active.json`) and file_safety's deny globs
     # join it at CALL time, and those are the writes no table can enumerate.

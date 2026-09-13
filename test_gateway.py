@@ -6460,6 +6460,31 @@ class LiveStoreIsolationTests(unittest.TestCase):
                 self.assertFalse(real == self.LIVE or real.startswith(self.LIVE + os.sep),
                                  f"{label} points into the real data/ ({path})")
 
+    def test_the_stand_in_data_dir_has_a_checkout_of_its_own_above_it(self):
+        """The temp `data/` must be a CHILD of a private directory, never the mkdtemp root.
+
+        `file_safety._otto_root()` is `dirname(DATA_DIR)` — "Otto's own checkout". Point DATA_DIR
+        at the mkdtemp root and that becomes the SYSTEM temp dir, which silently disarms the read
+        guard: `_reads_allowed_from` exempts any run whose cwd is under Otto's root, and the
+        suite legitimately uses the system temp dir as an unrelated cwd. On macOS
+        `tempfile.gettempdir()` is a per-user `/var/folders/...` path so nothing collides; on
+        Linux it is the shared `/tmp` and `ReadDenyTests` went green while proving the opposite
+        of what it claims (PR #80 CI, ubuntu-latest 3.12/3.13/3.14).
+
+        Mirroring the real layout (`<checkout>/data`) is what keeps `_otto_root()` private."""
+        tmp = os.path.realpath(tempfile.gettempdir())
+        root = os.path.realpath(file_safety._otto_root())
+        self.assertNotEqual(root, tmp,
+                            "_otto_root() resolved to the shared temp dir — every run with a cwd "
+                            "under it is now treated as an Otto-introspection run")
+        self.assertEqual(os.path.realpath(config.DATA_DIR), os.path.join(root, "data"),
+                         "the stand-in data/ must sit under a checkout of its own, as it does live")
+        # The point of the private parent: a directory the suite hands around as an unrelated
+        # cwd must NOT unlock Otto's own state.
+        self.assertFalse(file_safety._reads_allowed_from(tmp))
+        self.assertTrue(file_safety.is_read_denied(
+            os.path.join(config.DATA_DIR, "otto.db"), allow_cwd=tmp))
+
     def test_both_shared_setups_route_through_the_one_redirect(self):
         """Two setUpModules used to carry hand-maintained copies of the list, and they had
         already drifted. One call, or the drift comes straight back."""
