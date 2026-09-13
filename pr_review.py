@@ -794,7 +794,8 @@ async def _reconcile_schedule(cfg):
     every = timedelta(seconds=max(60, int(cfg.get("poll_seconds") or 900)))
     fresh = Schedule(
         action=ScheduleActionStartWorkflow(
-            PrReviewPollWorkflow.run, id="pr-review-poll-run", task_queue=tc.TASK_QUEUE),
+            PrReviewPollWorkflow.run, id="pr-review-poll-run", task_queue=tc.TASK_QUEUE,
+            execution_timeout=every * config.POLL_TIMEOUT_FACTOR),
         spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=every)]),
         policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
     )

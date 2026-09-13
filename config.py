@@ -444,6 +444,13 @@ PLAN_MAX_PARALLEL = int(os.environ.get("OTTO_PLAN_MAX_PARALLEL", "3"))
 STUCK_TTL_H = float(os.environ.get("OTTO_STUCK_TTL_H", "6"))
 # How often the reaper sweep runs (Temporal Schedule interval, seconds).
 REAPER_SECONDS = int(os.environ.get("OTTO_REAPER_SECONDS", "300"))
+# Every polling Schedule runs ScheduleOverlapPolicy.SKIP, so a single execution that never ends
+# makes the schedule skip every later fire — for as long as it stays RUNNING. A workflow task
+# failing on a bad import (a module rewritten under a live worker) does exactly that: it retries
+# forever, the workflow never closes, and the ingress goes silently deaf. A finite
+# execution_timeout caps that at one expiry. Multiplied by the schedule's OWN interval and kept
+# generous, so it never fires for a merely slow poll.
+POLL_TIMEOUT_FACTOR = int(os.environ.get("OTTO_POLL_TIMEOUT_FACTOR", "10"))
 # How far back the reaper's GENERAL sweep (non-board workflows) looks. Bounds the first sweep
 # after a deploy: without it, every TERMINATED/TIMED_OUT run from months past would flood
 # needs-you at once (their in-workflow finalizer never wrote a terminal row).

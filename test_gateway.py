@@ -6010,7 +6010,7 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # signature may be recorded are both decisions that look right either way in the code and
     # fail silently — an unsigned timestamp reads as a freshness check while adding none, and a
     # burned signature turns a sender's legitimate retry into a 409 nobody sees.
-    MAX_RULES_BYTES = 77483   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 77758   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

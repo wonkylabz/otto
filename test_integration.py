@@ -12,6 +12,7 @@ Two layers, no network and no tokens:
 import inspect
 import json
 import os
+import pathlib
 import re
 import shutil
 import tempfile
@@ -2613,6 +2614,34 @@ class ReaperSurvivesADisabledBoardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.deleted, [board.REAPER_SCHED_ID])
         self.assertEqual(self.created, [])
         self.assertIn("disabled", status)
+
+
+class PollScheduleExecutionTimeoutTests(unittest.TestCase):
+    """Every polling Schedule runs ScheduleOverlapPolicy.SKIP, so one execution that never closes
+    makes the schedule skip every later fire for as long as it stays RUNNING. A workflow task
+    that fails on a bad import retries forever without ever closing the workflow, so a module
+    rewritten under a live worker takes the ingress off the air until someone terminates the run
+    by hand. A finite execution_timeout is what bounds that to a single expiry."""
+
+    SOURCES = (("slack.py", "SlackPollWorkflow"), ("board.py", "ReaperWorkflow"),
+               ("pr_review.py", "PrReviewPollWorkflow"))
+
+    def test_every_skip_schedule_bounds_its_execution(self):
+        for path, wf in self.SOURCES:
+            src = pathlib.Path(path).read_text()
+            i = src.index(wf + ".run")
+            action = src[i:i + 400]
+            self.assertIn("execution_timeout", action,
+                          f"{path}: {wf} is scheduled with OverlapPolicy.SKIP and no "
+                          "execution_timeout — one wedged run deafens this ingress forever")
+            self.assertIn("POLL_TIMEOUT_FACTOR", action,
+                          f"{path}: {wf}'s timeout must scale with its own interval via "
+                          "config.POLL_TIMEOUT_FACTOR, not a literal")
+
+    def test_the_factor_leaves_headroom_over_a_healthy_poll(self):
+        # A timeout at or near 1x the interval would kill merely-slow polls, which is a worse
+        # failure than the one it prevents.
+        self.assertGreaterEqual(config.POLL_TIMEOUT_FACTOR, 3)
 
 
 class NeedsYouLoopSafetyTests(unittest.TestCase):
