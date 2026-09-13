@@ -172,8 +172,9 @@ def _generated_secret(title, key, nbytes, what):
 def step_event_secret():
     return _generated_secret(
         "event ingress", "OTTO_EVENT_SECRET", 32,
-        "The webhook ingress (POST /api/events/<source>) 503s until this is set. It is the\n"
-        "      HMAC-SHA256 key senders sign the body with.")
+        "The webhook ingress (POST /api/events/<source>) 503s until this is set. Senders send\n"
+        "      X-Otto-Timestamp (unix seconds) and X-Otto-Signature = hex HMAC-SHA256 of\n"
+        "      \"<timestamp>.\" + the raw body, under this key.")
 
 
 def step_ntfy_topic():
