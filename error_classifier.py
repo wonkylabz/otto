@@ -47,6 +47,7 @@ class Reason(str, enum.Enum):
     tools_unsupported = "tools_unsupported"  # rejects the tools param outright
     context_overflow = "context_overflow"    # prompt longer than the window
     unsupported_param = "unsupported_param"  # the body carries a parameter this model refuses
+    bad_model = "bad_model"                  # 404 — no such model id, or the wrong base_url path
     unknown = "unknown"
 
 
@@ -62,7 +63,7 @@ class Action(str, enum.Enum):
 # onto this list is what spends the ladder differently, so each entry needs that property to
 # actually hold — `unknown` is deliberately absent, since an unrecognised error might well be a
 # blip and the safe default is to let the ladder retry.
-_WALL = {Reason.auth, Reason.quota, Reason.tools_unsupported}
+_WALL = {Reason.auth, Reason.quota, Reason.tools_unsupported, Reason.bad_model}
 
 # Reasons a backoff can legitimately outlive. Past the retry budget they become walls, which is
 # `escalate()` below rather than a second table.
@@ -84,6 +85,9 @@ _MESSAGE = {
     Reason.context_overflow: "the prompt exceeds the model's context window",
     Reason.unsupported_param: ("the model refuses a parameter in the request body "
                                "({quirk}) — retried in this endpoint's dialect"),
+    # Both spellings of a 404 point at the model entry, which is the one place either is fixed.
+    Reason.bad_model: ("the model endpoint has no such model (HTTP 404) — check the model id "
+                       "and the endpoint's base_url in Admin \u2192 Models"),
     Reason.unknown: "the model endpoint failed (HTTP {code})",
 }
 
@@ -152,6 +156,16 @@ def classify(status=None, detail="", transport_error=False, adaptable=True):
         return _v(Reason.auth, Action.wall, status)
     if status == 402:
         return _v(Reason.quota, Action.wall, status)
+    if status == 404:
+        # A model id the server does not serve — or a base_url missing its `/v1` — is as
+        # deterministic as a bad key: every attempt reaches the same 404, so this is a wall
+        # rather than two more rungs spent on the same endpoint and no health badge lit.
+        return _v(Reason.bad_model, Action.wall, status)
+    if status == 413:
+        # "Payload too large" is the other way an endpoint says the prompt does not fit: a
+        # proxy in front of the server enforcing a body cap rather than the model's own window.
+        # The recovery is identical, so it takes the same action.
+        return _v(Reason.context_overflow, Action.prune)
     if status == 429:
         return _v(Reason.rate_limit, Action.retry_in_place)
     if status == 500:
