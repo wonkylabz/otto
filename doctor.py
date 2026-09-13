@@ -302,6 +302,24 @@ def check_secret_provider():
                   f"{st['command']} — resolved {len(from_cmd)}: {', '.join(from_cmd)}")
 
 
+def check_socket_mode():
+    """Socket Mode is the Slack ingress's accelerator, and it fails SILENTLY: `slack_socket`
+    soft-imports `websockets` and degrades to the 60s poll with a trace line nobody reads. An
+    operator who set OTTO_SLACK_APP_TOKEN then sees poll latency with no diagnosis — measured on
+    this install, whose venv had no `websockets` at all despite the pin in requirements.txt."""
+    import slack_socket
+    if not slack_socket.APP_TOKEN:
+        return _check("Slack Socket Mode", "ok", "not configured (OTTO_SLACK_APP_TOKEN unset)",
+                      "optional — the Slack poll runs on its schedule without it")
+    if not slack_socket.OK:
+        return _check("Slack Socket Mode", "warn",
+                      "OTTO_SLACK_APP_TOKEN is set but the `websockets` package is not "
+                      "importable from this interpreter — falling back to the poll",
+                      "install it into the venv Otto runs from: "
+                      "`./.venv/bin/pip install -r requirements.txt`")
+    return _check("Slack Socket Mode", "ok", "app token + `websockets` present")
+
+
 def run_checks(caps=None):
     """All checks, catalogue loaded once. Returns [{name, status, detail, hint}]."""
     if caps is None:
@@ -320,6 +338,7 @@ def run_checks(caps=None):
         check_exec_tool_calls(gateway),
         check_local_fallback(gateway),
         check_secret_provider(),
+        check_socket_mode(),
         check_optional_env(),
     ]
 
