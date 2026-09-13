@@ -1001,6 +1001,29 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertFalse(out["tools_unsupported"])                    # NOT a Claude re-dispatch
         self.assertEqual(len(calls), config.LOCAL_RETRY_ATTEMPTS + 1)  # tries then gives up
 
+    def test_a_404_walls_on_the_first_attempt_instead_of_burning_the_ladder(self):
+        # A model id the endpoint does not serve fails identically every time, so it must reach
+        # the engine as a `wall_reason` (which re-dispatches to Claude) after ONE call -- not as
+        # an anonymous RuntimeError the ladder retries twice more against the same endpoint.
+        import io
+        import urllib.error
+        self._no_backoff()
+        calls = []
+
+        def fake_post(m, body, timeout):
+            calls.append(1)
+            raise urllib.error.HTTPError(
+                "http://x", 404, "Not Found", {},
+                io.BytesIO(b'{"error":{"message":"The model `qwen3` does not exist"}}'))
+        local_runtime._post = fake_post
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertTrue(out["is_error"])
+        self.assertEqual(out["wall_reason"], "bad_model")
+        self.assertEqual(len(calls), 1)                               # no retry in place
+        # engine turns the reason into the operator-facing sentence; no new boolean is needed.
+        import error_classifier
+        self.assertIn("404", error_classifier.wall_message(out["wall_reason"]))
+
     def test_connection_error_is_transient_and_retried(self):
         # A connection-level failure (refused/reset) is the same transient case as a 5xx.
         import urllib.error
@@ -6487,6 +6510,28 @@ class ErrorClassifierTests(unittest.TestCase):
         v = self.ec.classify(402, "insufficient credit")
         self.assertIs(v.reason, self.ec.Reason.quota)
         self.assertTrue(v.is_wall)
+
+    def test_an_unknown_model_id_is_a_wall_not_two_more_rungs(self):
+        """A 404 for a model the server does not serve (or a base_url missing its `/v1`) is as
+        deterministic as a bad key: every attempt reaches the identical refusal. Unclassified it
+        fell through as an anonymous `HTTP 404: ...` that the verify ladder read as a
+        model-quality failure and retried twice more against the same endpoint, lighting no
+        health badge on the way."""
+        v = self.ec.classify(404, '{"error":{"message":"The model `qwen3` does not exist"}}')
+        self.assertIs(v.reason, self.ec.Reason.bad_model)
+        self.assertTrue(v.is_wall)
+        self.assertTrue(v.counts_as_unhealthy)
+        # The remedy has to name where it is fixed — "the endpoint is down" is the wrong advice.
+        self.assertIn("model", self.ec.wall_message("bad_model").lower())
+
+    def test_a_413_prunes_like_the_400_it_is_a_proxy_for(self):
+        """"Payload too large" is a proxy in front of the server enforcing a body cap rather
+        than the model's own window naming itself. Same recovery, so the same action — and it
+        must NOT light the badge, since the oversized prompt is ours."""
+        v = self.ec.classify(413, "request entity too large")
+        self.assertIs(v.action, self.ec.Action.prune)
+        self.assertFalse(v.is_wall)
+        self.assertFalse(v.counts_as_unhealthy)
 
     def test_rate_limit_and_server_error_retry_before_they_wall(self):
         """429 and 500 were permanent failures while 502/503/504 backed off — the wrong way
