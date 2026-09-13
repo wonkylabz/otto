@@ -232,22 +232,35 @@ def cron_valid(expr):
 # --- capability resolution -------------------------------------------------
 
 _CAPS = None
+_CAPS_STAMP = None          # the policy stamp _CAPS was loaded at; None = injected
 
 
 def _caps():
-    global _CAPS
-    if _CAPS is None:
-        import policy
-        import registry
-        _CAPS = registry.load()
-        registry.apply_policy(_CAPS, policy.load())
+    """The policy-applied catalogue, cached against `policy.stamp()`.
+
+    Keyed, not cached forever: `apply_policy` stamps each cap's RISK, and this was loaded once
+    per process with `refresh_caps` having zero callers — so after an operator reclassified a
+    cap read->write in Admin, `registry` said write and `resolve_cap` went on saying read for
+    the life of the worker. A runbook pinned to that cap kept firing ungated (issue #29).
+
+    `_CAPS_STAMP` is set ONLY by a load made here, so a catalogue injected directly (a test
+    fixture assigning `runbooks._CAPS`) is never silently reloaded out from under the caller."""
+    global _CAPS, _CAPS_STAMP
+    import policy
+    import registry
+    st = ("policy", policy.stamp())
+    if _CAPS is None or (_CAPS_STAMP is not None and _CAPS_STAMP != st):
+        caps = registry.load()
+        registry.apply_policy(caps, policy.load())
+        _CAPS, _CAPS_STAMP = caps, st
     return _CAPS
 
 
 def refresh_caps():
-    """Drop the cached catalogue (after a policy/registry change)."""
-    global _CAPS
-    _CAPS = None
+    """Drop the cached catalogue (after a registry change the policy stamp cannot see — a new
+    agent file in ~/.claude). A policy edit invalidates it on its own."""
+    global _CAPS, _CAPS_STAMP
+    _CAPS, _CAPS_STAMP = None, None
 
 
 def resolve_cap(name):

@@ -25,6 +25,7 @@ with workflow.unsafe.imports_passed_through():
     from activities import (clarify_request, classify_followup, classify_request,
                             cleanup_workspace, deliver_result, detect_repo_changes,
                             estop_check, execute_plan, finalize_terminal, finalize_workspace, judge_qa,
+                            resolve_pinned_cap,
                             merge_results, notify_human, plan_capability, plan_swarm, open_chat,
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack, pr_head_branch,
                             provision_workspace, resolve_pr_target, check_grounding,
@@ -853,6 +854,14 @@ class OttoWorkflow:
                     self._discussion = True
         else:
             pinned = params.get("cap")
+            if not pinned and params.get("cap_name"):
+                # A runbook/schedule pins by NAME (its args are frozen at schedule-creation
+                # time, so a risk resolved there is a risk from whenever the operator last
+                # saved it). Resolve against the live registry + policy instead.
+                pinned = (await workflow.execute_activity(
+                    resolve_pinned_cap, {"name": params["cap_name"]},
+                    start_to_close_timeout=timedelta(seconds=60),
+                    retry_policy=_RETRY)).get("cap")
 
             # Swarm planning: a fresh, un-pinned request that isn't already a sub-task may
             # decompose into several INDEPENDENT capability runs that execute in parallel as
