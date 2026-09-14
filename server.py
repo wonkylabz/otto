@@ -1307,6 +1307,13 @@ class Handler(BaseHTTPRequestHandler):
                      "enabled": c.enabled, "source": c.source, "description": c.description,
                      "prompt": c.prompt or "", "plugin": getattr(c, "plugin", None),
                      "tool_free": getattr(c, "tool_free", False),
+                     # What the LOCAL backend will spawn for this cap, and what it COULD.
+                     # Declared-empty is not "none": it means the servers are chosen by
+                     # ranking the request, which a request that only points at a ticket
+                     # cannot drive — which is the whole reason this is settable.
+                     "declared_mcp": mcp_client.declared_servers(c),
+                     "frontmatter_mcp": [n for n in mcp_client.declared_servers(c)
+                                         if n not in (getattr(c, "declared_mcp", None) or [])],
                      "local_blockers": mcp_client.unservable(c, POLICY),
                      "local_latched": latched.get(c.name, []),
                      "tier": getattr(c, "tier", None),
@@ -1318,6 +1325,11 @@ class Handler(BaseHTTPRequestHandler):
                 # spinner waits on — once per TTL, i.e. exactly on the first open. The client now
                 # renders from cache and refreshes health in the background via /api/mcp/recheck.
                 "mcps": policy.all_mcps(POLICY),
+                # The subset a LOCAL run can actually spawn (stdio, enabled, confirmed) —
+                # the only valid picks for a per-capability declaration. Derived here, not in
+                # the client: `all_mcps` also lists claude.ai connectors, which have nothing
+                # to spawn and would render as choices that can never work.
+                "servable_mcps": sorted(mcp_client.servable(POLICY)),
                 "projects": registry.projects(),
                 # per-project namespace + standing instructions (issue #69), keyed by path
                 "project_meta": {p: registry.project_meta(p) for p in registry.projects()},
@@ -1715,7 +1727,9 @@ class Handler(BaseHTTPRequestHandler):
         # stored MCP notes are re-attached server-side rather than trusted from the client —
         # otherwise flipping one switch (or a stale tab doing it) erases every note.
         pol = _set_policy({**POLICY,
-                           "capabilities": body.get("capabilities", {}),
+                           "capabilities": policy.keep_cap_mcp(
+                               policy.load().get("capabilities", {}),
+                               body.get("capabilities", {})),
                            "mcps": policy.keep_notes(policy.load().get("mcps", {}),
                                                      body.get("mcps", {}))})
         policy.save(pol)
@@ -1840,6 +1854,37 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True,
             "mcps": policy.all_mcps(POLICY, allow_refresh=True,
                                     force=bool(body.get("force", True)))}))
+
+    def _post_cap_mcp(self, body):
+        """POST /api/cap-mcp — which MCP servers the LOCAL backend spawns for one capability.
+
+        Its own endpoint rather than a field on the policy POST for the reason `keep_notes`
+        exists: the Admin panel re-POSTs the WHOLE capability map on any toggle, so a stale
+        tab flipping a switch would wipe a declaration it never knew about.
+
+        The names are checked against the servers Otto can actually spawn, not trusted from
+        the client. This does not activate or enable anything — an unconfirmed or disabled
+        def stays unspawnable (`policy.mcp_confirmed`, `mcp_client.servable`); it only says
+        which of the already-usable servers this capability is about."""
+        name = (body.get("name") or "").strip()
+        if not any(c.name == name for c in CAPS):
+            self._send(400, json.dumps({"error": "unknown capability"})); return
+        servable = set(mcp_client.servable(POLICY))
+        want = [n for n in (body.get("servers") or []) if isinstance(n, str)]
+        unknown = [n for n in want if n not in servable]
+        if unknown:
+            self._send(400, json.dumps({
+                "error": "not launchable stdio servers: " + ", ".join(unknown)})); return
+        caps_pol = {k: dict(v) for k, v in (POLICY.get("capabilities") or {}).items()}
+        entry = caps_pol.setdefault(name, {})
+        if want:
+            entry["mcp"] = want
+        else:
+            entry.pop("mcp", None)
+        pol = _set_policy({**POLICY, "capabilities": caps_pol})
+        policy.save(pol)
+        registry.apply_policy(CAPS, pol)   # take effect immediately
+        self._send(200, json.dumps({"ok": True, "servers": want}))
 
     def _post_cap_latch_clear(self, body):
         """POST /api/cap-latch/clear"""
@@ -2251,6 +2296,7 @@ _POST_ROUTES = {
     "/api/board-config": Handler._post_board_config,
     "/api/bundle/import": Handler._post_bundle_import,
     "/api/cap-latch/clear": Handler._post_cap_latch_clear,
+    "/api/cap-mcp": Handler._post_cap_mcp,
     "/api/capability/add": Handler._post_capability_add,
     "/api/capability/edit": Handler._post_capability_edit,
     "/api/capability/remove": Handler._post_capability_remove,

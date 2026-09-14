@@ -2825,7 +2825,14 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # naming it has to exist somewhere a UI session reads. The dir is over-budget by design
     # (issue #56 is the prune); this raise is deliberately visible rather than funded by
     # quietly compressing an unrelated rule, which would make that audit harder.
-    MAX_RULES_BYTES = 78271   # fetched tier — bounded, but looser; it is not always loaded
+    # 78271 -> 78897 for the local-MCP declaration rules (PR: fix/local-mcp-server-selection):
+    # which MCP servers a local run gets was decided by keyword-ranking the REQUEST, and a
+    # request that only points at a ticket cannot drive it — one stopword hit gave a New Relic
+    # task two Kubernetes tools. Three rules, because three separate things had to be true and
+    # each was independently wrong: where a declaration comes from, what happens without one,
+    # and how the tool budget splits across servers. Raised rather than funded by compressing
+    # an unrelated rule, per the precedent above.
+    MAX_RULES_BYTES = 78897   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
 

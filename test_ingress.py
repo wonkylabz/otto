@@ -6378,7 +6378,12 @@ class UiAssetLayoutTests(unittest.TestCase):
     # -> 116433 for `.toasts`/`.toast` (issue #48): 51 mutating POSTs reported nothing on a
     # refusal, and most of them are a switch or a row action with no inline status element
     # to write into — so the one shared surface is what makes reporting them possible at all.
-    ASSET_MAX = 116433
+    # -> 116822 for `.capmcp`: which MCP servers a capability gets on the LOCAL backend is now
+    # settable per capability, and the control has to sit in the Execution cell beside the
+    # latch it is nothing like. It rides `.latchclear`'s geometry (one selector, not a second
+    # rule) and only overrides the two colours that carry the difference — a latch is something
+    # that happened TO the cap, this is something the operator set.
+    ASSET_MAX = 116822
 
     def _assets(self):
         out = {}
@@ -6479,6 +6484,28 @@ class UiAssetLayoutTests(unittest.TestCase):
         # The opening TAG, not the first mention: the shell comments talk about `<main>`.
         self.assertLess(doc.index('id="toasts"'), doc.index("\n<main>"),
                         "the toast container moved inside <main> — a tab switch unmounts it")
+
+    def test_the_execution_cell_exposes_which_mcp_servers_a_local_run_gets(self):
+        """The other half of the Execution decision, and it was invisible. With no declaration
+        the local backend picks servers by keyword-matching the request against every tool
+        description; run runbook-rb-e0f48559 asked for New Relic work behind a ticket URL and
+        was handed two Kubernetes tools, with nothing on any screen saying so.
+
+        Three things are pinned because each was a way to get it silently wrong: the control
+        is rendered in the cap row, its options come from the SERVABLE set (a claude.ai
+        connector has nothing to spawn, so offering one is offering a pick that can never
+        work), and the save goes to its own endpoint — the whole-policy POST this panel fires
+        on any toggle does not carry the field."""
+        src = ui_src()
+        self.assertIn("showCapMcpForm", src)
+        self.assertIn("data-mcpcap", src)
+        self.assertIn("servable_mcps", src)
+        self.assertIn("/api/cap-mcp", src)
+        # A server the cap's own frontmatter names is shown ticked and FIXED: unticking it
+        # here could not remove it without rewriting the agent file, so an enabled box would
+        # be a control that silently does nothing.
+        self.assertIn("frontmatter", src)
+        self.assertIn("box.disabled=isFixed", src)
 
     def test_no_asset_exceeds_the_ceiling(self):
         for rel, path in self._assets().items():

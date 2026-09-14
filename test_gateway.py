@@ -5204,6 +5204,41 @@ class LocalMcpRegistryTests(unittest.TestCase):
         self.assertEqual(sorted(mcp_client.servers_for(
             cap, ["mcp__newrelic", "mcp__kubernetes"], {})), ["kubernetes", "newrelic"])
 
+    def test_admin_can_declare_servers_without_rewriting_the_agents_tools_line(self):
+        """A cap whose request never names its tools (sre-minion: "work on this ticket <url>")
+        can only get MCP by DECLARING it, and the frontmatter route cannot be used to say so:
+        an agent's `tools:` line is its COMPLETE grant on the Claude path, so adding
+        `mcp__newrelic__*` to name one server revokes Bash, Read and Write from the same cap.
+        `registry.apply_policy` carries it instead, and the two sources UNION."""
+        cap = registry.Capability("agent", "sre-minion", "works a ticket end to end")
+        cap.declared_tools = ["Bash", "mcp__kubernetes__*"]
+        registry.apply_policy([cap], {"capabilities": {
+            "sre-minion": {"mcp": ["newrelic", "newrelic_eu"]}}})
+        self.assertEqual(mcp_client.declared_servers(cap),
+                         ["kubernetes", "newrelic", "newrelic_eu"])
+        # ...and a declaration is what turns `mcp_require_score` off, so the same pointer-shaped
+        # request no longer has to prove each tool's relevance to be offered it.
+        self.assertTrue(mcp_client.declared_servers(cap))
+
+    def test_a_capability_with_no_admin_declaration_is_unchanged(self):
+        cap = registry.Capability("agent", "plain", "does a thing")
+        cap.declared_tools = ["mcp__grafana__*"]
+        registry.apply_policy([cap], {"capabilities": {}})
+        self.assertEqual(cap.declared_mcp, [])
+        self.assertEqual(mcp_client.declared_servers(cap), ["grafana"])
+
+    def test_a_whole_policy_save_cannot_erase_a_declaration(self):
+        """The Admin panel re-POSTs every capability on any risk flip or on/off toggle and
+        tracks neither field, so without `keep_cap_mcp` one click (or a stale tab) silently
+        un-declares every server and the next local run goes back to guessing. Same reason
+        `keep_notes` exists — and a client-supplied `mcp` is dropped, never trusted."""
+        saved = {"sre-minion": {"mcp": ["newrelic"], "risk": "write"}}
+        incoming = {"sre-minion": {"risk": "read"},
+                    "other": {"mcp": ["grafana"], "risk": "read"}}
+        out = policy.keep_cap_mcp(saved, incoming)
+        self.assertEqual(out["sre-minion"], {"risk": "read", "mcp": ["newrelic"]})
+        self.assertEqual(out["other"], {"risk": "read"})
+
     def test_allowlist_matching_accepts_prefix_wildcard_and_exact(self):
         for allow in (["mcp__newrelic"], ["mcp__newrelic__*"],
                       ["mcp__newrelic__query_nrql"]):
@@ -5355,6 +5390,45 @@ class LocalMcpToolBudgetTests(unittest.TestCase):
         # "catch me up" shares no vocabulary with any tool name.
         p = self._pool(request="rename a python variable", max_tools=25)
         self.assertEqual(len(p.names), 2)
+
+    def test_filler_shared_with_a_tool_description_never_decides_the_fleet(self):
+        """THE BUG (run runbook-rb-e0f48559): the request was `Work on this ticket <url>`, and
+        the ONLY word it shared with the whole catalogue was "this", out of "This accesses node
+        logs through the Kubernetes API". Two Kubernetes tools scored 1, every New Relic tool
+        scored 0 and was dropped by `require_score`, and a New Relic task ran with no New Relic.
+
+        Proving it with the defence removed, not beside it: `_words` is measured with and
+        without `_STOP`, so the pass is attributable."""
+        desc = "This accesses node logs through the Kubernetes API"
+        self.assertEqual(mcp_client._score(desc, mcp_client._words("Work on this ticket")), 0)
+        # ... and the same scorer with the stop list patched out still shows the old hit,
+        # so the assertion above is the guard doing work, not the corpus missing the word.
+        orig = mcp_client._STOP
+        mcp_client._STOP = frozenset()
+        try:
+            self.assertEqual(mcp_client._score(desc, mcp_client._words("Work on this ticket")), 1)
+        finally:
+            mcp_client._STOP = orig
+
+    def test_a_pasted_link_is_not_vocabulary(self):
+        # A ticket URL's path segments are nouns the asker never said. Left in, they rank the
+        # fleet: "issues", "infra" and the org name are as matchable as anything real.
+        self.assertEqual(
+            mcp_client._words("look at https://github.com/acme/kubernetes/issues/494"),
+            {"look"})
+
+    def test_the_budget_takes_from_every_server_in_turn_not_the_first_one_dry(self):
+        """A declared cap whose request scores nothing (a pointer: "work on this ticket <url>")
+        ties every tool, so the plain top-N cut drained the servers in order: declaring three
+        delivered the first's tools and NONE of the third's, and `Pool` records only a count,
+        so the missing server looked like one that was never declared."""
+        mcp_client._user_servers = lambda: {
+            "a": {"command": sys.executable, "args": [self.script]},
+            "b": {"command": sys.executable, "args": [self.script]}}
+        self.pool = mcp_client.Pool(["a", "b"], allowed_tools=["mcp__a", "mcp__b"], pol={},
+                                    request="work on this ticket", max_tools=2)
+        self.assertEqual(sorted(n.split("__")[1] for n in self.pool.names), ["a", "b"])
+        self.assertEqual(self.pool.trimmed, 2)
 
     def test_listing_tools_warms_the_catalogue_for_the_next_run(self):
         self._pool(request="echo")

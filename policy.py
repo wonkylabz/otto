@@ -270,6 +270,31 @@ def keep_notes(saved, incoming):
     return out
 
 
+def keep_cap_mcp(saved, incoming):
+    """Re-attach each capability's stored `mcp` declaration to a client-supplied
+    `capabilities` map — the exact counterpart of `keep_notes`, for the exact same reason.
+
+    `/api/cap-mcp` is the only writer, and the Admin panel re-POSTs the whole capability map
+    on any risk flip or on/off toggle while tracking neither field. Without this, flipping one
+    switch (or a stale tab doing it) silently un-declares every server an operator set, and
+    the next local run of that capability quietly goes back to guessing from the request.
+    An `mcp` arriving from the client is DROPPED rather than trusted, so a whole-policy save
+    can neither write nor blank a declaration."""
+    out = {}
+    for name, entry in (incoming or {}).items():
+        out[name] = ({k: v for k, v in entry.items() if k != "mcp"}
+                     if isinstance(entry, dict) else entry)
+    for name, entry in (saved or {}).items():
+        want = (entry or {}).get("mcp") if isinstance(entry, dict) else None
+        if not want:
+            continue
+        if isinstance(out.get(name), dict):
+            out[name]["mcp"] = want
+        elif name not in out:
+            out[name] = {"mcp": want}
+    return out
+
+
 def save(pol):
     storage.write_json(_PATH, pol)
 
