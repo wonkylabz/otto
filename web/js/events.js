@@ -168,8 +168,7 @@ async function loadSlackConfig(){
     // enabling with no allowlisted user/channel would listen to nobody — same guard the form applies
     if(!c.enabled && !nUsers && !nChans && !c.allow_self){
       alert("Add at least one allowed user or channel (or turn on test mode) in configure first."); return; }
-    await fetch("/api/slack-config",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({config:{...c, enabled:!c.enabled}})});
+    await postOr("/api/slack-config",{config:{...c, enabled:!c.enabled}},"switching the Slack listener");
     loadSlackConfig();
   });
   wireSlackBotCard(host,d,c);
@@ -273,8 +272,7 @@ function wireSlackBotCard(host,d,c){
   const nA=slackIds(c.bot_approvers).length;
     if(!c.bot_enabled && !nU && !nC){
       alert("Add at least one allowed channel (or a user allowed to DM the bot) in configure first."); return; }
-    await fetch("/api/slack-config",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({config:{...c, bot_enabled:!c.bot_enabled}})});
+    await postOr("/api/slack-config",{config:{...c, bot_enabled:!c.bot_enabled}},"switching the Slack bot");
     loadSlackConfig();
   });
 }
@@ -353,7 +351,10 @@ function showSlackBotForm(){
       bot_approvers:lines("sb-approvers"),
       bot_ack_template:document.getElementById("sb-ack").value,
       bot_greeting_template:document.getElementById("sb-hello").value};
-    await fetch("/api/slack-config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({config})});
+    // The form is still open and owns an error slot, so a refusal belongs in it — closing
+    // regardless threw away everything just typed and looked exactly like a save.
+    try { await postJSON("/api/slack-config",{config}); }
+    catch(e){ document.getElementById("sb-err").textContent=e.message; return; }
     closeFormModal(); loadSlackConfig();
   };
 }
@@ -450,7 +451,10 @@ function showSlackForm(){
       approval_default:document.getElementById("sf-approval").value||"ask",
       cap:document.getElementById("sf-cap").value||"",
       ack_template:document.getElementById("sf-ack").value};
-    await fetch("/api/slack-config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({config})});
+    // The form is still open and owns an error slot, so a refusal belongs in it — closing
+    // regardless threw away everything just typed and looked exactly like a save.
+    try { await postJSON("/api/slack-config",{config}); }
+    catch(e){ document.getElementById("sf-err").textContent=e.message; return; }
     closeFormModal(); loadSlackConfig();
   };
 }
@@ -512,8 +516,7 @@ async function loadBoardQueue(){
   document.getElementById("board-edit").addEventListener("click",showBoardForm);
   const bsw=host.querySelector("[data-toggleboard]");
   if(bsw) bsw.addEventListener("click",async()=>{
-    await fetch("/api/board-config",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({config:{...c, enabled:!c.enabled}})});
+    await postOr("/api/board-config",{config:{...c, enabled:!c.enabled}},"switching the board queue");
     loadBoardQueue();
   });
 }
@@ -577,8 +580,7 @@ async function loadPrReviews(){
   document.getElementById("prrev-edit").addEventListener("click",showPrReviewForm);
   const sw=host.querySelector("[data-toggleprrev]");
   if(sw) sw.addEventListener("click",async()=>{
-    await fetch("/api/pr-review-config",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({config:{...c, enabled:!c.enabled}})});
+    await postOr("/api/pr-review-config",{config:{...c, enabled:!c.enabled}},"switching PR review");
     loadPrReviews();
   });
 }
@@ -632,8 +634,7 @@ async function updatePrBar(){
   bar.hidden=false;
 }
 async function prReviewDismiss(key, dismissed){
-  await fetch("/api/pr-review/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({key, dismissed})});
+  await postOr("/api/pr-review/dismiss",{key, dismissed},"dismissing that review");
   await updatePrBar();
   if(eventsVisible()) loadPrReviews();
 }
@@ -644,10 +645,9 @@ async function prReviewPost(key, willApprove){
   const bar=document.getElementById("prbar");
   if(bar) bar.innerHTML=`<span class="sdot"></span>${willApprove?'approving':'posting'}&hellip;`;
   let out={};
-  try { out=await (await fetch("/api/pr-review/post",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({key})})).json(); }
+  try { out=await postJSON("/api/pr-review/post",{key}); }
   catch(e){ out={ok:false, detail:e.message}; }
-  if(!out.ok) alert("Couldn't post the review: "+(out.detail||out.error||"unknown error"));
+  if(!out.ok) toast("Couldn't post the review: "+(out.detail||out.error||"unknown error"));
   await updatePrBar();
   if(eventsVisible()) loadPrReviews();
 }
@@ -749,7 +749,10 @@ function showPrReviewForm(){
       skip_drafts:document.getElementById("pf2-drafts").checked,
       skip_own:document.getElementById("pf2-own").checked,
       repos};
-    await fetch("/api/pr-review-config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({config})});
+    // The form is still open and owns an error slot, so a refusal belongs in it — closing
+    // regardless threw away everything just typed and looked exactly like a save.
+    try { await postJSON("/api/pr-review-config",{config}); }
+    catch(e){ document.getElementById("pf2-err").textContent=e.message; return; }
     closeFormModal(); loadPrReviews();
   };
 }
@@ -810,12 +813,15 @@ function showBoardForm(){
       columns:{ready:val("bf-ready")||"Ready", active:val("bf-active")||"In Progress",
         review:val("bf-review")||"Review", done:val("bf-done")||"Done"},
       label_cap, repo_edit_label:val("bf-repoedit")||"repo-edit", hold_label:val("bf-hold")||"hold"};
-    await fetch("/api/board-config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({config})});
+    // The form is still open and owns an error slot, so a refusal belongs in it — closing
+    // regardless threw away everything just typed and looked exactly like a save.
+    try { await postJSON("/api/board-config",{config}); }
+    catch(e){ document.getElementById("bf-err").textContent=e.message; return; }
     closeFormModal(); loadBoardQueue();
   };
 }
 async function saveRules(){
-  await fetch("/api/event-rules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rules:EVENT_RULES})});
+  return postOr("/api/event-rules",{rules:EVENT_RULES},"saving the event rules");
 }
 function showRuleForm(idx){
   const editing=idx>=0, r=editing?EVENT_RULES[idx]:{};

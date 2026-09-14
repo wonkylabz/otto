@@ -90,8 +90,7 @@ function memRender(key){
     </div>`,"Nothing matches.");
     if(list) list.querySelectorAll(".factdel").forEach(b=>b.addEventListener("click",async()=>{
       if(!confirm("Forget this fact?\n\n"+b.dataset.fact)) return;
-      await fetch("/api/memory/delete",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({id:b.dataset.id,fact:b.dataset.fact})});
+      if(!await postOr("/api/memory/delete",{id:b.dataset.id,fact:b.dataset.fact},"forgetting that fact")) return;
       mascotEvict(1);
       loadMemory();
     }));
@@ -103,8 +102,7 @@ function memRender(key){
     </div>`,"Nothing matches.");
     if(list) memClamp(list);
     if(list) list.querySelectorAll(".soldel").forEach(b=>b.addEventListener("click",async()=>{
-      await fetch("/api/solutions/delete",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({id:b.dataset.id})});
+      await postOr("/api/solutions/delete",{id:b.dataset.id},"deleting that approach");
       loadMemory();
     }));
   } else {
@@ -117,14 +115,12 @@ function memRender(key){
     if(list){
       memClamp(list);
       list.querySelectorAll(".ruledel").forEach(b=>b.addEventListener("click",async()=>{
-        await fetch("/api/behaviors/delete",{method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({id:b.dataset.id})});
+        await postOr("/api/behaviors/delete",{id:b.dataset.id},"deleting that rule");
         loadMemory();
       }));
       list.querySelectorAll(".ruleedit").forEach(b=>b.addEventListener("click",async()=>{
         const next=prompt("Edit rule:",b.dataset.rule); if(next===null) return;
-        await fetch("/api/behaviors/update",{method:"POST",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({id:b.dataset.id,rule:next})});
+        await postOr("/api/behaviors/update",{id:b.dataset.id,rule:next},"saving that rule");
         loadMemory();
       }));
     }
@@ -213,8 +209,8 @@ function gcTrack(startedAtS){
 async function runGC(){
   if(GC_RUNNING) return;   // already in flight (e.g. a stale click after switching tabs away and back)
   let r;
-  try { r=await (await fetch("/api/memory/gc/run",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json(); }
-  catch(e){ alert("GC run failed: "+e.message); return; }
+  try { r=await postJSON("/api/memory/gc/run",{}); }
+  catch(e){ toast("GC run failed: "+e.message); return; }
   if(!r.started) return;   // a scan was already running server-side — just let the tick pick it up
   gcTrack();
   refreshGCSection();      // reflect "scanning…" immediately; GC_RUNNING outlives any later re-render
@@ -223,10 +219,8 @@ async function evictGC(){
   const picks=[...document.querySelectorAll(".gcpick:checked")].map(el=>GC[+el.dataset.i]).filter(Boolean);
   if(!picks.length) return;
   if(!confirm(`Evict ${picks.length} item(s)? This can't be undone (the audit trail keeps a record).`)) return;
-  try{
-    await fetch("/api/memory/gc/evict",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({candidates:picks})});
-  } catch(e){ alert("Eviction failed: "+e.message); return; }
+  try{ await postJSON("/api/memory/gc/evict",{candidates:picks}); }
+  catch(e){ toast("Eviction failed: "+e.message); return; }
   mascotEvict(picks.length);
   GC=[]; GC_META={scanned:0,verify_skipped:0,ran:false};
   loadMemory();
@@ -302,12 +296,12 @@ async function loadMemory(){
   const cb=document.getElementById("mem-clear");
   if(cb) cb.addEventListener("click",async()=>{
     if(!confirm("Clear working memory? The audit trail is kept.")) return;
-    await fetch("/api/memory/clear",{method:"POST"}); loadMemory();
+    await postOr("/api/memory/clear",{},"clearing working memory"); loadMemory();
   });
   const sc=document.getElementById("sol-clear");
   if(sc) sc.addEventListener("click",async()=>{
     if(!confirm("Clear all stored solution approaches?")) return;
-    await fetch("/api/solutions/clear",{method:"POST"}); loadMemory();
+    await postOr("/api/solutions/clear",{},"clearing the solutions store"); loadMemory();
   });
   const addRule=document.getElementById("bx-add");
   if(addRule) addRule.addEventListener("click",showBehaviorRuleForm);
@@ -335,8 +329,10 @@ function showBehaviorRuleForm(){
     const rule=(document.getElementById("bx-rule").value||"").trim();
     if(!rule){ document.getElementById("bx-err").textContent="write the rule first"; return; }
     const scope=document.getElementById("bx-scope").value||"global";
-    await fetch("/api/behaviors/add",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({rule,scope})});
+    // The form has its own error slot and is still open, so a refusal belongs in it — and the
+    // modal must NOT close, or the typed rule is gone along with the message.
+    try { await postJSON("/api/behaviors/add",{rule,scope}); }
+    catch(e){ document.getElementById("bx-err").textContent=e.message; return; }
     closeFormModal(); loadMemory();
   };
 }

@@ -1147,7 +1147,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 items = tc.run(_board())
             except Exception as e:  # noqa: BLE001
-                self._send(200, json.dumps({"temporal": True, "items": [],
+                # 502, not 200 with an empty `items`: a failed read is not an empty board, and
+                # under 200 the two are the same document to every client (issue #48).
+                self._send(502, json.dumps({"temporal": True, "items": [],
                                             "error": str(e)[:200], "ui": TEMPORAL_UI})); return
             self._send(200, json.dumps({"temporal": True, "items": items, "ui": TEMPORAL_UI}))
         elif self.path.startswith("/api/board/full"):
@@ -1161,7 +1163,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._send(200, json.dumps(tc.run(_board_full_result(wid))))
             except Exception as e:  # noqa: BLE001
-                self._send(200, json.dumps({"error": str(e)[:200]}))
+                # 502, not 200: every client list loader reads `.json()` then `d.items or []`,
+                # so an error under 200 renders as an EMPTY result rather than a failed one, and
+                # `util.postJSON` has to treat an `error` key as a failure to compensate.
+                self._send(502, json.dumps({"error": str(e)[:200]}))
         elif self.path == "/api/needs-you":
             # Unified "what needs a human / what failed / what's in flight" + health strip.
             if not TEMPORAL_OK:
@@ -1584,7 +1589,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             tc.run(_wf_terminate(wid))
         except Exception as e:  # noqa: BLE001 - already-closed workflow, unknown id
-            self._send(200, json.dumps({"error": str(e)[:200]})); return
+            # 409, not 200 — the run was not terminated, and the card must not disappear as if
+            # it had been (`board.boardTerminate` removes it on a resolved promise).
+            self._send(409, json.dumps({"error": str(e)[:200]})); return
         _dismiss(wid)
         self._send(200, json.dumps({"ok": True}))
 

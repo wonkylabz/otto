@@ -71,6 +71,10 @@
   <span class="estopwhy" id="estop-why"></span>
 </div>
 
+<!-- Refused saves, from any tab. Outside <main> for the same reason the pause bar is: a tab
+     switch mid-request must not unmount the one thing telling you the write did not land. -->
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
 <!-- Otto himself. Outside <main> on purpose: every tab is a view swap inside <main>, so this
      is the only place he can stand and still be there when you switch. Nothing sets his state
      here or anywhere else except applyMood() - see the mascot block in the script below. -->
