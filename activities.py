@@ -367,12 +367,16 @@ def finalize_workspace(payload: dict) -> dict:
     `existing_pr` pushes to update an already-open PR (a QA fix) and skips `gh pr create`.
     A fresh PR's title/body are drafted from the request + the run's result summary
     (engine.pr_copy, memory tier, raw-request fallback) instead of the raw request verbatim.
+    `summary_is_error` says that summary is a failed attempt's failure report, not a description
+    of the diff — pr_copy then drafts from the request alone rather than telling the PR's reader
+    about Otto's turn budget.
     `plan` (the approved plan, when the run had one) is posted as a PR comment, never committed
     into the target repo — see workspace.post_plan."""
     import workspace
     title, body = payload.get("title"), None
     if not payload.get("existing_pr"):
-        copy = engine.pr_copy(payload.get("title") or "", summary=payload.get("summary"))
+        copy = engine.pr_copy(payload.get("title") or "", summary=payload.get("summary"),
+                              summary_is_error=bool(payload.get("summary_is_error")))
         title, body = copy["title"], copy["body"]
     return workspace.finalize(payload["run_id"], title=title,
                               base_head=payload.get("head"),

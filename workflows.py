@@ -567,7 +567,7 @@ class OttoWorkflow:
                 pass
             raise
 
-    async def _finalize_pr(self, ws, request, result, cap, repo):
+    async def _finalize_pr(self, ws, request, result, cap, repo, is_error=False):
         """Repo-mode tail: push the branch, open (or update) the draft PR, tear the clone
         down, and fold the outcome into the report. Returns `(pr, result)` — extracted from
         `_run_impl` verbatim; the activity order it issues is part of the replay history."""
@@ -576,6 +576,11 @@ class OttoWorkflow:
             finalize_workspace,
             {"run_id": workflow.info().workflow_id, "title": request[:120],
              "head": ws["head"], "summary": (result or "")[:1500],
+             # The last rung's attempt ERRORED, so `result` is a report about the run (a turn
+             # budget, a timeout, a stderr tail), not about the diff. The PR still opens — the
+             # branch can hold real commits from an earlier rung — but its copy is drafted from
+             # the request alone. Observed: bobo#39 shipped titled for Otto's own turn budget.
+             "summary_is_error": bool(is_error),
              # Working ON an open PR: push back to ITS branch and skip `gh pr create`, or
              # the run opens a second PR for a change that belongs on the first. `branch` is
              # required here — finalize otherwise looks at `otto/<run_id>`, which this run
@@ -1376,7 +1381,8 @@ class OttoWorkflow:
         # Repo-mode: push the branch + open a draft PR, then tear down the workspace (always —
         # even on a poor result — so clones don't leak; a stale-sweep backstops a hard failure).
         if ws:
-            pr, result = await self._finalize_pr(ws, request, result, cap, repo)
+            pr, result = await self._finalize_pr(ws, request, result, cap, repo,
+                                                 is_error=bool(out.get("is_error")))
 
         # Post-PR code-review loop: get a strict Claude PR review, fold must/should-fix findings
         # into a fix on the SAME branch, re-review — bounded rounds (sre-minion's Phase 5-7,
