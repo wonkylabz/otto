@@ -97,9 +97,11 @@ def setUpModule():
     gateway.load = lambda: json.loads(json.dumps(_MODULE_CFG))
     # PR title/body drafting (engine.pr_copy) makes a gateway call inside finalize_workspace;
     # pin it module-wide so no repo-mode test ever reaches a model. Its real behavior is
-    # covered by test_core.PrCopyTests with gateway.complete mocked.
+    # covered by test_repo.PrCopyTests with gateway.complete mocked. Takes **k on purpose: the
+    # seam grows kwargs (`summary_is_error`), and a positional-only double turns every
+    # repo-mode workflow test red on a change that is actually fine.
     _orig_pr_copy = engine.pr_copy
-    engine.pr_copy = lambda request, summary=None: {
+    engine.pr_copy = lambda request, summary=None, **k: {
         "title": (request or "Otto automated change")[:120], "body": "test body"}
 
 def tearDownModule():

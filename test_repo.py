@@ -9,6 +9,7 @@ import inspect
 import io
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -103,6 +104,58 @@ class PrCopyTests(unittest.TestCase):
         self.assertNotIn("What the change did:", seen_prompts[0])
         self.assertNotIn("aborted by supervisor", out["body"])
         self.assertIn("_Automated by Otto for request:_", out["body"])
+
+    def test_a_local_runtime_death_never_becomes_the_pr_copy(self):
+        # bobo#39, live: four local attempts died on the turn budget, so `result` was
+        # "(local runtime hit the 120-turn budget)". It reached the BODY verbatim and, through
+        # the title drafter, the TITLE ("Optimize g measurement to stay under 120-turn budget") —
+        # Otto's own runtime limit described to the PR's reader as the change on the branch.
+        req = "Work on the tickets of this board in order"
+        seen = []
+        import gateway
+        orig = gateway.complete
+        def fake(task, prompt):
+            seen.append(prompt)
+            return "Measure every g against the reference weight"
+        gateway.complete = fake
+        self.addCleanup(setattr, gateway, "complete", orig)
+        for sentinel in ("(local runtime hit the 120-turn budget)",
+                         "(local runtime error: connection reset)",
+                         "(local runtime: model has no base_url)"):
+            seen.clear()
+            out = engine.pr_copy(req, summary=sentinel)
+            self.assertNotIn("What the change did:", seen[0], sentinel)
+            self.assertNotIn("local runtime", out["body"], sentinel)
+            self.assertNotIn("turn budget", out["body"], sentinel)
+
+    def test_an_errored_attempt_is_dropped_even_when_it_is_not_sentinel_shaped(self):
+        # The structural guard. `claude_cli` hands back a raw stderr TAIL as `result` on a
+        # harness death, which no prefix list can ever recognise — so the workflow's own
+        # `is_error` flag rides in and decides, with the prefix list only backstopping it.
+        req = "Work on the tickets of this board in order"
+        seen = []
+        import gateway
+        orig = gateway.complete
+        def fake(task, prompt):
+            seen.append(prompt)
+            return "Draft a title from the request alone"
+        gateway.complete = fake
+        self.addCleanup(setattr, gateway, "complete", orig)
+        tail = "Traceback (most recent call last):\n  File \"cli.js\", line 9\nOOM killed"
+        out = engine.pr_copy(req, summary=tail, summary_is_error=True)
+        self.assertNotIn("What the change did:", seen[0])
+        self.assertNotIn("OOM killed", out["body"])
+        self.assertNotIn("Traceback", out["body"])
+
+    def test_the_workflow_threads_is_error_into_the_pr_copy_activity(self):
+        # The flag is only worth having if it actually travels: workflow -> finalize_workspace
+        # payload -> engine.pr_copy. A grep guard, because the three hops live in three files
+        # and a dropped one is invisible (the PR still opens, just with the failure as its copy).
+        wf = pathlib.Path("workflows.py").read_text()
+        self.assertIn('"summary_is_error": bool(is_error)', wf)
+        self.assertIn('is_error=bool(out.get("is_error"))', wf)
+        acts = pathlib.Path("activities.py").read_text()
+        self.assertIn('summary_is_error=bool(payload.get("summary_is_error"))', acts)
 
     def test_garbage_or_error_falls_back_to_request(self):
         req = "Pick a good candidate to work on from the otto issues"

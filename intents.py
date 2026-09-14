@@ -311,7 +311,13 @@ def _parse_pr_title(text, fallback):
 
 _OPERATIONAL_SENTINEL_PREFIXES = (
     "(aborted by supervisor:", "(timed out)", "(no output)",
-    "(execution activity failed", "(plan execution failed")
+    "(execution activity failed", "(plan execution failed",
+    # The LOCAL backend's own deaths (local_runtime.py): the turn budget, an unreachable or
+    # mis-configured endpoint, and its catch-all. Omitting them put "(local runtime hit the
+    # 120-turn budget)" into bobo#39's BODY and, through the title drafter, into its TITLE
+    # ("Optimize g measurement to stay under 120-turn budget") — Otto's own runtime failure
+    # described to the reader as if it were the change on the branch.
+    "(local runtime hit the", "(local runtime error:", "(local runtime:")
 
 
 def _is_operational_sentinel(text):
@@ -320,18 +326,27 @@ def _is_operational_sentinel(text):
     were the change itself — observed live: the LAST verify-ladder attempt was killed by the
     supervisor, so `result` was just its abort sentinel, and PR #68's title became "Check
     platform#358 merge status before implementation" (lifted verbatim from that sentinel) even
-    though the branch held real, unrelated commits from an earlier, unaborted attempt."""
+    though the branch held real, unrelated commits from an earlier, unaborted attempt.
+
+    This is the BACKSTOP, not the guard: `claude_cli` returns a raw stderr tail as `result` on a
+    harness death, which no prefix can ever recognise. `pr_copy`'s `summary_is_error` carries the
+    structural signal — keep both, since a caller without one still needs this."""
     return (text or "").strip().startswith(_OPERATIONAL_SENTINEL_PREFIXES)
 
 
-def pr_copy(request, summary=None):
+def pr_copy(request, summary=None, summary_is_error=False):
     """Title + body for the draft PR repo-mode opens. The old title was the RAW request
     truncated to 120 chars — including composer chatter like 'Use the otto-dev local repo'
     (PR #199). Draft a conventional title on the cheap memory tier (local-eligible; the raw
     request stays the fallback and this must never block the PR), and build the body from the
-    run's actual result summary instead of a stock one-liner."""
+    run's actual result summary instead of a stock one-liner.
+
+    `summary_is_error` is the attempt's own `is_error` flag, threaded from the workflow. An
+    errored attempt's `result` is a failure report about the RUN, never a description of the
+    diff — and it is not always sentinel-shaped (a `claude -p` death hands back a raw stderr
+    tail), so the flag decides and `_is_operational_sentinel` only backstops it."""
     fallback = (request or "Otto automated change")[:120]
-    if _is_operational_sentinel(summary):
+    if summary_is_error or _is_operational_sentinel(summary):
         summary = None
     try:
         text = gateway.complete(
