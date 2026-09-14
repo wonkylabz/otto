@@ -202,7 +202,7 @@ async function loadBoard(silent){
       ${it.outcome?`${hint?'<div class="boutlabel">Result</div>':''}<div class="bout ${truncated?'clip':''}" data-expand="${esc(it.id)}" title="Click to read the full result">${renderMD(it.outcome)}</div>${truncated?`<div class="bmore" data-expand="${esc(it.id)}">Read full result →</div>`:''}`:''}
       ${retried}
       ${askClarify?`${it.question?`<div class="bquestion">&#10022; ${esc(it.question)}</div>`:''}<div class="bclarify"><input type="text" data-clarinput="${esc(it.id)}" placeholder="Type your answer to continue…" /><button class="btn approve sm" data-clarify="${esc(it.id)}">Send</button></div>`:''}
-      ${askApprove?`<div class="bapprove"><button class="btn approve sm" data-approve="${esc(it.id)}">Approve</button><button class="btn decline sm" data-deny="${esc(it.id)}">Deny</button></div>`:''}
+      ${askApprove?gateBlock(it):''}
       ${it._needs?`<div class="bapprove"><button class="btn approve sm" data-retry="${esc(it.id)}">${it.retried_to?'Retry again':'Retry'}</button><button class="btn accept sm" data-accept="${esc(it.id)}" title="the work is fine \u2014 the judge was wrong. Records the override and files the approach in solutions.">Accept</button><button class="btn decline sm" data-dismiss="${esc(it.id)}">Dismiss</button></div>`:''}
       ${it.status==="RUNNING"&&!it._needs?`<div class="bapprove"><button class="btn danger sm" data-terminate="${esc(it.id)}" title="hard-stop this run now — no cleanup, the card disappears">Terminate</button></div>`:''}
       <div class="bfoot"><span class="bwhen" title="${esc(it.end?`finished ${it.end} \u00b7 started ${it.start||'?'}`:`started ${it.start||'?'}`)}">${esc(shortWhen(it.end||it.start))}</span><a href="#" class="bdebug" data-debug="${esc(it.id)}" title="attempts, verify critiques, transcript, failure reason">🔍 Debug</a>${it.chat_key?`<a href="#" data-openchat="${esc(it.chat_key)}" title="open this run's conversation">Chat</a>`:''}${link?`<a href="${link}" target="_blank" rel="noopener">Temporal ↗</a>`:''}</div>
@@ -222,6 +222,7 @@ async function loadBoard(silent){
       ${col("Finished",cols.done,"done","done, with each card's verify verdict")}
     </div>`;
   loadBoardHealth();
+  el.querySelectorAll("[data-plan]").forEach(x=>x.addEventListener("click",e=>{ e.preventDefault(); openPlanModal(byId[x.dataset.plan]); }));
   el.querySelectorAll("[data-approve]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.approve,true)));
   el.querySelectorAll("[data-deny]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.deny,false)));
   el.querySelectorAll("[data-clarify]").forEach(b=>b.addEventListener("click",()=>boardClarify(b.dataset.clarify,b)));
@@ -277,6 +278,46 @@ async function loadBoardHealth(){
   if(html===_healthSig && box.innerHTML) return;
   _healthSig=html;
   box.innerHTML=html;
+}
+/* The gate card's plan and its decision. The board offers Approve/Deny for a run whose reader
+   may have no chat at all — an API-submitted web-* run never gets one, because the browser owns
+   chat creation — so this is frequently the ONLY surface the decision is made on. It therefore
+   has to show what is being decided: the plan, the critic's concerns, and which model wrote it.
+   It carried the buttons without the plan (measured on web-0d73ed71), which is a one-click
+   approval of an unread write. Mirrors the chat gate's one hard rule too: a plan made only of
+   questions proposes no operations, so there is nothing to approve and the button is disabled
+   rather than offering a blind yes. */
+function gateBlock(it){
+  const plan=(it.plan||"").trim();
+  const {questions, rest}=splitPlanQuestions(plan);
+  const cs=(it.plan_concerns||[]).filter(c=>c&&String(c).trim());
+  const by=it.plan_model?` · by ${esc(String(it.plan_model).split("/").pop())}`:'';
+  let h='';
+  if(rest) h+=`<div class="boutlabel">Plan${by}</div>`
+           +`<div class="bout clip" data-plan="${esc(it.id)}" title="Click to read the whole plan">${renderMD(rest)}</div>`
+           +`<div class="bmore" data-plan="${esc(it.id)}">Read the whole plan →</div>`;
+  else if(!plan) h+=`<div class="bhint">⚠ No plan preview is available for this run — approving runs it blind.</div>`;
+  if(questions.length) h+=`<div class="bquestion">&#10022; ${questions.map(q=>esc(q)).join("<br>")}</div>`;
+  if(cs.length) h+=`<div class="bhint" data-plan="${esc(it.id)}">⚠ ${cs.length} concern${cs.length>1?'s':''} with this plan — click to read ${cs.length>1?'them':'it'}.</div>`;
+  // A plan that is only questions has nothing concrete to approve; the chat gate disables
+  // Approve for exactly this case, and a board that still offered it would be the softer door.
+  const dis=(questions.length&&!rest)?` disabled title="This plan only asks a question — it proposes no operations. Answer it in the run's chat, or deny."`:'';
+  return h+`<div class="bapprove"><button class="btn approve sm" data-approve="${esc(it.id)}"${dis}>Approve</button>`
+          +`<button class="btn decline sm" data-deny="${esc(it.id)}">Deny</button></div>`;
+}
+/* The whole plan, rendered straight from the card's own data. openCardModal can't serve this:
+   it fetches /api/board/full, which refuses a RUNNING run — and a gate card is always RUNNING. */
+function openPlanModal(it){
+  if(!it) return;
+  const modal=document.getElementById("cardModal"), title=document.getElementById("cardModalTitle"),
+        body=document.getElementById("cardModalBody");
+  const by=it.plan_model?' · written by '+esc(String(it.plan_model).split("/").pop()):'';
+  title.innerHTML=`<b>${esc(it.cap||'—')}</b> · plan awaiting your approval<br>${esc(it.id)}${it.repo?' · repo: '+esc(it.repo):''}${by}`;
+  const cs=(it.plan_concerns||[]).filter(c=>c&&String(c).trim());
+  const con=cs.length?`<div class="modalHint">⚠ ${cs.length} concern${cs.length>1?'s':''} with this plan`
+      +`<ul>${cs.map(c=>`<li>${renderMD(String(c).trim())}</li>`).join("")}</ul></div>`:'';
+  body.innerHTML=con+`<div class="result">${renderMD(it.plan||"(no plan preview was produced — approving runs it blind)")}</div>`;
+  modal.hidden=false;
 }
 async function boardSignal(id, ok){
   // A swallowed failure here is the worst of the set: the run stays parked at its gate while

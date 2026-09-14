@@ -4897,6 +4897,61 @@ class EstopUiTests(unittest.TestCase):
         self.assertIn("stopping the service", btn)
 
 
+class BoardGatePlanTests(unittest.TestCase):
+    """The board's gate card carries its OWN Approve/Deny buttons, and a run whose reader has no
+    chat (an API-submitted `web-*` run never gets one — the browser owns chat creation) is decided
+    there or nowhere. It shipped with the buttons and WITHOUT the plan: `_board`'s awaiting_approval
+    branch forwarded only `risk_reason`, so a $1.07 write plan was approved sight-unseen on
+    web-0d73ed71. Same whitelist shape as GateStateForwardingTests — catch the forgotten
+    forwarding, not the logic."""
+
+    def _board_gate_branch(self):
+        src = open("server.py").read()
+        i = src.index('e["phase"] = "awaiting approval"')
+        return src[i:src.index("elif q.get(", i)]
+
+    def test_the_board_forwards_every_plan_field_its_gate_card_reads(self):
+        branch = self._board_gate_branch()
+        ui = ui_src()
+        m = re.search(r"function gateBlock\(it\)\{.*?\n\}", ui, re.S)
+        self.assertIsNotNone(m, "the board's gateBlock moved — re-point this test")
+        for f in sorted(set(re.findall(r"it\.(plan\w*)", m.group(0)))):
+            self.assertIn('e["%s"]' % f, branch,
+                          "the board's gate card reads it.%s but _board never forwards it" % f)
+
+    def test_the_board_gate_card_shows_the_plan_next_to_the_buttons(self):
+        """The buttons and the plan must come from ONE place — a card that renders the decision
+        without what is being decided is the whole bug."""
+        ui = ui_src()
+        self.assertIn("${askApprove?gateBlock(it):''}", ui,
+                      "the gate card's Approve/Deny no longer routes through gateBlock")
+        block = re.search(r"function gateBlock\(it\)\{.*?\n\}", ui, re.S).group(0)
+        self.assertIn("data-approve", block)
+        self.assertIn("renderMD(rest)", block, "the plan must be rendered on the card")
+        self.assertIn("No plan preview is available", block,
+                      "an empty plan must say so explicitly, not render as a bare approval")
+
+    def test_a_questions_only_plan_cannot_be_approved_from_the_board(self):
+        """The chat gate disables Approve when the plan proposes no operations. A board that still
+        offered it would just be the softer door onto the same blind yes."""
+        block = re.search(r"function gateBlock\(it\)\{.*?\n\}", ui_src(), re.S).group(0)
+        self.assertIn("splitPlanQuestions", block,
+                      "the board must split questions out the same way the chat gate does")
+        self.assertIn("questions.length&&!rest", block)
+        self.assertIn("disabled", block)
+
+    def test_the_whole_plan_is_readable_without_leaving_the_board(self):
+        """openCardModal fetches /api/board/full, which refuses a RUNNING run — and a gate card is
+        always RUNNING. The plan opener must render the card's own data instead."""
+        ui = ui_src()
+        m = re.search(r"function openPlanModal\(it\)\{.*?\n\}", ui, re.S)
+        self.assertIsNotNone(m, "openPlanModal is gone — the board can only show the clipped plan")
+        self.assertNotIn("/api/board/full", m.group(0),
+                         "a gate card is RUNNING, so board/full returns nothing to read")
+        self.assertIn("renderMD(it.plan", m.group(0))
+        self.assertIn('[data-plan]', ui, "nothing on the card opens the full plan")
+
+
 class BoardStageChipTests(unittest.TestCase):
     """`phase` collapses everything before the first attempt to a bare "running", so a card sat
     unchanged through routing, a 15-minute plan preview and the gate — a working run reads as a

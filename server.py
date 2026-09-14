@@ -578,6 +578,16 @@ async def _board(limit=40):
                 elif q.get("awaiting_approval"):
                     e["phase"] = "awaiting approval"
                     e["risk_reason"] = q.get("risk_reason")
+                    # The board's gate card carries its OWN Approve/Deny buttons, so it must
+                    # carry the plan they decide on — the same whitelist rule as _wf_state's
+                    # gate block, and broken here in exactly the way that comment warns about.
+                    # Measured on web-0d73ed71: an API-submitted run never gets a chat (the
+                    # browser owns that), so the board was the only surface offering the
+                    # decision, and it showed everything about the run except what was being
+                    # proposed — a $1.07 plan approved sight-unseen.
+                    e["plan"] = q.get("plan")
+                    e["plan_concerns"] = q.get("plan_concerns") or []
+                    e["plan_model"] = q.get("plan_model")
                 elif q.get("attempt"):
                     e["phase"] = f"running · try {q['attempt']}"
                 else:
