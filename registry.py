@@ -82,6 +82,7 @@ class Capability:
         self.tool_free = False                         # pure-LLM cap: eligible for LOCAL execution (issue #42; read-risk only)
         self.path = None                               # source .md of an agent/skill — inlined when the LOCAL runtime executes it
         self.declared_tools = []                       # frontmatter `tools:` grant, verbatim (mcp_client reads it to pick servers)
+        self.declared_mcp = []                         # Admin-set MCP servers (policy override; see apply_policy)
 
     def score(self, request):
         """This cap's lexical relevance to `request`, scored on its own. Prefer `rank()` for a
@@ -176,6 +177,13 @@ def apply_policy(caps, pol):
         # Optional-tier stock caps are an opt-in catalog: default OFF until enabled in Admin.
         c.enabled = o.get("enabled", getattr(c, "tier", None) != "optional")
         c.tool_free = bool(o.get("tool_free", False)) and c.risk == "read"
+        # Which MCP servers the LOCAL backend spawns for this cap, set in Admin. An agent's
+        # `tools:` line would say the same thing, but on the Claude path that line is the
+        # cap's COMPLETE tool grant — writing one purely to name a server silently revokes
+        # Bash/Edit/Write from the very cap that needs them. This override says it without
+        # touching the agent file, and `claude -p` ignores it (it inherits every server
+        # anyway), so it only ever changes the local run.
+        c.declared_mcp = [str(n) for n in (o.get("mcp") or []) if str(n).strip()]
     return caps
 
 

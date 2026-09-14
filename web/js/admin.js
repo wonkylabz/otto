@@ -704,7 +704,20 @@ async function saveModels(){
 }
 
 
+// The stdio MCP servers a LOCAL run can spawn, from /api/policy. Module-level because the
+// per-capability declaration form is opened from a click, long after renderAdmin returned.
+let SERVABLE_MCPS=[];
+// name -> {declared, frontmatter}. `frontmatter` is the half the form must render as fixed:
+// it comes from the cap's own `tools:` line, which is a file Otto does not own and on the
+// Claude path is that cap's COMPLETE tool grant — an unticked box here could not remove it
+// without rewriting the agent, and pretending otherwise would silently do nothing.
+let CAP_MCP={};
+
 function renderAdmin(data, models, el, settings){
+  SERVABLE_MCPS=data.servable_mcps||[];
+  CAP_MCP={};
+  (data.capabilities||[]).forEach(c=>{ CAP_MCP[c.name]={
+    declared:c.declared_mcp||[], frontmatter:c.frontmatter_mcp||[]}; });
   // ONE Execution control per capability. It used to be three (an exec dropdown, a local
   // dropdown and a TOOL-FREE pill) whose interaction was invisible: the tool-free pair silently
   // took attempt 1 away from whatever exec: was set to, so "exec: local + local: <same model>"
@@ -782,7 +795,22 @@ function renderAdmin(data, models, el, settings){
         +`${esc(latched.join(', '))} after three failed verifications in a row. Clear to give the `
         +`local backend another chance on the next run.">latched \u21ba</button>`
       : '';
-    return `<select class="capexec ${cur&&!gone?'set':''}" data-cap="${esc(c.name)}" title="which model runs this capability, and on which backend">${opts}</select>${clearBtn}`;
+    // WHICH MCP servers the local backend spawns for this cap — the other half of the
+    // Execution decision, and invisible until now. With no declaration the servers are picked
+    // by keyword-matching the request against every tool description, which a request that
+    // only points at a ticket ("work on this ticket <url>") cannot drive: run
+    // runbook-rb-e0f48559 needed New Relic and was handed two Kubernetes tools. Only shown
+    // where it can matter (a local model exists to run on) and only offering servers Otto can
+    // actually spawn — a claude.ai connector has nothing to spawn, on any backend.
+    const dm=(c.declared_mcp||[]);
+    const mcpBtn=(localModels.length && SERVABLE_MCPS.length)
+      ? `<button class="capmcp ${dm.length?'set':''}" data-mcpcap="${esc(c.name)}" title="${esc(
+          dm.length ? "local runs of this capability get: "+dm.join(", ")
+                    : "no MCP servers declared - a local run picks them by matching the request "
+                      +"text against tool descriptions, which fails when the request is only a link")
+        }">mcp ${dm.length?esc(String(dm.length)):'\u00b7'}</button>`
+      : '';
+    return `<select class="capexec ${cur&&!gone?'set':''}" data-cap="${esc(c.name)}" title="which model runs this capability, and on which backend">${opts}</select>${clearBtn}${mcpBtn}`;
   };
   // Per-capability reliability scorecard (issue #102), aggregated from the audit trail — shown
   // right beside the exec dropdown so a "downgrade this cap to a local model" decision has
@@ -1147,6 +1175,8 @@ function renderAdmin(data, models, el, settings){
     if(capEmpty) capEmpty.hidden=any;
   });
   el.querySelectorAll(".capexec").forEach(s=>s.addEventListener("change",()=>setCapBackend(s)));
+  el.querySelectorAll(".capmcp").forEach(b=>b.addEventListener("click",
+    ()=>showCapMcpForm(b.dataset.mcpcap,(CAP_MCP[b.dataset.mcpcap]||{}))));
   el.querySelectorAll(".latchclear").forEach(b=>b.addEventListener("click",async()=>{
     b.disabled=true; b.textContent="clearing\u2026";
     try{ await api("/api/cap-latch/clear",{name:b.dataset.cap}); }catch(e){}
@@ -1311,6 +1341,46 @@ function showCapForm(cap){
       risk:document.getElementById("cf-risk").value,
       prompt:document.getElementById("cf-prompt").value,
     },document.getElementById("cf-err"));
+    if(ok){ closeFormModal(); loadAdmin(); }
+  };
+}
+
+function showCapMcpForm(name, cur){
+  // Which stdio MCP servers a LOCAL run of this capability spawns. Deliberately NOT written
+  // into the agent's `tools:` frontmatter, which would say the same thing and revoke every
+  // built-in tool in the same stroke (`mcp_client.declared_servers`); and deliberately its own
+  // POST, because the whole-policy save this panel fires on any toggle does not carry it.
+  const declared=(cur.declared||[]), fixed=(cur.frontmatter||[]);
+  const c=openFormModal("<b>MCP servers</b><br>"+esc(name)+" &mdash; local backend only");
+  c.innerHTML=`<div class="aform">
+    <span class="sk-help">Which servers Otto spawns for a local run of this capability. With
+      none ticked they are chosen by matching the request text against every tool description
+      &mdash; fine for &ldquo;check the pods in dev&rdquo;, useless for a request that is only
+      a link. <code>claude -p</code> inherits every server either way, so this changes nothing
+      on the Claude backend.</span>
+    <div class="disclist" id="cm-list"></div>
+    <div class="ferr" id="cm-err"></div>
+    <div class="factions"><button class="btn approve" id="cm-save">Save</button><button class="btn decline" id="cm-cancel">Cancel</button></div>
+  </div>`;
+  const list=document.getElementById("cm-list");
+  SERVABLE_MCPS.forEach(n=>{
+    const isFixed=fixed.indexOf(n)>=0;
+    const row=document.createElement("label");
+    row.className="discrow";
+    const box=document.createElement("input");
+    box.type="checkbox"; box.className="cm-box"; box.value=n;
+    box.checked=isFixed||declared.indexOf(n)>=0;
+    box.disabled=isFixed;
+    const txt=document.createElement("span");
+    txt.textContent=" "+n+(isFixed?"  (from the capability's own tools: line)":"");
+    row.appendChild(box); row.appendChild(txt); list.appendChild(row);
+  });
+  document.getElementById("cm-cancel").onclick=closeFormModal;
+  document.getElementById("cm-save").onclick=async()=>{
+    const want=[...document.querySelectorAll(".cm-box")]
+      .filter(b=>b.checked && !b.disabled).map(b=>b.value);
+    const ok=await postForm("/api/cap-mcp",{name:name,servers:want},
+                            document.getElementById("cm-err"));
     if(ok){ closeFormModal(); loadAdmin(); }
   };
 }

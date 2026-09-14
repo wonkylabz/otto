@@ -258,13 +258,25 @@ def servable(pol=None):
 # --- what a capability asked for -------------------------------------------
 
 def declared_servers(cap):
-    """The MCP server names a capability's own `tools:` frontmatter references.
+    """The MCP server names this capability declares — its own `tools:` frontmatter, plus
+    anything an operator named for it in Admin (`registry.apply_policy`'s `declared_mcp`).
 
     An agent's `tools:` line is its COMPLETE tool grant on the Claude path (CLAUDE.md), so
     it is also the most honest statement of which servers it needs — and it's already
     written, for every cap that cares. Entries look like `mcp__newrelic__*`,
-    `mcp__claude_ai_Gmail__search_threads`, or a bare `mcp__grafana`."""
-    declared = getattr(cap, "declared_tools", None) or []
+    `mcp__claude_ai_Gmail__search_threads`, or a bare `mcp__grafana`.
+
+    But that line is also why it cannot be the ONLY source. A cap whose frontmatter names no
+    tools has the full built-in grant; adding `tools: mcp__newrelic__*` to say "it needs New
+    Relic" revokes Bash, Read and Write from it in the same stroke. The Admin override says
+    the one thing without the other, and is the only way to declare a server for a cap Otto
+    does not own the file of. Union, not precedence: a declaration is additive, and both
+    halves are a human's explicit statement of need.
+
+    Non-empty is load-bearing beyond server choice: it turns OFF `mcp_require_score` (the
+    request no longer has to prove each tool's relevance) and it feeds `unservable()`."""
+    declared = list(getattr(cap, "declared_tools", None) or [])
+    declared += [f"mcp__{n}" for n in (getattr(cap, "declared_mcp", None) or [])]
     names = []
     for t in declared:
         m = re.match(r"^mcp__([A-Za-z0-9_-]+?)(?:__.*)?$", str(t).strip())
@@ -479,12 +491,35 @@ def _record_catalogue(server, spec, tools, failed=False):
 
 
 _WORD = re.compile(r"[a-z]+")
+# Mirrors `registry._rank_tokens`: a pasted link's path segments ("…/infra/issues/494")
+# inject topic nouns the asker never said, and here they would choose the MCP fleet.
+_URL = re.compile(r"https?://\S+")
+
+# Filler that a TOOL DESCRIPTION is as likely to contain as any request, so an overlap on it
+# carries no information about relevance. The len>3 cut below removes "the"/"and"/"for" but
+# left the four-letter half of the same class in, and a single such hit is enough to decide
+# the whole fleet: run runbook-rb-e0f48559 offered a New Relic task two Kubernetes tools and
+# nothing else, because "Work on this ticket <url>" shares exactly one word with the
+# catalogue — "this", out of "This accesses node logs through the Kubernetes API". Every New
+# Relic tool scored 0 and was dropped by `require_score`. Sibling of
+# `memory._FACT_QUERY_STOP`, deliberately not shared with it: that list is tuned for prose
+# facts, this one must keep verbs a tool name lives on ("list", "query", "logs").
+_STOP = frozenset("""
+about also another anything been before being both cannot could does doing done each else even
+ever every from give given have having here into itself just like made make many more most much
+must need none only other over same should some such than that their them then there these they
+thing things this those through very want were what when where which while whose will with
+within would your yours
+""".split())
 
 
 def _words(text):
     """Significant words, mirroring `engine._keywords` / `registry.Capability.score` so tool
-    selection ranks a request the same way routing shortlists a capability."""
-    return {w for w in _WORD.findall((text or "").lower()) if len(w) > 3}
+    selection ranks a request the same way routing shortlists a capability — minus `_STOP`,
+    which mirrors nothing because the thing being ranked here is a tool DESCRIPTION, i.e.
+    prose, not a capability's one-line summary."""
+    text = _URL.sub(" ", (text or "").lower())   # a pasted URL's path is topic noise, not vocabulary
+    return {w for w in _WORD.findall(text) if len(w) > 3 and w not in _STOP}
 
 
 def _score(text, want):
@@ -495,15 +530,33 @@ def _score(text, want):
     return len(_words(text) & want)
 
 
-def _rank(items, key, request, budget, require_score):
+def _rank(items, key, request, budget, require_score, owner=None):
     """Top-`budget` items by request relevance. `require_score` drops non-matching items
-    entirely (undeclared caps) instead of filling the budget with arbitrary ones."""
+    entirely (undeclared caps) instead of filling the budget with arbitrary ones.
+
+    `owner` (an item -> server name) makes the trim take from each server in TURN rather than
+    draining them in order. A declared cap scores nothing when the request is a pointer
+    ("work on this ticket <url>"), so every tool ties and the plain cut hands the whole
+    25-tool budget to whichever server sorted first: declaring three servers delivered the
+    first one's 19 tools, 6 of the second's and NONE of the third's — and `Pool` only records
+    the count it dropped, so the missing server looks like one that was never declared."""
     want = _words(request)
     scored = [(_score(key(it), want), i, it) for i, it in enumerate(items)]
     if require_score:
         scored = [t for t in scored if t[0] > 0]
     scored.sort(key=lambda t: (-t[0], t[1]))       # ties keep discovery order
-    return [it for _s, _i, it in scored[:budget]]
+    if owner is None or len(scored) <= budget:
+        return [it for _s, _i, it in scored[:budget]]
+    queues = {}                                    # server -> its items, best first
+    for t in scored:
+        queues.setdefault(owner(t[2]), []).append(t)
+    kept = []
+    while len(kept) < budget and any(queues.values()):
+        for q in queues.values():                  # insertion order = best-scoring server first
+            if q and len(kept) < budget:
+                kept.append(q.pop(0))
+    kept.sort(key=lambda t: (-t[0], t[1]))         # restore relevance order for the offer
+    return [it for _s, _i, it in kept]
 
 
 # --- the stdio JSON-RPC session --------------------------------------------
@@ -748,7 +801,8 @@ class Pool:
                         or {"type": "object", "properties": {}}}}))
         budget = config.LOCAL_MCP_MAX_TOOLS if max_tools is None else max_tools
         kept = _rank(found, lambda f: f"{f[0]} {f[3]['function']['description']}",
-                     request or "", budget, require_score) if budget else found
+                     request or "", budget, require_score,
+                     owner=lambda f: f[1].name) if budget else found
         self.trimmed = len(found) - len(kept)
         for offered, sess, real, spec_dict in kept:
             self._route[offered] = (sess, real)

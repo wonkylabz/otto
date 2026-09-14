@@ -6934,6 +6934,34 @@ class McpNoteEndpointTests(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
 
+    def test_a_capability_mcp_declaration_is_stored_and_validated(self):
+        """`/api/cap-mcp` is what makes a local run of a pointer-shaped request reach the
+        server it needs. Both halves resolve server-side: an unknown capability and a name
+        that is not a launchable stdio server are refused, because the API is unauthenticated
+        and this key decides which subprocess a later run spawns."""
+        cap = registry.Capability("agent", "sre-minion", "works a ticket")
+        caps, servable = self.server.CAPS, mcp_client.servable
+        self.server.CAPS = [cap]
+        mcp_client.servable = lambda pol=None: {"grafana": {}, "kubernetes": {}}
+        try:
+            self.assertEqual(self._post("/api/cap-mcp",
+                                        {"name": "nope", "servers": ["grafana"]})[0], 400)
+            self.assertEqual(self._post("/api/cap-mcp",
+                                        {"name": "sre-minion",
+                                         "servers": ["claude_ai_Gmail"]})[0], 400)
+            status, out = self._post("/api/cap-mcp",
+                                     {"name": "sre-minion", "servers": ["kubernetes"]})
+            self.assertEqual((status, out["servers"]), (200, ["kubernetes"]))
+            # stored where apply_policy reads it, and applied to the live cap immediately
+            self.assertEqual(policy.load()["capabilities"]["sre-minion"]["mcp"], ["kubernetes"])
+            self.assertEqual(cap.declared_mcp, ["kubernetes"])
+            # ...and an empty list CLEARS it rather than storing "mcp": []
+            self._post("/api/cap-mcp", {"name": "sre-minion", "servers": []})
+            self.assertNotIn("mcp", policy.load()["capabilities"]["sre-minion"])
+        finally:
+            self.server.CAPS = caps
+            mcp_client.servable = servable
+
     def test_a_note_is_saved_and_read_back_by_the_run_path(self):
         status, out = self._post("/api/mcp/note", {"name": "grafana", "notes": "read-only token"})
         self.assertEqual((status, out["notes"]), (200, "read-only token"))

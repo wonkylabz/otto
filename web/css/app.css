@@ -1302,9 +1302,14 @@
     border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 7px; width: 150px; cursor: pointer; }
   .capexec.set { color: var(--accent); border-color: var(--accent); }
   .capexec:focus { outline: none; border-color: var(--accent); }
-  .latchclear { font-family: var(--mono); font-size: 10px; color: var(--warn);
+  .latchclear, .capmcp { font-family: var(--mono); font-size: 10px; color: var(--warn);
     background: transparent; border: 1px solid var(--warn); border-radius: var(--r-sm);
     padding: 2px 5px; margin-left: 5px; cursor: pointer; white-space: nowrap; }
+  /* Same control geometry, opposite provenance to the latch beside it: a latch is something
+     that HAPPENED to the capability, this is something the operator SET, so it must not
+     wear the warning colour. Quiet until it holds a declaration. */
+  .capmcp { color: var(--dim); border-color: var(--line); }
+  .capmcp.set { color: var(--accent); border-color: var(--accent); }
   .scorechip { display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .01em; flex: none;
     padding: 3px 7px; border-radius: var(--r-sm); border: 1px solid var(--line); cursor: default;
     white-space: nowrap; color: var(--dim); background: var(--raised); }
