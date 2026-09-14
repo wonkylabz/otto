@@ -33,7 +33,7 @@
 - **An errored fix round ENDS the loop** (`is_error` → inconclusive, not counted) — it commits nothing, so re-reviewing re-runs the same judge over the same diff to the same verdict, spending the whole budget (`web-2bd1a194`).
 - **A fix round never runs on the LOCAL backend** (`_FIX_NO_LADDER` → `local_disabled`) — both loops are one-shot, with no rung above them for `LOCAL_FALLBACK` to cover a local death with.
 - **A post-PR fix round checks out the PR's head branch, not `otto/<run_id>`** (`_fix_workspace`) — a run amending an existing PR never pushed its own; a round that can't provision goes inconclusive, not Failed.
-- **The PR DESCRIPTION describes the change, never the run** (`contracts._PR_BODY_RULE` → `_pr_body_note`) — `pr_copy`'s body is bounded but is not the only writer, and rounds APPEND. Countered in both `fix_critique`s and `review_request` too (`PrBodyContractTests`).
+- **The PR's title, body and commit msg describe the CHANGE, never the run** (`_PR_BODY_RULE`; `pr_copy(summary_is_error=)`←the ladder's `is_error`) — an errored `result` is a stderr tail no prefix list catches; rounds APPEND (`PrBodyContractTests`, `PrCopyTests`).
 
 ## Terminal state / no silent failure
 
