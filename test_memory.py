@@ -55,7 +55,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
 class RedactTests(unittest.TestCase):
@@ -1508,20 +1508,27 @@ class ScorecardTests(unittest.TestCase):
         self.assertEqual(cards["agent:sre-qa"]["pass_rate"], None)
 
     def test_both_post_PR_loops_stamp_their_verdict_source(self):
-        # The wid rule above is the RETROACTIVE half; this is the root fix. Each loop builds its
-        # own verdict dict for record_attempt (judge_review/judge_qa return {verdict, critique},
-        # not a source), so a source omitted here lands as a sourceless row that reads as a
-        # verify verdict about the capability. Asserted on the source because the loops are
-        # workflow code — there is no way to call one without a Temporal worker, and the mistake
+        # The wid rule above is the RETROACTIVE half; this is the root fix. The loop builds the
+        # verdict dict for record_attempt itself (judge_review/judge_qa return {verdict,
+        # critique}, not a source), so a source omitted here lands as a sourceless row that reads
+        # as a verify verdict about the capability. Asserted on the source because the loop is
+        # workflow code — there is no way to call it without a Temporal worker, and the mistake
         # is a missing key in a literal.
-        body = open("workflows.py").read()
-        for marker, source in (('"[review] ', "review"), ('"[QA] ', "qa")):
-            i = body.index(marker)
-            call = body[i:body.index('"remember": False', i)]
-            self.assertIn('"passed": verdict["verdict"] == "pass"', call)
-            self.assertIn(f'"source": "{source}"', call,
-                          f'the {source} loop must stamp verdict_source, or its rounds are '
-                          f'counted as capability failures')
+        #
+        # Both loops are one parameterised body since issue #58, so the stamp is read once from
+        # the loop and once from each spec: a spec that dropped `source` would leave the loop
+        # stamping None on a round the scorecard then prices as the capability's failure.
+        import inspect, wf_postpr
+        body = inspect.getsource(wf_postpr.PostPrMixin._run_fix_loop)
+        i = body.index('"[{spec[\'label\']}] ')
+        call = body[i:body.index('"remember": False', i)]
+        self.assertIn('"passed": verdict["verdict"] == "pass"', call)
+        self.assertIn('"source": spec["source"]', call,
+                      "the post-PR loop must stamp verdict_source, or its rounds are counted "
+                      "as capability failures")
+        self.assertEqual({k: v["source"] for k, v in wf_postpr._LOOPS.items()},
+                         {"review": "review", "qa": "qa"},
+                         "a post-PR loop lost the verdict source the scorecard filters on")
 
     def test_a_fix_round_wid_is_not_mistaken_for_a_review_round(self):
         # "-revfix<N>" / "-fix<N>" are the FIX runs of the same loops. They record no verdict at

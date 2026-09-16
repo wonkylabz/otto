@@ -58,7 +58,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
 class PrCopyTests(unittest.TestCase):
@@ -151,7 +151,7 @@ class PrCopyTests(unittest.TestCase):
         # The flag is only worth having if it actually travels: workflow -> finalize_workspace
         # payload -> engine.pr_copy. A grep guard, because the three hops live in three files
         # and a dropped one is invisible (the PR still opens, just with the failure as its copy).
-        wf = pathlib.Path("workflows.py").read_text()
+        wf = workflow_src()
         self.assertIn('"summary_is_error": bool(is_error)', wf)
         self.assertIn('is_error=bool(out.get("is_error"))', wf)
         acts = pathlib.Path("activities.py").read_text()
@@ -353,13 +353,23 @@ class PrBodyContractTests(unittest.TestCase):
         # asking for exactly this ("update the PR description (`gh pr edit 565`) (append a
         # section, don't wipe the existing description)"). A note in the system context is not
         # enough on its own — the immediate instruction has to contradict it.
-        import workflows
-        for fn in (workflows.OttoWorkflow._run_qa_loop,
-                   workflows.OttoWorkflow._run_review_loop):
-            src = inspect.getsource(fn)
-            self.assertIn("do NOT open a new PR", src)
-            self.assertIn("append", src, f"{fn.__name__} does not forbid appending")
-            self.assertIn("PR description", src, f"{fn.__name__} does not name the description")
+        #
+        # Both rounds are ONE loop since issue #58, so the order below is shared and this reads
+        # it once — but what each loop actually SENDS is `fix_lead + _FIX_ORDER + critique`, and
+        # a spec that stopped concatenating the shared half would leave this passing. Hence the
+        # second half: every loop's critique is rebuilt here exactly as the loop builds it.
+        import wf_postpr
+        self.assertIn("do NOT open a new PR", wf_postpr._FIX_ORDER)
+        self.assertIn("append", wf_postpr._FIX_ORDER, "the fix order does not forbid appending")
+        self.assertIn("PR description", wf_postpr._FIX_ORDER,
+                      "the fix order does not name the description")
+        src = inspect.getsource(wf_postpr.PostPrMixin._run_fix_loop)
+        self.assertIn('spec["fix_lead"] + _FIX_ORDER', src,
+                      "the fix round no longer sends the shared order with its own lead")
+        for kind, spec in wf_postpr._LOOPS.items():
+            self.assertTrue(spec["fix_lead"].endswith("Address them, ")
+                            or spec["fix_lead"].endswith("Address these findings, "),
+                            f"{kind}'s lead must hand straight over to the shared order")
 
     def test_the_reviewer_may_not_raise_the_finding_at_all(self):
         # Upstream of the fix round: judge_review folds the reviewer's findings VERBATIM into
@@ -1072,7 +1082,7 @@ class ChatGitIdentityForwardingTests(unittest.TestCase):
         import list at the top of the module and silently extracted that instead the moment an
         activity name was added to it (a passing test reading the wrong bytes is worse than a
         failing one)."""
-        src = self._src("workflows.py")
+        src = workflow_src()
         i = src.index("execute_activity(\n            record_chat,")
         return src[i:src.index("start_to_close_timeout", i)]
 
@@ -1914,7 +1924,7 @@ class PrTargetTests(unittest.TestCase):
     def test_the_fresh_provision_call_site_uses_the_target(self):
         """Every other piece of this is dead code if the fresh repo-mode provision still hardcodes
         a default-branch clone."""
-        src = open("workflows.py").read()
+        src = workflow_src()
         i = src.index("provision_workspace,\n                {\"repo\": repo, \"run_id\": workflow.info().workflow_id,")
         block = src[i:i + 400]
         self.assertIn('"from_branch": bool(target)', block)
@@ -1925,7 +1935,7 @@ class PrTargetTests(unittest.TestCase):
     def test_finalize_amends_the_targeted_pr_instead_of_opening_a_second(self):
         """Branching off an open PR and then running `gh pr create` anyway would produce exactly
         the duplicate-PR outcome this feature exists to prevent."""
-        src = open("workflows.py").read()
+        src = workflow_src()
         # Anchored on the call, not its indentation — the payload is what matters, and
         # pinning leading spaces re-breaks this on any extraction that moves the block.
         i = re.search(r"finalize_workspace,\s*\{\"run_id\": workflow\.info\(\)\.workflow_id", src)
@@ -1937,10 +1947,49 @@ class PrTargetTests(unittest.TestCase):
     def test_the_result_says_it_updated_a_pr_rather_than_opened_one(self):
         """Reporting "opened draft PR" after pushing to someone else's branch names a PR that
         does not exist, and hides the one decision the reader most needs to see."""
-        src = open("workflows.py").read()
+        src = workflow_src()
         self.assertIn("**Updated PR #", src)
         i = src.index("**Updated PR #")
         self.assertIn("self._pr_target['branch']", src[i:i + 400])
+
+
+class PostPrLoopSpecTests(unittest.TestCase):
+    """The review and QA loops are one body driven by `wf_postpr._LOOPS` (issue #58), so a typo in
+    a spec is a silent wrong answer rather than a crash: `setattr(self, spec["attr"], …)` on a name
+    `OttoWorkflow.__init__` never declared just grows a new attribute, `status()` keeps reading the
+    real one, and the Board card sits on "running" for the whole loop. Nothing else can see that —
+    the loops need a Temporal worker to run at all."""
+
+    def test_every_spec_names_state_the_workflow_actually_declares(self):
+        import wf_postpr, workflows
+        wf = workflows.OttoWorkflow()
+        for kind, spec in wf_postpr._LOOPS.items():
+            self.assertTrue(hasattr(wf, spec["attr"]),
+                            f"{kind} writes its state to self.{spec['attr']}, which "
+                            "OttoWorkflow.__init__ never declares — status() cannot see it")
+
+    def test_no_two_specs_share_a_wid_suffix_or_a_state_attribute(self):
+        """Both loops run in the SAME workflow, one after the other. A shared wid makes the second
+        round's audit rows collide with the first's; a shared attr makes one loop's progress
+        overwrite the other's on the card."""
+        import wf_postpr
+        for field in ("attr", "wid", "fix_wid", "cap_field", "source"):
+            vals = [spec[field] for spec in wf_postpr._LOOPS.values()]
+            self.assertEqual(len(set(vals)), len(vals), f"two loops share a {field}: {vals}")
+
+    def test_the_audit_trails_wid_pattern_still_matches_what_the_loops_mint(self):
+        """`audit._POST_PR_WID` is a hand-written mirror of these suffixes — it is how the 49
+        historical rounds that predate `verdict_source` are recognised at all. A spec renaming
+        its suffix leaves the pattern reading a shape nothing mints, and the drift is invisible:
+        the scorecard just goes back to pricing those rounds as capability failures."""
+        import audit, wf_postpr
+        for kind, spec in wf_postpr._LOOPS.items():
+            self.assertRegex(f"web-abc1234-{spec['wid']}0", audit._POST_PR_WID,
+                             f"{kind}'s round wid is not what the audit trail looks for")
+            # ...and a FIX round must NOT match: it records `verdict: None` and is a run of the
+            # write capability, not a judgement about the PR.
+            self.assertIsNone(audit._POST_PR_WID.search(f"web-abc1234-{spec['fix_wid']}0"),
+                              f"{kind}'s fix-round wid reads as a judging round")
 
 
 class GroundingTests(unittest.TestCase):
@@ -2062,7 +2111,7 @@ class GroundingTests(unittest.TestCase):
 
     def test_the_note_and_the_judge_rule_are_both_threaded_from_the_workflow(self):
         """Computed and then dropped on the floor is the classic shape of this bug."""
-        src = open("workflows.py").read()
+        src = workflow_src()
         self.assertEqual(src.count('"grounding": self._grounding'), 4,
                          "grounding must reach run_capability, verify_capability, the "
                          "resumed-turn run_capability AND the brainstorm turn — a resume is the "
@@ -2214,7 +2263,7 @@ class PreviewModelTierTests(unittest.TestCase):
     def test_the_gate_is_told_who_wrote_the_plan(self):
         """Approving a plan without being told its author is how the downgrade went unnoticed."""
         self.assertIn('"model": preview.get("model")', open("activities.py").read())
-        self.assertIn('"plan_model": self._plan_model', open("workflows.py").read())
+        self.assertIn('"plan_model": self._plan_model', workflow_src())
         # server._wf_state's gate block is a WHITELIST — absent here, the browser never sees it.
         self.assertIn('"plan_model": st.get("plan_model")', open("server.py").read())
         ui = ui_src()

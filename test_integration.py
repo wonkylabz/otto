@@ -7073,3 +7073,49 @@ class UiAssetRouteTests(unittest.TestCase):
                           "the asset route caches, so a UI edit needs a restart again")
         finally:
             os.unlink(path)
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class WorkflowReplayCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    """A workflow already IN FLIGHT replays its recorded history against whatever code the worker
+    has now. Reordering, adding or dropping one activity command is therefore not a refactor: it
+    is a NondeterminismError on the next workflow task, and no restart fixes it — the run has to
+    be terminated by hand and resubmitted.
+
+    Every other guard here reads the source or drives a fresh run, and neither can see this: the
+    refactored code is self-consistent, so a fresh run passes while every run started before the
+    deploy dies. The fixture is a real history recorded from the pre-#58 code (the repo-mode write
+    path: gate, ladder, PR, then a review round that FAILED, a fix round on the PR's own branch
+    and a clean re-review — 27 activities), replayed here against the current workflow.
+
+    Re-record it only when an activity-order change is deliberate, and say so in the commit."""
+
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "regress", "fixtures", "history-review-loop-pre58.json")
+
+    async def test_a_pre_split_history_still_replays(self):
+        import json
+        from temporalio.client import WorkflowHistory
+        from temporalio.worker import Replayer
+        from workflows import OttoWorkflow
+        with open(self.FIXTURE, encoding="utf-8") as fh:
+            hist = WorkflowHistory.from_json("replay-fixture", json.load(fh))
+        await Replayer(workflows=[OttoWorkflow]).replay_workflow(hist)
+
+    def test_the_fixture_still_covers_the_loops_it_was_recorded_for(self):
+        """A fixture that lost the post-PR half would replay green while proving nothing about
+        the code this test exists to protect."""
+        import json
+        with open(self.FIXTURE, encoding="utf-8") as fh:
+            events = json.load(fh)["events"]
+        order = [e["activityTaskScheduledEventAttributes"]["activityType"]["name"]
+                 for e in events
+                 if e["eventType"] == "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED"]
+        for name in ("plan_capability", "provision_workspace", "run_capability",
+                     "verify_capability", "finalize_workspace", "review_capability",
+                     "judge_review", "pr_head_branch", "cleanup_workspace"):
+            self.assertIn(name, order, f"the fixture no longer exercises {name}")
+        self.assertEqual(order.count("review_capability"), 2,
+                         "the fixture must hold a failed review AND the clean re-review")
+        self.assertGreaterEqual(order.count("run_capability"), 2,
+                                "the fixture must hold the fix round, not just the first attempt")

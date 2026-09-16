@@ -64,7 +64,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
 class CronTests(unittest.TestCase):
@@ -2339,8 +2339,7 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         PENDING_STALE_S afterwards; and the gate-armed marker stands for GATE_STALE_S, so a later
         plain "no" reads as a verdict on a finished run. Observed live: a DM went deaf for 30
         minutes after a decline (`slack-b-D0BVD1F856Y-1788736699-386419`, denied 11:41:52)."""
-        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "workflows.py")).read()
+        src = workflow_src()
         block = src[src.index('msg = "Declined — nothing was run."'):
                     src.index("await self._record_chat(params, request, msg, resume, cap)")]
         # The delivery must NOT be nested under the expiry branch.
@@ -2407,8 +2406,7 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         self.assertEqual(armed, [])
 
     def test_the_workflow_tells_the_asker_once_and_cannot_die_doing_it(self):
-        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "workflows.py")).read()
+        src = workflow_src()
         gate = src[src.index('self._enter("GATE")'):src.index("if self._decision is not None:")]
         self.assertIn("interim_notice", gate)
         # Once per run, not once per revision round: the asker is not the one revising, so a
@@ -4227,7 +4225,7 @@ class MascotStateTests(unittest.TestCase):
         animating and simply stops telling the truth about which stage it is."""
         table = self._stage_table()
         moods = set(re.findall(r"^\s*([A-Z]+):", table, re.M))
-        emitted = set(re.findall(r'self\._enter\("([A-Z]+)"\)', open("workflows.py").read()))
+        emitted = set(re.findall(r'self\._enter\("([A-Z]+)"\)', workflow_src()))
         self.assertTrue(emitted, "no stages found in workflows.py - the regex has drifted")
         self.assertEqual(emitted - moods, set(),
                          f"stages with no mascot mood: {sorted(emitted - moods)}")
@@ -4991,7 +4989,7 @@ class BoardStageChipTests(unittest.TestCase):
         """A bare uppercase token with no tooltip is jargon; the chip exists to orient."""
         ui = ui_src()
         helped = set(re.findall(r"^\s*(?:const STAGE_HELP=\{)?([A-Z]+):", ui, re.M))
-        wf = open("workflows.py").read()
+        wf = workflow_src()
         emitted = set(re.findall(r'self\._enter\("([A-Z]+)"\)', wf))
         self.assertTrue(emitted, "no stages found in workflows.py — the regex has drifted")
         self.assertEqual(emitted - helped, set(),
@@ -5002,7 +5000,7 @@ class BoardStageChipTests(unittest.TestCase):
         is missing from ONE theme silently falls back to the same grey as its neighbour there —
         the colour language works in four themes and quietly stops in the fifth."""
         ui = ui_src()
-        wf = open("workflows.py").read()
+        wf = workflow_src()
         emitted = {s.lower() for s in re.findall(r'self\._enter\("([A-Z]+)"\)', wf)}
         self.assertTrue(emitted, "no stages found in workflows.py — the regex has drifted")
         for st in sorted(emitted):
@@ -6139,8 +6137,7 @@ class PrReviewWiringTests(unittest.TestCase):
         """The chat copy is written mid-run and the returned result at the end, from two
         different places — applying the prefix to only one makes the Board card and the chat
         thread disagree about what the report says, which is how this was noticed."""
-        with open(os.path.join(self.ROOT, "workflows.py"), encoding="utf-8") as f:
-            src = f.read()
+        src = workflow_src()
         run_fn = src.split("    async def run(self, params) -> dict:", 1)[1].split("\n    async def ", 1)[0]
         chat_fn = src.split("    async def _record_chat(", 1)[1].split("\n    async def ", 1)[0]
         self.assertIn("contracts.lead_with", run_fn, "the returned result skips the lead line")
