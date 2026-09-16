@@ -1,6 +1,8 @@
 # Ingress — Slack, GitHub board, schedules, webhooks
 
-Five adapters normalizing into one `OttoWorkflow`: web chat (`web/index.html`+`server.py`), Temporal Schedules (`scheduler.py`), webhooks (`events.py`), GitHub board (`board.py`), Slack (`slack.py`). Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver to `reply_to`).
+Five adapters normalizing into one `OttoWorkflow`: web chat (`web/index.html`+`server.py`), Temporal Schedules (`scheduler.py`), webhooks (`events.py`), GitHub board (`board.py`), Slack (`slack.py`).
+
+Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver to `reply_to`).
 
 ## Slack
 
@@ -13,7 +15,7 @@ Five adapters normalizing into one `OttoWorkflow`: web chat (`web/index.html`+`s
 - **An ack is a REACTION, not a post** (`slack.ACK_REACTION`, `activities.poll_slack`) — a posted ack promises a reply before there is one, so a `NO_REPLY` turn read as a dead run. Exception: USER first contact, whose ack introduces Otto (`SlackListenerActivityTests`).
 - **A reply to Otto's OWN question is never silence** (`contracts._DIRECT_REPLY_FORMAT`) — it reads as an acknowledgement, and the decision Otto asked for is left outstanding with nobody told (`SlackDirectReplyContractTests`).
 - **A pleasantry never starts a run** (`slack.is_pleasantry`) — narrow predicate, any `?`/digit/URL/mention bails out.
-- **A thread Otto replied in is watched** (`slack._poll_threads`) — `conversations.history` omits thread replies. `conversations.replies` includes the parent and treats `oldest` as inclusive, so filter `ts > cursor` yourself. One turn at a time via a pending flag (`PENDING_STALE_S`=1800).
+- **A thread Otto replied in is watched** (`slack._poll_threads`) — `history` omits thread replies. `conversations.replies` includes the parent and treats `oldest` as inclusive, so filter `ts > cursor` yourself. One turn at a time via a pending flag (`PENDING_STALE_S`=1800).
 - **Continuity is per-conversation** (`slack.conversation_key`) — a DM keys on the channel, a channel thread on `channel|thread_ts`. Keying a DM on the thread breaks continuity.
 - **One-turn-at-a-time is DERIVED, never a stored flag** (`slack.is_busy` → `run_alive`) — `pending_at` is cleared only on DELIVERY, so any terminal path that skips it (a decline shipped this) leaves a DM deaf for 30min. Unknown = still running (`SlackConversationBusyTests`).
 - **A new task in an old conversation is handed off, not resumed** (`engine.followup_handoff`) — resume binds the session's cap for life and skips repo-mode/verify/review.
@@ -64,16 +66,21 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 
 ## Runbooks / scheduler
 
-`runbooks.py` owns the definition (`data/runbooks.json`), `scheduler.py` the Temporal-schedule layer. A runbook is a superset of a schedule: `steps:[]` = a saved request, `+doc` = the same with prose, `steps:[…]` = a human-authored dependency graph. Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_legacy`) — re-keying orphans every live `sched-<id>`.
+`runbooks.py` owns the definition (`data/runbooks.json`), `scheduler.py` the Temporal-schedule layer. A runbook is a superset of a schedule: `steps:[]` = a saved request, `+doc` = the same with prose, `steps:[…]` = a human-authored dependency graph.
+
+Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_legacy`) — re-keying orphans every live `sched-<id>`.
 
 - **A human-authored graph is never re-planned** (`engine.run_plan(replan=False)`) — rewriting a person's plan delivers something they never approved. With no tail repair, `write_escalate` flips ON: escalating the model is the only recovery.
 - **Per-step caps resolve up front or the plan never starts** (`engine._plan_step_caps`) — failing at step 7 has already spent the money.
 - **A runbook's `doc` IS its approved plan** — bound to `self._plan` *before* the gate, so it rides into execution and the judge and replaces the plan-preview pass.
 - **A cron and a required param with no default are mutually exclusive** (`runbooks.normalize`) — an empty substitution turns "decommission {{env}}" into an unscoped instruction. Same reason an unknown placeholder is left verbatim.
 - **The store keeps a cap NAME, never its risk** — resolved via `runbooks.resolve_cap` at fire time, so a reclassified cap gates next run instead of firing forever under a stale `read`.
-- **"Run now" starts a workflow directly, not `ScheduleHandle.trigger()`** — a schedule's action args are frozen at creation, so triggering runs the defaults while the operator watches the form they just filled in. That loses `ScheduleOverlapPolicy.SKIP`, so `scheduler._in_flight` re-enforces no-stacking. An on-demand runbook has no Schedule object and stays editable with Temporal down.
+- **"Run now" starts a workflow directly, not `ScheduleHandle.trigger()`** — a schedule's action args are frozen at creation, so triggering runs the defaults while the operator watches the form they just filled in.
+- Starting directly loses `ScheduleOverlapPolicy.SKIP`, so `scheduler._in_flight` re-enforces no-stacking. An on-demand runbook has no Schedule object and stays editable with Temporal down.
 
-**Temporal Schedules** are durable and out-of-process; they fire whenever Temporal server + worker are up. Crons use server timezone (`OTTO_SCHEDULE_TZ`). `data/runbooks.json` is source-of-truth; `scheduler.reconcile()` rebuilds at startup and GCs any schedule whose runbook lost its cron. `scheduler` shadows `list()` — use `[*x]`.
+**Temporal Schedules** are durable and out-of-process; they fire whenever Temporal server + worker are up. Crons use server timezone (`OTTO_SCHEDULE_TZ`).
+
+`data/runbooks.json` is source-of-truth; `scheduler.reconcile()` rebuilds at startup and GCs any schedule whose runbook lost its cron. `scheduler` shadows `list()` — use `[*x]`.
 
 ## Webhooks
 
@@ -83,7 +90,8 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 
 ## Cross-ingress
 
-- **Every mutating POST is origin-checked** (`server.Handler._csrf_ok`) — the API is unauthenticated by design, so without it any page the user visits can start a pinned WRITE run or approve its own gate cross-site. Absent `Origin` = allowed (curl/tests/webhooks); `/api/events/` is exempt (its HMAC is its auth); escape hatch `OTTO_ALLOWED_ORIGINS` (`test_integration.CsrfOriginGuardTests`).
+- **Every mutating POST is origin-checked** (`server.Handler._csrf_ok`) — the API is unauthenticated by design, so without it any page the user visits can start a pinned WRITE run or approve its own gate cross-site (`test_integration.CsrfOriginGuardTests`).
+- Absent `Origin` = allowed (curl/tests/webhooks); `/api/events/` is exempt (its HMAC is its auth); escape hatch `OTTO_ALLOWED_ORIGINS`.
 - **A web route that starts a run is gated in `_wf_start`, not by path** (`server.Paused` -> 409) — the dispatcher's allowlist named submit/continue only, so `/api/needs-you/retry` started a run under the stop, pre-authorized, and dismissed its own card (`EstopWebStartTests`).
 - **An identity lookup caches only a RESOLVED answer and rate-limits the failure** (`slack.whoami`, `pr_review.viewer`) — caching the miss goes deaf until a restart, retrying it costs 15-30s a panel load, and the window stays under the poll interval (`PrReviewViewerCacheTests`).
 - **A SKIP schedule bounds its execution** (`config.POLL_TIMEOUT_FACTOR`) — a workflow task failing forever never closes the run, so `ScheduleOverlapPolicy.SKIP` skips every later fire and the ingress goes deaf until a hand terminate (`PollScheduleExecutionTimeoutTests`).

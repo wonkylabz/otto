@@ -22,7 +22,10 @@ Moving a rule down a tier is a real win. Adding one at the top is a per-run tax 
 
 ## Writing a rule
 
-**One imperative + its why, ≤280 characters.** Longer means it's two rules — split it.
+**One imperative + its why, ≤280 characters.** Longer means it's two rules — split it. This
+is now absolute: `MAX_OVER_CAP` is 0, so an over-cap line fails the suite (#56). Splitting a
+rule whose key sits in `UNGUARDED` gives the second half a new key — write that half as a plain
+`- ` bullet if it is the same rule's other clause, not a second assertion.
 
 **Name a guard test instead of describing it.** `(test_core.SetupWizardTests)` beats a
 paragraph reconstructing what the test asserts.
@@ -36,7 +39,7 @@ its own commit subject is a second copy of the git log.
 ## The ceilings
 
 `test_core.ClaudeMdBudgetTests` enforces three: resident bytes, total `.claude/rules/` bytes,
-and over-cap lines across both tiers. All are ratchets carrying no headroom, so adding a rule
+and over-cap lines across both tiers (now 0). All are ratchets carrying no headroom, so adding a rule
 fails the suite until something is deleted or merged.
 
 Raising one is an explicit constant edit that shows up in the diff — that is the point. When a

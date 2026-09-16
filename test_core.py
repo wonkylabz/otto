@@ -2218,31 +2218,20 @@ class RuleEnforcementTests(unittest.TestCase):
         # --- engine-core.md (2) ---
         "engine-core.md:One store alias, engine._DB (=config.DB_PATH)",
         "engine-core.md:engine.py is a FACADE, and callers keep addressing engine.X",
-        # --- gateway-backends.md (27) ---
-        "gateway-backends.md:--setting-sources user for any run with no cwd of its own",
-        "gateway-backends.md:--strict-mcp-config only on tool-free calls",
-        "gateway-backends.md:A Read(//path/",
+        # --- gateway-backends.md (16) ---
         "gateway-backends.md:A cap failing on a local model is latched off it ACROSS runs",
-        "gateway-backends.md:A cap needing a connector must not run locally",
         "gateway-backends.md:A context compaction must reach the caller or it is re-paid every turn",
-        "gateway-backends.md:A deny rule covers rm through Bash, not just writes",
         "gateway-backends.md:A local resume saves IN PLACE",
-        "gateway-backends.md:A path deny rule has exactly one working spelling: Edit(//abs/",
         "gateway-backends.md:A resume follows the SESSION's backend, never the phase model",
         "gateway-backends.md:A wall crosses to the engine as wall_reason (a plain string), never a ",
         "gateway-backends.md:Claude fallback is a flag",
-        "gateway-backends.md:Every REGISTERED repo's live checkout is write-denied by default",
         "gateway-backends.md:Every local-endpoint request takes its headers from gateway.request_he",
         "gateway-backends.md:Measure the harness before blaming the model.",
         "gateway-backends.md:Model health is real-outcome-first",
         "gateway-backends.md:No fallback lands on haiku",
         "gateway-backends.md:One wall clock for both backends",
-        "gateway-backends.md:Servable/unservable is the whole design",
-        "gateway-backends.md:Still missing",
-        "gateway-backends.md:The LOCAL backend bypasses claude -p's permission system entirely",
         "gateway-backends.md:This is ONE Admin control, not three",
         "gateway-backends.md:Three claude -p failures are WALLS, not harness deaths",
-        "gateway-backends.md:Two bounds, not one",
         "gateway-backends.md:Which 400 is an overflow is error_classifier.classify, not _context_fi",
         "gateway-backends.md:Which failures are walls is error_classifier.classify, not an if-chain",
         "gateway-backends.md:discover_models groups by root, not one row per id",
@@ -2323,6 +2312,18 @@ class RuleEnforcementTests(unittest.TestCase):
         "run-pipeline.md:Unattended dead-end rule",
         "run-pipeline.md:conventions._SOURCES is the whole input set.",
         "run-pipeline.md:engine.critique_plan",
+        # --- tools-mcp.md (11) ---
+        "tools-mcp.md:--setting-sources user for any run with no cwd of its own",
+        "tools-mcp.md:--strict-mcp-config only on tool-free calls",
+        "tools-mcp.md:A Read(//path/",
+        "tools-mcp.md:A cap needing a connector must not run locally",
+        "tools-mcp.md:A deny rule covers rm through Bash, not just writes",
+        "tools-mcp.md:A path deny rule has exactly one working spelling: Edit(//abs/",
+        "tools-mcp.md:Every REGISTERED repo's live checkout is write-denied by default",
+        "tools-mcp.md:Servable/unservable is the whole design",
+        "tools-mcp.md:Still missing",
+        "tools-mcp.md:The LOCAL backend bypasses claude -p's permission system entirely",
+        "tools-mcp.md:Two bounds, not one",
         # --- ui.md (3) ---
         "ui.md:An in-flight flag for a long action lives OUTSIDE the render",
         "ui.md:CSS.escape() is for identifiers, never inside a quoted attribute selec",
@@ -2815,26 +2816,17 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     DOCS_DIR = os.path.join(ROOT, "docs")
     # Each ceiling is a ratchet: raising one is a deliberate constant edit that shows
     # up in the diff. The history of every bump is in git log, not here.
-    MAX_BYTES = 8110          # resident tier — the per-session tax
-    # 77_758 -> 78_000 for the base-branch rule (#38, PR #92): "a cap's own PR wins" and
-    # "the clone's own base branch is not a cap's PR" read as the same rule and are
-    # opposites — one repo shape silently made every run's deliverable a colleague's PR.
-    # 78_000 -> 78271 for the postJSON rule (#48, PR #101): 51 of 58 mutating fetches were
-    # hand-rolled and reported nothing on a refusal. The helper is only load-bearing if the
-    # next hand-rolled one is caught, and the guard test is what catches it — so the rule
-    # naming it has to exist somewhere a UI session reads. The dir is over-budget by design
-    # (issue #56 is the prune); this raise is deliberately visible rather than funded by
-    # quietly compressing an unrelated rule, which would make that audit harder.
-    # 78271 -> 78897 for the local-MCP declaration rules (PR: fix/local-mcp-server-selection):
-    # which MCP servers a local run gets was decided by keyword-ranking the REQUEST, and a
-    # request that only points at a ticket cannot drive it — one stopword hit gave a New Relic
-    # task two Kubernetes tools. Three rules, because three separate things had to be true and
-    # each was independently wrong: where a declaration comes from, what happens without one,
-    # and how the tool budget splits across servers. Raised rather than funded by compressing
-    # an unrelated rule, per the precedent above.
-    MAX_RULES_BYTES = 78897   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_BYTES = 8045          # resident tier — the per-session tax
+    # 78897 -> 77758 (#56): `gateway-backends.md` had reached 18 KB, digested into every
+    # convention judge. Split into gateway/backends/walls and `tools-mcp.md`, and the prose
+    # restating a guard test's own docstring pruned out of every file. Both ceilings ratchet
+    # DOWN here; the history of every earlier bump is in git log, not here.
+    MAX_RULES_BYTES = 77758   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
-    MAX_OVER_CAP = 60          # pre-existing offenders, across BOTH tiers; drive DOWN, never up
+    # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
+    # the incident narrative its commit message already carries. The cap is now absolute —
+    # a rule that does not fit is two rules.
+    MAX_OVER_CAP = 0
 
     def _rule_files(self):
         return sorted(glob.glob(os.path.join(self.RULES_DIR, "*.md")))
