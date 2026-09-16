@@ -320,8 +320,13 @@
   .swarm .swhead { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 10px; }
   .swarm .swrow { display: flex; align-items: center; gap: 9px; padding: 5px 0; border-top: 1px solid var(--line); }
   .swarm .swrow:first-of-type { border-top: none; }
-  .swarm .swrow code { color: var(--text); font-size: 12.5px; flex: none; }
-  .swarm .swsub { color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* `.msg .body`'s inherited `overflow-wrap:anywhere` drops a flex item's automatic minimum
+     size to ONE CHARACTER, so the badge shrank until "WRITE" stacked letter-per-line. Cap
+     name and badge hold their width; the request text is the one that gives. */
+  .swarm .swrow code { color: var(--text); font-size: 12.5px; flex: none; max-width: 45%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .swarm .swrow .badge { flex: none; }
+  .swarm .swsub { flex: 1; min-width: 0; color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .swarm .swnote { font-size: 12px; color: var(--dim); margin-top: 10px; }
   /* clarification card — informational (accent), distinct from the amber write gate */
   .clarify { border: 1px solid var(--accent-line); border-left: 3px solid var(--accent);
@@ -344,7 +349,7 @@
   /* Rides the text baseline like the <code> chip it sits beside in "I'll use `cap` WRITE" —
      `vertical-align: middle` centred it on the x-height instead, lifting the pill visibly
      above the chip next to it. */
-  .badge { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; vertical-align: baseline; position: relative; top: 1px; }
+  .badge { display: inline-block; white-space: nowrap; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; vertical-align: baseline; position: relative; top: 1px; }
   .badge.read { background: var(--accent-soft); color: var(--accent); }
   .badge.write { background: var(--warn-soft); color: var(--warn); }
   /* Integration status at a glance (Events tab), same visual weight as .badge.read/.write. */
