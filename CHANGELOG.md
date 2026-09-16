@@ -64,6 +64,15 @@ changelog that restates it is a second copy of `git log`.
   it. Pinned chats are now exempt from the cap and spend no slot against it — the 100 counts
   unpinned chats. **Anything already trimmed is gone**; this only stops it happening again.
 
+### Removed
+
+- **The two one-shot migration scripts are gone** (`migrate_to_sqlite.py`, `migrate_model_ids.py`).
+  Both predate the first public release: Otto has stored its history in `data/otto.db` and
+  recorded canonical model ids since 0.1.0, so there is no install for either to run against.
+  If yours still has the frozen `data/*.json`, `data/*.log` and `otto.db.pre-*` files the first
+  of them read, `docs/operating.md` now says which ones are safe to archive and which one
+  (`schedules.json`) is still read at startup.
+
 ### Security
 
 - **Error text from the server is escaped before it reaches the page.** Thirteen of the UI's
