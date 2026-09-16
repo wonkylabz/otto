@@ -26,6 +26,20 @@ Corpus instability looks identical to a regression: before blaming an edit, hash
 prompt sent against a clean `git archive main` checkout. A case that flips is often served by
 a different model than you think — read the `[GATEWAY] tier -> model` line first.
 
+## Planner harness
+
+`plan_eval.py` — plan-then-execute (`config.PLAN_MODE`) without the orchestration around it.
+It calls the strong planner on one request and prints the atomic-step plan, so decomposition
+quality is readable without a routing gate, an approval preview or a workflow.
+
+- `./.venv/bin/python plan_eval.py "<request>"` — plan only; needs `claude` on `PATH`
+- `--cap <name>` pins the executor capability, skipping Router #1
+- `--samples` plans a few built-in multi-step requests
+- `--run` also EXECUTES the plan on the configured execution model — point that at a local
+  model (Admin → Execution) to test the other half: can the weak model eat the steps?
+
+It reads the LIVE `data/` — `--run` spends real money and really runs the steps.
+
 ## Writing a guard test
 
 A green suite is not evidence a guard works. Before committing one, **prove it fails without

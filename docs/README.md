@@ -4,8 +4,10 @@ The REFERENCED documentation tier: read only by a session that follows a pointer
 `CLAUDE.md`, and deliberately outside `.claude/rules/` so no convention judge digests it.
 See `maintaining-docs.md` for which tier a new rule belongs in.
 
-- **`operating.md`** — setup, the background service, running, restart discipline, global pause.
-- **`testing.md`** — the unit suite, the regression corpus, how to write a guard test.
+- **`operating.md`** — setup, the background service, running, restart discipline, global
+  pause, and archiving the frozen pre-SQLite state under `data/`.
+- **`testing.md`** — the unit suite, the regression corpus, the `plan_eval.py` planner
+  harness, how to write a guard test.
 - **`maintaining-docs.md`** — the three tiers, the rule format, and the enforced ceilings.
 - **`releasing.md`** — what Otto's version number means, and how to cut and publish a release.
 

@@ -60,3 +60,30 @@ session and no convention judge pays for it.
   new work, never kills in-flight — nothing re-checks it mid-activity, and the lever stopping
   the service can't be. Anything at that path pauses, however malformed. The control is in the
   page HEADER, not Admin (`.claude/rules/ui.md`).
+
+## Archiving frozen legacy state
+
+An install that predates the SQLite store kept its history in JSON/JSONL files under `data/`.
+Those stores are now tables in `data/otto.db`, and the files they were migrated from are read
+by nothing — they are forensic copies, left on disk rather than deleted. On a current install
+they are simply stale bytes (`knowledge.json` alone is a few MB), safe to move somewhere else
+once `data/otto.db` is the live store:
+
+- `audit.log`, `audit-content.log` (+ `.1`/`.2`/`.3` rotations) → `audit`, `audit_content`
+- `chats.json` → `chats`, `messages`
+- `memory.json` and `memory/<ns>.json` → `memory` (the `namespace` column)
+- `solutions.json`, `behaviors.json`, `knowledge.json` → their same-named tables
+- `otto.db.pre-*` — a timestamped DB backup taken by a one-off backfill before it rewrote rows
+
+Confirm the table is populated before moving the file it came from
+(`sqlite3 data/otto.db "SELECT COUNT(*) FROM chats"`), and keep the archive: the audit trail is
+immutable by design and these files are the only copy of anything the migration dropped.
+
+**`data/schedules.json` is the exception — it is still read.** `scheduler.migrate_legacy()`
+imports it into the runbook store on every startup (idempotent, skipping ids already there), so
+it can only be archived once its rows exist as runbooks. Removing it first loses those
+schedules; `data/runbooks.json` is the source of truth after that.
+
+The scripts that performed those two migrations are gone: every published version of Otto has
+been SQLite-backed and has recorded canonical model ids, so there is no install left for them
+to run against. Recover them from history (`git log -- migrate_to_sqlite.py`) if one turns up.
