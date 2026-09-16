@@ -6383,7 +6383,12 @@ class UiAssetLayoutTests(unittest.TestCase):
     # latch it is nothing like. It rides `.latchclear`'s geometry (one selector, not a second
     # rule) and only overrides the two colours that carry the difference — a latch is something
     # that happened TO the cap, this is something the operator set.
-    ASSET_MAX = 116822
+    # -> 117254 for the swarm card's row layout: `.msg .body` sets `overflow-wrap:anywhere`,
+    # which is INHERITED and lowers a flex item's automatic minimum size to one character, so
+    # the risk badge shrank until "WRITE" rendered one letter per line. The three declarations
+    # are the fix; the comment naming the inherited rule is what stops the next edit deleting
+    # them as redundant (`SwarmCardRowTests`).
+    ASSET_MAX = 117254
 
     def _assets(self):
         out = {}
@@ -6650,6 +6655,43 @@ class UiAssetLayoutTests(unittest.TestCase):
             self.assertIn(probe, src, "ui_src() lost %r" % probe)
         # order is what the .index()-style guards depend on
         self.assertLess(src.index("function esc(s){"), src.index("function loadAdmin("))
+
+
+class SwarmCardRowTests(unittest.TestCase):
+    """The chat's fan-out card (`showSwarm`) is a flex row per sub-task: cap name, risk badge,
+    request. It renders inside `.msg .body`, whose `overflow-wrap:anywhere` is INHERITED — and
+    that property lowers a flex item's automatic minimum size to one CHARACTER, so flexbox
+    shrank the badge until "WRITE" stacked one letter per line and the row grew to four lines.
+    Measured in headless Chrome at 600px: badge 43.4x38.1 before, 51.5x21.0 after.
+
+    The three declarations here are the whole fix, and each is load-bearing: without
+    `flex:none` on the badge it is the item that gives, and without `min-width:0` on the
+    request text (the one that SHOULD give) its ellipsis never engages."""
+
+    def _css(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "web", "css", "app.css"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_badge_never_wraps(self):
+        """A badge is one uppercase word — it has no legible wrapped form ANYWHERE, so the
+        guard is on `.badge` itself, not on the swarm row that happened to expose it."""
+        rule = re.search(r"\n  \.badge \{([^}]*)\}", self._css())
+        self.assertIsNotNone(rule, "the .badge rule moved — re-point this guard")
+        self.assertIn("white-space: nowrap", rule.group(1))
+
+    def test_the_row_gives_on_the_request_text_not_the_badge(self):
+        css = self._css()
+        self.assertRegex(css, r"\.swarm \.swrow \.badge \{[^}]*flex: none")
+        self.assertRegex(css, r"\.swarm \.swsub \{[^}]*min-width: 0")
+        # A cap name is `<repo>:<name>` long; unbounded it pushes badge+request off the row.
+        self.assertRegex(css, r"\.swarm \.swrow code \{[^}]*max-width:")
+        self.assertRegex(css, r"\.swarm \.swrow code \{[^}]*text-overflow: ellipsis")
+
+    def test_the_inherited_rule_that_caused_it_is_still_there(self):
+        """If `.msg .body` ever loses `overflow-wrap:anywhere` the declarations above read as
+        redundant and get deleted — this is the note saying they are not."""
+        self.assertRegex(self._css(), r"\.msg \.body \{[^}]*overflow-wrap: anywhere")
 
 
 class UiErrorEscapingTests(unittest.TestCase):
