@@ -67,7 +67,7 @@ except Exception:  # noqa: BLE001
 import test_memory
 import test_support
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
 class AutoEngageRepoTests(unittest.TestCase):
@@ -1757,9 +1757,15 @@ class ToolsUsedThreadingTests(unittest.TestCase):
     def _fn_src(path, name):
         import ast
         """The source of one top-level def/method, by text — `workflows`/`activities` import
-        temporalio, and this invariant is about the code, not about a live worker."""
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), path)) as fh:
-            src = fh.read()
+        temporalio, and this invariant is about the code, not about a live worker.
+
+        The pipeline is four files since issue #58, so it is read through `workflow_src()`; a
+        method that moved into a mixin would otherwise raise "not found" here."""
+        if path == "workflows.py":
+            src = test_support.workflow_src()
+        else:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), path)) as fh:
+                src = fh.read()
         for node in ast.walk(ast.parse(src)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
                 return ast.get_source_segment(src, node)
@@ -2551,8 +2557,7 @@ class ApprovedPlanBindingTests(unittest.TestCase):
     def test_every_workflow_execution_site_passes_the_approved_plan(self):
         # The bug class is a new call site added without the field — invisible, because a run with
         # no plan and a run whose plan was dropped look identical.
-        with open(os.path.join(os.path.dirname(__file__), "workflows.py"), encoding="utf-8") as f:
-            src = f.read()
+        src = test_support.workflow_src()
         for act in ("run_capability", "verify_capability"):
             sites = [m.start() for m in re.finditer(rf"^\s+{act},$", src, re.M)]
             self.assertTrue(sites, f"no {act} call sites found — re-point this test")
@@ -2564,8 +2569,7 @@ class ApprovedPlanBindingTests(unittest.TestCase):
     def test_review_loop_defaults_on_for_every_repo_mode_pr(self):
         # Was: opt-in unless the cap was the general worker, so a 428-line sre-minion PR got no
         # independent diff review at all.
-        with open(os.path.join(os.path.dirname(__file__), "workflows.py"), encoding="utf-8") as f:
-            src = f.read()
+        src = test_support.workflow_src()
         self.assertIn('params.get("review", True)', src)
         self.assertNotIn('params.get("review") or cap["name"] == config.WORKER_CAP', src)
 

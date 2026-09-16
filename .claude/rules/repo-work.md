@@ -30,6 +30,8 @@
 
 **QA** (opt-in, repo-mode only) — judges pass/fail/inconclusive; FAIL re-provisions, re-runs, re-pushes, re-QAs. Bounded `MAX_QA_ROUNDS=2`. Opt-in = pre-authorized. Cap `qa-tester` (`OTTO_QA_CAP`).
 
+Both loops are ONE parameterised body — `wf_postpr._run_fix_loop` over `_LOOPS`; every rule below binds each of them.
+
 - **A post-PR round stamps `verdict_source` — its verdict is about the PR, not the capability** — a round correctly raising must-fix findings booked the reviewer as failing, and no round raises a needs-you card a human could accept (`ScorecardTests`).
 - **An errored fix round ENDS the loop** (`is_error` → inconclusive, not counted) — it commits nothing, so re-reviewing re-runs the same judge over the same diff to the same verdict, spending the whole budget (`web-2bd1a194`).
 - **A fix round never runs on the LOCAL backend** (`_FIX_NO_LADDER` → `local_disabled`) — both loops are one-shot, with no rung above them for `LOCAL_FALLBACK` to cover a local death with.

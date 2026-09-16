@@ -56,7 +56,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
 class AuthoredPlanTests(unittest.TestCase):
@@ -911,7 +911,7 @@ class SettingsSnapshotAccessTests(unittest.TestCase):
         # Parsed, not grepped: prose in a comment or docstring naming the anti-pattern must not
         # trip it, and a real read must not hide behind one.
         import ast
-        tree = ast.parse(self._src("workflows.py"))
+        tree = ast.parse(workflow_src())
         reads = [n for n in ast.walk(tree)
                  if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Attribute)
                  and n.value.attr == "_settings"]
@@ -1520,8 +1520,9 @@ class NotificationContentTests(unittest.TestCase):
     _CALL_RE = re.compile(r"(?:self\._notify|delivery\.notify)\(")
 
     def _notify_calls(self, path):
-        """Every push call in `path`, as source text, with parens balanced."""
-        src = open(path, encoding="utf-8").read()
+        """Every push call in `path`, as source text, with parens balanced. The pipeline is four
+        files since issue #58 — `workflows.py` alone would miss the swarm's completion push."""
+        src = workflow_src() if path == "workflows.py" else open(path, encoding="utf-8").read()
         calls, i = [], 0
         while True:
             m = self._CALL_RE.search(src, i)
@@ -2136,7 +2137,7 @@ class ResidentRuleGuardTests(unittest.TestCase):
         """CLAUDE.md: workflow code must never call `config.setting()` — the store is mutable,
         so a replay could branch differently than the history recorded. `OttoWorkflow` takes ONE
         snapshot via `snapshot_settings` and reads it through `self._setting(...)`."""
-        tree = ast.parse(self._src("workflows.py"))
+        tree = ast.parse(workflow_src())
         bad = [n.lineno for n in ast.walk(tree)
                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                and n.func.attr == "setting" and getattr(n.func.value, "id", "") == "config"]
@@ -2173,9 +2174,11 @@ class ResidentRuleGuardTests(unittest.TestCase):
         gw = self._src("gateway.py")
         self.assertIn('config.secret("ANTHROPIC_API_KEY")', gw,
                       "the key must resolve through the secret helper, not os.environ")
-        for name in ("engine.py", "claude_cli.py", "workflows.py", "activities.py"):
+        for name in ("engine.py", "claude_cli.py", "activities.py"):
             self.assertNotIn("ANTHROPIC_API_KEY", self._src(name),
                              f"{name} must not reference the API key - runs use claude -p")
+        self.assertNotIn("ANTHROPIC_API_KEY", workflow_src(),
+                         "the run pipeline must not reference the API key - runs use claude -p")
 
 
 class RuleEnforcementTests(unittest.TestCase):
@@ -2578,7 +2581,7 @@ class ResumeGroundingTests(unittest.TestCase):
 
     def setUp(self):
         if ResumeGroundingTests.SRC is None:
-            ResumeGroundingTests.SRC = open("workflows.py").read()
+            ResumeGroundingTests.SRC = workflow_src()
         self.src = ResumeGroundingTests.SRC
 
     def test_the_resume_path_computes_grounding(self):
@@ -2654,8 +2657,8 @@ class EffortPlumbingTests(unittest.TestCase):
     exactly like a run that honoured the pick.
 
     The hops: composer/Admin -> workflow input -> the plan preview and all four run_capability
-    callsites (fresh ladder, resume, QA-fix, review-fix) -> activity payload -> run_attempt ->
-    each backend. Guarded structurally, since none of these can be driven end-to-end from a unit
+    callsites (fresh ladder, resume, brainstorm, the shared post-PR fix round) -> activity
+    payload -> run_attempt -> each backend. Guarded structurally, since none of these can be driven end-to-end from a unit
     test."""
 
     def _src(self, name):
@@ -2679,29 +2682,30 @@ class EffortPlumbingTests(unittest.TestCase):
 
     def test_every_execution_and_preview_payload_carries_the_effort(self):
         import ast
-        tree = ast.parse(self._src("workflows.py"))
-        # 5 run_capability callsites: three ladder rungs' worth (fresh, fix rounds), the resumed
-        # turn, and the unjudged brainstorm turn. Effort is per-TURN, so every one carries it.
-        for activity, expected in (("run_capability", 5), ("plan_capability", 1)):
+        tree = ast.parse(workflow_src())
+        # 4 run_capability callsites: the fresh ladder, the ONE parameterised post-PR fix round
+        # (issue #58 — it serves both the review and QA loops), the resumed turn and the unjudged
+        # brainstorm turn. Effort is per-TURN, so every one carries it.
+        for activity, expected in (("run_capability", 4), ("plan_capability", 1)):
             payloads = self._payload_keys(tree, activity)
             self.assertEqual(len(payloads), expected,
                              f"{activity} callsite count changed — this test is stale")
             for lineno, keys in payloads:
                 self.assertIn("effort", keys,
-                              f"{activity} payload at workflows.py:{lineno} drops effort")
+                              f"{activity} payload at pipeline line {lineno} drops effort")
 
     def test_the_workflow_reads_the_default_from_its_snapshot_not_the_live_store(self):
         # A mutable store read inside workflow code sends a replay down a different branch than
         # history recorded — and effort is read once per run, so the divergence is permanent.
         import ast
-        tree = ast.parse(self._src("workflows.py"))
+        tree = ast.parse(workflow_src())
         live = [n.lineno for n in ast.walk(tree)
                 if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "setting"
                 and getattr(n.func.value, "id", None) == "config"]
         self.assertEqual(live, [], f"config.setting() called in workflow code at {live}")
         self.assertIn(
             'self._effort = config.resolve_effort(params.get("effort"), self._setting("effort"))',
-            self._src("workflows.py"),
+            workflow_src(),
             "the workflow no longer resolves effort as composer-pick > snapshot default")
         self.assertEqual(config.resolve_effort("max", "low"), "max", "the pick must win")
         self.assertEqual(config.resolve_effort(None, "low"), "low", "the Admin default must apply")
@@ -2713,7 +2717,7 @@ class EffortPlumbingTests(unittest.TestCase):
         # Admin value is silently ignored on every run — the exact bug this ordering prevents.
         # Compared by position INSIDE _run_impl, so moving either statement is what trips it.
         import ast
-        tree = ast.parse(self._src("workflows.py"))
+        tree = ast.parse(workflow_src())
         impl = next(n for n in ast.walk(tree)
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and n.name == "_run_impl")
@@ -2816,12 +2820,17 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     DOCS_DIR = os.path.join(ROOT, "docs")
     # Each ceiling is a ratchet: raising one is a deliberate constant edit that shows
     # up in the diff. The history of every bump is in git log, not here.
-    MAX_BYTES = 8045          # resident tier — the per-session tax
+    # 8045 -> 8055 (#58): the layer table now names `wf_*.py`. `OttoWorkflow` is four files, and
+    # the table is the only index from a file to the rules a session must read before editing it.
+    MAX_BYTES = 8055          # resident tier — the per-session tax
     # 78897 -> 77758 (#56): `gateway-backends.md` had reached 18 KB, digested into every
     # convention judge. Split into gateway/backends/walls and `tools-mcp.md`, and the prose
     # restating a guard test's own docstring pruned out of every file. Both ceilings ratchet
     # DOWN here; the history of every earlier bump is in git log, not here.
-    MAX_RULES_BYTES = 77758   # fetched tier — bounded, but looser; it is not always loaded
+    # 77758 -> 78461 (#58): two run-pipeline rules the mixin split makes load-bearing — read the
+    # pipeline through `workflow_src()`, and activity ORDER is the replay contract — plus naming
+    # where the post-PR loops live. Paid down partly by cutting three restated measurements.
+    MAX_RULES_BYTES = 78461   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

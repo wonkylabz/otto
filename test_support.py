@@ -293,3 +293,25 @@ def ui_src():
         return (f"<script>\n{body}</script>" if js else f"<style>\n{body}</style>")
 
     return _UI_TAG.sub(inline, doc)
+
+
+_WF_MODULES = ("wf_runtime.py", "wf_repo.py", "wf_postpr.py", "wf_swarm.py")
+
+
+def workflow_src():
+    """The run pipeline's deterministic code as ONE document: `workflows.py` followed by every
+    mixin/constants module it is composed from, in the order they are mixed in.
+
+    `OttoWorkflow` is one class at runtime but four files on disk (issue #58), and ~40 guard
+    tests here read the pipeline by GREPPING or `ast.parse`-ing its source. Pointed at
+    `workflows.py` alone, every one of them silently stops covering the half that moved — the
+    post-PR loops, the repo tail, the swarm — and keeps passing. This is the ONE reader, the
+    analogue of `ui_src()`: a new mixin needs no change here beyond `_WF_MODULES`, and the
+    concatenation parses as a module, so the `ast` walkers keep working unchanged.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    parts = []
+    for name in ("workflows.py",) + _WF_MODULES:
+        with open(os.path.join(root, name), encoding="utf-8") as fh:
+            parts.append(fh.read())
+    return "\n".join(parts)

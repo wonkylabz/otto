@@ -54,8 +54,9 @@ try:                                       # the Temporal layer — absent under
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
+import test_support
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
-from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src)  # noqa: F401
+from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
 class PlanPreviewAuditTests(unittest.TestCase):
@@ -2011,7 +2012,7 @@ class PlanArtifactForwardingTests(unittest.TestCase):
     def test_repo_mode_finalize_call_site_passes_the_plan(self):
         """The fresh repo-mode finalize is the one that opens the PR — if its payload omits
         `plan`, every other piece of this feature is dead code."""
-        src = open("workflows.py").read()
+        src = workflow_src()
         # Anchored on the call, not its indentation — the payload is what matters, and
         # pinning leading spaces re-breaks this on any extraction that moves the block.
         i = re.search(r"finalize_workspace,\s*\{\"run_id\": workflow\.info\(\)\.workflow_id", src)
@@ -2874,17 +2875,20 @@ class WorkflowComplexityTests(unittest.TestCase):
     _BRANCH = (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With,
                ast.BoolOp, ast.IfExp, ast.comprehension, ast.Assert, ast.Match)
 
+    # OttoWorkflow is one class at runtime and four files on disk (issue #58): the mixins are
+    # its methods, so a hotspot that moved into one has to keep counting against this ceiling —
+    # otherwise the ratchet is escapable by extraction, which is the opposite of its purpose.
+    _WF_CLASSES = ("OttoWorkflow", "RepoFlowMixin", "PostPrMixin", "SwarmMixin")
+
     def _methods(self):
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows.py")
-        with open(path) as fh:
-            tree = ast.parse(fh.read())
-        cls = next(n for n in ast.walk(tree)
-                   if isinstance(n, ast.ClassDef) and n.name == "OttoWorkflow")
+        tree = ast.parse(workflow_src())
         out = {}
-        for m in cls.body:
-            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                branches = sum(1 for n in ast.walk(m) if isinstance(n, self._BRANCH))
-                out[m.name] = (branches, m.end_lineno - m.lineno + 1)
+        for cls in [n for n in ast.walk(tree)
+                    if isinstance(n, ast.ClassDef) and n.name in self._WF_CLASSES]:
+            for m in cls.body:
+                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    branches = sum(1 for n in ast.walk(m) if isinstance(n, self._BRANCH))
+                    out[m.name] = (branches, m.end_lineno - m.lineno + 1)
         return out
 
     def test_run_impl_stays_within_its_ceiling(self):
@@ -2904,9 +2908,7 @@ class WorkflowComplexityTests(unittest.TestCase):
         on the resume path and simply never read (that path returns first). Lifting the block
         into a method made the return tuple read it on EVERY path - UnboundLocalError, which
         surfaced as the Temporal test worker retrying forever rather than as a failure."""
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows.py")
-        with open(path) as fh:
-            tree = ast.parse(fh.read())
+        tree = ast.parse(workflow_src())
         cls = next(n for n in ast.walk(tree)
                    if isinstance(n, ast.ClassDef) and n.name == "OttoWorkflow")
 
@@ -3038,7 +3040,7 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         # without one: it works, and only a worker death months later shows that the run stalled
         # for the whole ceiling. Parsed, not grepped, so a timeout in a comment can't satisfy it.
         import ast
-        tree = ast.parse(self._src("workflows.py"))
+        tree = ast.parse(workflow_src())
         missing = []
         for n in ast.walk(tree):
             if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
@@ -3062,7 +3064,7 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         # healthy one after 3 minutes, which is far worse than the 20min stall this change set
         # out to fix. The decorator is what makes the promise true.
         import ast
-        wf = ast.parse(self._src("workflows.py"))
+        wf = ast.parse(workflow_src())
         promised = set()
         for n in ast.walk(wf):
             if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
@@ -3114,7 +3116,7 @@ class ExecutionHeartbeatTests(unittest.TestCase):
     def _ceiling_sites(self):
         """{activity name: [ceiling expression source, ...]} across workflows.py."""
         import ast
-        src = self._src("workflows.py")
+        src = workflow_src()
         tree = ast.parse(src)
         out = {}
         for n in ast.walk(tree):
@@ -3171,7 +3173,7 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         # branch was on _RETRY (max 3) — and unlike the fresh path it has no verify ladder that
         # would notice the duplicate.
         import ast
-        tree = ast.parse(self._src("workflows.py"))
+        tree = ast.parse(workflow_src())
         EXEC = {"run_capability", "qa_capability", "review_capability", "execute_plan",
                 "plan_capability"}
         bad = []
@@ -3184,6 +3186,52 @@ class ExecutionHeartbeatTests(unittest.TestCase):
             if not (isinstance(rp, ast.Name) and rp.id == "_RETRY_EXEC"):
                 bad.append((n.args[0].id, n.lineno))
         self.assertEqual(bad, [], f"execution activities not on _RETRY_EXEC: {bad}")
+
+
+class PipelineSourceReaderTests(unittest.TestCase):
+    """`OttoWorkflow` is one class at runtime and four files on disk (issue #58), and ~40 guards
+    across this suite read the pipeline by GREPPING or `ast.parse`-ing its source.
+
+    Pointed at `workflows.py` alone, every one of them silently stops covering whatever moved
+    into a mixin and keeps passing — the tautological-guard failure mode, at suite scale, and the
+    same reason the UI guards all read `ui_src()` instead of `index.html`. So: nothing reads
+    `workflows.py` directly except `workflow_src()` itself."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+
+    def test_no_test_reads_workflows_py_directly(self):
+        offenders = []
+        for name in sorted(glob.glob(os.path.join(self.ROOT, "test_*.py"))):
+            with open(name, encoding="utf-8") as fh:
+                src = fh.read()
+            tree = ast.parse(src)
+            for call in ast.walk(tree):
+                if not (isinstance(call, ast.Call) and call.args
+                        and (getattr(call.func, "id", None) == "open"
+                             or getattr(call.func, "attr", None) in ("read_text", "_src", "_read"))):
+                    continue
+                arg = ast.get_source_segment(src, call.args[0]) or ""
+                if "workflows.py" in arg:
+                    offenders.append("%s:%d" % (os.path.basename(name), call.lineno))
+        self.assertEqual(offenders, [],
+                         "these read workflows.py directly and so miss the mixins; use "
+                         "test_support.workflow_src()")
+
+    def test_workflow_src_holds_every_module_the_class_is_built_from(self):
+        """If it drifted from what `OttoWorkflow` actually inherits, the guards above would be
+        reading a document that is not the pipeline."""
+        import workflows
+        src = workflow_src()
+        bases = [b.__module__ for b in workflows.OttoWorkflow.__mro__[1:] if b is not object]
+        self.assertTrue(bases, "OttoWorkflow has no mixins — re-point this test")
+        for mod in bases:
+            self.assertIn(f"{mod}.py", test_support._WF_MODULES,
+                          f"{mod} is mixed into OttoWorkflow but workflow_src() cannot see it")
+        # and the concatenation must still be one parseable module, or every ast walker breaks
+        ast.parse(src)
+        for probe in ("async def _run_impl", "async def _run_fix_loop", "async def _finalize_pr",
+                      "async def _run_swarm", "_EXEC_CEILING = timedelta"):
+            self.assertIn(probe, src, f"workflow_src() lost {probe!r}")
 
 
 class DiscussionTurnNarrowingTests(unittest.TestCase):
@@ -3347,7 +3395,7 @@ class PlanBranchNoteTests(unittest.TestCase):
     def test_the_target_is_resolved_before_the_gate_and_reused(self):
         """Resolved once, above the gate (the preview needs it) and read from cache at provision
         — two `gh` round-trips per run would be the obvious wrong way to wire this."""
-        src = open("workflows.py").read()
+        src = workflow_src()
         self.assertEqual(src.count("resolve_pr_target, {\"repo\": repo, \"request\": request}"), 2,
                          "expected exactly the pre-gate resolve and the resume repair tier")
         gate = src.index("# Approval for writes.")
@@ -3368,7 +3416,7 @@ class HarnessDeathKeepsLocalTests(unittest.TestCase):
         """The loop is written twice on purpose (CLAUDE.md: change one, mirror the other), so a
         guard that checks one copy proves nothing about the run path the other serves."""
         for path in ("engine.py", "workflows.py"):
-            src = open(path).read()
+            src = workflow_src() if path == "workflows.py" else open(path).read()
             i = src.index("WRITE_LOCAL_ESCALATE_REASON")
             block = src[max(0, i - 900):i]
             self.assertIn('verdict.get("source") != "harness"', block,
@@ -3378,7 +3426,7 @@ class HarnessDeathKeepsLocalTests(unittest.TestCase):
         """Issue #172's actual purpose — a write cap that a JUDGE failed on local moves to
         Claude. Narrowing must not disable it."""
         for path in ("engine.py", "workflows.py"):
-            src = open(path).read()
+            src = workflow_src() if path == "workflows.py" else open(path).read()
             i = src.index("WRITE_LOCAL_ESCALATE_REASON")
             block = src[max(0, i - 900):i]
             self.assertIn('write_local', block)
@@ -3387,7 +3435,7 @@ class HarnessDeathKeepsLocalTests(unittest.TestCase):
     def test_it_matches_the_rung_rule_directly_below_it(self):
         """The same loop already spares a harness death from spending a ladder rung, for the same
         stated reason. The two decisions disagreeing is the bug."""
-        src = open("workflows.py").read()
+        src = workflow_src()
         i = src.index("WRITE_LOCAL_ESCALATE_REASON")
         after = src[i:i + 1200]
         self.assertIn('verdict.get("source") == "harness"', after,
@@ -3521,14 +3569,14 @@ class BrainstormModeTests(unittest.TestCase):
         """`passed` is False for a brainstorm (there is no verdict), so without the `verdict is
         not None` guard the deferred verify_exhausted branch fires on the mode's very first reply
         and the chat renders Blocked."""
-        src = _read("workflows.py")
+        src = workflow_src()
         self.assertIn("if verdict is not None and not passed and not self._needs_human:", src)
 
     # --- the pipeline skips ----------------------------------------------------------------
     def test_the_ladder_short_circuits_before_any_judge(self):
         """One attempt, no verify_capability, no retry — asserted on the AST rather than the
         prose so a judge sneaking back into the brainstorm path is caught."""
-        tree = ast.parse(_read("workflows.py"))
+        tree = ast.parse(workflow_src())
         cls = next(n for n in ast.walk(tree)
                    if isinstance(n, ast.ClassDef) and n.name == "OttoWorkflow")
         def _method(name):
@@ -3557,7 +3605,7 @@ class BrainstormModeTests(unittest.TestCase):
         ladder = next(m for m in cls.body
                       if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
                       and m.name == "_verify_ladder")
-        src = ast.get_source_segment(_read("workflows.py"), ladder)
+        src = ast.get_source_segment(workflow_src(), ladder)
         self.assertLess(src.index("_brainstorm_turn"), src.index("verify_capability"),
                         "the brainstorm hand-off must come before the ladder does any work")
 
@@ -3565,7 +3613,7 @@ class BrainstormModeTests(unittest.TestCase):
         """`supervise_enforce` is documented as armed only while a rung remains for its critique
         to steer. There is none here — a kill would discard the only attempt and leave the user's
         message unanswered."""
-        tree = ast.parse(_read("workflows.py"))
+        tree = ast.parse(workflow_src())
         for n in ast.walk(tree):
             if not (isinstance(n, ast.Call)
                     and getattr(n.func, "attr", None) == "execute_activity"
@@ -3583,7 +3631,7 @@ class BrainstormModeTests(unittest.TestCase):
         mode answers its own questions in-band. The write-intent guard is worse than redundant:
         `intent["redirect"]` is skipped for a PINNED cap, so a write-shaped musing would fall
         through to the risk bump and park the conversation behind an approval card."""
-        src = _read("workflows.py")
+        src = workflow_src()
         self.assertIn('if not subtask and not _is_brainstorm(cap) and '
                       '(not unattended or params.get("clarify")):', src)
         self.assertIn('if cap["risk"] == "read" and not unattended and not _is_brainstorm(cap):',
@@ -3592,7 +3640,7 @@ class BrainstormModeTests(unittest.TestCase):
     def test_a_follow_up_never_re_classifies_out_of_the_mode(self):
         """A bound session has no redirect available, so an up-classify on turn 4 ("so we'd just
         delete the QA loop then?") would gate the CONVERSATION for work nobody asked to start."""
-        src = _read("workflows.py")
+        src = workflow_src()
         i = src.index("downgradeable = cap[\"risk\"] == \"write\" and approval != \"auto\"")
         j = src.index("classify_followup", i)
         self.assertIn("_is_brainstorm(cap)", src[i:j],

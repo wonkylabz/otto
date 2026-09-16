@@ -304,8 +304,8 @@ def prune_board_cards(before):
         return cur.rowcount or 0
 
 
-# A post-PR ROUND's own workflow id (`workflows._run_review_loop` / `_run_qa_loop` mint
-# "<run>-rev<N>" and "<run>-qa<N>"). Those rounds carry a judge_review/judge_qa verdict on THE
+# A post-PR ROUND's own workflow id (`wf_postpr._LOOPS` mints "<run>-rev<N>" and "<run>-qa<N>";
+# kept in step with the specs by `test_repo.PostPrLoopSpecTests`). Those rounds carry a judge_review/judge_qa verdict on THE
 # PR, not a verify verdict on the capability that produced the review — see the `source` note at
 # both call sites. Rows written before those loops stamped `verdict_source` have no field to
 # read, and this is the correlate that survives in the trail: the same trick as `killed` below,

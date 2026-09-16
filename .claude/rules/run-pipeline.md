@@ -1,19 +1,21 @@
 # Run pipeline — plan gate, ladder, verify, supervisor
 
-`workflows.py`+`worker.py` (Temporal, the only path — #278).
+`workflows.py`+`worker.py` (Temporal, the only path — #278). `OttoWorkflow` = `workflows.py` + the `wf_repo`/`wf_postpr`/`wf_swarm` mixins over `wf_runtime`, all imported under `imports_passed_through`.
 
 - **Never bare-index `self._settings`** — read every setting through `self._setting(name)`, which falls back to `config.SETTINGS_FALLBACK`. Same for `config.budget_exceeded(snapshot=)` (`test_core.SettingsSnapshotAccessTests`).
 - **Every in-test Temporal `Worker` must register `snapshot_settings`** — or the workflow silently falls back to import-time defaults instead of the store (`ResidentRuleGuardTests`).
+- **A test reads the pipeline through `test_support.workflow_src()`, never `workflows.py`** — the class is four files, so a guard pointed at one silently stops covering whatever moved into a mixin, and still passes (`PipelineSourceReaderTests`).
+- **The ORDER of a run's activity commands is its replay contract** — reordering, adding or dropping one NondeterminismErrors every run in flight, and no restart fixes it. A recorded history in `regress/fixtures/` guards it (`WorkflowReplayCompatibilityTests`).
 - **A snapshot missing a key poisons the run forever** — `self._settings` is a recorded activity result replayed verbatim, so a run in flight when a key was added KeyErrors on every replay. No restart fixes it; only `temporal workflow terminate` + resubmit.
 
 ## Plan-first approval preview
 
 A read-only plan (`--permission-mode plan`, scoped tools) before running. Skipped whenever `approval:"auto"`, and on a discussion turn (routing-capabilities.md).
 
-- **Pre-authorization does not also require `unattended`** — "auto" is only ever set by a trusted opt-in path, so gating it anyway made "Run now" gate the same runbook its cron fire runs, after a 900s preview (`PreAuthorizedGateTests`).
+- **Pre-authorization does not also require `unattended`** — "auto" is only ever set by a trusted opt-in path, so gating it anyway made "Run now" gate the same runbook its cron fire runs (`PreAuthorizedGateTests`).
 - **A plan is enumerated in edit order but must be approved in deploy order.** `_PLAN_INSTRUCTION` wants: load-bearing unknown first, a precondition on any step changing existing callers, blast radius by name, mirrored config re-read, every AC, a closing "Risks & assumptions".
 - **The plan preview runs from the LIVE checkout, before provisioning** — for a request about an open PR it reads the DEFAULT branch. `plans._pr_branch_note` names it and points at `gh pr diff` (already in `PLAN_TOOLS`); the target resolves above the gate (`PlanBranchNoteTests`).
-- **The preview writes its own transcript** (`claude_cli.plan_transcript_path`) — it is a full agentic pass, and with nothing on disk the board's model chip (it resolves the model BY reading one) stayed blank for the whole 15-minute ceiling (`PlanVisibilityTests`).
+- **The preview writes its own transcript** (`claude_cli.plan_transcript_path`) — it is a full agentic pass, and with nothing on disk the board's model chip (it resolves the model BY reading one) stayed blank (`PlanVisibilityTests`).
 - **`engine.critique_plan`** judges the plan for what a competent plan *hides* (enforcement ahead of its precondition, collateral damage, no-op step, uncovered AC, no rollback). Advisory — every failure path returns `[]`. Told the planner had no live-system access.
 - `server._wf_state`'s gate fields are a whitelist — a new `OttoWorkflow.status` field is invisible to the UI until named there (`GateStateForwardingTests`).
 - **The approved plan is carried into execution and the judge** (`self._plan`→`_approved_plan_note`, `verify(approved_plan=)`) — else execution re-derives its approach and verify judges the raw request, so an approved ordering passes (`ApprovedPlanBindingTests`).
@@ -22,7 +24,7 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 - The plan must be the **last** thing the cap says — only the final turn is captured.
 - Preview timeout is 900s; `plan_capability`'s activity timeout must stay well above it (17min).
 - A failed pass yields no plan text, never its error sentinel rendered as one; an empty plan at the gate shows an explicit note rather than a bare approval card.
-- **A parked gate TELLS THE ASKER** (`delivery.interim`, once per run) — the ntfy push goes to the OWNER, so the asker gets an ack then silence (67min, measured). Conversations only, and wrapped: a note must not kill a paid-for plan (`GateNoticeToTheAskerTests`).
+- **A parked gate TELLS THE ASKER** (`delivery.interim`, once per run) — the ntfy push goes to the OWNER, so the asker gets an ack then silence. Conversations only, and wrapped: a note must not kill a paid-for plan (`GateNoticeToTheAskerTests`).
 - **The gate wait is BOUNDED** (`_gate_wait`, `gate_timeout_h`=24h, 0=off) — an ingress whose asker can't see the approval card parks forever otherwise. Expiry DECLINES: `gate_timeout` needs-human + a word to `reply_to`, never an approval (`GateDeadlineAndDenialIdentityTests`).
 - **A decline is audited under the run's OWN wid** — `record_skip` minting a fresh one orphans the row from the preview the human declined, the chat and the board card.
 - **"Request changes" (`revise_plan`)** folds free-text feedback into the request and re-previews, bounded by `max_plan_revisions` (3).
