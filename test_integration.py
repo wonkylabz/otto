@@ -3965,7 +3965,9 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: [
             {"cap": cap, "request": "sub A"}, {"cap": cap, "request": "sub B"}]
-        engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
+        self.verify_unattended = []
+        engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: (
+            self.verify_unattended.append(unattended) or {"passed": True, "critique": ""})
         engine.record_attempt = lambda *a, **k: None
         self.ran, self.attempt_audiences = [], []
 
@@ -4091,6 +4093,36 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
         # The children ran as ordinary pinned runs with no audience of their own.
         self.assertEqual(sorted(self.ran), ["sub A", "sub B"])
         self.assertEqual(self.attempt_audiences, [None, None])
+
+    async def test_a_child_is_judged_unattended_even_when_the_parent_is_not(self):
+        """A "Run now" runbook (`scheduler.run_now(unattended=False)`) fanned out, and the parent's
+        interactive flag rode into every child — so `judging.verify`'s dead-end rule never armed and
+        the judge PASSED a child whose whole output was "I need five inputs from you", marking it
+        Finished. Nothing but `merge` ever reads a child, so a child is unattended by construction."""
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, classify_request, merge_results, plan_swarm,
+                                record_attempt, record_skip, route_request, snapshot_settings,
+                                run_capability, resolve_pr_target, check_grounding,
+                                verify_capability)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                async with Worker(
+                    env.client, task_queue="swuq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, plan_swarm, merge_results,
+                                clarify_request, classify_request, run_capability,
+                                resolve_pr_target, check_grounding, verify_capability,
+                                record_attempt, record_skip],
+                    activity_executor=ex,
+                ):
+                    await env.client.execute_workflow(
+                        OttoWorkflow.run,
+                        # No `unattended` key at all: a human is watching the PARENT.
+                        {"request": "do sub A and sub B", "auto_approve": True},
+                        id="swarmu-" + uuid.uuid4().hex[:8], task_queue="swuq")
+        self.assertEqual(sorted(self.ran), ["sub A", "sub B"])
+        self.assertEqual(self.verify_unattended, [True, True],
+                         "a swarm child was judged as if someone could answer its question")
 
     async def test_single_task_does_not_fan_out(self):
         # decompose() returning <2 sub-tasks must take the ordinary single-capability path.

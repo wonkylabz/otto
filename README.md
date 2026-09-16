@@ -94,6 +94,19 @@ Temporal is required — `server.py` refuses to start without it (the old non-du
   - **Schedules** — run a request on a cron schedule.
   - **Admin** — capabilities, MCP servers, and the LLM model per phase.
 
+### Gotchas
+
+- **Pin a capability on any runbook or schedule that is one deliverable.** With nothing
+  pinned, a fresh request goes through the swarm planner first, which may fan it out into
+  parallel sub-tasks. On a weak planner model that split can go wrong in a way nothing
+  downstream catches: it reads the *capability list* back as its plan, and because it
+  renumbers its own lines, each child ends up running a **different** capability from the
+  work it was handed. The tell is children whose reported outcome has nothing to do with
+  your request. A pinned capability skips the planner entirely.
+- **A runbook's `auto_approve` means its writes never pause.** Combined with the above, a
+  mis-split runbook can write in three places you didn't ask about, so pin the cap before
+  you tick it.
+
 ## How it works (file ≈ layer)
 
 | Layer | File(s) | Notes |

@@ -41,7 +41,10 @@ class SwarmMixin:
                 # history, so a swarm in flight across this refactor replays unchanged.
                 type(self).run,
                 {"request": sub["request"], "cap": sub["cap"], "subtask": True,
-                 "unattended": unattended, "approval": approval,
+                 # A child is ALWAYS unattended, whatever the parent is: nothing reads its
+                 # output but `merge`, so a child ending on a question is a dead end by
+                 # construction and must earn the judge's dead-end rule (`judging.verify`).
+                 "unattended": True, "approval": approval,
                  # Carry the parent chat's composer overrides into every child (memory doesn't
                  # apply to sub-tasks anyway — recall is off for subtask=True — but the model
                  # override should still bind, same model for the whole chat's work).
