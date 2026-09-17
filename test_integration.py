@@ -71,6 +71,11 @@ async def _time_skipping_env(attempts=3):
     import asyncio
     dest = os.environ.get("OTTO_TEST_SERVER_DIR")
     dest = os.path.expanduser(dest) if dest else None   # a `~/...` value is not shell-expanded here
+    if dest:
+        # The SDK writes the binary into this directory but does NOT create it: a missing one
+        # fails as "Failed starting test server: No such file or directory", three retries deep,
+        # naming neither the directory nor the variable. A cache MISS is exactly that case.
+        os.makedirs(dest, exist_ok=True)
     last = None
     for i in range(attempts):
         try:
