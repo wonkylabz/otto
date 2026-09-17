@@ -2,54 +2,28 @@
 
 Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
-import ast
-import glob
-import contextlib
 import inspect
-import io
 import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
-import threading
 import time
 import unittest
-import chats
 import claude_cli
 import config
-import conventions
 import delivery
 import engine
-import file_safety
 import memory
-import error_classifier
-import events
 import gateway
-import intents
-import judging
 import knowledge
-import local_runtime
-import mcp_client
-import plans
-import policy
 import privacy
 import registry
-import server
-import workspace
-import runbooks
-import scheduler
-import slack
-import slack_state
-import storage
 import supervisor
-import contextlib
 
 try:                                       # the Temporal layer — absent under a bare python3
-    import activities
-    import workflows
+    import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
+    import workflows    # noqa: F401 - and every Temporal test then fails instead of self-skipping
     _HAS_TEMPORAL = True
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
@@ -135,7 +109,6 @@ class RedactTests(unittest.TestCase):
         (progress endpoint, supervisor, the Debug drawer) rather than merely lose a line."""
         import json as _json
 
-        import claude_cli
         tok = "ATATT3xFfGF0" + "Qw9zK2mV7nB4pL1sX8tR3yH6jD5gA0cE" * 5 + "aB2c=="
         line = claude_cli.transcript_line({
             "type": "assistant",
@@ -149,7 +122,6 @@ class RedactTests(unittest.TestCase):
     def test_the_transcript_line_accepts_an_already_serialized_line(self):
         """The `claude -p` stream loop forwards raw stdout lines, which already end in \n and
         must not gain a second one — a blank line makes every reader's `json.loads` throw."""
-        import claude_cli
         raw = '{"type": "system", "subtype": "init"}\n'
         self.assertEqual(claude_cli.transcript_line(raw), raw)
         self.assertEqual(claude_cli.transcript_line(raw.rstrip("\n")), raw)
@@ -649,7 +621,6 @@ class MemoryGcTests(unittest.TestCase):
         engine.add_behavior("a rule")
         fact_event = engine.memory_events()[0]
         sol = engine.solutions()[0]
-        rule = engine.behaviors()[0]
 
         candidates = [
             {"store": "fact", "id": fact_event["id"], "text": "fact one"},

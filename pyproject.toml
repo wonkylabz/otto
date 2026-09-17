@@ -28,3 +28,15 @@ dependencies = ["temporalio==1.30.0"]
 [project.urls]
 Homepage = "https://github.com/wonkylabz/otto"
 Issues = "https://github.com/wonkylabz/otto/issues"
+
+# Lint is pyflakes (`F`) and nothing else, on purpose: it finds DEAD code and real mistakes —
+# an import nothing uses, a shadowed name, an assignment that goes nowhere — while leaving style
+# alone. Style here is "match the surrounding code" (CONTRIBUTING.md), which no formatter knows.
+# A re-export or a side-effecting import reads as dead to F, so those carry `# noqa: F401` AND
+# the reason (engine.py's facade, test_support.py's sys.modules table, the temporalio probe).
+[tool.ruff]
+target-version = "py312"
+extend-exclude = ["data", ".venv"]
+
+[tool.ruff.lint]
+select = ["F"]

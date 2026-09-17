@@ -15,42 +15,18 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest import mock
-import chats
 import claude_cli
 import config
 import conventions
-import delivery
 import engine
-import file_safety
-import memory
-import error_classifier
-import events
-import gateway
-import intents
-import judging
-import knowledge
-import local_runtime
-import mcp_client
-import plans
-import policy
-import privacy
 import registry
-import server
-import workspace
-import runbooks
-import scheduler
-import slack
-import slack_state
 import storage
-import supervisor
-import contextlib
 
 try:                                       # the Temporal layer — absent under a bare python3
-    import activities
-    import workflows
+    import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
+    import workflows    # noqa: F401 - and every Temporal test then fails instead of self-skipping
     _HAS_TEMPORAL = True
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
@@ -302,7 +278,6 @@ class DoctorTests(unittest.TestCase):
     def test_every_doctor_check_is_wired_into_run_checks(self):
         # A check nobody calls is the same silence it was written to break.
         import ast
-        import doctor
         src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "doctor.py")
         with open(src) as fh:
             tree = ast.parse(fh.read())
@@ -660,7 +635,6 @@ class RunPlanTests(unittest.TestCase):
     def test_independent_steps_run_concurrently_in_one_wave(self):
         # Two steps with no interdependency form one dependency wave and must run AT THE SAME TIME:
         # a barrier of 2 (short timeout) only clears if both ladders are in-flight together.
-        import threading
         config.PLAN_MAX_PARALLEL = 3
         active, lock, barrier = {"now": 0, "max": 0}, threading.Lock(), threading.Barrier(2, timeout=5)
 
@@ -1354,6 +1328,17 @@ class TemporalPinTests(unittest.TestCase):
             f"requirements.txt pins temporalio=={self._pin()} but this venv runs {installed}. "
             f"A rebuilt venv would not be the environment these tests passed in — bump the pin "
             f"to the tested version (NOT to the Temporal CLI's version, a separate scheme).")
+
+    def test_the_two_files_that_state_the_sdk_pin_agree(self):
+        """`requirements.txt` is what install.sh and CI install; `pyproject.toml` is what tooling
+        reads. Nothing installs from the second, so a divergence is silent here and only felt by
+        whoever trusts the metadata — and dependabot bumps manifests one file at a time."""
+        with open(os.path.join(self.ROOT, "pyproject.toml"), encoding="utf-8") as f:
+            m = re.search(r'temporalio==([\w.]+)', f.read())
+        self.assertIsNotNone(m, "pyproject.toml must pin temporalio with ==")
+        self.assertEqual(m.group(1), self._pin(),
+                         f"pyproject.toml pins temporalio=={m.group(1)} but requirements.txt "
+                         f"pins {self._pin()} — bump both or neither")
 
     def _cli_pin(self):
         with open(os.path.join(self.ROOT, "install.sh"), encoding="utf-8") as f:
@@ -2566,7 +2551,7 @@ class SystemContextTranscriptTests(unittest.TestCase):
     def test_it_sits_next_to_the_prompt_not_inside_it(self):
         """They are separate arguments; folding one into the other would change what the model
         receives, not just what is logged."""
-        i = src = open("claude_cli.py").read()
+        src = open("claude_cli.py").read()
         meta = src[src.index('"type": "otto-meta"'):][:400]
         self.assertIn('"prompt": prompt', meta)
         self.assertIn('"system_context": system_context', meta)
@@ -2732,7 +2717,7 @@ class EffortPlumbingTests(unittest.TestCase):
                         "effort default falls back to the code default on every run")
 
     def test_run_attempt_forwards_effort_to_both_backends(self):
-        import ast, inspect, textwrap, engine
+        import ast, textwrap, engine
         tree = ast.parse(textwrap.dedent(inspect.getsource(engine.run_attempt)))
         for target in ("_claude", "run_json"):
             calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
@@ -2767,7 +2752,7 @@ class ClaudeSeamSignatureTests(unittest.TestCase):
     and that each kwarg is actually forwarded."""
 
     def test_every_run_attempt_kwarg_exists_on_the_real_claude_seam(self):
-        import ast, inspect, textwrap, engine
+        import ast, textwrap, engine
         seam = set(inspect.signature(engine._claude).parameters)
         tree = ast.parse(textwrap.dedent(inspect.getsource(engine.run_attempt)))
         calls = [n for n in ast.walk(tree)
@@ -2779,7 +2764,7 @@ class ClaudeSeamSignatureTests(unittest.TestCase):
                               f"run_attempt passes {kw.arg}= to _claude, which does not accept it")
 
     def test_claude_seam_forwards_its_kwargs_to_run_json(self):
-        import inspect, engine, claude_cli
+        import engine
         seam = set(inspect.signature(engine._claude).parameters) - {"prompt"}
         target = set(inspect.signature(claude_cli.run_json).parameters)
         self.assertTrue(seam <= target, f"_claude accepts {seam - target}, run_json does not")

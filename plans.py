@@ -9,18 +9,16 @@ decomposition (`plan_steps`/`replan_steps`), the approval gate's read-only plan 
 import concurrent.futures
 import json
 import re
-import time
 
 import claude_cli
 import config
 import conventions
 import gateway
 import local_runtime
-import registry
 from audit import _audit
 from contracts import _invocation, _setting_sources
 from memory import _resolve_project
-from ui import say, trace
+from ui import trace
 
 
 def _eng():
@@ -651,7 +649,7 @@ def _step_prompt(request, step, store):
     done-condition, and ONLY the outputs of the steps it declared in `needs` — each truncated
     to config.PLAN_ARTIFACT_CHARS. Deliberately NOT a growing "context so far" blob: weak models
     have small windows and are hurt more by irrelevant context than helped by completeness."""
-    out = [f"You are executing ONE step of a larger task. Do ONLY this step — not the whole task.",
+    out = ["You are executing ONE step of a larger task. Do ONLY this step — not the whole task.",
            f"\nOVERALL TASK (for orientation only): {request}",
            f"\n\nYOUR STEP [{step['id']}]: {step['goal']}"]
     if step.get("context"):

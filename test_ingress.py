@@ -15,7 +15,6 @@ import re
 import shutil
 import socketserver
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -23,24 +22,12 @@ import unittest
 import unittest.mock
 import urllib.error
 import urllib.request
-import chats
-import claude_cli
 import config
 import contracts
-import conventions
 import delivery
 import engine
-import file_safety
-import memory
-import error_classifier
 import events
 import gateway
-import intents
-import judging
-import knowledge
-import local_runtime
-import mcp_client
-import plans
 import policy
 import pr_review
 import privacy
@@ -53,12 +40,10 @@ import scheduler
 import slack
 import slack_state
 import storage
-import supervisor
-import contextlib
 
 try:                                       # the Temporal layer — absent under a bare python3
-    import activities
-    import workflows
+    import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
+    import workflows    # noqa: F401 - and every Temporal test then fails instead of self-skipping
     _HAS_TEMPORAL = True
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
@@ -284,7 +269,6 @@ class RunbookCapResolutionTests(unittest.TestCase):
         # so after an operator flipped a cap read->write in Admin the registry said write and
         # `resolve_cap` went on saying read for the life of the worker — a scheduled runbook
         # pinned to it kept firing ungated. The cache now keys on the policy store's stamp.
-        import policy
         import registry
         tmp = tempfile.mkdtemp(prefix="otto-pol-")
         self.addCleanup(shutil.rmtree, tmp, True)

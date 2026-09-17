@@ -161,7 +161,7 @@ async def _in_flight(c, rid):
     Temporal suffixes the scheduled time) or an earlier on-demand start (`runbook-<rid>-…`)."""
     out = []
     async for wf in c.list_workflows(
-            f'WorkflowType = "OttoWorkflow" AND ExecutionStatus = "Running"'):
+            'WorkflowType = "OttoWorkflow" AND ExecutionStatus = "Running"'):
         if wf.id.startswith((f"sched-{rid}", f"runbook-{rid}-")):
             out.append(wf.id)
     return out

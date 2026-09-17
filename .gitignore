@@ -45,3 +45,6 @@ data/repos
 /external-audit.log
 # Brand assets with unverified provenance — do not ship until their licence is known.
 /Otto Mascot Design.zip
+# Cached Temporal test-server binary (OTTO_TEST_SERVER_DIR). CI points it here so actions/cache
+# can hold the ~84MB download across runs; it lands inside the checkout, never in a commit.
+/.temporal-test-server
