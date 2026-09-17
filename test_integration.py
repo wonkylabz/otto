@@ -1,6 +1,8 @@
 """Integration / E2E tests for the `claude -p` paths — with Claude fully MOCKED.
 
-Two layers, no network and no tokens:
+Two layers, no tokens. The only network these tests ever touch is the Temporal SDK fetching
+its ephemeral test-server binary on first use (see `_time_skipping_env`); everything Otto
+itself would reach out to is stubbed:
   * HTTP API (route -> clarify -> run -> audit) driven over a real ephemeral socket,
     with `engine._claude` and `gateway.complete` stubbed. Stdlib-only.
   * The Temporal workflow's signal path (clarification + approve/deny) on an isolated
@@ -59,12 +61,20 @@ async def _time_skipping_env(attempts=3):
     like that says nothing about the code and trains everyone to re-run instead of read it.
 
     Retry the STARTUP, never the test body: a flaky server boot and a flaky assertion look
-    identical in a log, and only one of them is safe to paper over."""
+    identical in a log, and only one of them is safe to paper over.
+
+    The SDK downloads that ~84MB binary from GitHub on first use and keeps it in the system
+    temp dir, named for the SDK version — which is per-job scratch on a CI runner, so every job
+    re-downloaded it and the flake above was mostly that fetch. `OTTO_TEST_SERVER_DIR` moves the
+    download somewhere a CI cache can hold across runs (`.github/workflows/test.yml`); unset, the
+    SDK default stands, so a laptop behaves exactly as before."""
     import asyncio
+    dest = os.environ.get("OTTO_TEST_SERVER_DIR")
+    dest = os.path.expanduser(dest) if dest else None   # a `~/...` value is not shell-expanded here
     last = None
     for i in range(attempts):
         try:
-            return await WorkflowEnvironment.start_time_skipping()
+            return await WorkflowEnvironment.start_time_skipping(download_dest_dir=dest)
         except RuntimeError as e:                # the Rust bridge raises a bare RuntimeError
             if "test server" not in str(e):      # a real failure must not be retried into noise
                 raise
@@ -4791,7 +4801,7 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         self.fail("resumed write follow-up never reached the approval gate")
                     await h.signal(OttoWorkflow.approve, True)
-                    out = await h.result()
+                    await h.result()
         # Re-provisioned on the RECOVERED agent branch, not the never-pushed otto default.
         self.assertEqual(self.provisions, [{"repo": "myrepo", "run_id": "web-orig1",
                                             "from_branch": True, "branch": "38"}])
@@ -4864,7 +4874,6 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
         commits a follow-up might amend — so this case must still dead-end. That distinction is the
         whole reason the tier keys on "was a PR ever opened?" rather than "did checkout fail?", and
         it is why `recover_pr_branch` reports its `pr_url` even when it cannot resolve a branch."""
-        import asyncio
         import uuid
         from workflows import OttoWorkflow
         from activities import (classify_followup, cleanup_workspace, clarify_request,

@@ -23,7 +23,20 @@ on a Claude **subscription** via `claude -p` — no API key required. Linux and 
 `temporalio` isn't importable, and Temporal is the only production run path — so bare
 `python3` prints a green `OK (skipped=93)` having tested nothing. This trips everybody once.
 
-Nothing in the suite touches the network or spends tokens.
+No test spends a token, and the only network call in the suite is the Temporal SDK fetching its
+ephemeral test-server binary the first time you run it (~84MB, then cached in your temp dir).
+`OTTO_TEST_SERVER_DIR` moves that download somewhere you choose — that is how CI caches it.
+
+```bash
+pip install ruff==0.16.8 && ruff check      # pyflakes only; CI runs the same command
+shellcheck install.sh run.sh systemd/install.sh launchd/install.sh
+```
+
+Lint is `F` and nothing else: dead imports, shadowed names, assignments that go nowhere. It has
+one trap — a re-export and a side-effecting import read as dead to it, and deleting one is
+invisible until something far away breaks (`test_support.py`'s imports ARE the redirect table's
+`sys.modules` entries; the `import activities` in every suite's `try:` block IS the temporalio
+probe). Those carry `# noqa: F401` and the reason. Add the same when you add one.
 
 Two more things that will surprise you:
 

@@ -1,6 +1,7 @@
-# The suite is stdlib + temporalio, hits no network and spends no tokens, so CI is the whole
-# smoke test a PR needs. It deliberately does NOT install the `claude` CLI: if a test starts
-# needing it, that test has stopped being a unit test.
+# The suite spends no tokens and deliberately does NOT install the `claude` CLI: if a test
+# starts needing it, that test has stopped being a unit test. It reaches the network in exactly
+# one place — the Temporal SDK fetching its ~84MB ephemeral test-server binary — which is why
+# that download is cached below rather than re-paid by all six jobs on every push.
 name: tests
 
 on:
@@ -8,22 +9,55 @@ on:
     branches: [main]
   pull_request:
 
+# A PR branch is pushed to repeatedly; without this each push queued six more jobs BEHIND the
+# ones it had already obsoleted. `main` is never cancelled — its runs are the release record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   unittest:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.12", "3.13", "3.14"]
+    env:
+      # test_integration._time_skipping_env reads this; unset, the SDK downloads to the job's
+      # scratch temp dir, which is thrown away — one job in six then died on the fetch.
+      OTTO_TEST_SERVER_DIR: ${{ github.workspace }}/.temporal-test-server
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      # Keyed on the temporalio pin because the binary is named for the SDK version: a bump
+      # must miss the cache, and a python-version bump must not (the binary is the same one).
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.temporal-test-server
+          key: temporal-test-server-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
       - run: pip install -r requirements.txt
       # Temporal tests self-skip without `temporalio`, so a missing install would go GREEN
       # having tested nothing — the same trap as running the suite under a bare python3.
       - run: python -c "import temporalio, sys; print('temporalio', temporalio.__file__)"
       - run: python -m unittest
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # `F` only (pyflakes): dead imports, shadowed names, unused locals — mistakes, not style.
+      # Config and the reason it stops there live in pyproject.toml's [tool.ruff].
+      - run: pip install ruff==0.16.8
+      - run: ruff check --output-format github
+      # Preinstalled on the GitHub-hosted ubuntu image. run.sh sources a gitignored .env, which
+      # carries an in-file `# shellcheck source=/dev/null` rather than a blanket --exclude.
+      - run: shellcheck install.sh run.sh systemd/install.sh launchd/install.sh

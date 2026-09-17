@@ -4,7 +4,6 @@ Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
 import ast
 import glob
-import contextlib
 import inspect
 import io
 import json
@@ -29,37 +28,26 @@ import chats
 import claude_cli
 import config
 import contracts
-import conventions
-import delivery
 import engine
 import estop
 import file_safety
 import memory
 import error_classifier
-import events
 import gateway
-import intents
-import judging
 import knowledge
 import local_runtime
 import mcp_client
-import plans
 import policy
-import privacy
 import registry
 import server
 import workspace
 import runbooks
-import scheduler
-import slack
-import slack_state
 import storage
 import supervisor
-import contextlib
 
 try:                                       # the Temporal layer — absent under a bare python3
-    import activities
-    import workflows
+    import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
+    import workflows    # noqa: F401 - and every Temporal test then fails instead of self-skipping
     _HAS_TEMPORAL = True
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
@@ -3285,7 +3273,6 @@ class ModelKindTests(unittest.TestCase):
              local_runtime.run_json, config.SUPERVISE, mcp_client.unservable) = saved
 
     def test_a_hosted_verdict_never_feeds_the_latch_store(self):
-        import memory
         saved = (memory._audit, gateway.record_cap_local, gateway.resolve_model)
         fed, entry = [], {}
         memory._audit = lambda *a, **k: None
@@ -6084,7 +6071,6 @@ class FileSafetyTests(unittest.TestCase):
         `data/workspaces/`, where every repo-mode clone lives — silently blocking the entire
         feature most write runs exist to use. Nothing else in the suite would have caught it,
         because no unit test performs a real repo-mode write."""
-        import workspace
         clone = os.path.join(workspace.WORKSPACES, "run-123", "myrepo", "src", "main.py")
         self.assertFalse(self.fs.is_denied(clone))
         self.assertFalse(self.fs.is_denied(os.path.join(workspace.WORKSPACES, "r", "pkg.json")))

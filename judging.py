@@ -9,7 +9,6 @@ judge receives, and the resume/error result guards.
 import config
 import conventions
 import gateway
-import registry
 from contracts import CONVERSATION_AUDIENCE, _write_gate_note
 from ui import trace
 

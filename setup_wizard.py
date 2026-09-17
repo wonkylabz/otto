@@ -150,8 +150,8 @@ def step_secret_provider():
     else:
         # Loud on purpose: every failure mode of the helper reads as "unset", which is
         # indistinguishable from a correctly-empty .env until a feature silently does nothing.
-        _say(f"wrote it, but it resolved NOTHING yet — run it by hand with a real name "
-             f"substituted for {{name}}", _WARN + "⚠" + _OFF)
+        _say("wrote it, but it resolved NOTHING yet — run it by hand with a real name "
+             "substituted for {name}", _WARN + "⚠" + _OFF)
     return title, "fixed"
 
 

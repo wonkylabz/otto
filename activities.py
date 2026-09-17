@@ -990,7 +990,6 @@ def poll_slack(payload: dict) -> dict:
         rec = msg.get("conversation")                   # the conversation's record, or None
         identity = slack.identity_of(msg)
         in_thread = bool(msg.get("in_thread"))
-        root = msg.get("thread_ts") or msg["ts"]
         # Where Otto's own reply goes (channel level in a DM, in-thread in a channel) — the ack has
         # to land in the same place as the answer, so both come from slack.reply_target.
         ack_ts = slack.reply_target(msg).get("thread_ts")

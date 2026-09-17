@@ -2,11 +2,7 @@
 
 Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
-import ast
-import glob
-import contextlib
 import inspect
-import io
 import json
 import os
 import pathlib
@@ -16,43 +12,24 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest import mock
 import chats
-import claude_cli
 import config
 import conventions
-import delivery
 import engine
 import file_safety
-import memory
-import error_classifier
-import events
 import gateway
 import intents
 import judging
 import knowledge
-import local_runtime
-import mcp_client
-import plans
-import policy
-import privacy
 import registry
 import repos
-import server
 import workspace
-import runbooks
-import scheduler
-import slack
-import slack_state
-import storage
-import supervisor
-import contextlib
 
 try:                                       # the Temporal layer — absent under a bare python3
-    import activities
-    import workflows
+    import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
+    import workflows    # noqa: F401 - and every Temporal test then fails instead of self-skipping
     _HAS_TEMPORAL = True
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
@@ -176,7 +153,6 @@ class ProfileTests(unittest.TestCase):
 
     def setUp(self):
         import gateway
-        import knowledge
         import policy as pol_mod
         import workspace
         self.gateway, self.knowledge, self.policy, self.workspace = \
@@ -1619,7 +1595,6 @@ class ChatHistoryTests(unittest.TestCase):
         and worker.py write the same chat id on a reattached thread, so a turn landing in that
         gap was erased. append_messages() does the row merge and the INSERT in ONE storage.tx,
         so both writers' turns survive."""
-        import threading
         chats.append_run("race", "seed", "seeded")
         errors, n = [], 40
 

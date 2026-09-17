@@ -8,6 +8,23 @@
 isn't importable, and Temporal is the only production path — so bare `python3` reports a green
 `OK (skipped=93)` having tested nothing.
 
+The suite spends no tokens. Its one network call is the Temporal SDK fetching the ephemeral
+test-server binary on first use; `OTTO_TEST_SERVER_DIR` points that download at a directory of
+your choice, which is how `.github/workflows/test.yml` caches it across jobs instead of having
+all six re-download it (that fetch was most of the "failed connecting to test server" flake
+`_time_skipping_env` retries around).
+
+## Lint
+
+`ruff check` (pyflakes rules only, configured in `pyproject.toml`) and `shellcheck` over the
+four shell scripts. Both run in CI; both are clean today.
+
+A linter cannot tell a re-export from a dead import. `engine.py`'s facade, `test_support.py`'s
+`sys.modules` imports for the store-redirect table, and the `import activities` that IS the
+temporalio probe all read as dead — each carries `# noqa: F401` plus the reason it stays.
+Deleting the probe strands `_HAS_TEMPORAL` on True, which is the "green suite that tested
+nothing" trap from the other direction.
+
 ## Regression corpus
 
 `regress.py`, `regress_cases.py`, `regress/fixtures/`.

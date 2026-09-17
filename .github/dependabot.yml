@@ -1,0 +1,11 @@
+# Monthly, not weekly: the whole dependency list is two pinned packages (requirements.txt +
+# pyproject.toml carry the same temporalio pin, so a bump touches both) and every one of them
+# has to be merged with a suite run behind it — `test_core.TemporalPinTests` fails until the
+# venv actually runs the pinned SDK.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3

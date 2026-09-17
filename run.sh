@@ -9,7 +9,11 @@ cd "$(dirname "$0")"
 # ingress). `set -a` exports every assignment so the worker + server inherit them.
 if [ -f .env ]; then
   echo ".env: loading local environment"
-  set -a; . ./.env; set +a
+  # `.env` is gitignored and per-machine, so there is nothing for shellcheck to follow.
+  set -a
+  # shellcheck source=/dev/null
+  . ./.env
+  set +a
 fi
 
 PY="./.venv/bin/python"

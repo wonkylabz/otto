@@ -6,8 +6,6 @@ report/reply output contracts (`_output_contract` picks by delivery audience), t
 context header, the untrusted-data fence, and `_setting_sources`.
 """
 import config
-import conventions
-import gateway
 import knowledge
 import mcp_client
 import policy

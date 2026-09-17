@@ -8,58 +8,43 @@ layer they cover, mirroring `.claude/rules/*.md`; everything they SHARE lives he
 re-points each live-state alias at a temp dir. Splitting the suite without carrying it into
 all of them would have put the phantom-row bug (`LiveStoreIsolationTests`) straight back.
 """
-import ast
-import glob
 import contextlib
-import inspect
-import io
-import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 import tempfile
-import threading
-import time
-import unittest
-import board
 import chats
-import claude_cli
 import config
-import conventions
-import delivery
 import engine
-import estop
-import file_safety
-import memory
-import error_classifier
-import events
 import gateway
-import intents
-import judging
 import knowledge
-import local_runtime
-import mcp_client
-import plans
-import policy
-import pr_review
-import privacy
 import registry
-import repos
-import server
-import workspace
-import runbooks
-import scheduler
-import slack
-import slack_state
 import storage
-import supervisor
-import contextlib
+
+# `redirect_live_state` re-points each store through `sys.modules[mod]`, so every module named
+# in _DATA_STORES/_LAZY_STORES has to be IMPORTED somewhere first — these are that import, and
+# they read as dead to a linter. Drop one and the redirect KeyErrors, or worse, the store it
+# names stays pointed at the developer's real data/.
+import board  # noqa: F401
+import claude_cli  # noqa: F401
+import conventions  # noqa: F401
+import delivery  # noqa: F401
+import estop  # noqa: F401
+import events  # noqa: F401
+import local_runtime  # noqa: F401
+import mcp_client  # noqa: F401
+import policy  # noqa: F401
+import pr_review  # noqa: F401
+import repos  # noqa: F401
+import runbooks  # noqa: F401
+import scheduler  # noqa: F401
+import server  # noqa: F401
+import slack  # noqa: F401
+import workspace  # noqa: F401
 
 try:                                       # the Temporal layer — absent under a bare python3
-    import activities
-    import workflows
+    import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
+    import workflows    # noqa: F401 - and every Temporal test then fails instead of self-skipping
     _HAS_TEMPORAL = True
 except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False

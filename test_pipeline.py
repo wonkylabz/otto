@@ -4,48 +4,28 @@ Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
 import ast
 import glob
-import contextlib
 import inspect
 import io
 import json
 import os
 import re
 import shutil
-import subprocess
-import sys
 import tempfile
-import threading
 import time
 import unittest
-import chats
 import claude_cli
 import config
 import conventions
-import delivery
 import engine
-import file_safety
-import memory
-import error_classifier
-import events
 import gateway
-import intents
 import judging
-import knowledge
 import local_runtime
-import mcp_client
 import plans
-import policy
-import privacy
 import registry
 import server
 import workspace
-import runbooks
-import scheduler
-import slack
-import slack_state
 import storage
 import supervisor
-import contextlib
 
 try:                                       # the Temporal layer — absent under a bare python3
     import activities
@@ -1992,7 +1972,6 @@ class PlanArtifactForwardingTests(unittest.TestCase):
             import activities  # imports temporalio; skip when not installed
         except ImportError:
             self.skipTest("temporalio not installed")
-        import workspace
         seen = {}
         orig_fin, orig_copy = workspace.finalize, engine.pr_copy
         workspace.finalize = lambda run_id, **kw: seen.update(kw) or {"pushed": True}

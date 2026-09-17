@@ -4,71 +4,65 @@ In real Otto this is a Temporal workflow. Here it's a function, but the shape is
 identical: route -> approve (signal) -> run -> audit. The crucial "real" bit: the
 RUNNER shells out to `claude -p` to actually execute your real agent/skill.
 """
-import concurrent.futures
-import contextlib
-import datetime
 import json
 import os
 import re
-import threading
 import time
 import uuid
 
 import claude_cli
 import config
-import conventions
 import error_classifier
 import gateway
-import knowledge
 import local_runtime
 import mcp_client
-import registry
+import registry  # noqa: F401 - facade seam: the suite patches engine.registry, not registry
 import storage
 import supervisor
 import workspace
-from ui import say, trace
+from ui import say, trace  # noqa: F401 - `say` is a facade seam the suite silences
 # The audit and memory layers live in audit.py / memory.py; this module re-exports them so
 # callers and tests keep addressing engine.X (the whole suite monkeypatches these names HERE —
 # both modules resolve their patch-sensitive seams back through this facade at call time,
 # see audit._eng / memory._eng).
-from audit import (_schema, _conn, _audit_conn, _append_audit, _append_content, _audit,
-                   iter_audit_entries, iter_content_entries, audit_entries_for,
-                   content_entries_for, needs_human_wids, scorecard, pr_url_from_run,
-                   accept_run, record_terminal, record_skip, run_origin, audit_repo_changes,
-                   audit_mcp_change, archive_board_cards, archived_board_cards, prune_board_cards)
-from contracts import (_TLDR_SHAPE, _SINGLE_TURN_CONTRACT, _RESUME_CONTRACT, _REPORT_FORMAT,
-                       _DIRECT_REPLY_FORMAT, CONVERSATION_AUDIENCE, _output_contract,
-                       _invocation, _local_invocation, _LOCAL_CAP_CHARS, _CRITIQUE_FOLD,
-                       _repo_scope_note, _repo_source_note, _pr_body_note, _setting_sources,
-                       _write_gate_note,
-                       _DISCUSSION_TURN_NOTE, _discussion_note, _resume_contract,
-                       _DATA_FENCE_PREAMBLE, _fenced, _memory_context, _mcp_notes_note)
-from plans import (_PLAN_PROMPT, _extract_step_json, _toposort, _parse_steps, plan_steps,
-                   _REPLAN_PROMPT, _step_digest, replan_steps, _PLAN_INSTRUCTION, plan_preview,
-                   _PLAN_CONCERN_CAP, _PLAN_CRITIQUE_CHARS, _PLAN_REQUEST_CHARS, _clipped,
-                   _parse_plan_concerns, critique_plan, plan_mode_active, _step_prompt,
-                   _synthesize_plan, _run_plan_step, _plan_step_caps, run_plan)
-from routing import (ROUTE_DESC_CHARS, ROUTE_SHORTLIST, MAX_SWARM, _repo_eligible,
-                     _shortlist, route, _parse_plan, decompose, merge, plan)
-from intents import (_parse_clarification, clarify, _parse_write_intent,
-                     followup_write_intent, _parse_handoff, followup_handoff,
-                     request_write_intent, assistant_write_redirect, candidate_repo,
-                     repo_edit_intent, _parse_pr_title, _OPERATIONAL_SENTINEL_PREFIXES,
-                     _is_operational_sentinel, pr_copy, auto_engage_repo)
-from judging import (_parse_verdict, _parse_qa_verdict, _APPROVED_PLAN_CHARS,
-                     _approved_plan_note, _grounding_note, _JUDGE_REASONING_RULE,
-                     verify, qa_review_request,
-                     judge_qa, review_request, judge_review, error_verdict, _is_duplicated,
-                     guard_resume_result)
-from memory import (_SOLUTIONS_MAX, _BEHAVIORS_MAX, _extract_facts, _extract_solution,
-                    _is_durable_fact, _memory_ns, _norm, _remember, _remember_solution,
-                    _resolve_project, _keywords, record_attempt, recent_facts, memory_events,
-                    distil_memory,
-                    delete_fact, clear_memory, recall_solutions, solutions, delete_solution,
-                    clear_solutions, applicable_behaviors, behaviors, add_behavior,
-                    update_behavior, delete_behavior, suggest_behavior_rule,
-                    _parse_rule_suggestion, _parse_gc_classification, _parse_gc_verify,
-                    gc_preview, gc_status, gc_start, gc_evict)
+from audit import (_schema, _conn, _audit_conn, _append_audit, _append_content, _audit,  # noqa: F401
+                   iter_audit_entries, iter_content_entries, audit_entries_for,  # noqa: F401
+                   content_entries_for, needs_human_wids, scorecard, pr_url_from_run,  # noqa: F401
+                   accept_run, record_terminal, record_skip, run_origin, audit_repo_changes,  # noqa: F401
+                   audit_mcp_change, archive_board_cards, archived_board_cards, prune_board_cards)  # noqa: F401
+from contracts import (_TLDR_SHAPE, _SINGLE_TURN_CONTRACT, _RESUME_CONTRACT, _REPORT_FORMAT,  # noqa: F401
+                       _DIRECT_REPLY_FORMAT, CONVERSATION_AUDIENCE, _output_contract,  # noqa: F401
+                       _invocation, _local_invocation, _LOCAL_CAP_CHARS, _CRITIQUE_FOLD,  # noqa: F401
+                       _repo_scope_note, _repo_source_note, _pr_body_note, _setting_sources,  # noqa: F401
+                       _write_gate_note,  # noqa: F401
+                       _DISCUSSION_TURN_NOTE, _discussion_note, _resume_contract,  # noqa: F401
+                       _DATA_FENCE_PREAMBLE, _fenced, _memory_context, _mcp_notes_note)  # noqa: F401
+from plans import (_PLAN_PROMPT, _extract_step_json, _toposort, _parse_steps, plan_steps,  # noqa: F401
+                   _REPLAN_PROMPT, _step_digest, replan_steps, _PLAN_INSTRUCTION, plan_preview,  # noqa: F401
+                   _PLAN_CONCERN_CAP, _PLAN_CRITIQUE_CHARS, _PLAN_REQUEST_CHARS, _clipped,  # noqa: F401
+                   _parse_plan_concerns, critique_plan, plan_mode_active, _step_prompt,  # noqa: F401
+                   _synthesize_plan, _run_plan_step, _plan_step_caps, run_plan)  # noqa: F401
+from routing import (ROUTE_DESC_CHARS, ROUTE_SHORTLIST, MAX_SWARM, _repo_eligible,  # noqa: F401
+                     _shortlist, route, _parse_plan, decompose, merge, plan)  # noqa: F401
+from intents import (_parse_clarification, clarify, _parse_write_intent,  # noqa: F401
+                     followup_write_intent, _parse_handoff, followup_handoff,  # noqa: F401
+                     request_write_intent, assistant_write_redirect, candidate_repo,  # noqa: F401
+                     repo_edit_intent, _parse_pr_title, _OPERATIONAL_SENTINEL_PREFIXES,  # noqa: F401
+                     _is_operational_sentinel, pr_copy, auto_engage_repo)  # noqa: F401
+from judging import (_parse_verdict, _parse_qa_verdict, _APPROVED_PLAN_CHARS,  # noqa: F401
+                     _approved_plan_note, _grounding_note, _JUDGE_REASONING_RULE,  # noqa: F401
+                     verify, qa_review_request,  # noqa: F401
+                     judge_qa, review_request, judge_review, error_verdict, _is_duplicated,  # noqa: F401
+                     guard_resume_result)  # noqa: F401
+from memory import (_SOLUTIONS_MAX, _BEHAVIORS_MAX, _extract_facts, _extract_solution,  # noqa: F401
+                    _is_durable_fact, _memory_ns, _norm, _remember, _remember_solution,  # noqa: F401
+                    _resolve_project, _keywords, record_attempt, recent_facts, memory_events,  # noqa: F401
+                    distil_memory,  # noqa: F401
+                    delete_fact, clear_memory, recall_solutions, solutions, delete_solution,  # noqa: F401
+                    clear_solutions, applicable_behaviors, behaviors, add_behavior,  # noqa: F401
+                    update_behavior, delete_behavior, suggest_behavior_rule,  # noqa: F401
+                    _parse_rule_suggestion, _parse_gc_classification, _parse_gc_verify,  # noqa: F401
+                    gc_preview, gc_status, gc_start, gc_evict)  # noqa: F401
 
 # Every engine-owned store lives in ONE WAL-mode SQLite db (issue #103), not JSON — these are the
 # hot append paths, and a whole-file read-modify-write (storage.mutate_json) doesn't scale for
