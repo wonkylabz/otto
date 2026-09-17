@@ -1140,8 +1140,12 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path in ("/api/runbooks", "/api/schedules"):
             # One list: scheduled runbooks (cron) and on-demand ones. `/api/schedules` stays as an
             # alias so an open tab from before the rename keeps working until it reloads.
+            # `order` is the operator's manual row order and rides alongside the rows rather
+            # than sorting them here: the tab splits them into two sections and each has its own
+            # fallback sort for a runbook the order doesn't name yet.
             self._send(200, json.dumps({"jobs": scheduler.list(), "temporal": TEMPORAL_OK,
                                         "tz": scheduler.local_tz_name() or "UTC",
+                                        "order": runbooks.order(),
                                         "caps": [c.name for c in CAPS if c.enabled]}))
         elif self.path.startswith("/api/runbook/"):
             # ONE runbook's full definition (doc + steps), kept out of the list endpoint so the
@@ -2265,6 +2269,12 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "remove":
                 scheduler.remove(body.get("id"))
                 self._send(200, json.dumps({"ok": True}))
+            elif action == "reorder":
+                # Display only, and deliberately NOT routed through scheduler: it must not be
+                # able to touch a definition or a Temporal schedule, and it has to keep working
+                # with Temporal down like every other pure store write here.
+                self._send(200, json.dumps({"ok": True,
+                                            "order": runbooks.set_order(body.get("ids"))}))
             elif action == "toggle":
                 scheduler.set_paused(body.get("id"), not bool(body.get("enabled")))
                 self._send(200, json.dumps({"ok": True}))

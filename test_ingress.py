@@ -238,6 +238,95 @@ class RunbookStoreTests(unittest.TestCase):
         self.assertEqual(runbooks.migrate_schedules({"otto-bad": {"request": "", "cron": ""}}), 0)
 
 
+class RunbookOrderTests(unittest.TestCase):
+    """Reordering the Jobs tab is a DISPLAY act and nothing else.
+
+    The cheap way to build it — an `order` int on each runbook — makes that a claim about what
+    the rest of the code happens to read. Keeping the order in its own file makes it a property
+    anything can check: after a reorder the definitions are byte-identical, so no cron, cap,
+    param or step can have moved."""
+
+    def setUp(self):
+        d = tempfile.mkdtemp(prefix="otto-rb-")
+        self._orig = (runbooks._STORE, runbooks._ORDER_STORE)
+        runbooks._STORE = os.path.join(d, "runbooks.json")
+        runbooks._ORDER_STORE = os.path.join(d, "runbook-order.json")
+
+    def tearDown(self):
+        runbooks._STORE, runbooks._ORDER_STORE = self._orig
+
+    def _two(self):
+        a, _ = runbooks.add({"name": "a", "request": "do a"})
+        b, _ = runbooks.add({"name": "b", "request": "do b", "cron": "0 9 * * *"})
+        return a, b
+
+    def test_a_reorder_leaves_every_definition_byte_identical(self):
+        a, b = self._two()
+        with open(runbooks.store_path()) as f:
+            before = f.read()
+        runbooks.set_order([b, a])
+        self.assertEqual([b, a], runbooks.order())
+        with open(runbooks.store_path()) as f:
+            self.assertEqual(before, f.read())
+
+    def test_no_order_at_all_is_an_empty_list_not_an_error(self):
+        # The fallback sorts (name, next fire) are what the tab shows until someone drags a row,
+        # so an absent file must read as "no opinion", never as a failed load.
+        self.assertEqual([], runbooks.order())
+
+    def test_an_unknown_or_duplicated_id_is_pruned_at_write_time(self):
+        # The client sends the list it has RENDERED, so a removed runbook's id there means the
+        # tab is one refresh behind — not an instruction to keep the id alive forever.
+        a, b = self._two()
+        self.assertEqual([b, a], runbooks.set_order([b, a, b, "rb-gone", a]))
+
+    def test_editing_a_runbook_does_not_reset_its_position(self):
+        # The order is not a field on the runbook, so a form that never sends one cannot clear it
+        # — which is the failure the separate store exists to make impossible.
+        a, b = self._two()
+        runbooks.set_order([b, a])
+        runbooks.update(a, {"name": "a2", "request": "do a differently"})
+        self.assertEqual([b, a], runbooks.order())
+
+
+class JobReorderUiTests(unittest.TestCase):
+    """The Jobs tab's drag-to-reorder, read through the assembled UI."""
+
+    def setUp(self):
+        self.src = ui_src()
+
+    def test_only_the_grip_is_draggable(self):
+        # A draggable ROW starts a drag from every button inside it and swallows text selection.
+        self.assertIn('<span class="jgrip" draggable="true"', self.src)
+        self.assertNotIn('<div class="job ${j.enabled?\'\':\'off\'}${j.on_demand?\' jod\':\' jsw\'}" draggable',
+                         self.src)
+
+    def test_a_drag_cannot_cross_a_section(self):
+        # Which section a job is in is a property of its cron, so a cross-section drop would have
+        # to add or remove a schedule — the one thing reordering must never do.
+        self.assertIn('row.closest(".asection")!==from.closest(".asection")', self.src)
+
+    def test_the_whole_list_is_sent_not_just_the_section_that_moved(self):
+        # The server stores what it is given, so one section's ids alone would drop the other's.
+        self.assertIn('el.querySelectorAll(".job")].map(r=>r.dataset.job)', self.src)
+
+    def test_a_poll_cannot_re_render_the_list_mid_drag(self):
+        # pollTrigger refreshes every 3s while a run is in flight; a re-render mid-drag drops the
+        # dragged row on the floor.
+        self.assertIn("if(_dragJob) return;", self.src)
+
+    def test_a_drag_abandoned_outside_the_list_re_renders_rather_than_lying(self):
+        # dragover moves the rows live, so a cancelled drag leaves the screen showing an order
+        # nothing saved.
+        self.assertIn("if(!_dropped) loadJobs(true);", self.src)
+
+    def test_the_drag_handlers_are_assigned_as_properties(self):
+        # #schedulesview outlives every re-render, so addEventListener would stack one deep per
+        # poll — the same reason el.onclick is a property (AddControlModalTests' sibling rule).
+        for prop in ("el.ondragstart=", "el.ondragover=", "el.ondrop=", "el.ondragend="):
+            self.assertIn(prop, self.src)
+
+
 class RunbookCapResolutionTests(unittest.TestCase):
     """A runbook stores a capability NAME; the trusted {name,kind,risk} dict is resolved from the
     registry at fire time, so a cap reclassified to write gates the next run instead of firing
@@ -6465,7 +6554,12 @@ class UiAssetLayoutTests(unittest.TestCase):
     # the risk badge shrank until "WRITE" rendered one letter per line. The three declarations
     # are the fix; the comment naming the inherited rule is what stops the next edit deleting
     # them as redundant (`SwarmCardRowTests`).
-    ASSET_MAX = 117254
+    # -> 117963 for the Jobs tab's drag grip: the row had to become a grid in BOTH shapes (an
+    # on-demand row was not one at all), because the grip is a left rail like the enable switch
+    # and a rail cannot be a cell of .jtop without indenting the name away from the request under
+    # it. The comment naming that constraint is what stops the next edit moving it inside
+    # (`JobReorderTests`).
+    ASSET_MAX = 117963
 
     def _assets(self):
         out = {}

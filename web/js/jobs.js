@@ -5,6 +5,10 @@
    two tabs would mean adding a cron MOVES a job between tabs instead of editing a field. */
 let _jobs=[], JOB_CAPS=[];
 let _triggering={};   // job id -> true while a manual run is in flight (for the spinner)
+/* The id being dragged, and the guard that stops `pollTrigger`'s silent refresh re-rendering
+   the list out from under a drag in progress — same reason GC_RUNNING/CONV_BUSY live outside
+   their renders (see the UI conventions). */
+let _dragJob=null, _dropped=false;
 
 /* Both groups default OPEN — the key records what the user explicitly CLOSED, same contract as
    the Events tab's integration sections. */
@@ -27,16 +31,29 @@ function jobSection(id, title, hint, rows, empty){
 }
 
 async function loadJobs(silent){
+  if(_dragJob) return;            // a poll must never re-render the list mid-drag
   const el=document.getElementById("schedulesview");
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
   try { data=await (await fetch("/api/runbooks")).json(); }
   catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load jobs (${esc(e.message)}).</p>`; return; }
   _jobs=data.jobs||[]; JOB_CAPS=data.caps||[];
-  const onDemand=_jobs.filter(j=>j.on_demand).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  /* A dragged order is the operator's and OUTRANKS both default sorts below — that is what
+     dragging a row means. It is display-only: the server keeps it in its own file and nothing
+     that starts a run reads it (runbooks.set_order). A runbook the order doesn't name (added
+     since the last drag) sorts to the END of its section rather than to wherever its name or
+     next fire would put it — a new row landing in the middle of a hand-made order reads as the
+     order having been lost. */
+  const pos=new Map((data.order||[]).map((id,i)=>[id,i]));
+  const dragged=(a,b)=>{
+    const x=pos.has(a.id), y=pos.has(b.id);
+    if(x&&y) return pos.get(a.id)-pos.get(b.id);
+    return x===y ? 0 : (x?-1:1);
+  };
+  const onDemand=_jobs.filter(j=>j.on_demand).sort((a,b)=>dragged(a,b)||(a.name||'').localeCompare(b.name||''));
   // soonest first — the API returns store order, so the next thing to fire could be anywhere in
   // the list. A disabled job has no next_run and sorts to the end rather than to the top.
-  const scheduled=_jobs.filter(j=>!j.on_demand).sort((a,b)=>
+  const scheduled=_jobs.filter(j=>!j.on_demand).sort((a,b)=>dragged(a,b)||
     (a.next_run?Date.parse(a.next_run):Infinity)-(b.next_run?Date.parse(b.next_run):Infinity));
   // Temporal down is DEGRADED, not fatal: on-demand runbooks are a plain store, so the list still
   // renders and stays editable — only cron firing and "run now" are unavailable.
@@ -103,7 +120,12 @@ function jobRow(j){
   // rather than rendering them empty: reserved-but-blank columns opened ~270px of dead gap
   // between the name and the buttons, which is what stopped the section reading as a list.
   // The "on demand" tag went with them — its own section heading already says so.
-  return `<div class="job ${j.enabled?'':'off'}${j.on_demand?' jod':' jsw'}">
+  // The grip is a RAIL outside .jbody like the switch, for the same reason: as a cell of .jtop
+  // it would indent the name while the request under it stayed flush with the card. Only the
+  // GRIP is draggable, not the row — a draggable row swallows text selection and starts a drag
+  // from every button in it.
+  return `<div class="job ${j.enabled?'':'off'}${j.on_demand?' jod':' jsw'}" data-job="${j.id}">
+    <span class="jgrip" draggable="true" title="drag to reorder (display only)">&#10247;</span>
     ${j.on_demand?'':`<span class="switch ${j.enabled?'on':''}" data-togglejob="${j.id}" title="enable / disable"></span>`}
     <div class="jbody">
     <div class="jtop">
@@ -161,6 +183,52 @@ function wireJobs(el){
   el.querySelectorAll("[data-editjob]").forEach(b=>b.addEventListener("click",()=>openJobForm(b.dataset.editjob)));
   const add=document.getElementById("add-job");
   if(add) add.addEventListener("click",()=>showJobForm());
+  wireJobDrag(el);
+}
+
+/* ---- reordering ----
+   Display only. A row's SECTION is a property of its cron, so a drag that crossed sections would
+   have to add or remove a schedule — i.e. change what the job does. Dragging is therefore
+   confined to the section it started in, and the server stores the order in its own file. */
+function wireJobDrag(el){
+  // Property assignment, not addEventListener: #schedulesview outlives every re-render, so
+  // listeners would stack one deep per poll (same contract as el.onclick above).
+  el.ondragstart=e=>{
+    const grip=e.target.closest(".jgrip");
+    if(!grip) return;
+    const row=grip.closest(".job");
+    _dragJob=row.dataset.job; _dropped=false;
+    e.dataTransfer.effectAllowed="move";
+    e.dataTransfer.setData("text/plain", _dragJob);   // Firefox starts no drag without a payload
+    e.dataTransfer.setDragImage(row, 24, 16);         // drag the ROW, not the 10px grip
+    row.classList.add("dragging");
+  };
+  el.ondragover=e=>{
+    const from=_dragJob && el.querySelector(".job.dragging");
+    const row=e.target.closest(".job");
+    if(!from || !row || row.closest(".asection")!==from.closest(".asection")) return;
+    e.preventDefault();                               // the ONLY thing that makes a drop legal
+    e.dataTransfer.dropEffect="move";
+    const r=row.getBoundingClientRect();
+    if(row!==from) row.parentNode.insertBefore(from, (e.clientY-r.top)>r.height/2 ? row.nextSibling : row);
+  };
+  el.ondrop=e=>{ if(_dragJob){ e.preventDefault(); _dropped=true; saveJobOrder(el); } };
+  el.ondragend=()=>{
+    el.querySelectorAll(".job.dragging").forEach(r=>r.classList.remove("dragging"));
+    _dragJob=null;
+    // Dropped outside the list: the rows moved during dragover but nothing was saved, so the
+    // screen is now lying. Re-render from the server rather than leave it.
+    if(!_dropped) loadJobs(true);
+  };
+}
+
+async function saveJobOrder(el){
+  // BOTH sections, in rendered order: the server stores what it is given, so sending only the
+  // section that moved would drop the other one's positions.
+  const ids=[...el.querySelectorAll(".job")].map(r=>r.dataset.job);
+  _dragJob=null;                                      // release the render guard before reloading
+  await postOr("/api/runbooks/reorder",{ids},"saving that order");
+  loadJobs(true);
 }
 
 async function startJob(id, values, btn, errEl){

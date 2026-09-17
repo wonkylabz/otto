@@ -2817,7 +2817,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # where the post-PR loops live. Paid down partly by cutting three restated measurements.
     # 78461 -> 78742 (#110): retrieval ranks the task, not the carried conversation — the
     # bug that routed an implement-this-ticket run to a ticket refiner (web-5dbdb225).
-    MAX_RULES_BYTES = 78742   # fetched tier — bounded, but looser; it is not always loaded
+    # 78742 -> 79004: the Jobs tab reorders by drag, and the rule that makes it safe (its own
+    # store, never crossing a section) is the one thing a later edit could quietly undo.
+    MAX_RULES_BYTES = 79004   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

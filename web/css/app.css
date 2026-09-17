@@ -1063,9 +1063,19 @@
     transition: background .12s, border-color .12s; }
   .job:hover { background: var(--raised); border-color: var(--line-strong); }
   .job.off { opacity: .5; }
-  .job.jsw { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 0 11px; align-items: start; }
+  /* Both shapes are a grid because the drag grip is a left RAIL, like the switch: a scheduled
+     row carries both rails, an on-demand one only the grip. */
+  .job { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 0 10px; align-items: start; }
+  .job.jsw { grid-template-columns: auto auto minmax(0,1fr); gap: 0 9px; }
   .job .jbody { min-width: 0; }
   .job.jsw > .switch { margin-top: 2px; }
+  /* Reordering is display-only, so the grip stays quiet until the row is hovered — a control at
+     full contrast on every row would read as something that acts on the job. */
+  .job > .jgrip { cursor: grab; color: var(--dim); opacity: .3; font-size: 15px; line-height: 19px;
+    user-select: none; transition: opacity .12s; }
+  .job:hover > .jgrip { opacity: .85; }
+  .job > .jgrip:active { cursor: grabbing; }
+  .job.dragging { opacity: .45; border-color: var(--accent); }
   .job .jtop { display: grid; grid-template-columns: minmax(0,1fr) 118px 150px auto;
     align-items: center; gap: 12px; }
   /* No cron and no next-fire, so those two columns merge into one saying what Run will ask
