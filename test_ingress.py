@@ -562,6 +562,102 @@ class RouteTests(unittest.TestCase):
         self.assertNotIn("webapp:data-exporter", self.prompts[0])
 
 
+class CarriedContextRoutingTests(unittest.TestCase):
+    """Routing ranks the TASK, never the conversation carried behind it (`contracts.task_text`).
+
+    Live failure, web-5dbdb225: a follow-up delegating a new task is handed off as a FRESH run and
+    the UI appends the prior conversation to it as background (`carryContextForSubmit`). The whole
+    concatenation reached `registry.rank`, which is IDF over the string it is handed — so 9.4 kB of
+    a thread about ticket comments and PR reviews chose the 25-cap shortlist for a 300-char "work
+    on issue #641, implement it, open a PR". `sre-minion` (#2 of 25 on the task alone) was ABSENT
+    from it, and a top-N cut is absolute: Router #1 took the best-ranked survivor, a ticket
+    REFINER, which refined the ticket and wrote no code.
+
+    The router MODEL was never the problem — re-probed 5x on the live prompt with the shortlist
+    fixed it picks the implementer 5/5 with the carried conversation still in front of it. So the
+    carry stays in the prompt (it is what resolves "that ticket"); only retrieval is task-only.
+    """
+
+    _TASK = ("Work on the GitHub issue at issues/641 by implementing the necessary changes, "
+             "self-reviewing the local diff, fixing what it finds, then committing and opening "
+             "a pull request.")
+    # An ordinary chat tail: it names other capabilities' work, and `rank` boosts a cap whose name
+    # the "request" contains — so the carry alone hands one +3.0 the task never asked for.
+    _EARLIER = ("[user] tidy the board\n[otto] managed the epics on the Projects v2 board\n"
+                "[user] ship it\n[otto] deployed the release to that environment, then the "
+                "release-notes skill drafted the notes\n"
+                "[user] review it\n[otto] reviews the open pull request\n")
+
+    def _caps(self):
+        def cap(name, desc):
+            c = registry.Capability("custom", name, desc)
+            c.risk = "write"
+            return c
+        return [
+            cap("minion", "End-to-end agent that takes a GitHub issue, refines it, implements "
+                          "the work, self-reviews the local diff and fixes the findings, then "
+                          "commits and opens a pull request. Use when the user wants to work on "
+                          "a GitHub issue from start to finish."),
+            cap("release-notes", "Drafts the release notes for a version"),
+            cap("board-manager", "Manages epics on the Projects v2 board"),
+            cap("pr-reviewer", "Reviews an open pull request"),
+            cap("deployer", "Deploys a release to an environment"),
+            cap("cost-report", "Reports monthly cloud spend"),
+        ]
+
+    @contextlib.contextmanager
+    def _slots(self, n):
+        orig, routing.ROUTE_SHORTLIST = routing.ROUTE_SHORTLIST, n
+        try:
+            yield
+        finally:
+            routing.ROUTE_SHORTLIST = orig
+
+    def _short(self, request, n):
+        with self._slots(n):
+            return [c.name for c in routing._shortlist(request, self._caps())]
+
+    def test_the_carried_conversation_cannot_evict_the_task_s_capability(self):
+        # The whole bug in one assertion: ranked on the concatenation, the carry's own cap scores
+        # 6.67 to the implementer's 3.95 and takes the only slot — the router is then choosing
+        # between capabilities for a conversation that is over.
+        carried = self._TASK + "\n\n" + contracts.CARRIED_CONTEXT_MARK + "\n" + self._EARLIER
+        self.assertEqual(self._short(carried, 1), ["minion"])
+
+    def test_the_shortlist_is_the_same_with_and_without_the_carry(self):
+        # Retrieval must be a function of the task alone, not of how much history the UI attached.
+        carried = self._TASK + "\n\n" + contracts.CARRIED_CONTEXT_MARK + "\n" + self._EARLIER
+        self.assertEqual(self._short(carried, 2), self._short(self._TASK, 2))
+
+    def test_the_keyword_fallback_score_is_the_task_s_too(self):
+        # `route`'s fallback (an unparseable router reply) takes the highest-scoring cap, scored
+        # separately from the shortlist — a second, silent copy of the same bug if it is missed.
+        carried = self._TASK + "\n\n" + contracts.CARRIED_CONTEXT_MARK + "\n" + self._EARLIER
+        orig_complete, orig_trace = engine.gateway.complete, engine.trace
+        engine.gateway.complete, engine.trace = (lambda *a, **k: None), (lambda *a, **k: None)
+        try:
+            self.assertEqual(engine.route(carried, self._caps()).name, "minion")
+        finally:
+            engine.gateway.complete, engine.trace = orig_complete, orig_trace
+
+    def test_a_request_with_no_carried_block_is_untouched(self):
+        # Every ingress but the web handoff/rebind sends a bare request; the split is a no-op there.
+        for req in ("renew the vpn", "--- Earlier in this conversation ---"):
+            self.assertEqual(contracts.task_text(req), req)
+        self.assertEqual(contracts.task_text(None), "")
+
+    def test_a_request_that_is_ONLY_a_carried_block_keeps_its_text(self):
+        # Fail-safe: an empty head ranks nothing at all, and a shortlist decided by name order is
+        # worse than one decided by the wrong text.
+        req = contracts.CARRIED_CONTEXT_MARK + "\n[user] tidy the board"
+        self.assertEqual(contracts.task_text(req), req)
+
+    def test_the_ui_and_the_router_spell_the_marker_identically(self):
+        # ONE producer (web/js/chat.js), one consumer (contracts.task_text). Drifted spellings
+        # raise nowhere — the split silently stops matching and the bug is back.
+        self.assertIn(contracts.CARRIED_CONTEXT_MARK, ui_src())
+
+
 class RouteConfirmationTests(unittest.TestCase):
     """Router #1 re-samples a WRITE pick before it stands (`routing._confirm_route`).
 

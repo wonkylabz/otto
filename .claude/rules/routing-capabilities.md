@@ -7,6 +7,7 @@
 **General assistant** = built-in read-only Q&A cap (always shortlisted); **general worker** = built-in write cap for task-shaped requests with no specialized agent. Both pinnable (`/assistant`, `/worker`).
 
 - **A wrong route is usually retrieval, not the model** — the shortlist is a top-N cut over every discovered cap, and one the router never sees can't be chosen. Diagnose with `registry.rank()` before touching the prompt, which is already several exceptions deep.
+- **Retrieval ranks the TASK, never the conversation carried behind it** (`contracts.task_text`) — `rank` is IDF over the whole string, so a 9 kB carry chose the shortlist, the cap the task named was never listed, and the router could not pick it (`CarriedContextRoutingTests`).
 - **Rank against the catalogue, never per-cap** (`registry.rank`): IDF + length normalization: a flat count can't tell a discriminating word from a ubiquitous one, and rewards long descriptions. The shortlist is always FILLED and tie-broken by name, so routing is reproducible.
 - **A WRITE pick is re-sampled; the majority stands** (`routing._confirm_route`, `route_confirmations`=3) — one sample is a coin flip, and only a write route arms the gate and preview. A lone read sample must not win, or a real task lands on assistant (`RouteConfirmationTests`).
 - **The listing is numbered from 1 and the LAST integer in the reply wins** — a reasoning preamble naming other options poisons a first-integer parse. Stock bundled caps are marked `[generic]` so a user's own cap wins ties.
