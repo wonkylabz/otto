@@ -23,7 +23,7 @@ classifiers = [
 ]
 # The whole dependency list. Everything else Otto uses is stdlib; `claude`, `git` and the
 # Temporal CLI are external binaries, not packages (see README Prerequisites).
-dependencies = ["temporalio==1.30.0"]
+dependencies = ["temporalio==1.32.0"]
 
 [project.urls]
 Homepage = "https://github.com/wonkylabz/otto"
