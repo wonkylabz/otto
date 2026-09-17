@@ -2830,7 +2830,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 77758 -> 78461 (#58): two run-pipeline rules the mixin split makes load-bearing — read the
     # pipeline through `workflow_src()`, and activity ORDER is the replay contract — plus naming
     # where the post-PR loops live. Paid down partly by cutting three restated measurements.
-    MAX_RULES_BYTES = 78461   # fetched tier — bounded, but looser; it is not always loaded
+    # 78461 -> 78742 (#110): retrieval ranks the task, not the carried conversation — the
+    # bug that routed an implement-this-ticket run to a ticket refiner (web-5dbdb225).
+    MAX_RULES_BYTES = 78742   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

@@ -12,7 +12,7 @@ import re
 import config
 import gateway
 import registry
-from contracts import CONVERSATION_AUDIENCE, _DIRECT_REPLY_FORMAT
+from contracts import CONVERSATION_AUDIENCE, _DIRECT_REPLY_FORMAT, task_text
 from ui import trace
 
 
@@ -67,7 +67,10 @@ def _shortlist(request, caps):
     # call sites because this is the documented candidate set for BOTH Router #1 and the swarm
     # planner. Pinning (`/brainstorm`) bypasses routing entirely and is unaffected.
     caps = [c for c in caps if not getattr(c, "route_hidden", False)]
-    score = registry.rank(request, caps)                  # names are unique (registry de-dupes)
+    # Rank the TASK, never the conversation carried behind it as background: retrieval is IDF
+    # over whatever string it is handed, so kilobytes of carried chat decide the shortlist and
+    # the cap the task actually names drops out of it (contracts.task_text).
+    score = registry.rank(task_text(request), caps)       # names are unique (registry de-dupes)
     # Ties are the norm at this scale, so break them by name — an ARBITRARY tie order silently
     # decides which caps survive a top-N cut, which made routing irreproducible run to run.
     ranked = sorted(caps, key=lambda c: (-score[c.name], c.name))
@@ -140,7 +143,7 @@ def route(request, caps, project_root=None):
     caps = _repo_eligible(caps, project_root)   # repo-scoped project caps need matching repo ctx
     if not caps:
         return None
-    score = registry.rank(request, caps)                  # names are unique (registry de-dupes)
+    score = registry.rank(task_text(request), caps)       # names are unique (registry de-dupes)
     shortlist = _shortlist(request, caps)
 
     # Numbered from 1: a 0-indexed listing invites an off-by-one, since a model asked to pick from

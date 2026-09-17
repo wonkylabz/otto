@@ -668,6 +668,9 @@ function carryContextForSubmit(force){
   // re-checks current state (correct) and then quietly serves a different figure than the one
   // above it — judged a fabricated "live" pull twice on web-50af486b — or skips the check and
   // asserts nothing has changed. Same rule the memory context states for stored facts.
+  // The marker line is SHARED with the server: `contracts.CARRIED_CONTEXT_MARK` splits on it so
+  // routing ranks the task and not this tail (a 9 kB carry chose the shortlist on web-5dbdb225 and
+  // the cap the task named was never listed). Byte-identical or the split stops matching, silently.
   return `\n\n--- Earlier in this conversation (background; the request above is what to do now) ---\n`
     + `Treat this as background, not as findings to restate. Anything about CURRENT state — what `
     + `exists, is open, is deployed, is reachable — must be re-checked with tools; the tool result `
