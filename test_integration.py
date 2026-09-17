@@ -493,6 +493,23 @@ class HttpApiTests(unittest.TestCase):
         st, body = _post(self.base, "/api/conventions/refresh", {"path": ""})
         self.assertEqual(st, 400)
 
+    def test_reorder_roundtrips_over_http_and_starts_nothing(self):
+        """The Jobs tab's drag. It has to work with Temporal unreachable (it is a pure store
+        write, like defining an on-demand runbook), and it must not be able to reach a workflow:
+        `server.started` is this suite's record of every workflow start, and a reorder adds none."""
+        import runbooks
+        a, _ = runbooks.add({"name": "ord-a", "request": "do a"})
+        b, _ = runbooks.add({"name": "ord-b", "request": "do b"})
+        before = len(self.started)
+        st, body = _post(self.base, "/api/runbooks/reorder", {"ids": [b, a]})
+        self.assertEqual(st, 200)
+        self.assertEqual([b, a], body["order"])
+        st, body = _get(self.base, "/api/runbooks")
+        self.assertEqual(st, 200)
+        self.assertEqual([b, a], body["order"])          # the tab reads it back with the rows
+        self.assertEqual(before, len(self.started))
+        runbooks.remove(a); runbooks.remove(b)
+
     def test_settings_get_and_post_roundtrip(self):
         """Admin → Runtime settings over real HTTP: GET reports value + provenance, POST persists a
         validated diff, and the change is visible to a subsequent config.setting() read (which is

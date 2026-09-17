@@ -39,6 +39,7 @@ import storage
 
 ID_PREFIX = "rb-"
 _STORE = None            # resolved lazily so tests can repoint config.DATA_DIR
+_ORDER_STORE = None      # display order, its own file — see set_order()
 
 MAX_STEPS = 25           # a runbook longer than this is a program, not a runbook
 MAX_PARAMS = 10
@@ -279,6 +280,44 @@ def resolve_cap(name):
 
 
 # --- store -----------------------------------------------------------------
+
+def order_path():
+    """Display order lives in its OWN file, not as a field on each runbook — see set_order()."""
+    global _ORDER_STORE
+    if _ORDER_STORE is None:
+        _ORDER_STORE = os.path.join(config.DATA_DIR, "runbook-order.json")
+    return _ORDER_STORE
+
+
+def order():
+    """The operator's manual display order, as a list of ids. PARTIAL by design: a runbook added
+    since the last drag is simply absent, and the UI falls back to its default sort for it."""
+    ids = storage.read_json(order_path(), [])
+    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
+
+
+def set_order(ids):
+    """Record the Jobs tab's display order. Returns the stored list.
+
+    This writes a SEPARATE file on purpose, and nothing that starts a run ever reads it. A
+    reorder has to be provably behaviour-free, and "the runbook definitions are byte-identical
+    afterwards" is checkable where "we only added a display field" is only asserted
+    (`RunbookOrderTests`). It is also why order is not a key in normalize()'s shape: every save
+    would then have to carry it, and a form that forgot to would silently reset the order.
+
+    Pruned against the store at write time (a removed runbook's id cannot accumulate) and
+    deduped — the client sends the rendered list, so a stale id there is a refresh behind, not
+    an instruction."""
+    known = load()
+    seen, clean = set(), []
+    for rid in ids or []:
+        rid = str(rid)
+        if rid in known and rid not in seen:
+            seen.add(rid)
+            clean.append(rid)
+    storage.write_json(order_path(), clean)
+    return clean
+
 
 def load():
     return storage.read_json(store_path(), {})

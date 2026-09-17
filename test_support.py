@@ -92,6 +92,7 @@ _LAZY_STORES = (
     ("config", "_SETTINGS_PATH", None),   # settings.json — None means "fall through to DATA_DIR"
     ("estop", "_PATH", None),             # the ESTOP sentinel
     ("runbooks", "_STORE", None),         # runbooks.json, via runbooks.store_path()
+    ("runbooks", "_ORDER_STORE", None),   # runbook-order.json, via runbooks.order_path()
 )
 
 
