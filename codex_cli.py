@@ -30,7 +30,13 @@ from ui import trace
 # the TTL sweep. They are imported, never re-implemented: a transcript records what a run did
 # INCLUDING the times it handled a credential, and two scrubbers drift (see
 # claude_cli.transcript_line — it is THE one writer for every backend).
-TRANSCRIPTS = claude_cli.TRANSCRIPTS
+#
+# FUNCTIONS may be aliased; the DIRECTORY may not. A module-level `TRANSCRIPTS =
+# claude_cli.TRANSCRIPTS` binds the string at import, and `test_support.redirect_live_state`
+# re-points the ORIGINAL through `sys.modules` — so the copy kept pointing at the real `data/`
+# and the suite wrote into the running service's transcript directory (this checkout IS the live
+# service's cwd). The functions below are immune: each reads `claude_cli.TRANSCRIPTS` when it is
+# called, which is the only thing that survives a re-point.
 transcript_path = claude_cli.transcript_path
 plan_transcript_path = claude_cli.plan_transcript_path
 keep_walled_transcript = claude_cli.keep_walled_transcript
@@ -273,8 +279,10 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     # unlink the same file, so one run could read the other's final message as its own answer.
     # Under `TRANSCRIPTS` on purpose: `data/transcripts/**` is read-denied, so for the moments
     # it exists it is not readable by another run.
-    os.makedirs(TRANSCRIPTS, exist_ok=True)
-    fd, last_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt", dir=TRANSCRIPTS)
+    # Read at CALL time, never bound at import — see the note beside the re-exports above.
+    os.makedirs(claude_cli.TRANSCRIPTS, exist_ok=True)
+    fd, last_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt",
+                                     dir=claude_cli.TRANSCRIPTS)
     os.close(fd)
     # The prompt and everything Otto tells the run that is NOT the request travel together here:
     # `codex exec` has no `--append-system-prompt`, so `system_context` has to be part of the
@@ -286,11 +294,24 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
                     config_overrides=config_overrides)
     trace("CODEX", f"{'resume ' if resume_session else ''}sandbox={sandbox} model={model}")
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            # The cwd is the PROCESS's on the resume path (`--cd` is refused
-                            # there) and both on the fresh one, so a resumed turn lands in the
-                            # same tree either way.
-                            cwd=cwd, start_new_session=True, env=codex_env())
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                # The cwd is the PROCESS's on the resume path (`--cd` is refused
+                                # there) and both on the fresh one, so a resumed turn lands in
+                                # the same tree either way.
+                                cwd=cwd, start_new_session=True, env=codex_env())
+    except OSError as e:
+        # The binary is missing or not executable — the whole reason `OTTO_CODEX_BIN` exists.
+        # A WALL, because it fails identically every attempt, and an error DICT, because this
+        # module's contract is "an error dict, never a raise": left to propagate, it reached the
+        # activity as an unclassified crash. The temp file is dropped on the way out — nothing
+        # else ever would, since `gc_transcripts` only unlinks `*.jsonl`.
+        _unlink(last_path)
+        detail = f"{CODEX_BIN}: {e}"
+        return {"result": error_classifier.codex_wall_message("cli_missing", detail),
+                "is_error": True, "total_cost_usd": 0, "usage": {}, "session_id": None,
+                "wall_reason": "cli_missing", "wall_detail": detail[:2000],
+                "tools_used": [], "tools_failed": []}
     sink = None
     if transcript:
         claude_cli.gc_transcripts()

@@ -4,6 +4,7 @@ Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
 import ast
 import glob
+import importlib
 import inspect
 import io
 import json
@@ -6386,6 +6387,47 @@ class LiveStoreIsolationTests(unittest.TestCase):
                 self.assertFalse(real == self.LIVE or real.startswith(self.LIVE + os.sep),
                                  f"{label} points into the real data/ ({path})")
 
+    def test_no_module_attribute_anywhere_still_points_into_the_real_data_dir(self):
+        """The ratchet the AST scan cannot be: it looks for `os.path.join(DATA_DIR, ...)`, so a
+        RE-EXPORT of another module's store — `TRANSCRIPTS = claude_cli.TRANSCRIPTS` — is
+        invisible to it. That copy binds the string at import while the redirect re-points the
+        original, so the suite wrote into the running service's transcript directory; this
+        checkout IS the live service's cwd. Exactly the "hand-kept list leaked twice" shape.
+
+        Checked by walking every Otto module's attributes AFTER the redirect, so it catches any
+        alias under any spelling, including one nothing here has thought of. The import has to
+        happen FIRST — a module imported after the redirect picks up the temp path and would
+        look innocent, which is the whole subtlety."""
+        for path in sorted(glob.glob(os.path.join(self.ROOT, "*.py"))):
+            name = os.path.basename(path)[:-3]
+            if name.startswith(("test_", "regress", "migrate_")):
+                continue
+            try:
+                importlib.import_module(name)
+            except Exception:  # noqa: BLE001 - an unimportable module is another test's problem
+                continue
+        offenders = []
+        for name, mod in sorted(sys.modules.items()):
+            if not (mod and getattr(mod, "__file__", "") or "").startswith(self.ROOT + os.sep):
+                continue
+            for attr in dir(mod):
+                if attr.startswith("__"):
+                    continue
+                try:
+                    value = getattr(mod, attr)
+                except Exception:  # noqa: BLE001
+                    continue
+                if not (isinstance(value, str) and value.startswith(os.sep)):
+                    continue
+                real = os.path.realpath(value)
+                if real == self.LIVE or real.startswith(self.LIVE + os.sep):
+                    offenders.append(f"{name}.{attr} = {value}")
+        self.assertEqual([], sorted(offenders),
+                         "these still point into the REAL data/ after redirect_live_state — a "
+                         "copy taken at import does not follow the re-point. Read the original "
+                         "at call time, or add the store to test_support._DATA_STORES:\n  "
+                         + "\n  ".join(sorted(offenders)))
+
     def test_the_stand_in_data_dir_has_a_checkout_of_its_own_above_it(self):
         """The temp `data/` must be a CHILD of a private directory, never the mkdtemp root.
 
@@ -8497,21 +8539,24 @@ class CodexBackendTests(unittest.TestCase):
         `claude_cli.gc_transcripts` (which only unlinks `*.jsonl`). An answer quoting a
         credential would sit on disk in plaintext for good. The scrubbed copy in the transcript
         is the durable record; this one lives for the length of one call."""
-        os.makedirs(codex_cli.TRANSCRIPTS, exist_ok=True)
+        # `claude_cli.TRANSCRIPTS`, never a copy in `codex_cli`: the redirect re-points the
+        # ORIGINAL, so a copy taken at import would make this assertion diff the LIVE service's
+        # transcript directory — which is also where the run under test would be writing.
+        os.makedirs(claude_cli.TRANSCRIPTS, exist_ok=True)
         with tempfile.TemporaryDirectory() as d:
-            before = set(os.listdir(codex_cli.TRANSCRIPTS))
+            before = set(os.listdir(claude_cli.TRANSCRIPTS))
             out, seen = self._run(self._happy(), transcript=os.path.join(d, "t.jsonl"))
             # It really was written, and really was the answer — otherwise the rest is vacuous.
             self.assertEqual(out["result"], self.LAST_FILE_TEXT)
             self.assertFalse(os.path.exists(seen["last"]), "the -o file survived the call")
-            self.assertEqual(sorted(set(os.listdir(codex_cli.TRANSCRIPTS)) - before), [])
+            self.assertEqual(sorted(set(os.listdir(claude_cli.TRANSCRIPTS)) - before), [])
             self.assertFalse(os.path.exists(os.path.join(d, "t-last.txt")),
                              "the -o file was written beside the transcript and left there")
             # …and it is dropped on the failure paths too, not just the happy one.
             _, seen = self._run([self._ev({"type": "thread.started",
                                            "thread_id": self.THREAD})])
             self.assertFalse(os.path.exists(seen["last"]))
-            self.assertEqual(sorted(set(os.listdir(codex_cli.TRANSCRIPTS)) - before), [])
+            self.assertEqual(sorted(set(os.listdir(claude_cli.TRANSCRIPTS)) - before), [])
 
     def test_two_concurrent_turns_do_not_share_one_last_message_path(self):
         """The Temporal worker runs activities concurrently in ONE process, and the cheap tiers
@@ -8534,6 +8579,25 @@ class CodexBackendTests(unittest.TestCase):
         self.assertNotEqual(paths[0], paths[1], "two turns shared one -o path")
         self.assertNotIn(str(os.getpid()), os.path.basename(paths[0]),
                          "the path is keyed on the PROCESS, which is not one turn")
+
+    def test_a_missing_binary_is_a_wall_and_never_a_raise(self):
+        """`OTTO_CODEX_BIN` exists because a version-manager shim resolves by CWD, so "it works
+        in my terminal" is consistent with the worker not finding it. Left to propagate, the
+        `FileNotFoundError` reached the activity as an unclassified crash, against this module's
+        own "an error dict, never a raise" contract — and it leaked the temp file on the way,
+        which nothing would ever sweep."""
+        before = set(os.listdir(claude_cli.TRANSCRIPTS))
+        saved = codex_cli.CODEX_BIN
+        try:
+            codex_cli.CODEX_BIN = "/nonexistent/codex-binary"
+            out = codex_cli.run_json("hi", timeout=5)
+        finally:
+            codex_cli.CODEX_BIN = saved
+        self.assertTrue(out["is_error"])
+        self.assertEqual(out["wall_reason"], "cli_missing")
+        self.assertIn("OTTO_CODEX_BIN", out["result"])
+        self.assertEqual(sorted(set(os.listdir(claude_cli.TRANSCRIPTS)) - before), [],
+                         "the temp file leaked when the binary was missing")
 
     # --- a wall is deterministic; stderr is not ---------------------------------------------
 

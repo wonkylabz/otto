@@ -492,6 +492,14 @@ _CODEX_WALL_REMEDY = {
     "overloaded": ("the Codex endpoint is unreachable",
                    "Check the worker's network and whether the configured provider is up, "
                    "then retry this run."),
+    # Not a model failure at all — the CLI is not there to run. Its own entry because the
+    # remedy is a different one from every other wall, and because a version-manager shim
+    # resolves by CWD, so "it works in my terminal" is consistent with this.
+    "cli_missing": ("the `codex` CLI could not be started",
+                    "Install it (`npm i -g @openai/codex`) on the machine running the worker, "
+                    "or set `OTTO_CODEX_BIN` to its absolute path — a version-manager shim "
+                    "(asdf/mise/nvm) resolves from the current directory and fails from a "
+                    "workspace."),
 }
 
 _CODEX_WALL_REASON = {
@@ -499,6 +507,7 @@ _CODEX_WALL_REASON = {
     "quota": "codex_quota_spent",
     "bad_model": "codex_model_unavailable",
     "overloaded": "codex_unreachable",
+    "cli_missing": "codex_cli_missing",
 }
 
 
