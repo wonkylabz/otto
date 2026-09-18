@@ -27,6 +27,7 @@ import storage
 # names stays pointed at the developer's real data/.
 import board  # noqa: F401
 import claude_cli  # noqa: F401
+import codex_cli  # noqa: F401
 import conventions  # noqa: F401
 import delivery  # noqa: F401
 import estop  # noqa: F401
@@ -58,6 +59,7 @@ except Exception:  # noqa: BLE001
 _DATA_STORES = (
     ("board", "_CFG", "board.json"),
     ("claude_cli", "TRANSCRIPTS", "transcripts"),
+    ("codex_cli", "CODEX_HOME", "codex-home"),
     ("config", "DB_PATH", "otto.db"),
     ("conventions", "_STORE", "conventions.json"),
     ("delivery", "_STATE", "notify-state.json"),

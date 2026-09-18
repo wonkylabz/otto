@@ -27,6 +27,7 @@ data/transcripts
 data/.mcp-active.json
 data/tickets
 !data/.gitkeep
+data/codex-home
 data/local-sessions
 # Isolated repo clones (workspace.py). Each is a full checkout WITH its own .git, so an
 # in-flight repo-mode run otherwise surfaces as an untracked embedded repo in `git status`.
