@@ -2835,7 +2835,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # through the local runtime's wire at all, its exit code is not a verdict, and `exec resume`
     # refuses the two flags that carry the sandbox and the cwd. Each one cost a real debugging
     # pass to find and none of them is in the CLI's docs.
-    MAX_RULES_BYTES = 80084   # fetched tier — bounded, but looser; it is not always loaded
+    # 80084 -> 81121 (#115 P3): the Codex write guard. Its own sandbox cannot deny a READ at
+    # all, the two sandboxes cannot be nested, and a control measured the leak — so which guard
+    # runs, and that it FAILS CLOSED, are the rules a later edit could quietly undo.
+    MAX_RULES_BYTES = 81121   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

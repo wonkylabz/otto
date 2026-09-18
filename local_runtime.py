@@ -160,36 +160,12 @@ def _abspath(p, cwd):
 # giving the planner Bash at all, and `claude -p`'s plan mode permits read-only network commands
 # for the same reason. `gh api -X POST` is refused by the allowlist and NOT by the sandbox; the
 # approval gate is what stands between a plan pass and a remote mutation, as it always was.
-_SANDBOX = None
-_SANDBOX_PROBE = "/var/tmp/.otto-sandbox-probe"
-
-
-def _read_deny_mounts(cwd=None):
-    """bwrap mounts that make `file_safety`'s READ deny-set unreadable inside the sandbox.
-
-    Without these the sandbox is a WRITE guard only, and "read-only" reads as safe when it is
-    not: `_read_guard` covers the Read tool, so `Read data/models.json` is refused while
-    `cat data/models.json` returns the endpoint API keys in plaintext — into the context of a
-    model that is, on this path, a THIRD-PARTY endpoint. The local plan pass had no shell before
-    the sandbox existed, so this is exposure the sandbox itself introduced.
-
-    A directory glob is masked with an empty tmpfs; a file is bound over /dev/null (measured:
-    the read comes back "Permission denied", which is the honest answer — the file exists and
-    this pass may not have it). `read_denied_globs` already returns [] when
-    the run is entitled to Otto's state (cwd IS Otto's checkout), so that case needs nothing
-    here."""
-    mounts = []
-    for pattern in file_safety.read_denied_globs(allow_cwd=cwd):
-        if pattern.endswith("/**"):
-            targets = [pattern[:-3]]
-        else:
-            targets = sorted(globmod.glob(pattern))
-        for path in targets:
-            if os.path.isdir(path):
-                mounts += ["--tmpfs", path]
-            elif os.path.isfile(path):
-                mounts += ["--ro-bind", "/dev/null", path]
-    return mounts
+# The deny-set mounts and the bwrap probe live in `file_safety` — it owns the deny set, and a
+# second copy of the mount rules drifts from the globs it is derived from (issue #115, where the
+# Codex backend needed exactly the same two pieces). Aliased rather than re-exported by name so
+# every existing caller and every test that patches them keeps working.
+_read_deny_mounts = file_safety.read_deny_mounts
+sandbox_available = file_safety.sandbox_available
 
 
 def _bwrap_argv(command, cwd=None):
@@ -210,39 +186,6 @@ def _bwrap_argv(command, cwd=None):
     return argv + ["bash", "-lc", command]
 
 
-def sandbox_available():
-    """True when a read-only `bwrap` shell actually works here — PROBED, never assumed from the
-    binary being on PATH. `bwrap` installs fine on a host with unprivileged user namespaces
-    disabled, where every invocation fails at runtime; believing PATH there would turn the whole
-    plan pass into an error loop instead of falling back.
-
-    Cached for the process, so a worker that starts during a transient userns failure serves the
-    allowlist for its whole life and never re-probes. Accepted: the two modes are recorded per
-    run (`bash_mode` in the transcript meta), so the degradation is visible where it matters
-    rather than silent — and a restart is the existing remedy for every other worker-scoped
-    latch."""
-    global _SANDBOX
-    if _SANDBOX is None:
-        _SANDBOX = False
-        if shutil.which("bwrap"):
-            try:
-                # Must do BOTH: run the command, and refuse the write. A sandbox that fails open
-                # is worse than none, so a probe that cannot prove the refusal is a no.
-                # Outside /tmp on purpose: /tmp is a writable scratch tmpfs INSIDE the
-                # sandbox, so a probe there succeeds under a perfectly good sandbox.
-                r = subprocess.run(_bwrap_argv(f"echo ok; touch {_SANDBOX_PROBE}"),
-                                   capture_output=True, text=True, timeout=30)
-                _SANDBOX = r.returncode != 0 and "ok" in (r.stdout or "")
-            except Exception:  # noqa: BLE001 - an unusable sandbox is a fallback, not a crash
-                _SANDBOX = False
-            # A confinement broken enough to let the probe through leaves the file behind; a
-            # working one never creates it, so FileNotFoundError here is the GOOD case and must
-            # not touch the verdict.
-            try:
-                os.unlink(_SANDBOX_PROBE)
-            except OSError:
-                pass
-    return _SANDBOX
 
 
 # Shell composition. Rejected under the ALLOWLIST layer only: without a sandbox the command must

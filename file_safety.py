@@ -49,7 +49,10 @@ Ported in spirit from hermes-agent's `agent/file_safety.py` (MIT), which enforce
 in-process because Hermes owns its own tool loop. Otto delegates execution to `claude -p`, so
 the list has to be handed to the executor instead.
 """
+import glob as globmod
 import os
+import shutil
+import subprocess
 
 import config
 
@@ -271,6 +274,82 @@ def is_read_denied(path, allow_cwd=None):
     """Would a read of `path` be refused? Same matching as `is_denied`, against the read set —
     the local runtime needs to ask, since `claude -p`'s permission system never sees its tools."""
     return _matches_any(path, read_denied_globs(allow_cwd=allow_cwd))
+
+
+# --- confining a SUBPROCESS to the deny set (issue #115) ---------------------------------
+#
+# `claude -p` enforces the deny set itself, through `permissions.deny` (see the module
+# docstring). Neither other backend can: the local runtime bypasses that permission system
+# entirely, and `codex exec` has no read-deny mechanism at all — probed against
+# `--strict-config`, it accepts `sandbox_workspace_write.{network_access,writable_roots,
+# exclude_slash_tmp,exclude_tmpdir_env_var}` and rejects any `sandbox_read_only.*` or
+# `sandbox_deny_read` outright. Its sandbox is a WRITE allowlist and nothing else: measured,
+# a run under `-s read-only` read `data/models.json` — the endpoint API keys in plaintext —
+# straight off disk.
+#
+# So for those two backends the deny set is enforced by the KERNEL instead, and these are the
+# pieces both of them build their `bwrap` invocation from. One owner, because the deny set has
+# one owner: a second copy of the mount rules drifts from the globs it is derived from, and the
+# drift is invisible until something reads a key.
+_SANDBOX = None
+_SANDBOX_PROBE = "/var/tmp/.otto-sandbox-probe"
+
+
+def read_deny_mounts(cwd=None):
+    """bwrap mounts that make the READ deny-set unreadable inside the sandbox.
+
+    Without these a sandbox is a WRITE guard only, and "read-only" reads as safe when it is not.
+    A directory glob is masked with an empty tmpfs; a file is bound over /dev/null.
+    `read_denied_globs` already returns [] for a run entitled to Otto's state (cwd IS Otto's
+    checkout), so that case needs nothing here."""
+    mounts = []
+    for pattern in read_denied_globs(allow_cwd=cwd):
+        targets = [pattern[:-3]] if pattern.endswith("/**") else sorted(globmod.glob(pattern))
+        for path in targets:
+            if os.path.isdir(path):
+                mounts += ["--tmpfs", path]
+            elif os.path.isfile(path):
+                mounts += ["--ro-bind", "/dev/null", path]
+    return mounts
+
+
+def _probe_argv(command):
+    """The probe's own confinement — its own function so a test can substitute a BROKEN one and
+    prove the probe rejects it. A sandbox that fails open is worse than none."""
+    return ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", "--unshare-pid", "--die-with-parent", "bash", "-lc", command]
+
+
+def sandbox_available():
+    """True when a read-only `bwrap` actually works here — PROBED, never assumed from the binary
+    being on PATH. `bwrap` installs fine on a host with unprivileged user namespaces disabled,
+    where every invocation fails at runtime; believing PATH there turns a whole backend into an
+    error loop instead of falling back.
+
+    Cached for the process: a worker that starts during a transient userns failure serves the
+    fallback for its whole life. Accepted, because which mode served a run is recorded per run,
+    so the degradation is visible where it matters rather than silent."""
+    global _SANDBOX
+    if _SANDBOX is None:
+        _SANDBOX = False
+        if shutil.which("bwrap"):
+            try:
+                # Must do BOTH: run the command, and refuse the write. A sandbox that fails open
+                # is worse than none, so a probe that cannot prove the refusal is a no. Outside
+                # /tmp on purpose: /tmp is a writable scratch tmpfs INSIDE the sandbox, so a
+                # probe there succeeds under a perfectly good sandbox.
+                r = subprocess.run(_probe_argv(f"echo ok; touch {_SANDBOX_PROBE}"),
+                                   capture_output=True, text=True, timeout=30)
+                _SANDBOX = r.returncode != 0 and "ok" in (r.stdout or "")
+            except Exception:  # noqa: BLE001 - an unusable sandbox is a fallback, not a crash
+                _SANDBOX = False
+            # A confinement broken enough to let the probe through leaves the file behind; a
+            # working one never creates it, so FileNotFoundError here is the GOOD case.
+            try:
+                os.unlink(_SANDBOX_PROBE)
+            except OSError:
+                pass
+    return _SANDBOX
 
 
 def _rule(glob_path, tool="Edit"):

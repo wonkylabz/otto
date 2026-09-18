@@ -7617,9 +7617,12 @@ class LocalPlanModeTests(unittest.TestCase):
         every invocation fails at runtime. Believing PATH there turns the plan pass into an error
         loop instead of falling back — so the probe must both RUN a command and see a write
         refused."""
-        src = open("local_runtime.py").read()
-        self.assertIn("shutil.which(\"bwrap\")", src)
-        self.assertIn("r.returncode != 0 and \"ok\" in", src,
+        # The probe lives in `file_safety` with the deny set it enforces (#115): both the local
+        # runtime and the Codex backend ask the same one, so a second probe would be a second
+        # answer to "is this host confinable".
+        src = inspect.getsource(file_safety.sandbox_available)
+        self.assertIn('shutil.which("bwrap")', src)
+        self.assertIn('r.returncode != 0 and "ok" in', src,
                       "a probe that cannot prove the refusal must be a no")
 
     @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
@@ -7672,16 +7675,18 @@ class LocalPlanModeTests(unittest.TestCase):
         present but its confinement is broken or misconfigured, the probe must see the write
         SUCCEED and report unavailable, so the run falls back to the allowlist rather than
         planning under a sandbox that isn't one."""
-        saved_probe, saved_cache = local_runtime._bwrap_argv, local_runtime._SANDBOX
+        # The probe moved to `file_safety` with the deny set it enforces (#115) — both runtimes
+        # ask the same one. `local_runtime.sandbox_available` is an alias for it.
+        saved_probe, saved_cache = file_safety._probe_argv, file_safety._SANDBOX
         try:
             # A "sandbox" that is really just a shell — writes go straight through.
-            local_runtime._bwrap_argv = lambda command, cwd=None: ["bash", "-lc", command]
-            local_runtime._SANDBOX = None
+            file_safety._probe_argv = lambda command: ["bash", "-lc", command]
+            file_safety._SANDBOX = None
             self.assertFalse(local_runtime.sandbox_available(),
                              "a sandbox that let the probe's write through was trusted")
         finally:
-            local_runtime._bwrap_argv, local_runtime._SANDBOX = saved_probe, saved_cache
-        self.assertFalse(os.path.exists(local_runtime._SANDBOX_PROBE),
+            file_safety._probe_argv, file_safety._SANDBOX = saved_probe, saved_cache
+        self.assertFalse(os.path.exists(file_safety._SANDBOX_PROBE),
                          "the probe leaves its file on the host when confinement is broken")
 
     @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
@@ -8511,9 +8516,23 @@ class CodexBackendTests(unittest.TestCase):
         self.assertIn("config.READ_TOOLS", src)
 
     def test_plan_mode_is_the_read_only_sandbox(self):
-        _, seen = self._run(self._happy(), permission_mode="plan",
-                            allowed_tools=config.WRITE_TOOLS)
-        self.assertIn('sandbox_mode="read-only"', seen["cmd"])
+        """Whichever guard serves the turn: as `-c sandbox_mode=` on Codex's own sandbox, and as
+        a read-only workspace bind under `bwrap` (see `CodexWriteGuardTests`). A write grant does
+        not override it — plan mode is the stronger statement."""
+        # Codex's own sandbox: as a config override. (Asserted on the argv builder, because
+        # `run_json` refuses to SPAWN without the read guard — see `CodexWriteGuardTests`.)
+        self.assertIn('sandbox_mode="read-only"',
+                      codex_cli.build_cmd("hi", sandbox=codex_cli.PLAN_SANDBOX))
+        saved = file_safety._SANDBOX
+        try:
+            file_safety._SANDBOX = True
+            _, seen = self._run(self._happy(), permission_mode="plan", cwd="/work",
+                                allowed_tools=config.WRITE_TOOLS)
+            cmd = seen["cmd"]
+            self.assertEqual(cmd[cmd.index("--chdir") - 3], "--ro-bind",
+                             "a plan pass was given a WRITABLE workspace")
+        finally:
+            file_safety._SANDBOX = saved
 
     # --- the shared seams are shared, not re-implemented ------------------------------------
 
@@ -8539,24 +8558,25 @@ class CodexBackendTests(unittest.TestCase):
         `claude_cli.gc_transcripts` (which only unlinks `*.jsonl`). An answer quoting a
         credential would sit on disk in plaintext for good. The scrubbed copy in the transcript
         is the durable record; this one lives for the length of one call."""
-        # `claude_cli.TRANSCRIPTS`, never a copy in `codex_cli`: the redirect re-points the
-        # ORIGINAL, so a copy taken at import would make this assertion diff the LIVE service's
-        # transcript directory — which is also where the run under test would be writing.
-        os.makedirs(claude_cli.TRANSCRIPTS, exist_ok=True)
+        # The directory the `-o` file actually lands in, or this diffs one nothing writes to
+        # and passes for the wrong reason. `CODEX_HOME` is `codex_cli`'s OWN store and is in
+        # `test_support._DATA_STORES`, so it follows the redirect — unlike a copy of another
+        # module's constant, which is what put these files in the live service's `data/`.
+        os.makedirs(codex_cli.CODEX_HOME, exist_ok=True)
         with tempfile.TemporaryDirectory() as d:
-            before = set(os.listdir(claude_cli.TRANSCRIPTS))
+            before = set(os.listdir(codex_cli.CODEX_HOME))
             out, seen = self._run(self._happy(), transcript=os.path.join(d, "t.jsonl"))
             # It really was written, and really was the answer — otherwise the rest is vacuous.
             self.assertEqual(out["result"], self.LAST_FILE_TEXT)
             self.assertFalse(os.path.exists(seen["last"]), "the -o file survived the call")
-            self.assertEqual(sorted(set(os.listdir(claude_cli.TRANSCRIPTS)) - before), [])
+            self.assertEqual(sorted(set(os.listdir(codex_cli.CODEX_HOME)) - before), [])
             self.assertFalse(os.path.exists(os.path.join(d, "t-last.txt")),
                              "the -o file was written beside the transcript and left there")
             # …and it is dropped on the failure paths too, not just the happy one.
             _, seen = self._run([self._ev({"type": "thread.started",
                                            "thread_id": self.THREAD})])
             self.assertFalse(os.path.exists(seen["last"]))
-            self.assertEqual(sorted(set(os.listdir(claude_cli.TRANSCRIPTS)) - before), [])
+            self.assertEqual(sorted(set(os.listdir(codex_cli.CODEX_HOME)) - before), [])
 
     def test_two_concurrent_turns_do_not_share_one_last_message_path(self):
         """The Temporal worker runs activities concurrently in ONE process, and the cheap tiers
@@ -8586,7 +8606,8 @@ class CodexBackendTests(unittest.TestCase):
         `FileNotFoundError` reached the activity as an unclassified crash, against this module's
         own "an error dict, never a raise" contract — and it leaked the temp file on the way,
         which nothing would ever sweep."""
-        before = set(os.listdir(claude_cli.TRANSCRIPTS))
+        os.makedirs(codex_cli.CODEX_HOME, exist_ok=True)
+        before = set(os.listdir(codex_cli.CODEX_HOME))
         saved = codex_cli.CODEX_BIN
         try:
             codex_cli.CODEX_BIN = "/nonexistent/codex-binary"
@@ -8596,7 +8617,7 @@ class CodexBackendTests(unittest.TestCase):
         self.assertTrue(out["is_error"])
         self.assertEqual(out["wall_reason"], "cli_missing")
         self.assertIn("OTTO_CODEX_BIN", out["result"])
-        self.assertEqual(sorted(set(os.listdir(claude_cli.TRANSCRIPTS)) - before), [],
+        self.assertEqual(sorted(set(os.listdir(codex_cli.CODEX_HOME)) - before), [],
                          "the temp file leaked when the binary was missing")
 
     # --- a wall is deterministic; stderr is not ---------------------------------------------
@@ -8614,13 +8635,14 @@ class CodexBackendTests(unittest.TestCase):
         self.assertEqual(codex_cli.wall_reason("", "HTTP error: 401 Unauthorized"), "auth")
         self.assertEqual(codex_cli.wall_reason("insufficient_quota", ""), "quota")
 
-    def test_the_deny_set_is_not_claimed_to_be_enforced_here(self):
-        """`claude -p` gets `file_safety` via `permissions.deny` and the local runtime
-        re-enforces it itself. Codex's sandbox confines writes but cannot express a read deny,
-        so a docstring saying otherwise reads as wired when it is not (issue #115 P3)."""
-        doc = inspect.getdoc(codex_cli.run_json)
-        self.assertIn("is NOT enforced here", doc)
-        self.assertNotIn("file_safety", inspect.getsource(codex_cli).split('"""')[0])
+    def test_the_deny_set_is_enforced_by_the_kernel_not_by_the_cli(self):
+        """`claude -p` gets `file_safety` via `permissions.deny`. Codex has no equivalent and
+        cannot express a read deny at all, so the docstring must point at what actually holds
+        it — a `bwrap` around the process (`CodexWriteGuardTests`) — and never read as though
+        the CLI were doing it."""
+        doc = " ".join(inspect.getdoc(codex_cli.run_json).split())
+        self.assertIn("enforced by `confinement`", doc)
+        self.assertIn("by the KERNEL, not by the CLI", doc)
 
     def test_the_binary_is_overridable_because_a_shim_resolves_by_cwd(self):
         """MEASURED here: a version-manager shim (asdf/mise/nvm) reads its version from the
@@ -8629,3 +8651,136 @@ class CodexBackendTests(unittest.TestCase):
         command codex", which arrived as the run's entire result."""
         self.assertIn("OTTO_CODEX_BIN", inspect.getsource(codex_cli))
         self.assertEqual(codex_cli.build_cmd("hi")[0], codex_cli.CODEX_BIN)
+
+
+class CodexWriteGuardTests(unittest.TestCase):
+    """Issue #115 P3: what stops a Codex run reaching outside its workspace.
+
+    `claude -p` enforces `file_safety`'s deny set itself, through `permissions.deny`. Codex
+    cannot: probed against `--strict-config`, it accepts
+    `sandbox_workspace_write.{network_access,writable_roots,exclude_slash_tmp,
+    exclude_tmpdir_env_var}` and rejects `sandbox_read_only.*` and `sandbox_deny_read` as
+    unknown fields. Its sandbox is a WRITE allowlist and nothing else — measured, a run under
+    `-s read-only` read `data/models.json` straight off disk."""
+
+    CANARY = "OTTO-P3-CANARY-7f3a9b2e"
+
+    def setUp(self):
+        self._cache = file_safety._SANDBOX
+
+    def tearDown(self):
+        file_safety._SANDBOX = self._cache
+
+    # --- the two sandboxes are alternatives, not layers -------------------------------------
+
+    def test_bwrap_is_preferred_and_codex_own_sandbox_is_then_bypassed(self):
+        """MEASURED: nesting them does not work. Inside `bwrap`, Codex's own confinement cannot
+        initialise and EVERY shell command fails, not just the denied ones — the turn degenerates
+        into the model narrating its way around a broken environment. So when `bwrap` confines
+        the process, Codex is told to stand down; that is what the bypass flag is for."""
+        file_safety._SANDBOX = True
+        guard, prefix = codex_cli.confinement(codex_cli.PLAN_SANDBOX, "/work")
+        self.assertEqual(guard, "bwrap")
+        self.assertEqual(prefix[0], "bwrap")
+        cmd = codex_cli.build_cmd("hi", sandbox=codex_cli.PLAN_SANDBOX, cwd="/work",
+                                  external_sandbox=True)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+        self.assertNotIn("sandbox_mode=\"read-only\"", cmd)
+
+    def test_the_bypass_flag_never_appears_without_a_sandbox_around_it(self):
+        """It is the most dangerous flag the CLI has. It is passed on exactly one branch — the
+        one that has already established a kernel-level sandbox around this process."""
+        cmd = codex_cli.build_cmd("hi", sandbox=codex_cli.PLAN_SANDBOX, cwd="/work")
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+        self.assertIn('sandbox_mode="read-only"', cmd)
+
+    def test_the_sandbox_is_probed_never_assumed(self):
+        """`bwrap` installs fine on a host with unprivileged user namespaces disabled, where
+        every invocation fails at runtime. Trusting PATH there turns the backend into an error
+        loop instead of a clean refusal."""
+        file_safety._SANDBOX = False
+        self.assertEqual(codex_cli.confinement(codex_cli.PLAN_SANDBOX, "/work")[0], "codex")
+
+    # --- the guard's shape ------------------------------------------------------------------
+
+    def test_the_read_deny_set_is_masked_into_the_sandbox(self):
+        file_safety._SANDBOX = True
+        _, prefix = codex_cli.confinement(codex_cli.PLAN_SANDBOX, "/work")
+        self.assertTrue(file_safety.read_deny_mounts(cwd=None),
+                        "the deny set produced no mounts — the guard would be a no-op")
+        for arg in file_safety.read_deny_mounts("/work"):
+            self.assertIn(arg, prefix)
+
+    def test_a_plan_pass_gets_a_READ_ONLY_workspace(self):
+        """The sandbox mode is the grant on this backend, so binding the tree writable for a
+        plan pass hands back exactly what plan mode removes."""
+        file_safety._SANDBOX = True
+        _, plan = codex_cli.confinement(codex_cli.PLAN_SANDBOX, "/work")
+        _, write = codex_cli.confinement(codex_cli.WRITE_SANDBOX, "/work")
+        self.assertIn("--ro-bind", plan[plan.index("--chdir") - 3:])
+        self.assertIn("--bind", write[write.index("--chdir") - 3:])
+
+    def test_codex_state_is_writable_and_lives_outside_the_workspace(self):
+        """MEASURED: under a read-only root Codex dies with "failed to initialize in-process
+        app-server client: Read-only file system". Its session files also have to outlive the
+        throwaway workspace or a resume has nothing to resume."""
+        file_safety._SANDBOX = True
+        _, prefix = codex_cli.confinement(codex_cli.PLAN_SANDBOX, "/work")
+        self.assertIn(codex_cli.CODEX_HOME, prefix)
+        self.assertIn("--setenv", prefix)
+        self.assertNotIn(os.path.expanduser("~/.codex"), prefix)
+        # …and it must not be masked by the read deny-set, or resume breaks.
+        self.assertFalse(file_safety.is_read_denied(
+            os.path.join(codex_cli.CODEX_HOME, "sessions", "x.jsonl"), allow_cwd="/work"))
+
+    def test_the_last_message_file_is_somewhere_BOTH_sides_can_see(self):
+        """`-o` is written by the CHILD and read by the PARENT, so it cannot live anywhere the
+        sandbox masks. `data/transcripts/**` is read-denied, so the deny-set mounts cover it
+        with an empty tmpfs: the child would write its answer into the mask and the parent would
+        read the real, still-empty path — silently losing `-o` and falling back to the stream on
+        every confined run. `CODEX_HOME` is the one directory both sides share."""
+        # Asserted on the deny GLOBS, not on the materialised mounts: `read_deny_mounts` only
+        # emits a mount for a path that exists, so under a redirected `data/` the mount list
+        # would be empty and this would measure nothing.
+        self.assertTrue(file_safety.is_read_denied(
+            os.path.join(claude_cli.TRANSCRIPTS, "x.txt"), allow_cwd="/work"),
+            "the transcripts dir is no longer read-denied — this test is measuring nothing")
+        self.assertFalse(file_safety.is_read_denied(
+            os.path.join(codex_cli.CODEX_HOME, "x.txt"), allow_cwd="/work"))
+        src = inspect.getsource(codex_cli.run_json)
+        self.assertIn("dir=CODEX_HOME", src[src.index("mkstemp"):src.index("mkstemp") + 120])
+
+    # --- failing closed ---------------------------------------------------------------------
+
+    def test_it_refuses_to_run_at_all_without_the_read_guard(self):
+        """A control proved the gap is real, not theoretical: a unique canary in a read-denied
+        `data/*.json` appeared ZERO times in the transcript under `bwrap` and TWICE under
+        Codex's own sandbox. A guard that fails OPEN is worse than none, so this walls."""
+        file_safety._SANDBOX = False
+        out = codex_cli.run_json("hi", timeout=5)
+        self.assertTrue(out["is_error"])
+        self.assertEqual(out["wall_reason"], "read_guard_unavailable")
+        self.assertFalse(out["read_guard"])
+        self.assertIn("bubblewrap", out["result"])
+
+    def test_the_escape_hatch_is_env_only(self):
+        """Same reason `OTTO_SECRET_COMMAND` is env-only: this one decides whether a run can read
+        the plaintext key store, and the settings API is unauthenticated."""
+        self.assertNotIn("codex_allow_unguarded", config._SETTING_SPECS)
+        self.assertIn("OTTO_CODEX_ALLOW_UNGUARDED", inspect.getsource(codex_cli))
+
+    def test_which_guard_served_the_turn_is_recorded(self):
+        """The fallback enforces the writes and not the reads, so a transcript that cannot say
+        which one ran cannot answer whether this run could have read the key store."""
+        src = inspect.getsource(codex_cli.run_json)
+        self.assertIn('"guard": guard', src)
+        self.assertIn('"read_guard": guard == "bwrap"', src)
+
+    # --- one owner for the deny-set machinery -------------------------------------------------
+
+    def test_both_runtimes_build_their_mounts_from_the_same_function(self):
+        """A second copy of the mount rules drifts from the globs it is derived from, and the
+        drift is invisible until something reads a key."""
+        self.assertIs(local_runtime._read_deny_mounts, file_safety.read_deny_mounts)
+        self.assertIs(local_runtime.sandbox_available, file_safety.sandbox_available)
+        self.assertIn("file_safety.read_deny_mounts", inspect.getsource(codex_cli.confinement))

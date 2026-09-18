@@ -24,6 +24,7 @@ import time
 import claude_cli
 import config
 import error_classifier
+import file_safety
 from ui import trace
 
 # `claude_cli` owns the transcript directory, the credential scrub, the process-group kill and
@@ -56,6 +57,30 @@ CODEX_BIN = os.environ.get("OTTO_CODEX_BIN") or "codex"
 # itself ("read-only file system"), so this is real enforcement rather than a prompt-level ask.
 PLAN_SANDBOX = "read-only"
 WRITE_SANDBOX = "workspace-write"
+
+# Codex keeps its session files and app-server state under `$CODEX_HOME`. Pointed at Otto's own
+# `data/` rather than `~/.codex` for two reasons: a run confined to a read-only root cannot write
+# the operator's home ("failed to initialize in-process app-server client: Read-only file
+# system"), and a resume needs those files to survive, so they cannot live in the throwaway
+# workspace either. Beside `local-sessions/`, and deliberately not matched by
+# `file_safety._otto_state_globs` (`data/*.json` is direct children only) — masking it would
+# break resume.
+CODEX_HOME = os.path.join(config.DATA_DIR, "codex-home")
+
+# Run Codex even when the kernel-level read guard is unavailable. OFF by default: Codex's own
+# sandbox cannot express a read deny at all, and the gap is not theoretical — see `confinement`
+# for the canary measurement. Env-only, never a runtime setting, for the same reason
+# `OTTO_SECRET_COMMAND` is: this one decides whether a run can read the plaintext key store, and
+# the settings API is unauthenticated.
+ALLOW_UNGUARDED = os.environ.get("OTTO_CODEX_ALLOW_UNGUARDED", "") == "1"
+
+UNGUARDED_MESSAGE = (
+    "\u26d4 **Stopped — nothing ran.** The Codex backend needs a working `bwrap` to enforce "
+    "Otto's read deny-set: its own sandbox confines writes but cannot deny a read, so a run "
+    "could read `data/models.json` (endpoint API keys in plaintext), `otto.db` and every other "
+    "run's transcripts.\n\nInstall `bubblewrap` and enable unprivileged user namespaces on the "
+    "machine running the worker, or choose a different execution model. Set "
+    "`OTTO_CODEX_ALLOW_UNGUARDED=1` only if that exposure is acceptable to you.")
 
 
 def is_codex_session(sid):
@@ -200,8 +225,54 @@ def _config_args(overrides):
     return out
 
 
+def confinement(sandbox, cwd):
+    """How this turn is confined: `("bwrap", argv_prefix)` or `("codex", [])`.
+
+    MEASURED, and it decides the whole shape of the call:
+
+    * Codex's own sandbox is a WRITE allowlist and nothing else. `-s workspace-write` genuinely
+      refused a write under `$HOME` (the model wrote into the cwd instead and reported success —
+      which is why this is measured against the filesystem, never read off the model's answer).
+      But READS are unrestricted in every mode: under `-s read-only` a run read
+      `data/models.json`, the endpoint API keys in plaintext, straight off disk. Probed against
+      `--strict-config`, there is no knob for it — `sandbox_read_only.*` and `sandbox_deny_read`
+      are both rejected as unknown fields.
+    * Nesting the two sandboxes does not work. Inside `bwrap`, Codex's own confinement cannot
+      initialise and EVERY shell command fails, not just the denied ones — the turn degenerates
+      into the model narrating its way around a broken environment.
+
+    So they are alternatives, not layers, and `bwrap` is preferred: it enforces the writes AND
+    the read deny-set that Codex cannot express. Codex then runs with
+    `--dangerously-bypass-approvals-and-sandbox`, which is exactly what that flag is for
+    ("intended solely for running in environments that are externally sandboxed").
+
+    Without a usable `bwrap` (no binary, or userns disabled — macOS) the only other option is
+    Codex's own sandbox, where the write guard holds and the READ deny-set does not. Measured
+    with a control, which is the whole reason this refuses by default: a unique canary written
+    into a read-denied `data/*.json` appeared ZERO times in the transcript under `bwrap` and
+    TWICE under the fallback. `run_json` therefore WALLS instead of running unguarded, unless
+    `OTTO_CODEX_ALLOW_UNGUARDED=1` says the operator has decided otherwise."""
+    if not file_safety.sandbox_available():
+        return "codex", []
+    # Read-only root + the deny-set masks, with exactly two writable holes: this turn's
+    # workspace, and Codex's own state. `--tmpfs /tmp` gives the throwaway scratch every shell
+    # expects; it also MASKS a cwd that lives under /tmp, so such a cwd is re-bound after it
+    # (later mounts win) — the same trap `local_runtime._bwrap_argv` documents.
+    argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", "--die-with-parent"]
+    argv += file_safety.read_deny_mounts(cwd)
+    argv += ["--bind", CODEX_HOME, CODEX_HOME, "--setenv", "CODEX_HOME", CODEX_HOME]
+    if cwd:
+        real = os.path.realpath(cwd)
+        # A read-only turn gets a read-only workspace: the sandbox mode is the grant, and
+        # binding the tree writable for a plan pass would hand it back what plan mode removes.
+        argv += ["--ro-bind" if sandbox == PLAN_SANDBOX else "--bind", real, real,
+                 "--chdir", real]
+    return "bwrap", argv
+
+
 def build_cmd(prompt, *, model=None, resume_session=None, sandbox=None, cwd=None,
-              last_message=None, config_overrides=None, effort=None):
+              last_message=None, config_overrides=None, effort=None, external_sandbox=False):
     """The argv for one `codex exec` turn. Split out so the flag contract is testable without
     spawning anything — three of these flags were chosen against a measured refusal.
 
@@ -222,8 +293,14 @@ def build_cmd(prompt, *, model=None, resume_session=None, sandbox=None, cwd=None
     # for the reason `--setting-sources user` exists on the Claude path: whatever the WORKER's
     # environment happens to carry is not this run's configuration.
     cmd.append("--ignore-user-config")
+    if external_sandbox:
+        # `bwrap` is the confinement, and the two cannot be nested (see `confinement`). This is
+        # the flag's documented purpose; it is passed ONLY on the branch that has already
+        # established a kernel-level sandbox around this process.
+        cmd.append("--dangerously-bypass-approvals-and-sandbox")
     overrides = dict(config_overrides or {})
-    overrides["sandbox_mode"] = sandbox or PLAN_SANDBOX
+    if not external_sandbox:
+        overrides["sandbox_mode"] = sandbox or PLAN_SANDBOX
     if model:
         overrides["model"] = model
     # Advisory on this backend exactly as it is on the local one: normalized so an unknown value
@@ -237,8 +314,10 @@ def build_cmd(prompt, *, model=None, resume_session=None, sandbox=None, cwd=None
         # stream because a turn emits SEVERAL agent_message items and only the last is the
         # answer; the stream stays the fallback for a turn that dies before writing it.
         cmd += ["-o", last_message]
-    if not resume_session:
-        cmd += ["--cd", cwd] if cwd else []
+    if not resume_session and cwd and not external_sandbox:
+        # Under bwrap the cwd is `--chdir`'d by the wrapper and the workspace is the only
+        # writable bind, so `--cd` would be a second, weaker statement of the same fact.
+        cmd += ["--cd", cwd]
     # `--` first: a prompt beginning with a dash is otherwise parsed as a flag, and on the
     # resume path the session id and the prompt are two positionals that must not be reordered.
     cmd.append("--")
@@ -258,11 +337,9 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     grant is the SANDBOX POLICY, never a tool list. It is still read — an empty-of-write-tools
     grant selects the read-only sandbox — so the argument is load-bearing, just not as argv.
 
-    `file_safety`'s deny set is NOT enforced here yet. `claude -p` gets it via
-    `permissions.deny`, and the local runtime re-enforces it itself; Codex's sandbox confines
-    writes to the workspace but cannot express a read deny at all, so `cat data/models.json`
-    still returns the endpoint keys. Closing that is its own change (issue #115 P3) — this
-    module deliberately does not pretend to do it.
+    `file_safety`'s deny set is enforced by `confinement` instead — by the KERNEL, not by the
+    CLI. `claude -p` gets it via `permissions.deny`; Codex has no equivalent and cannot express
+    a read deny at all, so a `bwrap` around the process is what holds it.
 
     `steer` is accepted and cannot be delivered: `codex exec` takes its prompt once, from argv
     or stdin, and has no mid-turn user-message channel. It is recorded in the transcript and
@@ -270,36 +347,50 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     steer budget is not spent on a channel that does not exist."""
     timeout = config.LOCAL_RUN_TIMEOUT_S if timeout is None else timeout
     sandbox = PLAN_SANDBOX if permission_mode == "plan" else _sandbox_for(allowed_tools)
+    os.makedirs(CODEX_HOME, exist_ok=True)
+    guard, prefix = confinement(sandbox, cwd)
+    if guard != "bwrap" and not ALLOW_UNGUARDED:
+        # A WALL, not a failure: it fails the same way every attempt, so the ladder must
+        # re-dispatch rather than spend two more rungs reaching the identical refusal.
+        return {"result": UNGUARDED_MESSAGE, "is_error": True, "total_cost_usd": 0,
+                "usage": {}, "session_id": None, "guard": guard, "read_guard": False,
+                "wall_reason": "read_guard_unavailable", "wall_detail": UNGUARDED_MESSAGE,
+                "tools_used": [], "tools_failed": []}
     # `-o` is written by CODEX, so it passes through neither `transcript_line`'s scrubber nor
     # `claude_cli.gc_transcripts` (which only unlinks `*.jsonl`) — an answer quoting a
-    # credential sat on disk in plaintext, unscrubbed, forever. It is therefore a throwaway:
-    # unique per CALL and deleted in `finally`, whatever happens. Unique per call and not per
-    # PROCESS because the Temporal worker runs activities concurrently in one process and the
-    # cheap tiers pass no transcript at all — a pid-named path let two live turns write and
-    # unlink the same file, so one run could read the other's final message as its own answer.
-    # Under `TRANSCRIPTS` on purpose: `data/transcripts/**` is read-denied, so for the moments
-    # it exists it is not readable by another run.
-    # Read at CALL time, never bound at import — see the note beside the re-exports above.
-    os.makedirs(claude_cli.TRANSCRIPTS, exist_ok=True)
-    fd, last_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt",
-                                     dir=claude_cli.TRANSCRIPTS)
+    # credential would sit on disk in plaintext, unscrubbed, forever. It is therefore a
+    # throwaway: unique per CALL and deleted in `finally`, whatever happens. Unique per call and
+    # not per PROCESS because the Temporal worker runs activities concurrently in one process
+    # and the cheap tiers pass no transcript at all — a pid-named path let two live turns write
+    # and unlink the same file, so one run could read the other's final message as its own.
+    #
+    # Under `CODEX_HOME`, NOT `TRANSCRIPTS`: `data/transcripts/**` is read-denied, so the
+    # sandbox masks it with an empty tmpfs — the child would write its answer into the mask and
+    # the parent would read the real, still-empty path, silently losing `-o` and falling back to
+    # the stream on every confined run. `CODEX_HOME` is the one directory both sides share, and
+    # unlike a copy of another module's constant it follows `redirect_live_state` (it is this
+    # module's own store, and is listed in `test_support._DATA_STORES`).
+    fd, last_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt", dir=CODEX_HOME)
     os.close(fd)
     # The prompt and everything Otto tells the run that is NOT the request travel together here:
     # `codex exec` has no `--append-system-prompt`, so `system_context` has to be part of the
     # one prompt it accepts. It is still recorded SEPARATELY in the meta line below — a
     # transcript that cannot say what the model was told cannot be debugged.
     full_prompt = f"{system_context}\n\n{prompt}" if system_context else prompt
-    cmd = build_cmd(full_prompt, model=model, resume_session=resume_session, sandbox=sandbox,
-                    cwd=cwd, last_message=last_path, effort=effort,
-                    config_overrides=config_overrides)
-    trace("CODEX", f"{'resume ' if resume_session else ''}sandbox={sandbox} model={model}")
+    cmd = prefix + build_cmd(full_prompt, model=model, resume_session=resume_session,
+                             sandbox=sandbox, cwd=cwd, last_message=last_path, effort=effort,
+                             config_overrides=config_overrides,
+                             external_sandbox=(guard == "bwrap"))
+    trace("CODEX", f"{'resume ' if resume_session else ''}sandbox={sandbox} guard={guard} "
+                   f"model={model}")
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 # The cwd is the PROCESS's on the resume path (`--cd` is refused
                                 # there) and both on the fresh one, so a resumed turn lands in
                                 # the same tree either way.
-                                cwd=cwd, start_new_session=True, env=codex_env())
+                                cwd=cwd, start_new_session=True,
+                                env=dict(codex_env(), CODEX_HOME=CODEX_HOME))
     except OSError as e:
         # The binary is missing or not executable — the whole reason `OTTO_CODEX_BIN` exists.
         # A WALL, because it fails identically every attempt, and an error DICT, because this
@@ -310,6 +401,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
         detail = f"{CODEX_BIN}: {e}"
         return {"result": error_classifier.codex_wall_message("cli_missing", detail),
                 "is_error": True, "total_cost_usd": 0, "usage": {}, "session_id": None,
+                "guard": guard, "read_guard": guard == "bwrap",
                 "wall_reason": "cli_missing", "wall_detail": detail[:2000],
                 "tools_used": [], "tools_failed": []}
     sink = None
@@ -322,6 +414,10 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
             "type": "otto-meta", "backend": "codex", "prompt": prompt, "model": model,
             "system_context": system_context, "effort": config.effort_level(effort),
             "sandbox": sandbox, "cwd": cwd, "at": time.time(),
+            # WHICH guard served this turn. The fallback enforces the writes and NOT the read
+            # deny-set, so a transcript that cannot say which one ran cannot answer whether
+            # this run could have read the key store.
+            "guard": guard, "read_guard": guard == "bwrap",
             "argv": [a for a in cmd if a != full_prompt],
             "supervised": on_event is not None, **(meta or {})}))
         if steer is not None:
@@ -421,7 +517,8 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
             _unlink(last_path)
 
     out = {"result": answer or "", "is_error": False, "total_cost_usd": 0,
-           "usage": usage, "session_id": session,
+           "usage": usage, "session_id": session, "guard": guard,
+           "read_guard": guard == "bwrap",
            "tools_used": sorted(worked), "tools_failed": sorted(failed - worked)}
     if steer is not None:
         out["steer_unsupported"] = True
