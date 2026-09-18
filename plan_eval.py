@@ -56,7 +56,8 @@ def _one(request, caps, cap_name, run):
     print(f"REQUEST: {request}")
     cap = _resolve_cap(caps, cap_name, request)
     entry = gateway.exec_model_entry(cap.name)
-    backend = "LOCAL runtime" if entry.get("provider") != "claude" else "claude -p"
+    backend = {"local": "LOCAL runtime", "claude": "claude -p",
+               "codex": "codex exec"}[gateway.backend_of(entry)]
     print(f"executor cap : [{cap.kind}] {cap.name} ({cap.risk})")
     print(f"exec model   : {entry.get('name')} ({entry.get('provider')}) -> {backend}")
     print("-" * 78)

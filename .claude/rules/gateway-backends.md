@@ -21,6 +21,7 @@
 
 **Execution backend follows the execution model** — Claude model → `claude -p`; LOCAL model → `local_runtime.py`. Plus tool-free: a read cap with a `cap_local_exec` model tries one local completion, escalating to Claude on verify fail.
 
+- **Which runtime an entry dispatches to is `gateway.backend_of` ALONE** (`claude`|`local`|`codex`) — `provider != "claude"` meant "therefore local" in 34 sites, so a third backend falls into the local runtime with no `base_url` (`BackendDispatchTests`).
 - **This is ONE Admin control, not three** — `cap_exec`/`cap_local_exec`/policy `tool_free` interact invisibly: tool-free is checked *first*, so setting both meant attempt 1 had no tools *and* every later rung was pinned local, defeating the Claude backstop.
 - One `Execution` select (`web/index.html` `execSelect`), one writer (`setCapBackend`).
 - **A resume follows the SESSION's backend, never the phase model** (`local_runtime.resume_entry`, one impl) — `claude -p --resume local-…` is rejected outright, so the plan preview came back is_error and the write gate rendered with NO plan on it.

@@ -1093,7 +1093,7 @@ class Handler(BaseHTTPRequestHandler):
             docs = knowledge.documents()
             # only LOCAL models can embed (Claude has no embeddings API) — offer those for the picker
             embed_models = [m["name"] for m in gateway.load().get("pool", [])
-                            if m.get("provider") != "claude"]
+                            if gateway.is_local(m)]
             self._send(200, json.dumps({"docs": docs, "count": len(docs),
                                         "settings": knowledge.settings(), "embed_models": embed_models}))
         elif self.path.startswith("/api/audit/content"):
@@ -1561,7 +1561,7 @@ class Handler(BaseHTTPRequestHandler):
             # chosen model rather than silently resuming on the OLD one (user-reported:
             # "it carries on using that model rather than using the override"). The client
             # re-submits with the conversation carried as context, and says so on screen.
-            if (entry.get("provider") != "claude") != local_runtime.is_local_session(
+            if gateway.backend_of(entry) != local_runtime.session_backend(
                     body["session_id"]):
                 self._send(200, json.dumps({"rebind": {"request": body["message"],
                                                        "model": model_override}}))

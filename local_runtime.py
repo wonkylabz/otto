@@ -74,6 +74,15 @@ def is_local_session(sid):
     return bool(sid) and str(sid).startswith("local-")
 
 
+def session_backend(sid):
+    """Which BACKEND minted this session id — the resume half of `gateway.backend_of`, and the
+    only correct thing to compare a resolved pool entry against. A session is bound for life to
+    the runtime that minted it, so every resume path (engine.run_attempt, plans.plan_preview,
+    /api/continue's rebind) has to ask the same question in the same shape, or one of them
+    disagrees and hands a session to a runtime that cannot read it."""
+    return "local" if is_local_session(sid) else "claude"
+
+
 def gc_sessions(ttl_h=None):
     """Best-effort sweep of stale session files (mirrors claude_cli.gc_transcripts)."""
     ttl_h = config.TRANSCRIPT_TTL_H if ttl_h is None else ttl_h
@@ -949,10 +958,10 @@ def resume_entry(session_id):
     (engine.run_attempt, plans.plan_preview). Prefers the model that minted the session, else ANY
     entry on that backend: local history is plain, portable messages, so a pre-#299 file that
     records no model at all is still resumable."""
-    use_local = is_local_session(session_id)
+    want = session_backend(session_id)
 
     def _on_this_backend(e):
-        return bool(e) and (e.get("provider") != "claude") == use_local
+        return bool(e) and gateway.backend_of(e) == want
 
     bound = gateway.resolve_model(session_model(session_id))
     if _on_this_backend(bound):

@@ -21,6 +21,7 @@ import claude_cli
 import config
 import conventions
 import engine
+import gateway
 import registry
 import storage
 
@@ -295,6 +296,9 @@ class DoctorTests(unittest.TestCase):
         probed = []
 
         class FakeGateway:
+            backend_of = staticmethod(gateway.backend_of)
+            is_local = staticmethod(gateway.is_local)
+
             @staticmethod
             def load():
                 return {"pool": [{"name": "claude-sonnet", "provider": "claude"},
@@ -332,6 +336,8 @@ class DoctorTests(unittest.TestCase):
                                                   (False, "--enable-auto-tool-choice missing"))
 
         class LocalExec:
+            is_local = staticmethod(gateway.is_local)
+
             @staticmethod
             def load():
                 return {}
@@ -1877,8 +1883,11 @@ class ResumeModelRebindTests(unittest.TestCase):
         src = self._src("server.py")
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
         branch = src[i:i + 2000]
-        self.assertIn("local_runtime.is_local_session(", branch,
+        self.assertIn("local_runtime.session_backend(", branch,
                       "/api/continue resumes without checking the session's backend")
+        self.assertIn("gateway.backend_of(", branch,
+                      "the picked entry's backend is compared by some spelling other than the "
+                      "one dispatch source — the two can disagree")
         self.assertIn('"rebind"', branch,
                       "a cross-backend pick is swallowed instead of rebinding to a fresh run")
 
@@ -2819,7 +2828,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # bug that routed an implement-this-ticket run to a ticket refiner (web-5dbdb225).
     # 78742 -> 79004: the Jobs tab reorders by drag, and the rule that makes it safe (its own
     # store, never crossing a section) is the one thing a later edit could quietly undo.
-    MAX_RULES_BYTES = 79004   # fetched tier — bounded, but looser; it is not always loaded
+    # 79004 -> 79261 (#115): the execution backend is a three-way now, and the one thing a
+    # later edit could quietly undo is asking `gateway.backend_of` instead of re-deriving it
+    # from `provider` — which is how the boolean reached 34 sites in the first place.
+    MAX_RULES_BYTES = 79261   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

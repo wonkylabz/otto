@@ -205,7 +205,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         trace("RUN", f"{wid} model override '{model_override}' isn't a known pool entry — "
                      f"ignoring it, using the admin-configured model")
     exec_entry = override_entry or gateway.exec_model_entry(cap.name)
-    use_local = (exec_entry.get("provider") != "claude"
+    use_local = (gateway.is_local(exec_entry)
                  and not getattr(cap, "mcp_config", None))
     # THE LOCAL BACKEND CANNOT SERVE A claude.ai CONNECTOR, so a cap that needs one must not
     # run there. `mcp_client` serves stdio servers (New Relic, k8s, Grafana, AWS, Vanta) but a
@@ -273,7 +273,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         # moved to Claude) hands a local model id to `claude -p`, or a Claude pool entry to the
         # local runtime, which cannot serve either. The session's own model is the only correct
         # answer here; /api/continue rebinds to a fresh run when the user's pick disagrees.
-        if (exec_entry.get("provider") != "claude") != use_local:
+        if gateway.is_local(exec_entry) != use_local:
             # The model that minted it, else ANY entry on the same backend. ONE implementation
             # (local_runtime.resume_entry) — the plan preview resumes the same session and has
             # to reach the same answer.
@@ -301,7 +301,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # Dropping the override lets the chain fall to the Claude-only helpers, which is what the
     # escalation was for. `exec_entry` deliberately keeps the local entry so the fallback badge
     # still names what we moved off. The resume branch above does the same via `bound`.
-    if override_entry and not use_local and override_entry.get("provider") != "claude":
+    if override_entry and not use_local and not gateway.is_claude(override_entry):
         trace("RUN", f"{wid} {override_entry['name']} is pinned but this run is on the Claude "
                      f"backend — using the Claude execution model instead")
         override_entry = None
@@ -424,7 +424,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         model = gateway.exec_model_id(cap.name)
     # Record the local→Claude move so the audit trail + UI show the "<local> ⇢ <claude>" badge
     # and WHY, when an earlier rung proved this run can't be served locally at all.
-    if local_disabled and not use_local and exec_entry.get("provider") != "claude":
+    if local_disabled and not use_local and gateway.is_local(exec_entry):
         fb_meta = {"fallback_from": exec_entry["name"],
                    "fallback_reason": local_disabled_reason or
                    ("the model endpoint could not serve this run (tool calls rejected, or "

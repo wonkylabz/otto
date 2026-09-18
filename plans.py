@@ -427,7 +427,7 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
                                transcript=transcript))
 
     if local_runtime.is_local_session(resume_session) or (
-            entry is not None and entry.get("provider") != "claude"):
+            entry is not None and gateway.is_local(entry)):
         out, model, backend = _local_preview(invocation, resume_session, cwd, effort=effort,
                                              entry=entry, transcript=transcript)
         # A local WALL re-dispatches to Claude, exactly as `engine.run_attempt` does for an
@@ -639,7 +639,7 @@ def plan_mode_active(cap, requested=False):
     if requested:
         return True
     if mode == "auto-local":
-        return gateway.exec_model_entry(cap.name).get("provider") != "claude"
+        return gateway.is_local(gateway.exec_model_entry(cap.name))
     return False
 
 

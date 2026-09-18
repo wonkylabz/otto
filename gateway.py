@@ -159,10 +159,49 @@ def guess_kind(base_url):
 def model_kind(m):
     """`claude` | `hosted` | `local` for a pool entry. The CLASS question — is this a weak
     model the write latch, the cross-run cap latch and the operator copy were written for?
-    Transport questions (which runtime dispatches it) keep reading `provider`."""
-    if not m or m.get("provider") == "claude":
+    Transport questions (which runtime dispatches it) ask `backend_of` below.
+
+    A `codex` entry is `hosted`: it is a frontier model behind a vendor's CLI, so the latches
+    written for a weak local model must never exile it — the same reason a frontier model on an
+    OpenAI-compatible URL is `hosted` rather than `local`."""
+    if not m or backend_of(m) == "claude":
         return "claude"
-    return "hosted" if m.get("kind") == "hosted" else "local"
+    if backend_of(m) == "codex" or m.get("kind") == "hosted":
+        return "hosted"
+    return "local"
+
+
+# The TRANSPORT question — which runtime dispatches this entry. `model_kind` above answers the
+# CLASS question (how good is the model); this one answers where the subprocess goes, and the
+# two are deliberately separate: a frontier model behind an OpenAI-compatible URL is `hosted`
+# CLASS on the `local` BACKEND.
+#
+# This exists because the transport used to be a BOOLEAN — `provider != "claude"` read as
+# "therefore local", in 34 places across 10 modules. That spelling has no room for a third
+# runtime: a Codex entry has no `base_url`, so every one of those sites would have handed it to
+# `local_runtime` to POST /chat/completions at nothing (issue #115). One interpreter instead,
+# and a guard test keeps site #35 from reintroducing the boolean.
+#
+# An unknown or missing provider is `local`, which is exactly what the boolean did — a
+# hand-edited models.json or an imported profile must not silently change backend.
+BACKENDS = ("claude", "local", "codex")
+
+
+def backend_of(m):
+    """`claude` | `local` | `codex` for a pool entry — the ONE place a `provider` string is
+    interpreted as a runtime. PURE."""
+    p = (m or {}).get("provider")
+    return p if p in BACKENDS else "local"
+
+
+def is_claude(m):
+    """Does this entry dispatch to `claude -p`? (`claude_cli.run_json`)"""
+    return backend_of(m) == "claude"
+
+
+def is_local(m):
+    """Does this entry dispatch to the local agent runtime? (`local_runtime.run_json`)"""
+    return backend_of(m) == "local"
 
 
 def _norm_headers(h):
@@ -207,7 +246,7 @@ def _hydrate(cfg):
     by_name = {e["name"]: e for e in eps}
     by_key = {_ep_key(e): e for e in eps}
     for m in cfg.get("pool", []):
-        if m.get("provider") == "claude":
+        if not is_local(m):
             continue
         ep = by_name.get(m.get("endpoint"))
         if ep is None and m.get("base_url"):
@@ -518,7 +557,7 @@ def _default_claude(cfg=None):
     surprise-expensive nor quietly too weak, and an operator who wants either end can assign it
     explicitly per phase."""
     cfg = cfg or load()
-    claude = [m for m in cfg.get("pool", []) if m.get("provider") == "claude"]
+    claude = [m for m in cfg.get("pool", []) if is_claude(m)]
     for tier in ("sonnet", "opus", "haiku"):
         m = next((m for m in claude if tier in m["model"]), None)
         if m:
@@ -530,7 +569,7 @@ def _claude_model(name, cfg):
     """Pool entry for `name`, but only if it's a Claude model (execution must drive
     `claude -p`). Returns None otherwise."""
     m = next((m for m in cfg.get("pool", []) if m["name"] == name), None)
-    return m if m and m.get("provider") == "claude" else None
+    return m if m and is_claude(m) else None
 
 
 def exec_model_id(cap_name=None):
@@ -549,7 +588,7 @@ def exec_model_id(cap_name=None):
         if m:
             return m["model"]
     m = _model_for("execution", cfg)
-    return m["model"] if m.get("provider") == "claude" else _default_claude(cfg)
+    return m["model"] if is_claude(m) else _default_claude(cfg)
 
 
 def preview_model_id(cfg=None):
@@ -561,7 +600,7 @@ def preview_model_id(cfg=None):
     `exec_model_id` does. Backend CHOICE is `preview_model_entry`'s job."""
     cfg = cfg or load()
     m = _model_for("preview", cfg)
-    return m["model"] if m.get("provider") == "claude" else _default_claude(cfg)
+    return m["model"] if is_claude(m) else _default_claude(cfg)
 
 
 def preview_model_entry(cfg=None):
@@ -583,7 +622,7 @@ def memory_gc_model_id(cfg=None):
     The tier's local-capable half is the batch classifier, which goes through `complete()`."""
     cfg = cfg or load()
     m = _model_for("memory_gc", cfg)
-    return m["model"] if m.get("provider") == "claude" else _default_claude(cfg)
+    return m["model"] if is_claude(m) else _default_claude(cfg)
 
 
 def exec_model_entry(cap_name=None, cfg=None):
@@ -665,7 +704,7 @@ def _local_model(name, cfg):
     """Pool entry for `name`, but only if it's a usable LOCAL model (OpenAI-compatible with a
     base_url). The mirror of _claude_model, for the tool-free execution carve-out (issue #42)."""
     m = next((m for m in cfg.get("pool", []) if m["name"] == name), None)
-    return m if m and m.get("provider") != "claude" and m.get("base_url") else None
+    return m if m and is_local(m) and m.get("base_url") else None
 
 
 def set_cap_local_exec(cap_name, model_name):
@@ -764,7 +803,7 @@ def escalation_model_id(cfg=None):
     before we give up. Falls back to the normal execution model if nothing stronger
     is available."""
     cfg = cfg or load()
-    claude = [m for m in cfg.get("pool", []) if m.get("provider") == "claude"]
+    claude = [m for m in cfg.get("pool", []) if is_claude(m)]
     for tier in _TIER_ORDER:
         m = next((m for m in claude if tier in m["model"]), None)
         if m:
@@ -777,7 +816,7 @@ def downshift_model_id(cfg=None):
     the remaining attempts finish on a cheaper tier. The mirror of escalation_model_id (strongest).
     Falls back to the normal execution model if no known tier is present."""
     cfg = cfg or load()
-    claude = [m for m in cfg.get("pool", []) if m.get("provider") == "claude"]
+    claude = [m for m in cfg.get("pool", []) if is_claude(m)]
     for tier in reversed(_TIER_ORDER):   # cheapest first
         m = next((m for m in claude if tier in m["model"]), None)
         if m:
@@ -1073,7 +1112,7 @@ def probe_models(force=False, cfg=None):
     for m in cfg.get("pool", []):
         entry = health.get(m["name"]) or {}
         stale = (now - (entry.get("at") or 0)) > _HEALTH_TTL
-        if m.get("provider") == "claude":
+        if not is_local(m):
             if not force:
                 continue
         elif force:
@@ -1148,7 +1187,7 @@ def complete(task, prompt):
     m = _model_for(task)
     # Degraded-mode memo: a local model that just failed is skipped for LOCAL_SKIP_S —
     # straight to the Claude fallback — so a dead endpoint costs one timeout, not one per call.
-    if m.get("provider") != "claude" and _local_down_until.get(m["name"], 0) > time.time():
+    if is_local(m) and _local_down_until.get(m["name"], 0) > time.time():
         if not config.local_fallback_allowed(task):
             _strict_stop(task, m, "the model is marked down after an earlier failure "
                                           f"(skipped for {config.LOCAL_SKIP_S:.0f}s)")
@@ -1158,8 +1197,8 @@ def complete(task, prompt):
         return _claude_tier(task, prompt, _default_claude())
     trace("GATEWAY", f"{task} -> {m['name']} ({m.get('provider')}:{m.get('model','')})")
     try:
-        if m.get("provider") == "claude":
-            text = _claude_tier(task, prompt, m["model"])
+        if not is_local(m):
+            text = _claude_tier(task, prompt, m["model"] if is_claude(m) else _default_claude())
         else:
             text = _openai_complete(m, prompt)
             if not text.strip():
@@ -1188,7 +1227,7 @@ def complete(task, prompt):
         raise
     except Exception as e:  # noqa: BLE001 - any failure -> graceful fallback to Claude
         down_model = down_until = None
-        if m.get("provider") != "claude":
+        if is_local(m):
             down_until = time.time() + config.LOCAL_SKIP_S
             _local_down_until[m["name"]] = down_until
             down_model = m["name"]
@@ -1590,7 +1629,7 @@ def embed(texts, model_name=None):
         return None
     cfg = load()
     m = next((x for x in cfg.get("pool", []) if x["name"] == model_name), None)
-    if not m or m.get("provider") == "claude" or not m.get("base_url"):
+    if not m or not is_local(m) or not m.get("base_url"):
         return None
     try:
         body = {"model": m["model"], "input": texts}
@@ -1626,7 +1665,7 @@ def test_model(name, cfg=None, timeout=None):
         record_health(name, ok, detail, via="probe")
         return {"ok": ok, "ms": ms(), "detail": detail}
     try:
-        if m.get("provider") == "claude":
+        if is_claude(m):
             # Through `_claude_complete`, so the probe inherits the tool-free flags and the
             # CLAUDE_TIER_TIMEOUT_S budget. A bare `run_json` was a full agentic pass with the
             # 900s execution default -- in the request thread serving /api/models, where a
@@ -1659,5 +1698,5 @@ def test_model(name, cfg=None, timeout=None):
         # banner says nothing about WHICH host to go and start, and "local" is wrong for a
         # vendor API.
         where = (f"cannot reach {m.get('base_url')}: "
-                 if m.get("provider") != "claude" and m.get("base_url") else "")
+                 if is_local(m) and m.get("base_url") else "")
         return done(False, (where + str(e))[:180])
