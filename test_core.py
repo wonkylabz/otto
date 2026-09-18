@@ -2838,7 +2838,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 80084 -> 81121 (#115 P3): the Codex write guard. Its own sandbox cannot deny a READ at
     # all, the two sandboxes cannot be nested, and a control measured the leak — so which guard
     # runs, and that it FAILS CLOSED, are the rules a later edit could quietly undo.
-    MAX_RULES_BYTES = 81121   # fetched tier — bounded, but looser; it is not always loaded
+    # 81121 -> 83009 (#115 P4): Codex wired into the pipeline. The seven rules are the ones a
+    # later edit could silently undo — the credential stays a var NAME, a Claude-tier move
+    # never leaves a Codex model, the connector guard covers both subprocess backends, and the
+    # Execution select does not offer a control this backend cannot honour.
+    MAX_RULES_BYTES = 83009   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

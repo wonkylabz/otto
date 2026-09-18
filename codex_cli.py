@@ -150,7 +150,15 @@ _WALLS = (
     # `bwrap: execvp <path>: No such file or directory` on stderr and a non-zero exit. Measured
     # — the spawn-time `except OSError` below covers the unconfined path and nothing else, which
     # is the path production never takes.
-    ("cli_missing", ("execvp ",)),
+    # "cannot start" in all three of its spellings. `execvp` is bwrap's; an `OSError` at spawn
+    # covers the unconfined path; and these are what a VERSION MANAGER says when the shim
+    # resolves but its version does not — which is the default failure on a shimmed install,
+    # because Otto runs every capability from a cwd of its own and a shim reads the CURRENT
+    # directory. Measured: unclassified, it was not a wall at all, so the ladder retried an
+    # identical failure twice more and then escalated the model to do it once again.
+    ("cli_missing", ("execvp ", "no version is set for command",
+                     "no version set for", "is not installed. please install",
+                     "asdf: unknown command", "mise: command not found")),
     ("auth", ("401 unauthorized", "missing bearer", "invalid api key", "not logged in",
               "unauthorized", "please run `codex login`")),
     ("quota", ("insufficient_quota", "exceeded your current quota", "billing hard limit")),
@@ -200,6 +208,29 @@ def _note_tool(item, worked, failed):
         (failed if bad else worked).add(name)
     except Exception:  # noqa: BLE001 - observability must never break the stream loop
         pass
+
+
+# --- MCP is NOT granted on this backend (yet) -------------------------------------------
+#
+# It works — measured, an `mcp_tool_call` completed under `bwrap` — but it cannot be granted
+# SAFELY through the door this backend offers, so it is withheld rather than shipped leaking:
+#
+#   * a stored def's credentials live in its `env` map, and `-c mcp_servers.<n>={… env = {…}}`
+#     puts them on the ARGV — readable by every process on the box, and `transcript_line`'s
+#     scrubber does not survive the TOML quoting, so they land in the transcript too. Measured
+#     with a real 46-char Grafana service-account token: in argv, and still intact after the
+#     scrub.
+#   * passing them through the process environment instead does NOT work: measured with a probe
+#     server, an MCP child of `codex exec` reported `PROBE=<ABSENT>` — it does not inherit
+#     codex's env, so the `env` table is the only channel there is.
+#   * which leaves a config FILE, and `-c`'s file equivalent (`-p <profile>`) is refused
+#     alongside `--ignore-user-config` — measured. Dropping that flag makes
+#     `$CODEX_HOME/config.toml` live, and `CODEX_HOME` is bound WRITABLE inside the sandbox, so
+#     a run could append its own `mcp_servers` entry and have it spawned as the operator next
+#     time. That is the self-escalation `file_safety` write-denies `~/.claude.json` for.
+#
+# So a capability that needs MCP stays on Claude (`engine.run_attempt`'s blocker list), and the
+# file mechanism gets its own change, with its own review.
 
 
 def _toml_value(v):
@@ -382,6 +413,13 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     # `codex exec` has no `--append-system-prompt`, so `system_context` has to be part of the
     # one prompt it accepts. It is still recorded SEPARATELY in the meta line below — a
     # transcript that cannot say what the model was told cannot be debugged.
+    # WHAT THIS RUN CANNOT REACH, said in context. `engine.run_attempt` keeps a cap that
+    # DECLARED MCP servers off this backend entirely; this is the backstop for the request whose
+    # words missed — the local runtime's `connector_note` in the same position, and needed more
+    # here, because this backend grants no MCP at all while still holding a shell and an
+    # unbounded network. Unconditional: the absence is total.
+    import mcp_client            # noqa: PLC0415 — deferred, mcp_client imports claude_cli
+    system_context = "\n\n".join(filter(None, [system_context, mcp_client.no_mcp_note()]))
     full_prompt = f"{system_context}\n\n{prompt}" if system_context else prompt
     cmd = prefix + build_cmd(full_prompt, model=model, resume_session=resume_session,
                              sandbox=sandbox, cwd=cwd, last_message=last_path, effort=effort,
@@ -590,12 +628,21 @@ def _unlink(path):
         pass
 
 
-def available():
-    """Is `codex` on PATH and runnable? Used by `doctor` — a configured Codex entry with no CLI
-    behind it is a day-one misconfiguration that otherwise surfaces as a failed run."""
+def available(cwd=None):
+    """Is `codex` runnable FROM A DIRECTORY OF ITS OWN? Used by `doctor`.
+
+    The cwd is the whole point, and defaults to a neutral one rather than the worker's. A
+    version-manager shim (asdf/mise/nvm) resolves its version from the CURRENT DIRECTORY, and
+    Otto runs every capability from an isolated clone or a scratch dir — so a probe run from
+    Otto's own checkout, which has a `.tool-versions`, answered "codex-cli 0.155.0" while every
+    real run died with "No version is set for command codex". A green check beside a backend
+    that cannot run once is worse than no check."""
     try:
         out = subprocess.run([CODEX_BIN, "--version"], capture_output=True, text=True,
-                             timeout=10, env=codex_env())
-        return (out.returncode == 0, (out.stdout or out.stderr).strip()[:80])
+                             timeout=10, env=codex_env(), cwd=cwd or tempfile.gettempdir())
+        said = (out.stdout or out.stderr).strip()[:120]
+        if out.returncode != 0 and wall_reason("", said) == "cli_missing":
+            said += "  — this is a version-manager shim; set OTTO_CODEX_BIN to the real binary"
+        return (out.returncode == 0, said)
     except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
         return (False, str(e)[:120])

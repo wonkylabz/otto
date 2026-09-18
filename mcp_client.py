@@ -429,6 +429,29 @@ def connector_note(pol=None):
               "complete and correct answer.")
 
 
+def no_mcp_note(pol=None):
+    """The line telling a CODEX run that no MCP server of any kind is reachable from it.
+
+    `connector_note` is the local backend's version and says only what a connector is; this one
+    has to say more, because the Codex backend grants NO MCP at all (issue #121) — the stdio
+    servers the local runtime spawns are missing here too, and unlike the local plan pass this
+    backend has a whole shell and an unbounded network to go looking with.
+
+    The declaration matters as much as the routing guard, and the measurement is the same one
+    `connector_note` was written from: told nothing, a model discovers the gap one failed call
+    at a time and then goes hunting for a way around it — 4/4 it planned to read `~/.netrc`.
+    Told plainly, it reports the blocker, which is a complete and correct answer. Never None:
+    the absence is total and does not depend on what happens to be configured."""
+    named = sorted(set(connectors(pol).values()) | set(servable(pol)))
+    return ("NO MCP server is reachable from this run — not the claude.ai connectors, which are "
+            "OAuth'd inside Claude Code, and not the stdio servers this machine has configured"
+            + (" (" + ", ".join(named) + ")" if named else "")
+            + ". If the task needs one of them, say so and STOP. Do not substitute a hand-"
+              "rolled HTTP call, and do not go looking for credentials on disk, in an "
+              "environment variable or in an editor cache to make one work — the run will be "
+              "killed for it, and reporting the blocker is the complete and correct answer.")
+
+
 # --- the tool catalogue (so selection doesn't have to spawn first) ---------
 # Scoring a server's tools against the request requires knowing them, and learning them
 # means starting the server (~1-3s of `npx`/`uvx` each). So every successful `tools/list` is

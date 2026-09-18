@@ -41,6 +41,7 @@ import urllib.request
 import uuid
 
 import claude_cli
+import codex_cli
 import config
 import error_classifier
 import file_safety
@@ -78,8 +79,13 @@ def session_backend(sid):
     only correct thing to compare a resolved pool entry against. A session is bound for life to
     the runtime that minted it, so every resume path (engine.run_attempt, plans.plan_preview,
     /api/continue's rebind) has to ask the same question in the same shape, or one of them
-    disagrees and hands a session to a runtime that cannot read it."""
-    return "local" if is_local_session(sid) else "claude"
+    disagrees and hands a session to a runtime that cannot read it.
+
+    Claude is the default rather than a third prefix because its ids are bare uuids — the two
+    runtimes that prefix theirs are the ones that had to be told apart from it."""
+    if is_local_session(sid):
+        return "local"
+    return "codex" if codex_cli.is_codex_session(sid) else "claude"
 
 
 def gc_sessions(ttl_h=None):
