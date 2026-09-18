@@ -17,13 +17,13 @@ Everything below that is not obvious from the docs was measured against codex-cl
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 
 import claude_cli
 import config
 import error_classifier
-import file_safety
 from ui import trace
 
 # `claude_cli` owns the transcript directory, the credential scrub, the process-group kill and
@@ -111,24 +111,38 @@ _TOOL_NAMES = {
 # A wall is "this will fail the same way every time", so it latches the ladder off this backend
 # instead of spending two more attempts reaching the identical refusal. Matched on the CLI's own
 # words because that is the only thing it reliably reports — see `_exit_code_is_not_a_verdict`.
+# A credential is wrong, a quota is spent or a model does not exist no matter WHERE the CLI
+# says so, so these are matched over the events and stderr alike.
 _WALLS = (
     ("auth", ("401 unauthorized", "missing bearer", "invalid api key", "not logged in",
               "unauthorized", "please run `codex login`")),
     ("quota", ("insufficient_quota", "exceeded your current quota", "billing hard limit")),
     ("bad_model", ("model_not_found", "does not exist or you do not have access",
                    "unknown model")),
+)
+
+# "The endpoint is down" is a claim about RIGHT NOW, and codex's stderr is per-retry tracing —
+# it logs a line for every attempt, including ones it then recovered from. Matched over the
+# `error` EVENTS only: an event is the CLI reporting the turn's outcome, a stderr line is it
+# narrating one retry. Read off stderr, a genuinely timed-out turn that happened to log one
+# blip classified as a deterministic wall and latched the whole ladder off this backend.
+_TRANSIENT_WALLS = (
     ("overloaded", ("503 service unavailable", "502 bad gateway", "connection refused",
                     "dns error", "failed to lookup address")),
 )
 
 
-def wall_reason(text):
-    """Which deterministic wall this run died on, or None. Pure text match over the events and
-    stderr — the same shape `error_classifier.claude_wall` uses, and returned as a plain string
-    so it crosses the activity-result boundary as JSON."""
-    d = (text or "").lower()
+def wall_reason(events, stderr=""):
+    """Which deterministic wall this run died on, or None. Returned as a plain string so it
+    crosses the activity-result boundary as JSON, the same shape `error_classifier.claude_wall`
+    uses. See `_TRANSIENT_WALLS` for why the two inputs are separate."""
+    both = ((events or "") + "\n" + (stderr or "")).lower()
     for reason, markers in _WALLS:
-        if any(m in d for m in markers):
+        if any(m in both for m in markers):
+            return reason
+    ev = (events or "").lower()
+    for reason, markers in _TRANSIENT_WALLS:
+        if any(m in ev for m in markers):
             return reason
     return None
 
@@ -235,9 +249,14 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     """One headless `codex exec` turn, in `claude_cli.run_json`'s return contract.
 
     `allowed_tools` is accepted and NOT forwarded: Codex has no per-tool permission flag, so the
-    grant is the sandbox policy plus `file_safety`'s deny set, never a tool list. It is still
-    read — an empty-of-write-tools grant selects the read-only sandbox — so the argument is
-    load-bearing, just not as argv.
+    grant is the SANDBOX POLICY, never a tool list. It is still read — an empty-of-write-tools
+    grant selects the read-only sandbox — so the argument is load-bearing, just not as argv.
+
+    `file_safety`'s deny set is NOT enforced here yet. `claude -p` gets it via
+    `permissions.deny`, and the local runtime re-enforces it itself; Codex's sandbox confines
+    writes to the workspace but cannot express a read deny at all, so `cat data/models.json`
+    still returns the endpoint keys. Closing that is its own change (issue #115 P3) — this
+    module deliberately does not pretend to do it.
 
     `steer` is accepted and cannot be delivered: `codex exec` takes its prompt once, from argv
     or stdin, and has no mid-turn user-message channel. It is recorded in the transcript and
@@ -245,8 +264,18 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     steer budget is not spent on a channel that does not exist."""
     timeout = config.LOCAL_RUN_TIMEOUT_S if timeout is None else timeout
     sandbox = PLAN_SANDBOX if permission_mode == "plan" else _sandbox_for(allowed_tools)
-    last_path = (transcript.replace(".jsonl", "-last.txt") if transcript
-                 else os.path.join(TRANSCRIPTS, f"codex-last-{os.getpid()}.txt"))
+    # `-o` is written by CODEX, so it passes through neither `transcript_line`'s scrubber nor
+    # `claude_cli.gc_transcripts` (which only unlinks `*.jsonl`) — an answer quoting a
+    # credential sat on disk in plaintext, unscrubbed, forever. It is therefore a throwaway:
+    # unique per CALL and deleted in `finally`, whatever happens. Unique per call and not per
+    # PROCESS because the Temporal worker runs activities concurrently in one process and the
+    # cheap tiers pass no transcript at all — a pid-named path let two live turns write and
+    # unlink the same file, so one run could read the other's final message as its own answer.
+    # Under `TRANSCRIPTS` on purpose: `data/transcripts/**` is read-denied, so for the moments
+    # it exists it is not readable by another run.
+    os.makedirs(TRANSCRIPTS, exist_ok=True)
+    fd, last_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt", dir=TRANSCRIPTS)
+    os.close(fd)
     # The prompt and everything Otto tells the run that is NOT the request travel together here:
     # `codex exec` has no `--append-system-prompt`, so `system_context` has to be part of the
     # one prompt it accepts. It is still recorded SEPARATELY in the meta line below — a
@@ -356,13 +385,19 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
                     {"type": "otto-timeout", "after_s": timeout,
                      "after_result": answer is not None}))
             sink.close()
-
-    # `-o` is the primary answer and the stream the fallback: the file holds exactly the final
-    # message, while the stream needs the last-wins rule above to get there. Both are only an
-    # ANSWER at all once the turn declared itself finished.
-    answer = (_read_last_message(last_path) or answer) if turn_done else None
-    if not transcript:
-        _unlink(last_path)
+        # `-o` is the primary answer and the stream the fallback: the file holds exactly the
+        # final message, while the stream needs the last-wins rule above to get there. Both are
+        # only an ANSWER at all once the turn declared itself finished.
+        #
+        # Read and DROPPED here, in the same `finally`, because the file is Codex's own output:
+        # it never passes `transcript_line`'s scrubber, so an answer quoting a credential would
+        # otherwise sit on disk in plaintext — and `claude_cli.gc_transcripts` only unlinks
+        # `*.jsonl`, so nothing would ever collect it. The scrubbed copy in the transcript is
+        # the durable record; this one exists for the length of one call.
+        try:
+            answer = (_read_last_message(last_path) or answer) if turn_done else None
+        finally:
+            _unlink(last_path)
 
     out = {"result": answer or "", "is_error": False, "total_cost_usd": 0,
            "usage": usage, "session_id": session,
@@ -383,7 +418,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     # timeout, that wall becomes a harness death — it draws on `max_harness_retries` and the
     # ladder never latches off this backend, so every later rung reaches the same refusal.
     # Whatever error events DID arrive before the kill still name the reason.
-    reason = wall_reason("\n".join(errors) + "\n" + stderr)
+    reason = wall_reason("\n".join(errors), stderr)
     if reason and not answer:
         detail = (errors[-1] if errors else stderr)
         return dict(out, is_error=True, wall_reason=reason, wall_detail=detail[:2000],

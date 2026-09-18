@@ -8238,8 +8238,11 @@ class CodexBackendTests(unittest.TestCase):
     contract does NOT transfer."""
 
     THREAD = "01a0b276-a2ec-74b1-af73-492014971034"
+    # What the fake child writes to `-o`. Shaped like a real vendor key on purpose: this file is
+    # Codex's own output and never meets `transcript_line`'s scrubber.
+    LAST_FILE_TEXT = "the answer, quoting sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF-GGGGHHHH"
 
-    def _popen(self, lines, stderr="", returncode=0):
+    def _popen(self, lines, stderr="", returncode=0, write_last=True):
         """A fake `codex exec` child that replays `lines` on stdout."""
         test = self
 
@@ -8262,11 +8265,20 @@ class CodexBackendTests(unittest.TestCase):
 
         def fake_popen(cmd, **kw):
             seen["cmd"], seen["kw"] = cmd, kw
+            if "-o" in cmd:
+                # Real `codex exec -o` writes the final message here itself. The fake has to do
+                # it too, or every assertion about that file passes because nothing created it.
+                # `write_last=False` is the turn that produced no final message — a crash, an
+                # auth failure — which is how the STREAM fallback gets exercised at all.
+                seen["last"] = cmd[cmd.index("-o") + 1]
+                if write_last:
+                    with open(seen["last"], "w") as f:
+                        f.write(test.LAST_FILE_TEXT)
             return _Proc()
         return fake_popen, seen
 
-    def _run(self, lines, stderr="", **kw):
-        fake, seen = self._popen(lines, stderr)
+    def _run(self, lines, stderr="", write_last=True, **kw):
+        fake, seen = self._popen(lines, stderr, write_last=write_last)
         orig = codex_cli.subprocess.Popen
         codex_cli.subprocess.Popen = fake
         try:
@@ -8298,7 +8310,7 @@ class CodexBackendTests(unittest.TestCase):
         for key in ("result", "is_error", "total_cost_usd", "usage", "session_id",
                     "tools_used", "tools_failed"):
             self.assertIn(key, out, key)
-        self.assertEqual(out["result"], "the answer")
+        self.assertEqual(out["result"], self.LAST_FILE_TEXT)
         self.assertFalse(out["is_error"])
         self.assertEqual(out["usage"]["input_tokens"], 100)
 
@@ -8354,7 +8366,8 @@ class CodexBackendTests(unittest.TestCase):
         lines = self._happy()
         lines.insert(3, self._ev({"type": "item.completed",
                                   "item": {"type": "agent_message", "text": "Let me look."}}))
-        out, _ = self._run(lines)
+        # No `-o` file: this is the STREAM fallback, which is the path that needs the rule.
+        out, _ = self._run(lines, write_last=False)
         self.assertEqual(out["result"], "the answer")
 
     def test_the_exit_code_is_not_a_verdict(self):
@@ -8366,7 +8379,8 @@ class CodexBackendTests(unittest.TestCase):
                 self._ev({"type": "error", "message": "unexpected status 401 Unauthorized: "
                                                       "Missing bearer or basic authentication"}),
                 self._ev({"type": "turn.failed", "error": {"message": "401"}})]
-        fake, _ = self._popen(dead, returncode=0)       # <- zero, like the real thing
+        # A turn that never answered writes no `-o` file, so the wall is all there is to read.
+        fake, _ = self._popen(dead, returncode=0, write_last=False)   # <- zero, like the real thing
         orig = codex_cli.subprocess.Popen
         codex_cli.subprocess.Popen = fake
         try:
@@ -8475,6 +8489,74 @@ class CodexBackendTests(unittest.TestCase):
         exist."""
         out, _ = self._run(self._happy(), steer=object())
         self.assertTrue(out["steer_unsupported"])
+
+    # --- the -o file is Codex's own output, so it is a THROWAWAY ---------------------------
+
+    def test_the_last_message_file_never_outlives_the_call(self):
+        """It is written by CODEX, so it passes neither `transcript_line`'s scrubber nor
+        `claude_cli.gc_transcripts` (which only unlinks `*.jsonl`). An answer quoting a
+        credential would sit on disk in plaintext for good. The scrubbed copy in the transcript
+        is the durable record; this one lives for the length of one call."""
+        os.makedirs(codex_cli.TRANSCRIPTS, exist_ok=True)
+        with tempfile.TemporaryDirectory() as d:
+            before = set(os.listdir(codex_cli.TRANSCRIPTS))
+            out, seen = self._run(self._happy(), transcript=os.path.join(d, "t.jsonl"))
+            # It really was written, and really was the answer — otherwise the rest is vacuous.
+            self.assertEqual(out["result"], self.LAST_FILE_TEXT)
+            self.assertFalse(os.path.exists(seen["last"]), "the -o file survived the call")
+            self.assertEqual(sorted(set(os.listdir(codex_cli.TRANSCRIPTS)) - before), [])
+            self.assertFalse(os.path.exists(os.path.join(d, "t-last.txt")),
+                             "the -o file was written beside the transcript and left there")
+            # …and it is dropped on the failure paths too, not just the happy one.
+            _, seen = self._run([self._ev({"type": "thread.started",
+                                           "thread_id": self.THREAD})])
+            self.assertFalse(os.path.exists(seen["last"]))
+            self.assertEqual(sorted(set(os.listdir(codex_cli.TRANSCRIPTS)) - before), [])
+
+    def test_two_concurrent_turns_do_not_share_one_last_message_path(self):
+        """The Temporal worker runs activities concurrently in ONE process, and the cheap tiers
+        pass no transcript at all — so a pid-named path let two live turns write and unlink the
+        same file, and one run could read the other's final message as its own answer."""
+        paths = []
+        real = codex_cli.tempfile.mkstemp
+
+        def spy(**kw):
+            fd, path = real(**kw)
+            paths.append(path)
+            return fd, path
+        codex_cli.tempfile.mkstemp = spy
+        try:
+            self._run(self._happy())
+            self._run(self._happy())
+        finally:
+            codex_cli.tempfile.mkstemp = real
+        self.assertEqual(len(paths), 2)
+        self.assertNotEqual(paths[0], paths[1], "two turns shared one -o path")
+        self.assertNotIn(str(os.getpid()), os.path.basename(paths[0]),
+                         "the path is keyed on the PROCESS, which is not one turn")
+
+    # --- a wall is deterministic; stderr is not ---------------------------------------------
+
+    def test_a_transient_line_on_stderr_does_not_latch_the_ladder(self):
+        """codex's stderr is per-retry tracing — it logs a line for every attempt, including
+        ones it recovered from. Read off stderr, a genuinely timed-out turn that happened to log
+        one blip classified as a deterministic wall and latched the whole ladder off Codex."""
+        self.assertIsNone(codex_cli.wall_reason("", "ERROR codex_api: connection refused"))
+        self.assertEqual(codex_cli.wall_reason("connection refused", ""), "overloaded")
+
+    def test_a_credential_failure_walls_wherever_the_cli_says_it(self):
+        """The other direction: a wrong key is wrong no matter which stream reports it, and the
+        auth wall is the one that most needs to reach the operator."""
+        self.assertEqual(codex_cli.wall_reason("", "HTTP error: 401 Unauthorized"), "auth")
+        self.assertEqual(codex_cli.wall_reason("insufficient_quota", ""), "quota")
+
+    def test_the_deny_set_is_not_claimed_to_be_enforced_here(self):
+        """`claude -p` gets `file_safety` via `permissions.deny` and the local runtime
+        re-enforces it itself. Codex's sandbox confines writes but cannot express a read deny,
+        so a docstring saying otherwise reads as wired when it is not (issue #115 P3)."""
+        doc = inspect.getdoc(codex_cli.run_json)
+        self.assertIn("is NOT enforced here", doc)
+        self.assertNotIn("file_safety", inspect.getsource(codex_cli).split('"""')[0])
 
     def test_the_binary_is_overridable_because_a_shim_resolves_by_cwd(self):
         """MEASURED here: a version-manager shim (asdf/mise/nvm) reads its version from the
