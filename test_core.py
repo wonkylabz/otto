@@ -2831,7 +2831,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 79004 -> 79261 (#115): the execution backend is a three-way now, and the one thing a
     # later edit could quietly undo is asking `gateway.backend_of` instead of re-deriving it
     # from `provider` — which is how the boolean reached 34 sites in the first place.
-    MAX_RULES_BYTES = 79261   # fetched tier — bounded, but looser; it is not always loaded
+    # 79261 -> 80084 (#115 P2): the Codex backend's three measured traps — it cannot be driven
+    # through the local runtime's wire at all, its exit code is not a verdict, and `exec resume`
+    # refuses the two flags that carry the sandbox and the cwd. Each one cost a real debugging
+    # pass to find and none of them is in the CLI's docs.
+    MAX_RULES_BYTES = 80084   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
