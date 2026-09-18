@@ -469,3 +469,53 @@ def claude_auth_message(detail=""):
     """Back-compat alias: the auth wall's body. Callers that have a reason should use
     `claude_wall_message(detail, reason)` so a usage limit is not reported as a bad login."""
     return claude_wall_message(detail, claude_wall(detail) or "auth")
+
+
+# --- the Codex backend (issue #115) ------------------------------------------------------
+#
+# A wall names its OWN remedy or it is worse than no message: the generic endpoint line tells
+# the operator to check `api_key_env` and `OTTO_SECRET_COMMAND`, and neither exists on this
+# backend — `codex exec` authenticates through `codex login`, against a ChatGPT subscription or
+# an API key held in its own auth file. Same reason `_CLAUDE_WALL_REMEDY` is separate from
+# `_MESSAGE`: "re-authenticate" is the wrong instruction for a spent quota, and "fix the
+# endpoint's key" is the wrong instruction for both.
+_CODEX_WALL_REMEDY = {
+    "auth": ("Codex rejected our credentials",
+             "Authenticate on the machine running the worker (`codex login`, or "
+             "`printenv OPENAI_API_KEY | codex login --with-api-key`), then retry this run."),
+    "quota": ("the Codex account has no remaining credit",
+              "Top up the OpenAI account, then retry this run. Retrying sooner reaches the "
+              "same refusal."),
+    "bad_model": ("Codex cannot serve the configured model",
+                  "Fix the model name in Admin → Models (`data/models.json`), then retry "
+                  "this run."),
+    "overloaded": ("the Codex endpoint is unreachable",
+                   "Check the worker's network and whether the configured provider is up, "
+                   "then retry this run."),
+}
+
+_CODEX_WALL_REASON = {
+    "auth": "codex_auth_expired",
+    "quota": "codex_quota_spent",
+    "bad_model": "codex_model_unavailable",
+    "overloaded": "codex_unreachable",
+}
+
+
+def codex_wall_reason(reason):
+    """The needs-human `reason` a Codex wall is labelled with on the dashboard and in the audit
+    row. Degrades to the AUTH reason rather than raising on one a newer worker sent."""
+    return _CODEX_WALL_REASON.get(reason, _CODEX_WALL_REASON["auth"])
+
+
+def codex_wall_message(reason, detail=""):
+    """The operator-facing body for a Codex-backend wall: the CLI's own words (the raw evidence)
+    plus the remedy for this particular wall."""
+    said = (detail or "").strip().splitlines()
+    said = said[-1].strip() if said else ""
+    what, remedy = _CODEX_WALL_REMEDY.get(reason, _CODEX_WALL_REMEDY["auth"])
+    return ("⛔ **Stopped — nothing ran.** " + what
+            + (f": {said[:300]}" if said else ".")
+            + "\n\n" + remedy
+            + " No further attempts were made — every one of them would have failed the "
+              "same way.")

@@ -26,6 +26,7 @@ from socketserver import ThreadingTCPServer
 
 import chats
 import claude_cli
+import codex_cli
 import config
 import contracts
 import engine
@@ -8228,3 +8229,257 @@ class BackendDispatchTests(unittest.TestCase):
         self.assertEqual(local_runtime.session_backend("0b3f-uuid"), "claude")
         self.assertIn(local_runtime.session_backend("local-abcdef"), gateway.BACKENDS)
         self.assertIn(local_runtime.session_backend(None), gateway.BACKENDS)
+
+
+class CodexBackendTests(unittest.TestCase):
+    """Issue #115 P2: `codex_cli.run_json`, the third backend, in `claude_cli.run_json`'s return
+    contract. Everything asserted here was measured against codex-cli 0.155.0 on 2026-09-18 —
+    the CLI's docs state none of it, and three of these are places where the Claude backend's
+    contract does NOT transfer."""
+
+    THREAD = "01a0b276-a2ec-74b1-af73-492014971034"
+
+    def _popen(self, lines, stderr="", returncode=0):
+        """A fake `codex exec` child that replays `lines` on stdout."""
+        test = self
+
+        class _Proc:
+            def __init__(_s):
+                _s.stdout = iter(lines)
+                _s.stderr = io.StringIO(stderr)
+                _s.returncode = returncode
+                _s.pid = os.getpid()
+
+            def wait(_s, timeout=None):
+                return returncode
+
+            def poll(_s):
+                return returncode
+
+            def kill(_s):
+                pass
+        seen = {}
+
+        def fake_popen(cmd, **kw):
+            seen["cmd"], seen["kw"] = cmd, kw
+            return _Proc()
+        return fake_popen, seen
+
+    def _run(self, lines, stderr="", **kw):
+        fake, seen = self._popen(lines, stderr)
+        orig = codex_cli.subprocess.Popen
+        codex_cli.subprocess.Popen = fake
+        try:
+            out = codex_cli.run_json("do the thing", timeout=5, **kw)
+        finally:
+            codex_cli.subprocess.Popen = orig
+        return out, seen
+
+    def _ev(self, obj):
+        return json.dumps(obj) + "\n"
+
+    def _happy(self, text="the answer"):
+        return [self._ev({"type": "thread.started", "thread_id": self.THREAD}),
+                self._ev({"type": "turn.started"}),
+                self._ev({"type": "item.completed",
+                          "item": {"type": "command_execution", "command": "ls",
+                                   "exit_code": 0, "status": "completed"}}),
+                self._ev({"type": "item.completed",
+                          "item": {"type": "agent_message", "text": text}}),
+                self._ev({"type": "turn.completed",
+                          "usage": {"input_tokens": 100, "output_tokens": 7}})]
+
+    # --- the return contract ------------------------------------------------------------
+
+    def test_it_returns_the_same_shape_every_other_backend_returns(self):
+        """`engine.run_attempt`, the ladder, the audit row and every test double read ONE
+        contract. A second one is a second set of call sites."""
+        out, _ = self._run(self._happy())
+        for key in ("result", "is_error", "total_cost_usd", "usage", "session_id",
+                    "tools_used", "tools_failed"):
+            self.assertIn(key, out, key)
+        self.assertEqual(out["result"], "the answer")
+        self.assertFalse(out["is_error"])
+        self.assertEqual(out["usage"]["input_tokens"], 100)
+
+    def test_the_session_id_says_which_runtime_minted_it(self):
+        """A session is bound for life to its runtime — `claude -p --resume codex-…` is rejected
+        outright — so the id has to carry the backend, and must not collide with `local-`."""
+        out, _ = self._run(self._happy())
+        self.assertEqual(out["session_id"], "codex-" + self.THREAD)
+        self.assertTrue(codex_cli.is_codex_session(out["session_id"]))
+        self.assertFalse(codex_cli.is_codex_session("local-abc"))
+        self.assertFalse(local_runtime.is_local_session(out["session_id"]))
+        # …and the prefix comes back OFF before it reaches the CLI, which takes the bare uuid.
+        self.assertEqual(codex_cli.thread_id(out["session_id"]), self.THREAD)
+
+    def test_a_tool_is_reported_in_ottos_vocabulary_not_codexs(self):
+        """`judging.verify` is handed this list as the turn's real grant, beside Claude tool
+        names. A raw `command_execution` reads to the judge as a tool it has never heard of."""
+        out, _ = self._run(self._happy())
+        self.assertEqual(out["tools_used"], ["Bash"])
+
+    def test_a_tool_that_only_ever_failed_is_not_reported_as_available(self):
+        """Crediting a refused tool as present turns a truthful "that source was blocked" into
+        what the judge reads as an invented excuse."""
+        lines = self._happy()
+        lines.insert(2, self._ev({"type": "item.completed",
+                                  "item": {"type": "command_execution", "command": "gh",
+                                           "exit_code": 127, "status": "failed"}}))
+        out, _ = self._run(lines)
+        self.assertEqual(out["tools_failed"], [])      # Bash also SUCCEEDED, so it is available
+        self.assertEqual(out["tools_used"], ["Bash"])
+        only_bad = [l for l in lines if '"exit_code": 0' not in l]
+        out, _ = self._run(only_bad)
+        self.assertEqual(out["tools_failed"], ["Bash"])
+        self.assertEqual(out["tools_used"], [])
+
+    # --- where the Claude contract does NOT transfer --------------------------------------
+
+    def test_an_unfinished_turns_narration_is_not_an_answer(self):
+        """MEASURED: a turn killed at 3s had already emitted an `agent_message` carrying the
+        model's opening narration ("I'll help you summarise the history of…"). This backend has
+        no single terminal `result` event, so treating any agent_message as the answer reported
+        a timed-out attempt as a SUCCESS whose result was a sentence of preamble."""
+        cut = [self._ev({"type": "thread.started", "thread_id": self.THREAD}),
+               self._ev({"type": "turn.started"}),
+               self._ev({"type": "item.completed",
+                         "item": {"type": "agent_message", "text": "I'll help you with that."}})]
+        out, _ = self._run(cut)
+        self.assertNotIn("I'll help you", out["result"])
+        self.assertTrue(out["is_error"])
+
+    def test_the_last_agent_message_is_the_answer_not_the_first(self):
+        """A turn narrates as it goes, so a first-match parse returns the preamble."""
+        lines = self._happy()
+        lines.insert(3, self._ev({"type": "item.completed",
+                                  "item": {"type": "agent_message", "text": "Let me look."}}))
+        out, _ = self._run(lines)
+        self.assertEqual(out["result"], "the answer")
+
+    def test_the_exit_code_is_not_a_verdict(self):
+        """MEASURED: a run that failed to authenticate at all — ten error events, five over
+        WebSocket and five more after falling back to HTTPS — exited **0**, while a resume
+        against the same dead credentials exited 1. The wall has to be read out of the STREAM."""
+        dead = [self._ev({"type": "thread.started", "thread_id": self.THREAD}),
+                self._ev({"type": "turn.started"}),
+                self._ev({"type": "error", "message": "unexpected status 401 Unauthorized: "
+                                                      "Missing bearer or basic authentication"}),
+                self._ev({"type": "turn.failed", "error": {"message": "401"}})]
+        fake, _ = self._popen(dead, returncode=0)       # <- zero, like the real thing
+        orig = codex_cli.subprocess.Popen
+        codex_cli.subprocess.Popen = fake
+        try:
+            out = codex_cli.run_json("hi", timeout=5)
+        finally:
+            codex_cli.subprocess.Popen = orig
+        self.assertTrue(out["is_error"])
+        self.assertEqual(out["wall_reason"], "auth")
+
+    def test_a_wall_names_the_codex_remedy_never_the_endpoints(self):
+        """`api_key_env` and `OTTO_SECRET_COMMAND` do not exist on this backend — sending an
+        operator to check them is worse than saying nothing."""
+        body = error_classifier.codex_wall_message("auth", "401 Unauthorized")
+        self.assertIn("codex login", body)
+        self.assertNotIn("api_key_env", body)
+        self.assertNotIn("OTTO_SECRET_COMMAND", body)
+        self.assertNotEqual(error_classifier.codex_wall_reason("quota"),
+                            error_classifier.codex_wall_reason("auth"))
+
+    def test_each_wall_marker_classifies_and_an_unknown_error_does_not(self):
+        for text, want in (("HTTP error: 401 Unauthorized", "auth"),
+                           ("You exceeded your current quota", "quota"),
+                           ("model_not_found", "bad_model"),
+                           ("connection refused", "overloaded"),
+                           ("the model wrote something silly", None)):
+            self.assertEqual(codex_cli.wall_reason(text), want, text)
+
+    # --- argv: three flags chosen against a measured refusal -------------------------------
+
+    def test_a_resume_never_passes_the_flags_resume_rejects(self):
+        """MEASURED: `codex exec resume` rejects BOTH `-s/--sandbox` and `-C/--cd` with
+        "unexpected argument". Passing either is not a degraded run, it is exit code 2 and no
+        run at all."""
+        cmd = codex_cli.build_cmd("hi", resume_session="codex-" + self.THREAD,
+                                  sandbox="read-only", cwd="/work", model="m")
+        self.assertIn("resume", cmd)
+        for flag in ("-s", "--sandbox", "-C", "--cd"):
+            self.assertNotIn(flag, cmd, flag)
+        self.assertEqual(cmd[-2:], [self.THREAD, "hi"])
+
+    def test_the_sandbox_travels_the_one_way_that_works_on_both_paths(self):
+        """One spelling per fact. The sandbox as `-c sandbox_mode=` is accepted on the resume
+        path AND proven to still enforce there (a write under it was refused); `-s` is not. Two
+        spellings means the write guard silently lapses on turn 2."""
+        for resume in (None, "codex-" + self.THREAD):
+            cmd = codex_cli.build_cmd("hi", resume_session=resume, sandbox="read-only")
+            self.assertIn('sandbox_mode="read-only"', cmd, repr(resume))
+
+    def test_a_fresh_run_is_anchored_and_a_resumed_one_inherits_the_process_cwd(self):
+        cmd = codex_cli.build_cmd("hi", cwd="/work")
+        self.assertEqual(cmd[cmd.index("--cd") + 1], "/work")
+        _, seen = self._run(self._happy(), cwd="/work")
+        self.assertEqual(seen["kw"].get("cwd"), "/work")
+
+    def test_the_operators_own_config_is_never_inherited(self):
+        """The analogue of `--setting-sources user`: whatever the WORKER's box happens to carry
+        in `~/.codex/config.toml` is not this run's configuration."""
+        self.assertIn("--ignore-user-config", codex_cli.build_cmd("hi"))
+
+    def test_a_value_is_serialized_as_toml_not_json(self):
+        """Codex parses `-c key=value` as TOML and FALLS BACK to a raw string when that fails,
+        so wrong quoting never errors — it silently configures something else. Measured both
+        ways: an unquoted `model=owner/Name-30B` became a literal nothing serves, and a
+        JSON-quoted inline table was rejected as `invalid type: string`."""
+        self.assertEqual(codex_cli._toml_value("gpt-5"), '"gpt-5"')
+        self.assertEqual(codex_cli._toml_value(True), "true")
+        self.assertEqual(codex_cli._toml_value({"name": "vllm", "n": 2}),
+                         '{name = "vllm", n = 2}')
+        self.assertEqual(codex_cli._toml_value(["a", "b"]), '["a", "b"]')
+
+    # --- the write guard is the sandbox on this backend ------------------------------------
+
+    def test_the_grant_picks_the_sandbox_and_fails_closed(self):
+        """There is no `--allowedTools` here: the sandbox IS the grant. An unrecognised or empty
+        one must not hand a read cap a writable workspace."""
+        self.assertEqual(codex_cli._sandbox_for(config.READ_TOOLS), codex_cli.PLAN_SANDBOX)
+        self.assertEqual(codex_cli._sandbox_for(config.WRITE_TOOLS), codex_cli.WRITE_SANDBOX)
+        self.assertEqual(codex_cli._sandbox_for(None), codex_cli.PLAN_SANDBOX)
+        self.assertEqual(codex_cli._sandbox_for(["Nonsense"]), codex_cli.PLAN_SANDBOX)
+
+    def test_the_write_only_tools_are_derived_from_config_not_copied(self):
+        """A third hand-kept list drifts: a tool added to `config.WRITE_TOOLS` must not leave a
+        read cap with a writable workspace because this module was not edited too."""
+        src = inspect.getsource(codex_cli._sandbox_for)
+        self.assertIn("config.WRITE_TOOLS", src)
+        self.assertIn("config.READ_TOOLS", src)
+
+    def test_plan_mode_is_the_read_only_sandbox(self):
+        _, seen = self._run(self._happy(), permission_mode="plan",
+                            allowed_tools=config.WRITE_TOOLS)
+        self.assertIn('sandbox_mode="read-only"', seen["cmd"])
+
+    # --- the shared seams are shared, not re-implemented ------------------------------------
+
+    def test_the_transcript_is_written_by_the_one_scrubber(self):
+        """A transcript records what a run did INCLUDING the times it handled a credential.
+        Two scrubbers drift, and this one would be the un-tested copy."""
+        src = inspect.getsource(codex_cli)
+        self.assertIn("claude_cli.transcript_line", src)
+        self.assertNotIn("def transcript_line", src)
+        self.assertIs(codex_cli.transcript_path, claude_cli.transcript_path)
+
+    def test_a_steer_is_reported_unsupported_rather_than_dropped(self):
+        """`codex exec` takes its prompt once and has no mid-turn user-message channel. A
+        silently swallowed steer spends the supervisor's budget on a channel that does not
+        exist."""
+        out, _ = self._run(self._happy(), steer=object())
+        self.assertTrue(out["steer_unsupported"])
+
+    def test_the_binary_is_overridable_because_a_shim_resolves_by_cwd(self):
+        """MEASURED here: a version-manager shim (asdf/mise/nvm) reads its version from the
+        CURRENT DIRECTORY, and Otto runs every capability from a cwd of its own — so `codex`
+        answered from the checkout and failed from a workspace with "No version is set for
+        command codex", which arrived as the run's entire result."""
+        self.assertIn("OTTO_CODEX_BIN", inspect.getsource(codex_cli))
+        self.assertEqual(codex_cli.build_cmd("hi")[0], codex_cli.CODEX_BIN)

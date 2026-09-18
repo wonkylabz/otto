@@ -22,6 +22,9 @@
 **Execution backend follows the execution model** — Claude model → `claude -p`; LOCAL model → `local_runtime.py`. Plus tool-free: a read cap with a `cap_local_exec` model tries one local completion, escalating to Claude on verify fail.
 
 - **Which runtime an entry dispatches to is `gateway.backend_of` ALONE** (`claude`|`local`|`codex`) — `provider != "claude"` meant "therefore local" in 34 sites, so a third backend falls into the local runtime with no `base_url` (`BackendDispatchTests`).
+- **Codex is a THIRD runtime, never a mode of the local one** (`codex_cli.py`) — codex-cli 0.155.0 removed `wire_api="chat"`, so it speaks only the Responses API and cannot be driven through the `/chat/completions` loop `local_runtime` owns (`CodexBackendTests`).
+- **On Codex the exit code is not a verdict; `turn.completed` is the only end-of-turn** — an unauthenticated run emits 10 error events and exits 0, and a killed turn has already narrated, so an `agent_message` read as the answer reports a timeout as success (`CodexBackendTests`).
+- **`codex exec resume` rejects `-s` and `-C`** — the sandbox travels as `-c sandbox_mode=` (both paths, still enforcing) and the cwd as the SUBPROCESS cwd, or the write guard lapses on turn 2. The sandbox IS the grant; there is no `--allowedTools` (`CodexBackendTests`).
 - **This is ONE Admin control, not three** — `cap_exec`/`cap_local_exec`/policy `tool_free` interact invisibly: tool-free is checked *first*, so setting both meant attempt 1 had no tools *and* every later rung was pinned local, defeating the Claude backstop.
 - One `Execution` select (`web/index.html` `execSelect`), one writer (`setCapBackend`).
 - **A resume follows the SESSION's backend, never the phase model** (`local_runtime.resume_entry`, one impl) — `claude -p --resume local-…` is rejected outright, so the plan preview came back is_error and the write gate rendered with NO plan on it.
