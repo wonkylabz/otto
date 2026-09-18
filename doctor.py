@@ -228,6 +228,18 @@ def check_codex(gateway):
                       "Install bubblewrap and enable unprivileged user namespaces, or pick a "
                       "different execution model. OTTO_CODEX_ALLOW_UNGUARDED=1 overrides, at "
                       "the cost of the read deny-set.")
+    literal = [m["name"] for m in used
+               if (m.get("api_key_env") or "").strip()
+               and not (m.get("api_key_env") or "").strip().isidentifier()]
+    if literal:
+        # The local path accepts a pasted key; this one cannot put it on the command line, so
+        # the endpoint goes out with no credential at all. Unsaid, that is a 401 -> a wall -> a
+        # silent re-dispatch to Claude, and nothing naming the cause.
+        return _check("codex backend", "warn",
+                      f"{', '.join(literal)}: the endpoint's api_key holds a literal key, which "
+                      f"this backend cannot carry — every run will 401 and fall back to Claude",
+                      "Put the key in an environment variable and name that variable in the "
+                      "endpoint's API key field instead.")
     return _check("codex backend", "ok", f"{names} via {said}, read guard: bwrap")
 
 

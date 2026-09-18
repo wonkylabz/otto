@@ -230,6 +230,15 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         mcp_blockers = mcp_client.unservable(cap)
         mcp_blockers += [n for n in mcp_client.connectors_named(request)
                          if n not in mcp_blockers]
+        # The CODEX backend serves no MCP at all yet — not because it cannot (an
+        # `mcp_tool_call` completes under the sandbox) but because the only channel for a
+        # server's credentials is a config table, and the argv door puts them in `ps` and in
+        # the transcript (see `codex_cli`'s note). So a cap that DECLARED servers is blocked
+        # here exactly as a connector cap is, and lands on Claude with the reason recorded —
+        # rather than running without the tools it said it needs and inventing the answers.
+        if use_codex:
+            mcp_blockers += [n for n in mcp_client.declared_servers(cap)
+                             if n not in mcp_blockers]
     if (use_local or use_codex) and mcp_blockers:
         why = ("needs MCP servers the local backend cannot serve (" + ", ".join(mcp_blockers)
                + ") — claude.ai connectors are OAuth'd inside Claude Code, so only the Claude "
@@ -444,7 +453,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                    ("the model endpoint could not serve this run (tool calls rejected, or "
                     "unreachable) — proven earlier this run; ladder stays on Claude")}
     trace("RUN", f"{wid} {verb} [{cap.kind}] {cap.name}  model={model}"
-                 f"{f' ({backend_pick} runtime)' if not gateway.is_claude(exec_entry) else ''}"
+                 f"{f" ({'local' if use_local else 'codex'} runtime)" if (use_local or use_codex) else ''}"
                  f"{f'  effort={effort}' if effort else ''}  tools={allowed}")
 
     # LLM supervisor (issue #143): watch the live stream on a bounded cadence. In ENFORCE
@@ -579,11 +588,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                                  cwd=cwd, transcript=transcript_path,
                                  on_event=sup.note if sup else None, abort=abort, steer=steer,
                                  effort=effort,
-                                 config_overrides=gateway.codex_config(exec_entry),
-                                 # Codex runs its own tool loop and its own budget, so unlike
-                                 # the local runtime there is no second ranking pass here —
-                                 # `servers_for` has already bounded the list.
-                                 mcp_servers=mcp_client.servers_for(cap, allowed, request))
+                                 config_overrides=gateway.codex_config(exec_entry))
         codex_wall = (error_classifier.wall_message(out["wall_reason"])
                       if out.get("wall_reason") and not resume_session else None)
         if codex_wall and not config.setting("local_fallback"):

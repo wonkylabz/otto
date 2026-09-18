@@ -9063,28 +9063,32 @@ class CodexWiringTests(unittest.TestCase):
         self.assertNotIn("env_key", cfg["model_providers.e"])
         self.assertNotIn("sk-ant", json.dumps(cfg))
 
-    def test_only_a_servable_server_reaches_the_command_line(self):
-        """The activation gate on a stored def is what stops a RUN appending a command and
-        having it spawned as the operator. `-c mcp_servers.…` is a second door to the same
-        subprocess, so it reads the same gate."""
-        saved = mcp_client.servable
-        mcp_client.servable = lambda pol=None: {"ok": {"command": "npx", "args": ["-y", "p"]}}
-        try:
-            out = codex_cli.mcp_overrides(["ok", "not-registered"])
-        finally:
-            mcp_client.servable = saved
-        self.assertEqual(sorted(out), ["mcp_servers.ok"])
-        self.assertEqual(out["mcp_servers.ok"], {"command": "npx", "args": ["-y", "p"]})
+    def test_no_mcp_server_reaches_this_backend_at_all(self):
+        """Withheld rather than shipped leaking. It WORKS — an `mcp_tool_call` completed under
+        the sandbox — but a stored def's credentials live in its `env` map, and the only door
+        `codex exec` offers for that is `-c`, i.e. the ARGV: measured with a real 46-char
+        Grafana service-account token, which landed in `ps` and survived `transcript_line`'s
+        scrubber into the transcript. The process environment is not an alternative — measured
+        with a probe server, an MCP child reported `PROBE=<ABSENT>`, so it does not inherit
+        codex's env — and the file equivalent (`-p`) is refused alongside
+        `--ignore-user-config`, whose absence makes a run-writable `config.toml` live."""
+        self.assertFalse(hasattr(codex_cli, "mcp_overrides"))
+        self.assertNotIn("mcp_servers", inspect.signature(codex_cli.run_json).parameters)
+        self.assertNotIn("mcp_servers", inspect.getsource(engine.run_attempt)
+                         .split("elif use_codex:")[1].split("codex_wall")[0])
 
-    def test_a_dotted_server_name_cannot_nest_the_config_table(self):
-        """`-c mcp_servers.new.relic=…` is three levels deep, not a server called "new.relic"."""
-        saved = mcp_client.servable
-        mcp_client.servable = lambda pol=None: {"new.relic": {"command": "x"}}
+    def test_a_cap_that_declared_mcp_servers_lands_on_claude_instead(self):
+        """Running it anyway means running WITHOUT the tools it said it needs, and a capability
+        that cannot reach its source does not stop — it invents. Same shape as the connector
+        guard, and recorded on the badge the same way."""
+        saved = mcp_client.declared_servers
+        mcp_client.declared_servers = lambda cap: ["grafana"]
         try:
-            self.assertEqual(sorted(codex_cli.mcp_overrides(["new.relic"])),
-                             ["mcp_servers.new_relic"])
+            att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
         finally:
-            mcp_client.servable = saved
+            mcp_client.declared_servers = saved
+        self.assertEqual(att["backend"], "claude")
+        self.assertIn("grafana", att["fallback_reason"])
 
     # --- the preview ------------------------------------------------------------------------
 
@@ -9134,3 +9138,34 @@ class CodexWiringTests(unittest.TestCase):
                       "localModels still means 'everything that is not Claude'")
         i = src.index("codexModels.forEach")
         self.assertNotIn("toolfree|", src[i:src.index("localModels.forEach", i)])
+
+
+class CodexAdminFormTests(unittest.TestCase):
+    """The add-model form for a Codex entry. Both of these produce a CONFIGURATION that cannot
+    work, silently, from a default pick — which is the worst kind of UI bug: nothing is wrong
+    until a run dies somewhere else."""
+
+    def setUp(self):
+        self.src = ui_src()
+        i = self.src.index('<select id="lm-prov">')
+        self.form = self.src[i:self.src.index("MODEL_STATE holds what the GET handed us", i)]
+
+    def test_a_codex_entry_defaults_to_NO_endpoint(self):
+        """`lm-ep` pre-selects the first endpoint whenever one exists, so on any install with a
+        vLLM endpoint, picking Codex silently produced `endpoint: <that one>` → a
+        `wire_api="responses"` provider pointed at a `/chat/completions` server, which cannot
+        serve this backend at all. No endpoint is the NORMAL shape here: `codex login`."""
+        self.assertIn('<option value="none"', self.form)
+        self.assertIn('if(codex) epSel.value="none"', self.form)
+        # …and "none" is meaningless for an OpenAI-compatible entry, so it is not offered there.
+        self.assertIn("noneOpt.hidden=!codex", self.form)
+
+    def test_max_turns_is_disabled_for_codex_rather_than_silently_discarded(self):
+        """ui.md: a control the pipeline would IGNORE is disabled, never left tickable. Max
+        turns measures OTTO's own tool loop; Codex runs its own, and the save path drops it."""
+        self.assertIn("turns.disabled=codex", self.form)
+
+    def test_the_table_column_and_the_form_agree(self):
+        """The row already hides the field; a form that still offers it is the same control
+        saying two different things."""
+        self.assertIn("p.provider!=='claude'&&p.provider!=='codex'", self.src)

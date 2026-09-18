@@ -16,7 +16,6 @@ Everything below that is not obvious from the docs was measured against codex-cl
 """
 import json
 import os
-import re
 import subprocess
 import tempfile
 import threading
@@ -211,34 +210,27 @@ def _note_tool(item, worked, failed):
         pass
 
 
-def mcp_overrides(server_names):
-    """`-c mcp_servers.<name>={command=…}` for each stdio server this run may use.
-
-    Codex reads MCP servers from `$CODEX_HOME/config.toml`, but `-c` reaches the same table —
-    so the per-run grant needs no generated file, and `--ignore-user-config` still holds for
-    everything else. Only servers `mcp_client.servable()` will vouch for: the activation gate
-    on a stored def is what stops a run appending a command and having it spawned as the
-    operator, and it must guard this door exactly as it guards `--mcp-config`.
-
-    Under the sandbox these servers are spawned INSIDE it, so one that needs to write outside
-    the workspace will fail there. That is the guard working, not a bug — and it is why the
-    read deny-set is enforced by the kernel rather than by the CLI."""
-    import mcp_client            # noqa: PLC0415 — deferred, mcp_client imports claude_cli
-    have = mcp_client.servable()
-    out = {}
-    for name in server_names or []:
-        d = have.get(name) or {}
-        if not d.get("command"):
-            continue
-        entry = {"command": d["command"]}
-        if d.get("args"):
-            entry["args"] = [str(a) for a in d["args"]]
-        if d.get("env"):
-            entry["env"] = {str(k): str(v) for k, v in d["env"].items()}
-        # A dotted key would nest: `mcp_servers.new.relic` is `mcp_servers.new.relic`, three
-        # levels deep, not a server called "new.relic".
-        out["mcp_servers." + re.sub(r"[^A-Za-z0-9_-]+", "_", str(name))] = entry
-    return out
+# --- MCP is NOT granted on this backend (yet) -------------------------------------------
+#
+# It works — measured, an `mcp_tool_call` completed under `bwrap` — but it cannot be granted
+# SAFELY through the door this backend offers, so it is withheld rather than shipped leaking:
+#
+#   * a stored def's credentials live in its `env` map, and `-c mcp_servers.<n>={… env = {…}}`
+#     puts them on the ARGV — readable by every process on the box, and `transcript_line`'s
+#     scrubber does not survive the TOML quoting, so they land in the transcript too. Measured
+#     with a real 46-char Grafana service-account token: in argv, and still intact after the
+#     scrub.
+#   * passing them through the process environment instead does NOT work: measured with a probe
+#     server, an MCP child of `codex exec` reported `PROBE=<ABSENT>` — it does not inherit
+#     codex's env, so the `env` table is the only channel there is.
+#   * which leaves a config FILE, and `-c`'s file equivalent (`-p <profile>`) is refused
+#     alongside `--ignore-user-config` — measured. Dropping that flag makes
+#     `$CODEX_HOME/config.toml` live, and `CODEX_HOME` is bound WRITABLE inside the sandbox, so
+#     a run could append its own `mcp_servers` entry and have it spawned as the operator next
+#     time. That is the self-escalation `file_safety` write-denies `~/.claude.json` for.
+#
+# So a capability that needs MCP stays on Claude (`engine.run_attempt`'s blocker list), and the
+# file mechanism gets its own change, with its own review.
 
 
 def _toml_value(v):
@@ -375,7 +367,7 @@ def build_cmd(prompt, *, model=None, resume_session=None, sandbox=None, cwd=None
 def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_session=None,
              system_context=None, cwd=None, transcript=None, on_event=None, abort=None,
              meta=None, permission_mode=None, effort=None, steer=None, model_entry=None,
-             config_overrides=None, mcp_servers=None):
+             config_overrides=None):
     """One headless `codex exec` turn, in `claude_cli.run_json`'s return contract.
 
     `allowed_tools` is accepted and NOT forwarded: Codex has no per-tool permission flag, so the
@@ -422,11 +414,9 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     # one prompt it accepts. It is still recorded SEPARATELY in the meta line below — a
     # transcript that cannot say what the model was told cannot be debugged.
     full_prompt = f"{system_context}\n\n{prompt}" if system_context else prompt
-    overrides = dict(config_overrides or {})
-    overrides.update(mcp_overrides(mcp_servers))
     cmd = prefix + build_cmd(full_prompt, model=model, resume_session=resume_session,
                              sandbox=sandbox, cwd=cwd, last_message=last_path, effort=effort,
-                             config_overrides=overrides,
+                             config_overrides=config_overrides,
                              external_sandbox=(guard == "bwrap"))
     trace("CODEX", f"{'resume ' if resume_session else ''}sandbox={sandbox} guard={guard} "
                    f"model={model}")

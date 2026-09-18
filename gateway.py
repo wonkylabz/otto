@@ -1289,8 +1289,19 @@ def codex_config(m, cfg=None):
         # The key rides as an ENV VAR NAME, never a literal: `codex_env()` passes the operator's
         # environment through, and a literal here would be argv — visible in `ps` to every
         # process on the box, and copied into the transcript's meta line.
-        if (m.get("api_key_env") or "").isidentifier():
-            provider["env_key"] = m["api_key_env"]
+        #
+        # `api_key()` exists because operators DO paste literals into that field, and on the
+        # local path that works. Here it cannot, so the endpoint goes out with no credential and
+        # the run dies on a 401 — a wall, a re-dispatch to Claude, and nothing anywhere saying
+        # why. Said out loud instead; `doctor.check_codex` reports the same thing before a run
+        # ever pays for it.
+        key = (m.get("api_key_env") or "").strip()
+        if key.isidentifier():
+            provider["env_key"] = key
+        elif key:
+            trace("GATEWAY", f"{m.get('name')}: this endpoint's api_key holds a literal key, "
+                             f"which the Codex backend cannot carry — set it as an env var and "
+                             f"name the variable here, or the endpoint will refuse the run")
         out[f"model_providers.{name}"] = provider
         out["model_provider"] = name
     return out

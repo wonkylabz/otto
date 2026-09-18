@@ -638,7 +638,7 @@ function showModelForm(){
     <label>Model id</label><input id="lm-model" placeholder="claude-opus-4-8  ·  qwen3-coder:30b">
     <div id="lm-local" style="display:none;flex-direction:column;gap:10px">
       <label>Endpoint</label>
-      <select id="lm-ep">${eps.map(e=>`<option value="${esc(e.name)}">${esc(e.name)} · ${esc(e.base_url||"")}</option>`).join("")}<option value="">+ new endpoint…</option></select>
+      <select id="lm-ep"><option value="none">none — codex exec authenticates itself (codex login)</option>${eps.map(e=>`<option value="${esc(e.name)}">${esc(e.name)} · ${esc(e.base_url||"")}</option>`).join("")}<option value="">+ new endpoint…</option></select>
       <div id="lm-newep" style="display:${eps.length?"none":"flex"};flex-direction:column;gap:10px">
         <label>Endpoint name</label><input id="lm-epname" placeholder="e.g. gpu-box">
         <label>Base URL (OpenAI-compatible)</label><input id="lm-url" placeholder="http://localhost:11434/v1">
@@ -653,10 +653,29 @@ function showModelForm(){
   </div>`;
   const prov=document.getElementById("lm-prov"), localDiv=document.getElementById("lm-local");
   const epSel=document.getElementById("lm-ep"), newEp=document.getElementById("lm-newep");
-  prov.onchange=()=>{ localDiv.style.display = (prov.value==="openai"||prov.value==="codex") ? "flex" : "none"; };
-  epSel.onchange=()=>{ newEp.style.display = epSel.value ? "none" : "flex"; };
+  const turns=document.getElementById("lm-turns");
+  // "none" is offered and PRE-SELECTED only for codex: a codex entry with no endpoint talks to
+  // OpenAI through the CLI's own login, which is the normal shape and the reason this backend
+  // needs no API key. For an OpenAI-compatible entry "none" is meaningless, so it is removed —
+  // otherwise the default pick builds an entry with nowhere to send a request.
+  const noneOpt=epSel.querySelector('option[value="none"]');
+  const syncProv=()=>{
+    const codex=prov.value==="codex";
+    localDiv.style.display = (prov.value==="openai"||codex) ? "flex" : "none";
+    noneOpt.hidden=!codex;
+    if(codex) epSel.value="none";
+    else if(epSel.value==="none") epSel.value = eps.length ? eps[0].name : "";
+    // Max turns measures OTTO's own tool loop. Codex runs its own, so the field would be a
+    // control the pipeline ignores — ui.md says disable such a control, never leave it tickable.
+    turns.disabled=codex;
+    turns.title=codex?"not used by the Codex backend — it runs its own tool loop":"";
+    epSel.onchange();
+  };
+  prov.onchange=syncProv;
+  epSel.onchange=()=>{ newEp.style.display = (epSel.value||epSel.value==="none") ? "none" : "flex"; };
   bindKindGuess("lm-url","lm-kind");
   if(!eps.length) epSel.value="";
+  syncProv();
   document.getElementById("lm-cancel").onclick=closeFormModal;
   document.getElementById("lm-save").onclick=async()=>{
     const err=document.getElementById("lm-err");
@@ -665,7 +684,7 @@ function showModelForm(){
     if(MODEL_STATE.pool.some(p=>p.name===name)){ err.textContent="a model with that name already exists"; return; }
     let m;
     if(prov.value==="claude"){ m={name,provider:"claude",model}; }
-    else if(prov.value==="codex" && !epSel.value && !val("lm-url")){
+    else if(prov.value==="codex" && epSel.value==="none"){
       // No endpoint at all: `codex exec` talks to OpenAI through its own login. That is the
       // normal shape, and the reason this backend needs no API key.
       m={name,provider:"codex",model};
