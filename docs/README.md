@@ -8,6 +8,8 @@ See `maintaining-docs.md` for which tier a new rule belongs in.
   pause, and archiving the frozen pre-SQLite state under `data/`.
 - **`testing.md`** — the unit suite, the regression corpus, the `plan_eval.py` planner
   harness, how to write a guard test.
+- **`slack.md`** — the two Slack identities, their scopes, allowlists, Socket Mode and
+  in-thread approval.
 - **`maintaining-docs.md`** — the three tiers, the rule format, and the enforced ceilings.
 - **`releasing.md`** — what Otto's version number means, and how to cut and publish a release.
 
