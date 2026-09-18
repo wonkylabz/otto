@@ -8289,6 +8289,18 @@ class CodexBackendTests(unittest.TestCase):
     # Codex's own output and never meets `transcript_line`'s scrubber.
     LAST_FILE_TEXT = "the answer, quoting sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF-GGGGHHHH"
 
+    def setUp(self):
+        """These measure the ADAPTER's contract — argv, the event stream, the return dict — so
+        they pin the confinement instead of inheriting the host's. Left to the host they pass on
+        a Linux box with `bwrap` and fail on every CI runner and every Mac, where the backend
+        correctly WALLS before it spawns anything and no argv is ever built. Which guard runs,
+        and that it fails closed, is `CodexWriteGuardTests`' subject, not this class's."""
+        self._sandbox, self._unguarded = file_safety._SANDBOX, codex_cli.ALLOW_UNGUARDED
+        file_safety._SANDBOX, codex_cli.ALLOW_UNGUARDED = False, True
+
+    def tearDown(self):
+        file_safety._SANDBOX, codex_cli.ALLOW_UNGUARDED = self._sandbox, self._unguarded
+
     def _popen(self, lines, stderr="", returncode=0, write_last=True):
         """A fake `codex exec` child that replays `lines` on stdout."""
         test = self
