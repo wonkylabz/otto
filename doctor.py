@@ -130,13 +130,15 @@ def check_models(gateway):
     used = set((cfg.get("assign") or {}).values()) | set((cfg.get("cap_local_exec") or {}).values())
     checks = []
     for m in cfg.get("pool", []):
-        if m.get("provider") == "claude" or m["name"] not in used:
+        if not gateway.is_local(m) or m["name"] not in used:
             continue
         probe = gateway.test_model(m["name"])
         if not probe.get("ok"):
             kind = "hosted" if m.get("kind") == "hosted" else "local"
             checks.append(f"{kind} model '{m['name']}' unreachable ({probe.get('detail', '')[:80]})")
-    backend = f"execution backend: {entry['name']} ({'claude -p' if entry.get('provider') == 'claude' else 'local runtime'})"
+    runtime = {"claude": "claude -p", "local": "local runtime",
+               "codex": "codex exec"}[gateway.backend_of(entry)]
+    backend = f"execution backend: {entry['name']} ({runtime})"
     if checks:
         return _check("models", "warn", "; ".join(checks) + f" — {backend}",
                       "start the local server or reassign those phases to a reachable model "
@@ -203,7 +205,7 @@ def check_exec_tool_calls(gateway):
     Under OTTO_LOCAL_FALLBACK=0 the same misconfiguration STOPS runs instead of overspending —
     see check_local_fallback."""
     entry = gateway.exec_model_entry(cfg=gateway.load())
-    if entry.get("provider") == "claude" or not entry.get("base_url"):
+    if not gateway.is_local(entry) or not entry.get("base_url"):
         return _check("exec tool calls", "ok",
                       f"execution on '{entry.get('name')}' via claude -p (tools inherent)")
     ok, detail = _probe_tool_calls(entry, gateway)
@@ -258,7 +260,7 @@ def check_local_fallback(gateway):
     check_exec_tool_calls); with it OFF the same endpoint stops runs dead. Knowing which mode you
     are in is the first question either symptom raises."""
     entry = gateway.exec_model_entry(cfg=gateway.load())
-    local_exec = entry.get("provider") != "claude" and entry.get("base_url")
+    local_exec = gateway.is_local(entry) and entry.get("base_url")
     if config.LOCAL_FALLBACK:
         return _check("local fallback", "ok",
                       "OTTO_LOCAL_FALLBACK=1 — a failing local model is covered by Claude "

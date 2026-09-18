@@ -6999,6 +6999,7 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self._patch_urlopen(fake_urlopen)
 
         class _Gw:
+            is_local = staticmethod(gateway.is_local)
             request_headers = staticmethod(gateway.request_headers)
             adapt_for = staticmethod(gateway.adapt_for)
             chat_body = staticmethod(gateway.chat_body)
@@ -8102,3 +8103,128 @@ class ClaudeLateExitTests(unittest.TestCase):
             def kill(_s):
                 _s._killed.set()
         return _Silent
+
+class BackendDispatchTests(unittest.TestCase):
+    """Issue #115: the execution backend used to be a BOOLEAN — `provider != "claude"` read as
+    "therefore local", in 34 places across 10 modules. A third runtime has nowhere to live in
+    that spelling: a `codex` entry carries no `base_url`, so every one of those sites would have
+    handed it to `local_runtime` to POST /chat/completions at nothing. `gateway.backend_of` is
+    the ONE interpreter now, and the source guard below is what stops site #35."""
+
+    CLAUDE = {"name": "claude-sonnet", "provider": "claude", "model": "claude-sonnet-5"}
+    LOCAL = {"name": "qwen", "provider": "openai", "base_url": "http://gpu:8000/v1",
+             "model": "qwen"}
+    CODEX = {"name": "codex-5", "provider": "codex", "model": "gpt-5-codex"}
+
+    def setUp(self):
+        self._orig = gateway._PATH
+        self._dir = tempfile.mkdtemp(prefix="otto-backend-")
+        gateway._PATH = os.path.join(self._dir, "models.json")
+
+    def tearDown(self):
+        shutil.rmtree(self._dir, ignore_errors=True)
+        gateway._PATH = self._orig
+
+    def _write(self, cfg):
+        with open(gateway._PATH, "w") as f:
+            json.dump(cfg, f)
+
+    # --- the interpreter ----------------------------------------------------------------
+
+    def test_each_provider_resolves_to_its_own_runtime(self):
+        self.assertEqual(gateway.backend_of(self.CLAUDE), "claude")
+        self.assertEqual(gateway.backend_of(self.LOCAL), "local")
+        self.assertEqual(gateway.backend_of(self.CODEX), "codex")
+
+    def test_an_unknown_provider_stays_local_exactly_as_the_boolean_did(self):
+        """A hand-edited models.json or an imported profile must not silently change backend:
+        every non-"claude" string was local before this function existed, and still is."""
+        for p in ("openai", "vllm", "ollama", "", None, "OpenAI-Compatible"):
+            self.assertEqual(gateway.backend_of({"name": "x", "provider": p}), "local", p)
+        self.assertEqual(gateway.backend_of({}), "local")
+        self.assertEqual(gateway.backend_of(None), "local")
+
+    def test_is_claude_and_is_local_are_not_each_others_complement(self):
+        """The whole point: `not is_claude` no longer means local. A site that wants the local
+        runtime has to SAY local, or a Codex entry falls into it by default."""
+        self.assertFalse(gateway.is_claude(self.CODEX))
+        self.assertFalse(gateway.is_local(self.CODEX))
+
+    # --- what a Codex entry must NOT be mistaken for --------------------------------------
+
+    def test_a_codex_entry_is_never_offered_to_the_local_runtime(self):
+        """The `base_url` test alone is not the guard. A stray one — a hand-edited models.json,
+        an imported profile, a Codex entry that once WAS an OpenAI entry — would sail straight
+        through it, and the local runtime would POST /chat/completions at a URL that does not
+        speak it. `backend_of` is what refuses this, so the fixture carries the stray URL."""
+        stray = dict(self.CODEX, base_url="https://api.openai.com/v1")
+        cfg = {"pool": [self.CLAUDE, stray], "assign": {"execution": "claude-sonnet"},
+               "cap_local_exec": {"some-cap": "codex-5"}}
+        self.assertIsNone(gateway._local_model("codex-5", cfg))
+        self.assertIsNone(gateway.local_exec_model("some-cap", cfg))
+
+    def test_a_codex_entry_is_never_passed_to_claude_p_as_a_model_id(self):
+        """`claude -p --model gpt-5-codex` is rejected outright and the CLI's "may not exist"
+        becomes the run's entire final answer (web-3a05328f booked exactly that for a local id).
+        Every `*_model_id` helper degrades to the Claude default instead."""
+        self._write({"pool": [self.CLAUDE, self.CODEX],
+                     "assign": {"execution": "codex-5", "preview": "codex-5",
+                                "memory_gc": "codex-5"},
+                     "cap_exec": {"some-cap": "codex-5"}})
+        self.assertEqual(gateway.exec_model_id(), "claude-sonnet-5")
+        self.assertEqual(gateway.exec_model_id("some-cap"), "claude-sonnet-5")
+        self.assertEqual(gateway.preview_model_id(), "claude-sonnet-5")
+        self.assertEqual(gateway.memory_gc_model_id(), "claude-sonnet-5")
+
+    def test_a_codex_entry_is_hosted_class_so_no_weak_model_latch_exiles_it(self):
+        """`model_kind` is the CLASS question. Codex is a frontier model behind a vendor CLI:
+        classing it `local` would hand it the cross-run cap latch and the "fix your endpoint"
+        copy written for a 4B on a laptop."""
+        self.assertEqual(gateway.model_kind(self.CODEX), "hosted")
+        self.assertEqual(gateway.model_kind(self.CLAUDE), "claude")
+        self.assertEqual(gateway.model_kind(self.LOCAL), "local")
+
+    def test_a_codex_entry_has_no_endpoint_to_hydrate_from(self):
+        """`_hydrate` adopts a legacy per-entry connection into the shared endpoint list. A
+        Codex entry has no connection at all, so it must pass through untouched rather than
+        minting an endpoint named after an empty URL."""
+        cfg = gateway._hydrate({"pool": [dict(self.CODEX)], "endpoints": []})
+        self.assertEqual(cfg["endpoints"], [])
+        self.assertNotIn("base_url", cfg["pool"][0])
+
+    # --- the ratchet --------------------------------------------------------------------
+
+    def test_no_module_outside_the_gateway_interprets_provider_as_a_backend(self):
+        """THE guard. Every site that compares `provider` to a literal is a second dispatch
+        source that can disagree with `backend_of` — which is exactly how a two-way boolean
+        survived in 34 places. Ask `backend_of`/`is_claude`/`is_local` instead."""
+        pat = re.compile(r"""provider["']?\]?\)?\s*[!=]=\s*["']""")
+        offenders = []
+        for path in sorted(glob.glob(os.path.join(os.path.dirname(__file__), "*.py"))):
+            name = os.path.basename(path)
+            if name == "gateway.py" or name.startswith("test_"):
+                continue
+            with open(path, encoding="utf-8", errors="surrogateescape") as f:
+                for n, line in enumerate(f, 1):
+                    if pat.search(line) and not line.lstrip().startswith("#"):
+                        offenders.append(f"{name}:{n}: {line.strip()}")
+        self.assertEqual(offenders, [], "these read `provider` directly instead of asking "
+                                        "gateway.backend_of() — a second dispatch source:\n"
+                                        + "\n".join(offenders))
+
+    def test_the_engine_asks_the_gateway_which_runtime_to_dispatch_to(self):
+        """`run_attempt`'s dispatch is the site that actually spawns the subprocess. It must
+        resolve the backend through the gateway, not re-derive it."""
+        src = inspect.getsource(engine.run_attempt)
+        i = src.index("exec_entry = override_entry or gateway.exec_model_entry(cap.name)")
+        self.assertIn("gateway.is_local(exec_entry)", src[i:i + 400],
+                      "engine.run_attempt derives the backend itself")
+
+    def test_a_resumed_session_and_a_pool_entry_are_compared_in_the_same_vocabulary(self):
+        """A session is bound for life to the runtime that minted it. `session_backend` and
+        `backend_of` return the SAME alphabet, so the comparison stays a comparison instead of
+        a boolean that silently reads a third backend as local."""
+        self.assertEqual(local_runtime.session_backend("local-abcdef"), "local")
+        self.assertEqual(local_runtime.session_backend("0b3f-uuid"), "claude")
+        self.assertIn(local_runtime.session_backend("local-abcdef"), gateway.BACKENDS)
+        self.assertIn(local_runtime.session_backend(None), gateway.BACKENDS)

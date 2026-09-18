@@ -146,7 +146,7 @@ def main(argv):
     cfg = gateway.load()
     want, only = (argv + [None, None])[:2]
     entries = [m for m in cfg.get("pool", [])
-               if m.get("provider") != "claude" and m.get("base_url")]
+               if gateway.is_local(m) and m.get("base_url")]
     if want:
         entries = [m for m in entries if want in (m.get("endpoint"), m.get("name"))]
         if not entries:

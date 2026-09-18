@@ -496,7 +496,7 @@ def import_profile(profile, existing_caps=(), existing_mcps=()):
     names = {m["name"] for m in cfg.get("pool", [])}
     pool_added = []
     for m in inc.get("pool", []):
-        if m.get("name") and m["name"] not in names and m.get("provider") != "claude":
+        if m.get("name") and m["name"] not in names and gateway.is_local(m):
             entry = dict(m)
             entry.pop("needs_key", None)
             cfg["pool"].append(entry)
