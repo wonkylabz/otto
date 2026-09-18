@@ -145,6 +145,12 @@ _TOOL_NAMES = {
 # A credential is wrong, a quota is spent or a model does not exist no matter WHERE the CLI
 # says so, so these are matched over the events and stderr alike.
 _WALLS = (
+    # The binary is not there to run. Under the sandbox this does NOT reach us as an OSError:
+    # `bwrap` starts perfectly well and it is the CHILD exec that fails, so the only trace is
+    # `bwrap: execvp <path>: No such file or directory` on stderr and a non-zero exit. Measured
+    # — the spawn-time `except OSError` below covers the unconfined path and nothing else, which
+    # is the path production never takes.
+    ("cli_missing", ("execvp ",)),
     ("auth", ("401 unauthorized", "missing bearer", "invalid api key", "not logged in",
               "unauthorized", "please run `codex login`")),
     ("quota", ("insufficient_quota", "exceeded your current quota", "billing hard limit")),

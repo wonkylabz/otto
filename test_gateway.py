@@ -8632,6 +8632,33 @@ class CodexBackendTests(unittest.TestCase):
         self.assertEqual(sorted(set(os.listdir(codex_cli.CODEX_HOME)) - before), [],
                          "the temp file leaked when the binary was missing")
 
+    @unittest.skipUnless(file_safety.sandbox_available(), "no usable bwrap here")
+    def test_a_missing_binary_is_a_wall_UNDER_THE_SANDBOX_TOO(self):
+        """The spawn-time `except OSError` covers the unconfined path and nothing else — which
+        is the path production never takes. Measured: under `bwrap` the missing binary does not
+        reach us as an exception at all, because `bwrap` starts perfectly well and it is the
+        CHILD exec that fails; the only trace is `bwrap: execvp <path>: No such file or
+        directory` on stderr. Read only from the spawn, the default path reported a missing CLI
+        as an anonymous "no output" and the ladder retried it twice more."""
+        saved_sandbox, saved_bin = file_safety._SANDBOX, codex_cli.CODEX_BIN
+        os.makedirs(codex_cli.CODEX_HOME, exist_ok=True)
+        try:
+            # The HOST's real answer, never a forced one: `_SANDBOX = True` on a machine whose
+            # bwrap does not work describes a state nothing is ever in, and the failure it
+            # produces is the forcing, not the code.
+            file_safety._SANDBOX = None
+            codex_cli.ALLOW_UNGUARDED = False       # the real default: bwrap is the guard
+            codex_cli.CODEX_BIN = "/nonexistent/codex-binary"
+            # Generous: this spawns a REAL `bwrap` with the whole deny-set mounted, and under
+            # full-suite load a 10s watchdog fired first — the turn then reports "(timed out)"
+            # and the wall is never read, which is a slow machine, not a missing wall.
+            out = codex_cli.run_json("hi", timeout=90)
+        finally:
+            file_safety._SANDBOX, codex_cli.CODEX_BIN = saved_sandbox, saved_bin
+        self.assertEqual(out["guard"], "bwrap")
+        self.assertEqual(out["wall_reason"], "cli_missing")
+        self.assertTrue(out["is_error"])
+
     # --- a wall is deterministic; stderr is not ---------------------------------------------
 
     def test_a_transient_line_on_stderr_does_not_latch_the_ladder(self):
