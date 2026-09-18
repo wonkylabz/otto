@@ -8975,6 +8975,59 @@ class CodexWiringTests(unittest.TestCase):
         self.assertEqual(att["backend"], "claude")
         self.assertTrue(att["fallback_reason"])
 
+    # --- forgetting the env var must not break anything --------------------------------------
+
+    def test_a_version_manager_shim_is_a_WALL_not_three_burned_attempts(self):
+        """The default failure on a shimmed install, because Otto runs every capability from a
+        cwd of its own and a shim reads the CURRENT directory. Measured before this: it was not
+        classified at all, so the ladder retried an identical failure twice more and then
+        escalated the model to reach it once again. It is deterministic, so it walls — the work
+        still lands, on Claude, with the reason on the badge."""
+        for said in ("No version is set for command codex",
+                     "codex is not installed. please install it with: mise use"):
+            self.assertEqual(codex_cli.wall_reason("", said), "cli_missing", said)
+        codex_cli.run_json = lambda *a, **k: {
+            "result": "⛔ …", "is_error": True, "wall_reason": "cli_missing",
+            "wall_detail": "No version is set for command codex", "total_cost_usd": 0,
+            "session_id": None, "usage": {}}
+        att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        self.assertEqual(att["backend"], "claude")
+        self.assertEqual(att["fallback_from"], "codex-5")
+
+    def test_the_probe_runs_from_a_directory_of_its_own(self):
+        """A probe run from Otto's checkout — which has a `.tool-versions` — answered
+        "codex-cli 0.155.0" while every real run died. A green check beside a backend that
+        cannot run once is worse than no check, so the probe stands where a RUN stands."""
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen.update(kw)
+            return types.SimpleNamespace(returncode=0, stdout="codex-cli 9.9.9", stderr="")
+        saved = codex_cli.subprocess.run
+        codex_cli.subprocess.run = fake_run
+        try:
+            codex_cli.available()
+        finally:
+            codex_cli.subprocess.run = saved
+        self.assertTrue(seen.get("cwd"), "the probe inherited the worker's cwd")
+        self.assertNotEqual(os.path.realpath(seen["cwd"]),
+                            os.path.realpath(os.path.dirname(os.path.abspath(engine.__file__))))
+
+    def test_the_probe_names_the_shim_rather_than_the_symptom(self):
+        """"No version is set for command codex" is not something an operator can act on
+        without being told what it means."""
+        def fake_run(argv, **kw):
+            return types.SimpleNamespace(
+                returncode=1, stdout="", stderr="No version is set for command codex")
+        saved = codex_cli.subprocess.run
+        codex_cli.subprocess.run = fake_run
+        try:
+            ok, said = codex_cli.available()
+        finally:
+            codex_cli.subprocess.run = saved
+        self.assertFalse(ok)
+        self.assertIn("OTTO_CODEX_BIN", said)
+
     # --- resume ---------------------------------------------------------------------------
 
     def test_a_codex_session_resumes_on_codex(self):

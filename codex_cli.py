@@ -151,7 +151,15 @@ _WALLS = (
     # `bwrap: execvp <path>: No such file or directory` on stderr and a non-zero exit. Measured
     # — the spawn-time `except OSError` below covers the unconfined path and nothing else, which
     # is the path production never takes.
-    ("cli_missing", ("execvp ",)),
+    # "cannot start" in all three of its spellings. `execvp` is bwrap's; an `OSError` at spawn
+    # covers the unconfined path; and these are what a VERSION MANAGER says when the shim
+    # resolves but its version does not — which is the default failure on a shimmed install,
+    # because Otto runs every capability from a cwd of its own and a shim reads the CURRENT
+    # directory. Measured: unclassified, it was not a wall at all, so the ladder retried an
+    # identical failure twice more and then escalated the model to do it once again.
+    ("cli_missing", ("execvp ", "no version is set for command",
+                     "no version set for", "is not installed. please install",
+                     "asdf: unknown command", "mise: command not found")),
     ("auth", ("401 unauthorized", "missing bearer", "invalid api key", "not logged in",
               "unauthorized", "please run `codex login`")),
     ("quota", ("insufficient_quota", "exceeded your current quota", "billing hard limit")),
@@ -623,12 +631,21 @@ def _unlink(path):
         pass
 
 
-def available():
-    """Is `codex` on PATH and runnable? Used by `doctor` — a configured Codex entry with no CLI
-    behind it is a day-one misconfiguration that otherwise surfaces as a failed run."""
+def available(cwd=None):
+    """Is `codex` runnable FROM A DIRECTORY OF ITS OWN? Used by `doctor`.
+
+    The cwd is the whole point, and defaults to a neutral one rather than the worker's. A
+    version-manager shim (asdf/mise/nvm) resolves its version from the CURRENT DIRECTORY, and
+    Otto runs every capability from an isolated clone or a scratch dir — so a probe run from
+    Otto's own checkout, which has a `.tool-versions`, answered "codex-cli 0.155.0" while every
+    real run died with "No version is set for command codex". A green check beside a backend
+    that cannot run once is worse than no check."""
     try:
         out = subprocess.run([CODEX_BIN, "--version"], capture_output=True, text=True,
-                             timeout=10, env=codex_env())
-        return (out.returncode == 0, (out.stdout or out.stderr).strip()[:80])
+                             timeout=10, env=codex_env(), cwd=cwd or tempfile.gettempdir())
+        said = (out.stdout or out.stderr).strip()[:120]
+        if out.returncode != 0 and wall_reason("", said) == "cli_missing":
+            said += "  — this is a version-manager shim; set OTTO_CODEX_BIN to the real binary"
+        return (out.returncode == 0, said)
     except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
         return (False, str(e)[:120])
