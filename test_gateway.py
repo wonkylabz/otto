@@ -3765,7 +3765,10 @@ class LocalConnectorGapTests(unittest.TestCase):
         with open(os.path.join(os.path.dirname(__file__), "engine.py"),
                   encoding="utf-8", errors="surrogateescape") as fh:
             src = fh.read()
-        i = src.index("mcp_blockers = mcp_client.unservable(cap)")
+        # The variable was split in two when Codex arrived — a connector and a withheld stdio
+        # server are different facts and read differently on the badge (#115 P4) — so the anchor
+        # is the connector list, which is the half this test is about.
+        i = src.index("connector_blockers = mcp_client.unservable(cap)")
         branch = src[i:i + 400]
         self.assertIn("mcp_client.connectors_named(request)", branch,
                       "the request half of the connector guard is not wired in")
@@ -8861,6 +8864,7 @@ class CodexWiringTests(unittest.TestCase):
             return {"result": "done on codex", "is_error": False, "total_cost_usd": 0,
                     "session_id": "codex-abc", "usage": {"output_tokens": 4},
                     "tools_used": ["Bash"], "tools_failed": []}
+        self._real_run_json = codex_cli.run_json      # setUp stubs it; this test needs the real one
         engine._claude, codex_cli.run_json = fake_claude, fake_codex
         local_runtime.run_json = lambda *a, **k: self.local_calls.append(k) or {
             "result": "LOCAL RAN", "is_error": False, "total_cost_usd": 0,
@@ -9076,6 +9080,66 @@ class CodexWiringTests(unittest.TestCase):
         self.assertNotIn("mcp_servers", inspect.signature(codex_cli.run_json).parameters)
         self.assertNotIn("mcp_servers", inspect.getsource(engine.run_attempt)
                          .split("elif use_codex:")[1].split("codex_wall")[0])
+
+    def test_the_reason_names_the_backend_it_was_on_and_why(self):
+        """This string is the audit row and the ⇢ badge — what somebody reads six weeks later.
+        Merged into one list it said two untrue things at once about a Codex run blocked on
+        `grafana`: that the run was on the LOCAL backend, and that the blocker was a claude.ai
+        connector OAuth'd inside Claude Code. It was on codex, and the local backend serves
+        grafana fine — it is withheld here for a credential-channel reason (#121)."""
+        saved = (mcp_client.declared_servers, mcp_client.unservable)
+        try:
+            mcp_client.declared_servers = lambda cap: ["grafana"]
+            mcp_client.unservable = lambda cap: []
+            why = engine.run_attempt("brief me", self.cap, attempt=1,
+                                     wid="w1")["fallback_reason"]
+            self.assertIn("codex backend", why)
+            self.assertIn("grafana", why)
+            self.assertNotIn("local backend cannot serve", why)
+            self.assertNotIn("OAuth", why)      # nothing here is a connector
+
+            mcp_client.declared_servers = lambda cap: []
+            mcp_client.unservable = lambda cap: ["claude_ai_Gmail"]
+            why = engine.run_attempt("brief me", self.cap, attempt=1,
+                                     wid="w1")["fallback_reason"]
+            self.assertIn("OAuth", why)         # …and a connector still reads as one
+            self.assertNotIn("#121", why)
+        finally:
+            mcp_client.declared_servers, mcp_client.unservable = saved
+
+    def test_a_codex_run_is_TOLD_it_has_no_mcp(self):
+        """The routing guard keeps a cap that DECLARED servers off this backend; this is the
+        backstop for the request whose words missed. `connector_note` is the local runtime's
+        version and the measurement behind it is the same: told nothing, the model discovers the
+        gap one failed call at a time and then goes hunting — 4/4 it planned to read `~/.netrc`.
+        The gap is WIDER here, because this backend grants no MCP at all while still holding a
+        shell and an unbounded network."""
+        saved_sandbox = file_safety._SANDBOX
+        seen = {}
+        # Pinned BEFORE patching: `subprocess.run` is built on `Popen`, so a fake Popen also
+        # poisons the sandbox probe and the run walls before it ever builds an argv.
+        file_safety._SANDBOX = True
+        orig = codex_cli.subprocess.Popen
+
+        def fake(cmd, **kw):
+            seen["cmd"] = list(cmd)
+            raise RuntimeError("stop")
+        codex_cli.subprocess.Popen = fake
+        try:
+            self._real_run_json("do it", allowed_tools=config.READ_TOOLS,
+                                system_context="CONTRACT")
+        except RuntimeError:
+            pass
+        finally:
+            codex_cli.subprocess.Popen = orig
+            file_safety._SANDBOX = saved_sandbox
+        prompt = seen["cmd"][-1]
+        self.assertIn("CONTRACT", prompt, "the note displaced the output contract")
+        self.assertIn("NO MCP server is reachable", prompt)
+        # The half that matters most on a backend with a shell: do not go looking for a way
+        # around it.
+        self.assertIn("credentials on disk", prompt)
+        self.assertIn("reporting the blocker", prompt)
 
     def test_a_cap_that_declared_mcp_servers_lands_on_claude_instead(self):
         """Running it anyway means running WITHOUT the tools it said it needs, and a capability

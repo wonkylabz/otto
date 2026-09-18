@@ -225,24 +225,40 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # cap DECLARE that we cannot serve, and which connectors does this REQUEST name? The
     # general worker/assistant declare nothing by design, so the declaration test is silent
     # for exactly the caps that get asked to do anything — see mcp_client.connectors_named.
-    mcp_blockers = []
+    # TWO lists, because they are two different facts and this string is the audit row and the
+    # ⇢ badge — what somebody reads six weeks later. A connector is unreachable from either
+    # subprocess backend and always will be; a stdio server is withheld from CODEX only, for a
+    # credential-channel reason that says nothing about the server (`codex_cli`'s note, #121).
+    # Merged into one list, a Codex run blocked on `grafana` was told "the local backend cannot
+    # serve it" and "claude.ai connectors are OAuth'd inside Claude Code" — two things untrue
+    # at once, about a backend it was not on and a server the local backend serves fine.
+    connector_blockers, stdio_blockers = [], []
     if (use_local or use_codex) and not resume_session:
-        mcp_blockers = mcp_client.unservable(cap)
-        mcp_blockers += [n for n in mcp_client.connectors_named(request)
-                         if n not in mcp_blockers]
+        connector_blockers = mcp_client.unservable(cap)
+        connector_blockers += [n for n in mcp_client.connectors_named(request)
+                               if n not in connector_blockers]
         # The CODEX backend serves no MCP at all yet — not because it cannot (an
         # `mcp_tool_call` completes under the sandbox) but because the only channel for a
         # server's credentials is a config table, and the argv door puts them in `ps` and in
-        # the transcript (see `codex_cli`'s note). So a cap that DECLARED servers is blocked
-        # here exactly as a connector cap is, and lands on Claude with the reason recorded —
-        # rather than running without the tools it said it needs and inventing the answers.
+        # the transcript. A cap that DECLARED servers is blocked here rather than running
+        # without the tools it said it needs and inventing the answers.
         if use_codex:
-            mcp_blockers += [n for n in mcp_client.declared_servers(cap)
-                             if n not in mcp_blockers]
+            stdio_blockers = [n for n in mcp_client.declared_servers(cap)
+                              if n not in connector_blockers]
+    mcp_blockers = connector_blockers + stdio_blockers
     if (use_local or use_codex) and mcp_blockers:
-        why = ("needs MCP servers the local backend cannot serve (" + ", ".join(mcp_blockers)
-               + ") — claude.ai connectors are OAuth'd inside Claude Code, so only the Claude "
-                 "backend can reach them")
+        where = "local" if use_local else "codex"
+        parts = []
+        if connector_blockers:
+            parts.append("needs claude.ai connectors (" + ", ".join(connector_blockers)
+                         + "), which are OAuth'd inside Claude Code and cannot be served by "
+                           "any other backend")
+        if stdio_blockers:
+            parts.append("declares MCP servers (" + ", ".join(stdio_blockers)
+                         + ") that the codex backend does not grant yet — their credentials "
+                           "would have to travel on the command line (issue #121); the local "
+                           "backend serves them normally")
+        why = f"cannot run on the {where} backend: " + "; ".join(parts)
         if not config.setting("local_fallback"):
             return _strict_stop_attempt(
                 wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why),

@@ -413,6 +413,13 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     # `codex exec` has no `--append-system-prompt`, so `system_context` has to be part of the
     # one prompt it accepts. It is still recorded SEPARATELY in the meta line below — a
     # transcript that cannot say what the model was told cannot be debugged.
+    # WHAT THIS RUN CANNOT REACH, said in context. `engine.run_attempt` keeps a cap that
+    # DECLARED MCP servers off this backend entirely; this is the backstop for the request whose
+    # words missed — the local runtime's `connector_note` in the same position, and needed more
+    # here, because this backend grants no MCP at all while still holding a shell and an
+    # unbounded network. Unconditional: the absence is total.
+    import mcp_client            # noqa: PLC0415 — deferred, mcp_client imports claude_cli
+    system_context = "\n\n".join(filter(None, [system_context, mcp_client.no_mcp_note()]))
     full_prompt = f"{system_context}\n\n{prompt}" if system_context else prompt
     cmd = prefix + build_cmd(full_prompt, model=model, resume_session=resume_session,
                              sandbox=sandbox, cwd=cwd, last_message=last_path, effort=effort,
