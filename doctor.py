@@ -16,7 +16,9 @@ import os
 import shutil
 import subprocess
 
+import codex_cli
 import config
+import file_safety
 import policy
 import registry
 
@@ -197,6 +199,38 @@ def _probe_tool_calls(m, gateway):
     return None, "the endpoint rejected every request-parameter dialect we know"
 
 
+def check_codex(gateway):
+    """A configured CODEX entry needs two things the other backends don't, and both fail at RUN
+    time otherwise — which is the expensive place to find out.
+
+    Silent when nothing in the pool selects Codex: an install that never uses this backend must
+    not be told to fix it. When something does, the two checks are the two measured traps — a
+    version-manager shim resolves from the CURRENT DIRECTORY and Otto runs every capability from
+    a cwd of its own, and Codex's own sandbox cannot deny a READ at all, so without `bwrap` the
+    backend refuses to run rather than expose `data/models.json`."""
+    cfg = gateway.load()
+    picks = set((cfg.get("assign") or {}).values()) | set((cfg.get("cap_exec") or {}).values())
+    used = [m for m in cfg.get("pool", [])
+            if gateway.backend_of(m) == "codex" and m.get("name") in picks]
+    if not used:
+        return _check("codex backend", "ok", "not in use")
+    names = ", ".join(sorted(m["name"] for m in used))
+    ok, said = codex_cli.available()
+    if not ok:
+        return _check("codex backend", "fail", f"{names} selected but `codex` will not run: {said}",
+                      "Install it (`npm i -g @openai/codex`), or set OTTO_CODEX_BIN to its "
+                      "absolute path — a shim (asdf/mise/nvm) resolves from the current "
+                      "directory and fails from every workspace Otto creates.")
+    if not file_safety.sandbox_available():
+        return _check("codex backend", "fail",
+                      f"{names} selected, `codex` is {said}, but there is no usable bwrap — "
+                      f"every run will refuse rather than expose Otto's key store",
+                      "Install bubblewrap and enable unprivileged user namespaces, or pick a "
+                      "different execution model. OTTO_CODEX_ALLOW_UNGUARDED=1 overrides, at "
+                      "the cost of the read deny-set.")
+    return _check("codex backend", "ok", f"{names} via {said}, read guard: bwrap")
+
+
 def check_exec_tool_calls(gateway):
     """A LOCAL execution model must accept tool calls or the local agent runtime can never run
     — every execution silently re-dispatches to Claude (`local_incapable`), which reads as
@@ -338,6 +372,7 @@ def run_checks(caps=None):
         check_project_repos(),
         check_models(gateway),
         check_exec_tool_calls(gateway),
+        check_codex(gateway),
         check_local_fallback(gateway),
         check_secret_provider(),
         check_socket_mode(),

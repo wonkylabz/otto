@@ -368,11 +368,11 @@ function modelsSection(m){
     <th class="c-test">Check</th><th class="c-rm"></th></tr></thead>`;
   const rows=m.pool.map(p=>`<tr class="mrow">
       <td><span class="minfo"><span class="mn">${plabel(p)} · ${esc(pname(p))}</span>
-        <small>${p.provider==='claude'?esc(p.model):esc(p.endpoint||p.base_url||'')+' · '+esc(p.model||'')}</small></span></td>
+        <small>${p.provider==='claude'?esc(p.model):(p.provider==='codex'&&!p.endpoint?'codex exec · '+esc(p.model||''):esc(p.endpoint||p.base_url||'')+' · '+esc(p.model||''))}</small></span></td>
       <td class="c-tag"><span class="srctag" title="${p.provider==='claude'?'runs through claude -p':'kind is set on the endpoint (edit it to change)'}">${esc(kindOf(p))}</span></td>
       <td class="c-health" data-mhealth="${esc(p.name)}">${modelHealthPill(p.name)}</td>
       <td class="c-phases"><span class="mradios">${radio(p,'routing')}${radio(p,'plan')}${radio(p,'preview')}${radio(p,'clarify')}${radio(p,'memory')}${radio(p,'verify')}${radio(p,'supervise')}${radio(p,'memory_gc')}${radio(p,'execution')}</span></td>
-      <td class="c-turns">${p.provider!=='claude'?`<input type="number" min="1" step="1" data-turns="${esc(p.name)}" value="${p.max_turns||''}" placeholder="60">`:''}</td>
+      <td class="c-turns">${(p.provider!=='claude'&&p.provider!=='codex')?`<input type="number" min="1" step="1" data-turns="${esc(p.name)}" value="${p.max_turns||''}" placeholder="60">`:''}</td>
       <td class="c-test"><span class="mtest"><button class="addbtn testbtn" data-testmodel="${esc(p.name)}">test</button><span class="tres" data-tres="${esc(p.name)}"></span></span></td>
       <td class="c-rm r">${p.provider!=='claude'?`<button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button>`:''}</td>
     </tr>`).join("");
@@ -508,7 +508,7 @@ function repointAssignments(gone){
    cross-run cap latch and the "fix the local server" copy were written for. The guess only
    PRE-SELECTS from the server's host list (gateway.HOSTED_HOSTS via /api/models) so the two
    sides can never disagree; the operator's pick is what is stored. */
-const kindOf=p=>p.provider==="claude"?"claude":(p.kind==="hosted"?"hosted":"local");
+const kindOf=p=>p.provider==="claude"?"claude":(p.provider==="codex"?"codex":(p.kind==="hosted"?"hosted":"local"));
 function epKindGuess(url){
   let host=""; try{ host=new URL(url||"").hostname.toLowerCase(); }catch(_){ return "local"; }
   return (MODEL_STATE.hosted_hosts||[]).some(h=>host===h||host.endsWith("."+h))?"hosted":"local";
@@ -633,7 +633,7 @@ function showModelForm(){
   const c=openFormModal("<b>New model</b><br>a Claude model, or one served by an OpenAI-compatible endpoint");
   c.innerHTML=`<div class="aform">
     <label>Type</label>
-    <select id="lm-prov"><option value="claude">Claude (claude -p)</option><option value="openai">OpenAI-compatible endpoint (local or hosted)</option></select>
+    <select id="lm-prov"><option value="claude">Claude (claude -p)</option><option value="openai">OpenAI-compatible endpoint (local or hosted)</option><option value="codex">Codex (codex exec)</option></select>
     <label>Name</label><input id="lm-name" placeholder="e.g. claude-opus  ·  local-qwen">
     <label>Model id</label><input id="lm-model" placeholder="claude-opus-4-8  ·  qwen3-coder:30b">
     <div id="lm-local" style="display:none;flex-direction:column;gap:10px">
@@ -653,7 +653,7 @@ function showModelForm(){
   </div>`;
   const prov=document.getElementById("lm-prov"), localDiv=document.getElementById("lm-local");
   const epSel=document.getElementById("lm-ep"), newEp=document.getElementById("lm-newep");
-  prov.onchange=()=>{ localDiv.style.display = prov.value==="openai" ? "flex" : "none"; };
+  prov.onchange=()=>{ localDiv.style.display = (prov.value==="openai"||prov.value==="codex") ? "flex" : "none"; };
   epSel.onchange=()=>{ newEp.style.display = epSel.value ? "none" : "flex"; };
   bindKindGuess("lm-url","lm-kind");
   if(!eps.length) epSel.value="";
@@ -665,6 +665,11 @@ function showModelForm(){
     if(MODEL_STATE.pool.some(p=>p.name===name)){ err.textContent="a model with that name already exists"; return; }
     let m;
     if(prov.value==="claude"){ m={name,provider:"claude",model}; }
+    else if(prov.value==="codex" && !epSel.value && !val("lm-url")){
+      // No endpoint at all: `codex exec` talks to OpenAI through its own login. That is the
+      // normal shape, and the reason this backend needs no API key.
+      m={name,provider:"codex",model};
+    }
     else {
       let ep=epSel.value;
       if(!ep){   // "+ new endpoint" — define it once here, then every later model just picks it
@@ -675,9 +680,9 @@ function showModelForm(){
         if(hdrs===null){ err.textContent="each header needs a name: one line is missing its 'Name: value'"; return; }
         MODEL_STATE.endpoints=[...(MODEL_STATE.endpoints||[]), {name:ep, base_url:url, kind:val("lm-kind"), api_key_env:val("lm-key"), headers:hdrs}];
       }
-      m={name,provider:"openai",endpoint:ep,model};
+      m={name,provider:prov.value==="codex"?"codex":"openai",endpoint:ep,model};
       const turns=val("lm-turns");
-      if(turns){
+      if(prov.value!=="codex" && turns){
         const n=parseInt(turns,10);
         if(!Number.isInteger(n)||n<1){ err.textContent="max turns must be a positive integer"; return; }
         m.max_turns=n;
@@ -726,7 +731,8 @@ function renderAdmin(data, models, el, settings){
   // tool_free flag) — they're just written together as one choice, so they cannot contradict
   // each other. Option values: "" | "exec|<pool model>" | "toolfree|<local model>".
   const claudeModels=(models.pool||[]).filter(p=>p.provider==='claude');
-  const localModels=(models.pool||[]).filter(p=>p.provider!=='claude');
+  const localModels=(models.pool||[]).filter(p=>p.provider!=='claude'&&p.provider!=='codex');
+  const codexModels=(models.pool||[]).filter(p=>p.provider==='codex');
   const capExec=models.cap_exec||{}, capLocal=models.cap_local_exec||{};
   const mshort=p=>p.name.replace(/^claude[-\s]?/i,"")||p.name;
   // The stored trio read back as one value. cap_exec wins the same way engine.run_attempt
@@ -768,6 +774,16 @@ function renderAdmin(data, models, el, settings){
         +blockers.join(", ")+"). claude.ai connectors are authenticated inside Claude Code, so "
         +"only the Claude backend can reach them."
       : "";
+    codexModels.forEach(p=>{
+      opts+=`<optgroup label="${esc(p.name)} · codex">`
+        +opt("exec|"+p.name,"with tools · never Claude",
+             localTip||"runs the capability through `codex exec`: its own tool loop, its own"
+             +" sandbox, and NO Claude — retries and the final escalation stay on this model."
+             +" Writes are confined to the workspace by bwrap, which also enforces Otto's read"
+             +" deny-set; without a working bwrap the run refuses rather than expose it.",
+             blockers.length>0)
+        +`</optgroup>`;
+    });
     localModels.forEach(p=>{
       const isLatched=latched.indexOf(p.name)>=0;
       const latchTip=isLatched

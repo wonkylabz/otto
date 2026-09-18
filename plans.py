@@ -11,6 +11,7 @@ import json
 import re
 
 import claude_cli
+import codex_cli
 import config
 import conventions
 import gateway
@@ -285,6 +286,29 @@ _PLAN_INSTRUCTION = (
     "The reply is the plan. Nothing before the first step and nothing after the risks.")
 
 
+def _codex_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None):
+    """The plan preview on the CODEX backend. Returns (out, model, backend) in `_claude`'s shape.
+
+    Far less to earn here than on the local path: `-c sandbox_mode="read-only"` is a real,
+    kernel-enforced read-only pass — measured, a run asked to create a file under it created
+    none and reported the refusal itself — so `permission_mode="plan"` is the whole of it, and
+    `config.PLAN_TOOLS` only has to pick the sandbox (see `codex_cli._sandbox_for`).
+
+    Unlike `claude -p`, `codex exec` does NOT fork a session to preview it: a resume previews
+    in the same thread, so the plan instruction lands in the history the approved run resumes.
+    Accepted rather than worked around — Codex has no fork-for-free and a thread copy would be
+    a second session store to keep — and it is why a preview is bound to the request it
+    previews, never reused."""
+    ent = entry if entry is not None else local_runtime.resume_entry(resume_session)
+    out = codex_cli.run_json(invocation, allowed_tools=config.PLAN_TOOLS,
+                             model=(ent or {}).get("model"), cwd=cwd,
+                             timeout=config.PLAN_TIMEOUT_S, permission_mode="plan",
+                             resume_session=resume_session, effort=effort,
+                             transcript=transcript,
+                             config_overrides=gateway.codex_config(ent or {}))
+    return out, (ent or {}).get("name") or "codex", "codex"
+
+
 def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None):
     """The plan preview on the LOCAL backend. Returns (out, model, backend) in `_claude`'s shape,
     so the caller's accounting, audit row and empty-plan fallback are unchanged.
@@ -426,6 +450,21 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
                                setting_sources=_setting_sources(cwd), effort=effort,
                                transcript=transcript))
 
+    if codex_cli.is_codex_session(resume_session) or (
+            resume_session is None and entry is not None
+            and gateway.backend_of(entry) == "codex"):
+        out, model, backend = _codex_preview(invocation, resume_session, cwd, effort=effort,
+                                             entry=entry, transcript=transcript)
+        # Same wall contract as the local branch below: a preview that could not run at all is
+        # re-previewed on Claude rather than handing the human an approval card with NO plan.
+        # Never for a resume — `claude -p --resume codex-…` is rejected outright, so "falling
+        # back" there IS the bug this prevents.
+        if out.get("wall_reason") and not resume_session:
+            trace("PLAN", f"codex preview walled ({out['wall_reason']}) — re-previewing on "
+                          f"Claude")
+            claude_cli.keep_walled_transcript(transcript, out["wall_reason"])
+            model, backend, out = _on_claude()
+        return out, model, backend
     if local_runtime.is_local_session(resume_session) or (
             entry is not None and gateway.is_local(entry)):
         out, model, backend = _local_preview(invocation, resume_session, cwd, effort=effort,

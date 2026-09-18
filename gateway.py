@@ -246,7 +246,11 @@ def _hydrate(cfg):
     by_name = {e["name"]: e for e in eps}
     by_key = {_ep_key(e): e for e in eps}
     for m in cfg.get("pool", []):
-        if not is_local(m):
+        # Everything that is not a Claude tier may reference an endpoint. A CODEX entry usually
+        # does not — it talks to OpenAI through the CLI's own auth — but it may, which is how
+        # it is pointed at a self-hosted Responses API instead (`codex_config` turns the
+        # endpoint into the `-c model_providers.…` override that does it).
+        if is_claude(m):
             continue
         ep = by_name.get(m.get("endpoint"))
         if ep is None and m.get("base_url"):
@@ -605,8 +609,9 @@ def preview_model_id(cfg=None):
 
 def preview_model_entry(cfg=None):
     """The FULL pool entry for the approval preview — the backend dispatch source, same TRANSPORT
-    question `exec_model_entry` answers: provider "claude" → `claude -p --permission-mode plan`,
-    anything else → `plans._local_preview` over Otto's own tool loop.
+    question `exec_model_entry` answers, and now the same THREE answers: `claude` →
+    `claude -p --permission-mode plan`, `local` → `plans._local_preview` over Otto's own tool
+    loop, `codex` → `plans._codex_preview` under `-c sandbox_mode="read-only"`.
 
     The preview is the one phase with no verify rung above it — it runs once and its output is
     what a human approves — so an operator pointing it at a local model is opting into that. The
@@ -1259,6 +1264,36 @@ def plan_complete(prompt):
     text = _claude_tier("plan_strong", prompt, escalation_model_id())
     _LAST["plan_strong"] = {"model": escalation_model_id(), "fell_back": False}
     return text or ""
+
+
+def codex_config(m, cfg=None):
+    """The `-c key=value` overrides that point `codex exec` at this entry's model, as a dict
+    for `codex_cli.build_cmd`.
+
+    With no endpoint this is just the model id: the CLI authenticates to OpenAI itself
+    (`codex login`), which is what keeps this backend inside the "never require an API key"
+    rule. WITH one, the same endpoint record that serves a local entry is translated into a
+    custom provider — so an operator configures a host once and both backends can use it.
+
+    `wire_api` is always "responses": codex-cli 0.155.0 removed `wire_api = "chat"`, so a
+    `/chat/completions` server cannot serve this backend at all (which is why it is a third
+    runtime and not a mode of the local one)."""
+    out = {}
+    if m.get("model"):
+        out["model"] = m["model"]
+    base = (m.get("base_url") or "").strip()
+    if base:
+        name = re.sub(r"[^a-z0-9_]+", "_", (m.get("endpoint") or "otto").lower()).strip("_")
+        provider = {"name": m.get("endpoint") or "otto", "base_url": base,
+                    "wire_api": "responses"}
+        # The key rides as an ENV VAR NAME, never a literal: `codex_env()` passes the operator's
+        # environment through, and a literal here would be argv — visible in `ps` to every
+        # process on the box, and copied into the transcript's meta line.
+        if (m.get("api_key_env") or "").isidentifier():
+            provider["env_key"] = m["api_key_env"]
+        out[f"model_providers.{name}"] = provider
+        out["model_provider"] = name
+    return out
 
 
 def api_key(m):

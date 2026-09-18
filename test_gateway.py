@@ -29,6 +29,7 @@ import chats
 import claude_cli
 import codex_cli
 import config
+import doctor
 import contracts
 import engine
 import estop
@@ -39,6 +40,7 @@ import gateway
 import knowledge
 import local_runtime
 import mcp_client
+import plans
 import policy
 import registry
 import server
@@ -8265,8 +8267,13 @@ class BackendDispatchTests(unittest.TestCase):
         resolve the backend through the gateway, not re-derive it."""
         src = inspect.getsource(engine.run_attempt)
         i = src.index("exec_entry = override_entry or gateway.exec_model_entry(cap.name)")
-        self.assertIn("gateway.is_local(exec_entry)", src[i:i + 400],
+        window = src[i:i + 600]
+        self.assertIn("gateway.backend_of(exec_entry)", window,
                       "engine.run_attempt derives the backend itself")
+        # …and it is a THREE-way. `use_local = not is_claude` is how a Codex entry ends up in
+        # the runtime that would POST /chat/completions at a `base_url` it does not have.
+        for flag in ("use_local", "use_codex"):
+            self.assertIn(flag, window, flag)
 
     def test_a_resumed_session_and_a_pool_entry_are_compared_in_the_same_vocabulary(self):
         """A session is bound for life to the runtime that minted it. `session_backend` and
@@ -8823,3 +8830,254 @@ class CodexWriteGuardTests(unittest.TestCase):
         self.assertIs(local_runtime._read_deny_mounts, file_safety.read_deny_mounts)
         self.assertIs(local_runtime.sandbox_available, file_safety.sandbox_available)
         self.assertIn("file_safety.read_deny_mounts", inspect.getsource(codex_cli.confinement))
+
+
+class CodexWiringTests(unittest.TestCase):
+    """Issue #115 P4: the Codex backend wired into the pipeline. P1 made the backend a
+    three-way and P2/P3 built the runtime and its guard; this is what makes a pool entry
+    actually reach it — and what stops it reaching the wrong one."""
+
+    ENTRY = {"name": "codex-5", "provider": "codex", "model": "gpt-5-codex"}
+
+    def setUp(self):
+        self._saved = (gateway.exec_model_entry, gateway.escalation_model_id,
+                       gateway.exec_model_id, engine._claude, codex_cli.run_json,
+                       local_runtime.run_json, config.SUPERVISE)
+        config.SUPERVISE = False
+        self._noise = (engine.trace, engine.say)
+        engine.trace = engine.say = lambda *a, **k: None
+        gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.ENTRY)
+        gateway.escalation_model_id = lambda cfg=None: "claude-opus-5"
+        gateway.exec_model_id = lambda cap_name=None: "claude-sonnet-5"
+        self.claude_models, self.codex_calls, self.local_calls = [], [], []
+
+        def fake_claude(prompt, model=None, **kw):
+            self.claude_models.append(model)
+            return {"result": "done on claude", "total_cost_usd": 0.02, "session_id": "s",
+                    "usage": {"output_tokens": 9}}
+
+        def fake_codex(prompt, **kw):
+            self.codex_calls.append(kw)
+            return {"result": "done on codex", "is_error": False, "total_cost_usd": 0,
+                    "session_id": "codex-abc", "usage": {"output_tokens": 4},
+                    "tools_used": ["Bash"], "tools_failed": []}
+        engine._claude, codex_cli.run_json = fake_claude, fake_codex
+        local_runtime.run_json = lambda *a, **k: self.local_calls.append(k) or {
+            "result": "LOCAL RAN", "is_error": False, "total_cost_usd": 0,
+            "session_id": "local-x", "usage": {}}
+        self.cap = registry.Capability("custom", "briefing", "morning briefing")
+        self.cap.risk = "read"
+
+    def tearDown(self):
+        (gateway.exec_model_entry, gateway.escalation_model_id, gateway.exec_model_id,
+         engine._claude, codex_cli.run_json, local_runtime.run_json,
+         config.SUPERVISE) = self._saved
+        engine.trace, engine.say = self._noise
+
+    # --- dispatch -------------------------------------------------------------------------
+
+    def test_a_codex_entry_reaches_codex_and_neither_of_the_others(self):
+        """The bug P1 existed to prevent, now checked end to end: a Codex entry has no
+        `base_url`, so the local runtime would POST /chat/completions at nothing."""
+        att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        self.assertEqual(att["backend"], "codex")
+        self.assertEqual(att["result"], "done on codex")
+        self.assertEqual(len(self.codex_calls), 1)
+        self.assertEqual(self.local_calls, [])
+        self.assertEqual(self.claude_models, [])
+
+    def test_escalation_and_downshift_stay_on_the_codex_model(self):
+        """Both are CLAUDE-TIER moves. Left to run, the final rung hands `claude -p --model` a
+        Codex id, which it rejects outright — and the CLI's refusal becomes the run's answer."""
+        for kw in ({"escalate": True}, {"downshift": True}):
+            att = engine.run_attempt("brief me", self.cap, attempt=3, wid="w1", **kw)
+            self.assertEqual((att["backend"], att["model"]), ("codex", "codex-5"), kw)
+        self.assertEqual(self.claude_models, [])
+
+    def test_a_codex_pin_is_not_REPORTED_as_a_wrong_backend_override(self):
+        """`override_entry` is discarded when a run lands on Claude carrying a non-Claude pin —
+        a real guard, because `claude -p --model <local id>` is rejected outright. A Codex pin
+        running ON CODEX is not that case. The model is unaffected either way (`exec_entry` is
+        resolved before the drop), so what the bug actually produces is a trace line telling the
+        operator their pick was overruled when it was honoured — which is worse than silence,
+        and is the only thing that can be measured here."""
+        said = []
+        saved_trace, saved_resolve = engine.trace, gateway.resolve_model
+        engine.trace = lambda *a, **k: said.append(" ".join(str(x) for x in a))
+        gateway.resolve_model = lambda n: dict(self.ENTRY) if n == "codex-5" else None
+        try:
+            att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1",
+                                     model_override="codex-5")
+        finally:
+            # RESTORED, never `del`: assignment replaced the module's own function, so deleting
+            # the attribute removes it outright and every later test in the process sees a
+            # gateway with no `resolve_model` at all.
+            engine.trace, gateway.resolve_model = saved_trace, saved_resolve
+        self.assertEqual((att["backend"], att["model"]), ("codex", "codex-5"))
+        self.assertEqual([m for m in said if "on the Claude backend" in m], [])
+
+    def test_a_cap_with_its_own_mcp_config_stays_on_claude(self):
+        """A project cap's repo `.mcp.json` is read by `claude -p` and nothing else."""
+        self.cap.mcp_config = "/repo/.mcp.json"
+        att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        self.assertEqual(att["backend"], "claude")
+        self.assertEqual(self.codex_calls, [])
+
+    # --- walls ----------------------------------------------------------------------------
+
+    def _walled(self, reason="auth"):
+        codex_cli.run_json = lambda *a, **k: {
+            "result": "⛔ …", "is_error": True, "wall_reason": reason,
+            "wall_detail": "401", "total_cost_usd": 0, "session_id": None, "usage": {}}
+
+    def test_a_codex_wall_re_dispatches_this_attempt_to_claude(self):
+        """A dead credential or a missing CLI fails identically on every rung, so retrying it
+        spends the ladder reaching the same refusal — the same reason the local backend
+        re-dispatches rather than burning attempts."""
+        self._walled()
+        att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        self.assertEqual(att["backend"], "claude")
+        self.assertTrue(att["local_incapable"])
+        self.assertEqual(self.claude_models, ["claude-sonnet-5"])
+        self.assertEqual(att["fallback_from"], "codex-5")
+
+    def test_strict_mode_stops_instead_of_quietly_moving_to_claude(self):
+        """`OTTO_LOCAL_FALLBACK=0` means a non-Claude backend failing IS the answer — reporting
+        a success Claude earned would be exactly what the flag exists to prevent."""
+        self._walled()
+        saved = config.setting
+        config.setting = lambda n, *a: False if n == "local_fallback" else saved(n, *a)
+        try:
+            att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        finally:
+            config.setting = saved
+        self.assertTrue(att["is_error"])
+        self.assertEqual(self.claude_models, [])
+
+    def test_both_backends_re_dispatch_through_one_implementation(self):
+        """Two copies of the wall recovery is two sets of half-updated details — the transcript
+        that must be kept, the timeout that must be what is LEFT of the budget, the meta the
+        board's badge reads."""
+        src = inspect.getsource(engine.run_attempt)
+        self.assertEqual(src.count("def _redispatch("), 1)
+        self.assertEqual(src.count("= _redispatch(out,"), 2, "one backend recovers its own way")
+
+    def test_a_connector_cap_never_lands_on_codex_either(self):
+        """A claude.ai connector's OAuth lives inside Claude Code. Neither subprocess backend
+        can reach one, so the guard that keeps such a cap off local must cover codex too — the
+        symptom otherwise is three attempts answering "tool is not available in this run"."""
+        saved = mcp_client.unservable
+        mcp_client.unservable = lambda cap: ["claude_ai_Gmail"]
+        try:
+            att = engine.run_attempt("brief me", self.cap, attempt=1, wid="w1")
+        finally:
+            mcp_client.unservable = saved
+        self.assertEqual(att["backend"], "claude")
+        self.assertTrue(att["fallback_reason"])
+
+    # --- resume ---------------------------------------------------------------------------
+
+    def test_a_codex_session_resumes_on_codex(self):
+        self.assertEqual(local_runtime.session_backend("codex-abc"), "codex")
+        self.assertEqual(local_runtime.session_backend("local-abc"), "local")
+        self.assertEqual(local_runtime.session_backend("0b3f-uuid"), "claude")
+        att = engine.run_attempt("and now?", self.cap, attempt=1, wid="w1",
+                                 resume_session="codex-abc")
+        self.assertEqual(att["backend"], "codex")
+
+    # --- the config the CLI is handed ------------------------------------------------------
+
+    def test_with_no_endpoint_the_cli_authenticates_itself(self):
+        """Which is what keeps this backend inside the resident "never require an API key"
+        rule: `codex login` against a subscription, not a key in models.json."""
+        self.assertEqual(gateway.codex_config(self.ENTRY), {"model": "gpt-5-codex"})
+
+    def test_an_endpoint_becomes_a_responses_provider_and_the_key_stays_a_var_name(self):
+        """codex-cli 0.155.0 removed `wire_api = "chat"`, so a `/chat/completions` server cannot
+        serve this backend at all. And the credential rides as an env var NAME: a literal would
+        be argv, visible in `ps` to every process on the box and copied into the meta line."""
+        cfg = gateway.codex_config(dict(self.ENTRY, endpoint="gpu box",
+                                        base_url="http://gpu:8000/v1", api_key_env="MY_KEY"))
+        self.assertEqual(cfg["model_provider"], "gpu_box")
+        prov = cfg["model_providers.gpu_box"]
+        self.assertEqual(prov["wire_api"], "responses")
+        self.assertEqual(prov["env_key"], "MY_KEY")
+        self.assertNotIn("api_key", prov)
+
+    def test_a_pasted_literal_key_is_never_put_on_the_command_line(self):
+        cfg = gateway.codex_config(dict(self.ENTRY, endpoint="e", base_url="http://x/v1",
+                                        api_key_env="sk-ant-api03-LITERAL-KEY"))
+        self.assertNotIn("env_key", cfg["model_providers.e"])
+        self.assertNotIn("sk-ant", json.dumps(cfg))
+
+    def test_only_a_servable_server_reaches_the_command_line(self):
+        """The activation gate on a stored def is what stops a RUN appending a command and
+        having it spawned as the operator. `-c mcp_servers.…` is a second door to the same
+        subprocess, so it reads the same gate."""
+        saved = mcp_client.servable
+        mcp_client.servable = lambda pol=None: {"ok": {"command": "npx", "args": ["-y", "p"]}}
+        try:
+            out = codex_cli.mcp_overrides(["ok", "not-registered"])
+        finally:
+            mcp_client.servable = saved
+        self.assertEqual(sorted(out), ["mcp_servers.ok"])
+        self.assertEqual(out["mcp_servers.ok"], {"command": "npx", "args": ["-y", "p"]})
+
+    def test_a_dotted_server_name_cannot_nest_the_config_table(self):
+        """`-c mcp_servers.new.relic=…` is three levels deep, not a server called "new.relic"."""
+        saved = mcp_client.servable
+        mcp_client.servable = lambda pol=None: {"new.relic": {"command": "x"}}
+        try:
+            self.assertEqual(sorted(codex_cli.mcp_overrides(["new.relic"])),
+                             ["mcp_servers.new_relic"])
+        finally:
+            mcp_client.servable = saved
+
+    # --- the preview ------------------------------------------------------------------------
+
+    def test_the_plan_preview_dispatches_on_the_third_transport_too(self):
+        src = inspect.getsource(plans)
+        self.assertIn("def _codex_preview(", src)
+        i = src.index("def plan_preview")
+        branch = src[i:]
+        self.assertIn("codex_cli.is_codex_session(resume_session)", branch)
+        self.assertIn('gateway.backend_of(entry) == "codex"', branch)
+
+    def test_a_walled_codex_preview_re_previews_on_claude(self):
+        """Else the human gets an approval card with NO plan on it and no diagnosis — the
+        `web-ce430e45` symptom, walked back in through a third backend."""
+        src = inspect.getsource(plans)
+        i = src.index('gateway.backend_of(entry) == "codex"')
+        self.assertIn("_on_claude()", src[i:i + 900])
+        self.assertIn("not resume_session", src[i:i + 900])
+
+    # --- the operator's view ------------------------------------------------------------------
+
+    def test_doctor_is_silent_until_something_selects_codex(self):
+        """An install that never uses this backend must not be told to fix it."""
+        class _Gw:
+            backend_of = staticmethod(gateway.backend_of)
+            load = staticmethod(lambda: {"pool": [dict(self.ENTRY)], "assign": {}})
+        self.assertEqual(doctor.check_codex(_Gw)["status"], "ok")
+
+        class _Used(_Gw):
+            load = staticmethod(lambda: {"pool": [dict(self.ENTRY)],
+                                         "assign": {"execution": "codex-5"}})
+        saved = codex_cli.available
+        codex_cli.available = lambda: (False, "not found")
+        try:
+            out = doctor.check_codex(_Used)
+        finally:
+            codex_cli.available = saved
+        self.assertEqual(out["status"], "fail")
+        self.assertIn("OTTO_CODEX_BIN", out["hint"])
+
+    def test_the_execution_select_gives_codex_its_own_group_and_no_tool_free_option(self):
+        """`tool_free` is ONE completion against a /chat/completions endpoint — this backend
+        does not have one, so offering it would be a control the pipeline ignores."""
+        src = ui_src()
+        self.assertIn("codexModels", src)
+        self.assertIn("p.provider!=='claude'&&p.provider!=='codex'", src,
+                      "localModels still means 'everything that is not Claude'")
+        i = src.index("codexModels.forEach")
+        self.assertNotIn("toolfree|", src[i:src.index("localModels.forEach", i)])
