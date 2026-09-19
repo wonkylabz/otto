@@ -3,9 +3,11 @@
 Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
 import ast
+import contextlib
 import glob
 import inspect
 import io
+import itertools
 import json
 import os
 import re
@@ -19,6 +21,7 @@ import conventions
 import engine
 import gateway
 import judging
+import ladder
 import local_runtime
 import plans
 import registry
@@ -3383,42 +3386,374 @@ class PlanBranchNoteTests(unittest.TestCase):
         self.assertIn('"pr": self._pr_target', src)
 
 
+class RunModeFlagTests(unittest.TestCase):
+    """A run-mode flag is read ONCE and passed down, never re-read from `params` further on.
+
+    `subtask` was read five times in two spellings — a resolved local returned by
+    `_route_or_resume`, and `params.get("subtask")` again at four later sites. They could not
+    disagree today (nothing writes the key), but this is the flag whose cross-wiring already
+    cost a production bug: `81e1b28`, where the PARENT's interactive flag reached a swarm CHILD
+    and disarmed the unattended dead-end rule, passing a child that only asked a question."""
+
+    def test_subtask_has_exactly_one_spelling_after_it_is_resolved(self):
+        src = workflow_src()
+        resolved = src.index('subtask = params.get("subtask", False)')
+        after = src[src.index("done, cap, request, subtask = await self._route_or_resume"):]
+        self.assertNotIn('params.get("subtask")', after,
+                         "a mode flag re-read from params after it was resolved is a second "
+                         "source of truth — pass the local down")
+        self.assertGreater(resolved, 0)
+
+    def test_a_swarm_child_is_unattended_whatever_the_parent_was(self):
+        """The `81e1b28` regression, pinned at the source: nothing but the merge ever reads a
+        child, so a child is unattended BY CONSTRUCTION, not by inheritance."""
+        import wf_swarm
+        src = inspect.getsource(wf_swarm)
+        # ONLY the child-spawn payload. The parent's own `finalize_terminal` call legitimately
+        # passes `unattended` — that row is about the parent, which may well be interactive.
+        spawn = src[src.index("async def _spawn"):src.index("results = await asyncio.gather")]
+        self.assertIn('"unattended": True', spawn,
+                      "a child must be spawned unattended outright, never handed the parent's flag")
+        self.assertNotIn('"unattended": unattended', spawn)
+        self.assertNotIn('params.get("unattended")', spawn)
+
+    def test_the_plan_step_exclusions_stay_five(self):
+        """`_may_plan_steps` ANDs five mode flags, and the brainstorm one was added only after
+        plan-mode silently replaced the whole brainstorm turn. Adding a sixth mode without a
+        matching exclusion is how that repeats."""
+        import workflows
+        self.assertEqual(
+            list(inspect.signature(workflows._may_plan_steps).parameters),
+            ["authored", "plan_mode", "repo", "subtask", "cap"])
+        for kwargs in ({"authored": True}, {"plan_mode": "off"}, {"repo": "r"},
+                       {"subtask": True}, {"cap": {"name": "brainstorm", "kind": "skill"}}):
+            base = {"authored": False, "plan_mode": "on", "repo": None, "subtask": False,
+                    "cap": {"name": "worker", "kind": "skill"}}
+            base.update(kwargs)
+            with self.subTest(exclusion=next(iter(kwargs))):
+                self.assertFalse(workflows._may_plan_steps(**base))
+        self.assertTrue(workflows._may_plan_steps(
+            authored=False, plan_mode="on", repo=None, subtask=False,
+            cap={"name": "worker", "kind": "skill"}))
+
+
+class PostPrLoopParameterisationTests(unittest.TestCase):
+    """The two post-PR loops are ONE body parameterised by `wf_postpr._LOOPS`, and the seam now
+    runs down through `activities` and `judging` too.
+
+    Added after mutation testing: breaking the summary fall-through, the rounds suffix, and the
+    QA/review prompt selection each left the whole suite green. A parameterised body is only as
+    safe as the tests that pin which parameters each caller gets."""
+
+    def _summary(self, kind, outcome):
+        import wf_postpr
+
+        class T(wf_postpr.PostPrMixin):
+            pass
+        return T()._loop_summary(kind, outcome)
+
+    def test_an_unanticipated_state_reads_as_needing_a_human_never_as_silence(self):
+        """`state` comes from a judge. A verdict nobody anticipated must fall through to the
+        failure line — rendering nothing would silently drop the PR's whole review result."""
+        for kind in ("review", "qa"):
+            with self.subTest(kind=kind):
+                out = self._summary(kind, {"state": "something-new", "rounds": 0})
+                self.assertTrue(out.strip(), "an unknown verdict rendered nothing at all")
+                self.assertIn("❌", out)
+                self.assertIn("human", out.lower())
+
+    def test_every_documented_state_renders_its_own_line(self):
+        for kind in ("review", "qa"):
+            seen = set()
+            for state in ("pass", "inconclusive", "unavailable", "failed"):
+                out = self._summary(kind, {"state": state, "rounds": 0})
+                with self.subTest(kind=kind, state=state):
+                    self.assertTrue(out.strip())
+                    self.assertNotIn(out, seen, f"{kind}/{state} duplicates another state's line")
+                seen.add(out)
+
+    def test_the_fix_round_count_reaches_the_reader(self):
+        """"clean" and "clean after 2 fix rounds" are different facts about a PR."""
+        for kind in ("review", "qa"):
+            with self.subTest(kind=kind):
+                self.assertNotIn("fix round", self._summary(kind, {"state": "pass", "rounds": 0}))
+                one = self._summary(kind, {"state": "pass", "rounds": 1})
+                self.assertIn("after 1 fix round", one)
+                self.assertNotIn("1 fix rounds", one, "singular must not be pluralised")
+                self.assertIn("after 2 fix rounds", self._summary(kind, {"state": "pass",
+                                                                        "rounds": 2}))
+
+    def test_the_critique_is_carried_and_clipped(self):
+        for kind in ("review", "qa"):
+            with self.subTest(kind=kind):
+                out = self._summary(kind, {"state": "failed", "rounds": 0, "critique": "x" * 900})
+                self.assertIn("x" * 800, out)
+                self.assertNotIn("x" * 801, out, "the critique must be clipped at 800 chars")
+
+    def test_each_judge_builds_its_own_prompt(self):
+        """Both judges share a scaffold and the SAME verdict parser, so handing one the other's
+        prose changes what is asked while every downstream assertion still passes."""
+        captured = []
+        original = judging.confirm_adverse
+        judging.confirm_adverse = lambda tier, prompt, *a, **k: (
+            captured.append(prompt), {"verdict": "pass", "critique": ""})[1]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                judging.judge_qa("req", "the QA transcript")
+                judging.judge_review("req", "the review transcript")
+        finally:
+            judging.confirm_adverse = original
+        qa_prompt, review_prompt = captured
+        self.assertIn("QA/test agent", qa_prompt)
+        self.assertIn("QA transcript:", qa_prompt)
+        self.assertNotIn("code reviewer", qa_prompt)
+        self.assertIn("code reviewer", review_prompt)
+        self.assertIn("Review transcript:", review_prompt)
+        self.assertNotIn("QA/test agent", review_prompt)
+        for prompt in (qa_prompt, review_prompt):      # the shared scaffold is still shared
+            self.assertIn("PASS, FAIL, or INCONCLUSIVE on the first line", prompt)
+
+    def test_an_empty_transcript_names_the_capability_that_produced_nothing(self):
+        for fn, word in ((judging.judge_qa, "QA"), (judging.judge_review, "review")):
+            with self.subTest(fn=fn.__name__):
+                v = fn("req", "(no output)")
+                self.assertEqual(v["verdict"], "inconclusive")
+                self.assertIn(word, v["critique"])
+
+
+class LadderStateMachineTests(unittest.TestCase):
+    """`ladder.py` is the ladder's control flow, consumed by BOTH runtimes.
+
+    The loop itself is written twice and always will be — `engine._ladder_core` calls
+    `run_attempt`/`verify`/`record_attempt` as functions, while `OttoWorkflow._verify_ladder` must
+    reach the same three things as Temporal activities, because workflow code is
+    replay-deterministic. That boundary is around the SIDE EFFECTS. The DECISIONS were duplicated
+    for no such reason, kept in step by a line of prose in CLAUDE.md and by no test at all — after
+    the two copies inside `engine.py` had already drifted at the verify call.
+
+    `_ladder_core`'s docstring states the lesson: a duplicated loop does not stay duplicated, it
+    becomes two behaviours."""
+
+    LIMITS = ladder.Limits.of(3, 2, 1, True, "escalated")
+
+    @staticmethod
+    def _v(passed=False, source="judge", critique="c"):
+        return {"passed": passed, "source": source, "critique": critique}
+
+    def test_limits_are_clamped_the_way_both_loops_clamped_them(self):
+        lim = ladder.Limits.of(0, -5, -1, True, "r")
+        self.assertEqual((lim.max_attempts, lim.max_harness_retries, lim.max_supervisor_kills),
+                         (1, 0, 0), "at least one attempt, never a negative budget")
+
+    def test_the_physical_index_and_the_judged_count_are_not_the_same_number(self):
+        """`attempt` names the transcript file and the audit row, so it must keep climbing even
+        across rungs no judge spent a verdict on — or two attempts collide on it."""
+        state, limits = ladder.start(self.LIMITS), self.LIMITS
+        for expected in (1, 2, 3):
+            nxt = ladder.plan_attempt(state, limits)
+            self.assertEqual(nxt.attempt, expected)
+            state = ladder.record_attempt(state, nxt)
+            state = ladder.next_step(state, limits, self._v(source="harness")).state
+        self.assertEqual(state.attempt, 3)
+        self.assertEqual(state.judged, 0, "no judge read any of those three")
+
+    def test_the_final_rung_escalates_and_disarms_the_kill_switch(self):
+        """A kill's only value is the critique it hands the NEXT attempt; on the last rung there
+        is none, so the run would just end holding an aborted partial."""
+        state, limits = ladder.start(self.LIMITS), self.LIMITS
+        seen = []
+        for _ in range(limits.max_attempts):
+            nxt = ladder.plan_attempt(state, limits)
+            seen.append((nxt.final, nxt.supervise_enforce))
+            state = ladder.record_attempt(state, nxt)
+            state = ladder.next_step(state, limits, self._v()).state
+        self.assertEqual([f for f, _ in seen], [False, False, True])
+        self.assertFalse(seen[-1][1], "the final rung must never arm the kill switch")
+
+    def test_kills_are_bounded_by_their_own_budget(self):
+        limits = ladder.Limits.of(5, 0, 1, True, "r")
+        state = ladder.start(limits)
+        nxt = ladder.plan_attempt(state, limits)
+        self.assertTrue(nxt.supervise_enforce)
+        state = ladder.record_attempt(state, nxt, killed=True)
+        state = ladder.next_step(state, limits, self._v(source="supervisor")).state
+        self.assertFalse(ladder.plan_attempt(state, limits).supervise_enforce,
+                         "a second kill rescues worse than letting the attempt finish")
+
+    def test_local_incapable_latches_and_never_unlatches(self):
+        state, limits = ladder.start(self.LIMITS), self.LIMITS
+        nxt = ladder.plan_attempt(state, limits)
+        state = ladder.record_attempt(state, nxt, local_incapable=True)
+        self.assertTrue(state.local_disabled)
+        state = ladder.record_attempt(state, ladder.plan_attempt(state, limits),
+                                      local_incapable=False)
+        self.assertTrue(state.local_disabled, "a backend that cannot serve the cap stays off")
+
+    def test_the_three_stop_reasons_are_distinct(self):
+        limits = ladder.Limits.of(1, 0, 0, True, "r")
+        state = ladder.start(limits)
+        self.assertEqual(ladder.next_step(state, limits, self._v(passed=True)).reason,
+                         ladder.PASSED)
+        self.assertEqual(ladder.next_step(state, limits, self._v()).reason,
+                         ladder.VERIFY_EXHAUSTED)
+        self.assertEqual(ladder.next_step(state, limits, self._v(source="harness")).reason,
+                         ladder.HARNESS_EXHAUSTED)
+
+    def test_it_reproduces_the_arithmetic_both_loops_used_to_carry(self):
+        """The differential check. `_old` is the inline logic as `engine._ladder_core` and
+        `OttoWorkflow._verify_ladder` both wrote it; every reachable short sequence of outcomes
+        must drive it and `ladder` to the same decisions and the same final counters."""
+        reason = "escalated"
+
+        def _old(outcomes, n, max_spare, max_kills, local_fallback):
+            spare, judged, attempt, kills = max_spare, 0, 0, 0
+            local_disabled, local_reason, critique = False, None, None
+            trace = []
+            for oc in outcomes:
+                attempt += 1
+                final = judged == n - 1
+                trace.append(("attempt", attempt, final,
+                              (not final and kills < max_kills)))
+                if oc.get("killed"):
+                    kills += 1
+                local_disabled = local_disabled or oc.get("local_incapable", False)
+                v = oc["verdict"]
+                if v["passed"]:
+                    trace.append(("stop", "passed"))
+                    break
+                if (local_fallback and not local_disabled and oc.get("write_local")
+                        and v.get("source") != "harness"):
+                    local_disabled, local_reason = True, reason
+                critique = v["critique"]
+                if v.get("source") == "harness":
+                    spare -= 1
+                    if spare < 0:
+                        trace.append(("stop", "harness_exhausted"))
+                        break
+                else:
+                    judged += 1
+                    if judged >= n:
+                        trace.append(("stop", "verify_exhausted"))
+                        break
+            return trace, (judged, spare, local_disabled, local_reason, critique)
+
+        def _new(outcomes, n, max_spare, max_kills, local_fallback):
+            limits = ladder.Limits.of(n, max_spare, max_kills, local_fallback, reason)
+            state, trace = ladder.start(limits), []
+            for oc in outcomes:
+                nxt = ladder.plan_attempt(state, limits)
+                trace.append(("attempt", nxt.attempt, nxt.final, nxt.supervise_enforce))
+                state = ladder.record_attempt(state, nxt, killed=oc.get("killed", False),
+                                              local_incapable=oc.get("local_incapable", False))
+                step = ladder.next_step(state, limits, oc["verdict"],
+                                        write_local=oc.get("write_local", False))
+                state = step.state
+                if step.stop:
+                    trace.append(("stop", step.reason))
+                    break
+            return trace, (state.judged, state.spare, state.local_disabled,
+                           state.local_disabled_reason, state.critique)
+
+        verdicts = [self._v(passed=True, critique=None), self._v(), self._v(source="harness"),
+                    self._v(source="supervisor")]
+        flags = [{}, {"killed": True}, {"local_incapable": True}, {"write_local": True},
+                 {"write_local": True, "killed": True}]
+        cases = [dict(verdict=v, **f) for v in verdicts for f in flags]
+        checked = 0
+        for n in (1, 2, 3):
+            for spare in (0, 1, 2):
+                for kills in (0, 1):
+                    for local_fallback in (True, False):
+                        for combo in itertools.product(cases, repeat=3):
+                            checked += 1
+                            self.assertEqual(
+                                _old(list(combo), n, spare, kills, local_fallback),
+                                _new(list(combo), n, spare, kills, local_fallback),
+                                f"diverged at n={n} spare={spare} kills={kills} "
+                                f"local_fallback={local_fallback} on {combo}")
+        self.assertGreater(checked, 100_000)
+
+    def test_error_verdict_has_one_home_and_both_runtimes_reach_it(self):
+        """The workflow re-implemented this inline, string parse and all, defending it as "pure
+        string work" that deterministic code cannot import. It is pure — which is exactly why it
+        can live in `ladder` and be called from both."""
+        self.assertEqual(ladder.error_verdict("(timed out)"), judging.error_verdict("(timed out)"))
+        killed = ladder.error_verdict("(aborted by supervisor: off building a UI)")
+        self.assertEqual(killed["source"], "supervisor")
+        self.assertIn("off building a UI", killed["critique"])
+        self.assertEqual(ladder.error_verdict("boom")["source"], "harness")
+        src = workflow_src()
+        self.assertNotIn('"(aborted by supervisor:" in', src,
+                         "the workflow parses the kill sentinel again — call ladder.error_verdict")
+
+
 class HarnessDeathKeepsLocalTests(unittest.TestCase):
     """A harness death is not a judgement, so it must not banish a run from the local backend.
 
     `web-a056884d`: deepseek emitted 75k output tokens of reasoning and hit
     LOCAL_EXEC_MAX_TOKENS with no final answer. No judge read that attempt — but issue #172's
     write-local escalation fired anyway, latching the rest of the ladder onto Claude for three
-    more attempts ending on Opus ($2.60), over a token ceiling an env var raises."""
+    more attempts ending on Opus ($2.60), over a token ceiling an env var raises.
 
-    def test_both_ladders_spare_a_harness_death(self):
-        """The loop is written twice on purpose (CLAUDE.md: change one, mirror the other), so a
-        guard that checks one copy proves nothing about the run path the other serves."""
-        for path in ("engine.py", "workflows.py"):
-            src = workflow_src() if path == "workflows.py" else open(path).read()
-            i = src.index("WRITE_LOCAL_ESCALATE_REASON")
-            block = src[max(0, i - 900):i]
-            self.assertIn('verdict.get("source") != "harness"', block,
-                          f"{path}'s write-local escalation still fires on a harness death")
+    These used to be GREP guards run over both ladder copies, because the rule was written twice
+    and checking one proved nothing about the other. The decision now lives once, in
+    `ladder.next_step`, so they assert the BEHAVIOUR instead — which is what they wanted to say."""
+
+    LIMITS = ladder.Limits.of(max_attempts=3, max_harness_retries=2, max_supervisor_kills=1,
+                              local_fallback=True, write_local_escalate_reason="escalated")
+
+    @staticmethod
+    def _verdict(source):
+        return {"passed": False, "critique": "c", "source": source}
+
+    def test_a_harness_death_does_not_banish_the_run_from_local(self):
+        step = ladder.next_step(ladder.start(self.LIMITS), self.LIMITS,
+                                self._verdict("harness"), write_local=True)
+        self.assertFalse(step.state.local_disabled,
+                         "no judge read the attempt, so it is not evidence about the model")
 
     def test_a_judged_local_failure_still_escalates(self):
-        """Issue #172's actual purpose — a write cap that a JUDGE failed on local moves to
-        Claude. Narrowing must not disable it."""
-        for path in ("engine.py", "workflows.py"):
-            src = workflow_src() if path == "workflows.py" else open(path).read()
-            i = src.index("WRITE_LOCAL_ESCALATE_REASON")
-            block = src[max(0, i - 900):i]
-            self.assertIn('write_local', block)
-            self.assertIn('local_fallback', block)
+        """Issue #172's actual purpose — a write cap a JUDGE failed on local moves to Claude."""
+        step = ladder.next_step(ladder.start(self.LIMITS), self.LIMITS,
+                                self._verdict("judge"), write_local=True)
+        self.assertTrue(step.state.local_disabled)
+        self.assertEqual(step.state.local_disabled_reason, "escalated")
 
-    def test_it_matches_the_rung_rule_directly_below_it(self):
-        """The same loop already spares a harness death from spending a ladder rung, for the same
-        stated reason. The two decisions disagreeing is the bug."""
-        src = workflow_src()
-        i = src.index("WRITE_LOCAL_ESCALATE_REASON")
-        after = src[i:i + 1200]
-        self.assertIn('verdict.get("source") == "harness"', after,
-                      "expected the rung-sparing check just below the escalation check")
+    def test_a_supervisor_kill_escalates_too(self):
+        """A kill is a deliberate intervention, not a harness death — it is evidence."""
+        step = ladder.next_step(ladder.start(self.LIMITS), self.LIMITS,
+                                self._verdict("supervisor"), write_local=True)
+        self.assertTrue(step.state.local_disabled)
+
+    def test_strict_mode_keeps_a_verify_failed_local_run_local(self):
+        """`local_fallback=0`: the ladder retries the same local model and lands in needs-human
+        rather than being rescued by Claude."""
+        strict = ladder.Limits.of(3, 2, 1, local_fallback=False,
+                                  write_local_escalate_reason="escalated")
+        step = ladder.next_step(ladder.start(strict), strict,
+                                self._verdict("judge"), write_local=True)
+        self.assertFalse(step.state.local_disabled)
+
+    def test_it_matches_the_rung_rule_beside_it(self):
+        """The same function already spares a harness death from spending a judged rung, for the
+        same stated reason. The two decisions disagreeing is the bug this class exists for."""
+        state = ladder.start(self.LIMITS)
+        after_harness = ladder.next_step(state, self.LIMITS, self._verdict("harness")).state
+        self.assertEqual(after_harness.judged, 0, "a harness death must not spend a judged rung")
+        self.assertEqual(after_harness.spare, self.LIMITS.max_harness_retries - 1)
+        after_judge = ladder.next_step(state, self.LIMITS, self._verdict("judge")).state
+        self.assertEqual(after_judge.judged, 1)
+        self.assertEqual(after_judge.spare, self.LIMITS.max_harness_retries)
+
+    def test_neither_ladder_re_derives_the_rule(self):
+        """The grep guard that remains: the decision has ONE home. A copy reappearing in either
+        runtime is how the two drifted the first time."""
+        for path in ("engine.py", "workflows.py"):
+            src = workflow_src() if path == "workflows.py" else _read(path)
+            with self.subTest(path=path):
+                self.assertNotIn('verdict.get("source") != "harness"', src,
+                                 f"{path} re-derives the escalation rule — call ladder.next_step")
+                self.assertIn("ladder.", src, f"{path} must consume the shared state machine")
 
 
 def _read(name):

@@ -47,7 +47,7 @@ Read the layer's rules file before editing it — each carries the invariants th
 
 Two cross-layer invariants that don't live in any one of them:
 
-- **The verify→retry→escalate loop is written ONCE, in `engine._ladder_core`** (via `_run_ladder`/`execute`). `OttoWorkflow._verify_ladder` is a deliberate third mirror — deterministic code can't merge in, so change one, mirror the other (`test_pipeline.LadderJudgeContextTests`).
+- **The ladder's DECISIONS live once, in `ladder.py`** — pure, so both the sync loop (`engine._ladder_core`) and the deterministic one (`OttoWorkflow._verify_ladder`) consume them; only side effects differ. Never re-derive a rung rule (`LadderStateMachineTests`).
 - **Five ingresses normalize into one `OttoWorkflow`.** The split that matters everywhere: **interactive** (clarify, wait for approval) vs **unattended** (deliver to `reply_to`).
 
 ## Conventions & gotchas

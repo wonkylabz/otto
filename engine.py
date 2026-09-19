@@ -15,6 +15,7 @@ import codex_cli
 import config
 import error_classifier
 import gateway
+import ladder
 import local_runtime
 import mcp_client
 import registry  # noqa: F401 - facade seam: the suite patches engine.registry, not registry
@@ -735,38 +736,37 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
 
     `budget=True` applies the per-run hard/soft cost ceiling. Plan-mode steps pass False (their
     spend is accounted by the plan, not per step) — see the note in `_run_ladder`."""
-    n = max(1, config.setting("max_attempts"))
-    # Mirrors OttoWorkflow._verify_ladder: a HARNESS death draws on its own bounded budget rather
-    # than spending a judged rung, because no judge read it — see the note there.
-    spare = max(0, config.setting("max_harness_retries"))
-    critique, result, verdict, local_disabled = None, "(no output)", None, False
-    local_disabled_reason, strict_stopped, budget_stopped = None, False, False
+    # The loop's CONTROL FLOW is `ladder.py`, shared verbatim with OttoWorkflow._verify_ladder —
+    # the counters, the harness-vs-judged rung accounting, the final-rung escalation and the
+    # local-write latch all live there, so the mirror is code rather than prose.
+    limits = ladder.Limits.of(config.setting("max_attempts"),
+                              config.setting("max_harness_retries"),
+                              config.setting("max_supervisor_kills"),
+                              config.setting("local_fallback"),
+                              config.WRITE_LOCAL_ESCALATE_REASON)
+    state = ladder.start(limits)
+    result, verdict = "(no output)", None
+    strict_stopped, budget_stopped = False, False
     auth_stopped, auth_wall = False, None
-    cost, tokens_out, attempt, att = 0, 0, 1, None
-    judged, attempt, harness_stopped = 0, 0, False
-    kills = 0
-    max_kills = max(0, config.setting("max_supervisor_kills"))
+    cost, tokens_out, att, harness_stopped = 0, 0, None, False
     while True:
-        attempt += 1
-        final = judged == n - 1
+        nxt = ladder.plan_attempt(state, limits)
+        attempt, final = nxt.attempt, nxt.final
         # Hard cost ceiling: stop before another attempt (never on attempt 1 — spend starts at 0).
         if budget and config.budget_exceeded(tokens_out, cost, hard=True):
             budget_stopped = True
             break
         downshift = budget and not final and config.budget_exceeded(tokens_out, cost, hard=False)
-        # Never arm the kill switch on the FINAL rung: a kill's whole value is the critique it
-        # hands the NEXT attempt, and on the last one there is no next — the run just ends holding
-        # an aborted partial instead of whatever that attempt would have produced.
-        att = run_attempt(request, cap, attempt=attempt, critique=critique, escalate=final,
+        att = run_attempt(request, cap, attempt=attempt, critique=state.critique, escalate=final,
                           downshift=downshift, extra_tools=extra_tools,
                           mcp_config_path=mcp_config_path, wid=wid, recall=recall, project=project,
-                          local_disabled=local_disabled,
-                          local_disabled_reason=local_disabled_reason,
+                          local_disabled=state.local_disabled,
+                          local_disabled_reason=state.local_disabled_reason,
                           memory_enabled=memory_enabled, model_override=model_override,
-                          supervise_enforce=(not final and kills < max_kills))
-        if (att.get("supervision") or {}).get("killed"):
-            kills += 1
-        local_disabled = local_disabled or att.get("local_incapable", False)
+                          supervise_enforce=nxt.supervise_enforce)
+        state = ladder.record_attempt(
+            state, nxt, killed=bool((att.get("supervision") or {}).get("killed")),
+            local_incapable=att.get("local_incapable", False))
         wid = att["workflow"]
         result = att["result"]
         cost += att["cost"]
@@ -809,43 +809,26 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
                        fallback_from=att.get("fallback_from"),
                        fallback_reason=att.get("fallback_reason"),
                        fallback_detail=att.get("fallback_detail"))
-        if verdict["passed"]:
-            break
-        # Safe local write escalation (issue #172): a WRITE cap that ran locally and FAILED verify
-        # escalates off local — the rest of the ladder (incl. the final strongest-model rung) runs
-        # on Claude instead of retrying on the same weak local model, which would dead-end or ship
-        # a shallow PR. A local write that PASSES never reaches here (loop broke above).
-        # Strict mode keeps a verify-failed local run LOCAL: the ladder retries on the same local
-        # model and lands in needs-human rather than being rescued by Claude.
-        # A HARNESS DEATH IS NOT A VERDICT, so it must not banish the run from local either.
-        # `verdict["source"] == "harness"` means the attempt errored or ran out of turns and NO
-        # judge ever read the work — the same reason the rung accounting below spares it. Measured
-        # (`web-a056884d`): deepseek emitted 75k output tokens of reasoning and hit
-        # LOCAL_EXEC_MAX_TOKENS with no final answer, which latched the rest of the ladder onto
-        # Claude and cost three attempts ending on Opus ($2.60) — for a token ceiling an env var
-        # raises. This is the same distinction gateway-backends.md already draws for `local_wall`:
-        # a deterministic wall latches, a budget death is the model working and not finishing, so
-        # a retry with the critique folded in can do better and stays local.
-        if (write_escalate and config.setting("local_fallback") and not local_disabled
-                and att.get("write_local") and verdict.get("source") != "harness"):
-            local_disabled, local_disabled_reason = True, config.WRITE_LOCAL_ESCALATE_REASON
+        was_local_disabled = state.local_disabled
+        step = ladder.next_step(state, limits, verdict,
+                                write_local=write_escalate and att.get("write_local", False))
+        state = step.state
+        if state.local_disabled and not was_local_disabled:
             trace("ESCALATE", f"{wid} write cap failed verify on local — rest of ladder on Claude")
-        critique = verdict["critique"]
+        if step.reason == ladder.PASSED:
+            break
         if not final:
             trace("RETRY", f"{wid} attempt {attempt} failed verification — retrying with critique")
-        if verdict.get("source") == "harness":
-            spare -= 1
-            if spare < 0:
-                harness_stopped = True
-                break
-        else:
-            judged += 1
-            if judged >= n:
-                break
+        if step.stop:
+            harness_stopped = step.reason == ladder.HARNESS_EXHAUSTED
+            break
     return {"att": att, "wid": wid, "result": result,
             "passed": bool(verdict and verdict["passed"]),
             "critique": None if not verdict else verdict.get("critique"),
-            "cost": cost, "tokens_out": tokens_out, "attempts": attempt,
+            "cost": cost, "tokens_out": tokens_out,
+            # The loop variable, not `state.attempt`: a BUDGET stop breaks before the
+            # attempt is recorded, and the old loop counted that intended attempt here.
+            "attempts": attempt,
             "strict_stop": strict_stopped, "budget_stop": budget_stopped,
             "auth_stop": auth_stopped, "auth_wall": auth_wall,
             "harness_stop": harness_stopped}

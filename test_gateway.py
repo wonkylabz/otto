@@ -5610,6 +5610,132 @@ class DeclaredToolsFrontmatterTests(unittest.TestCase):
         self.assertEqual(mcp_client.declared_servers(cap), ["grafana"])
 
 
+class SubprocessScaffoldTests(unittest.TestCase):
+    """The scaffolding around a captured subprocess turn is written ONCE, in `claude_cli`.
+
+    `claude_cli.run_json` and `codex_cli.run_json` each carried their own copy of it — the
+    transcript bootstrap, the watchdog, the stderr drain, the abort watch and the closing
+    records — ~60 structurally identical lines whose stdout loops legitimately differ (Claude ends
+    a turn on a `result` event, Codex on `turn.completed`, and its exit code is not a verdict).
+    Sharing the scaffold keeps that real difference visible instead of buried in a copy.
+
+    These exercise REAL processes, because every one of these helpers is about what happens when a
+    child misbehaves, and a mock cannot be killed."""
+
+    def _spawn(self, code):
+        # `start_new_session=True` exactly as both runtimes spawn: `kill_tree` signals the process
+        # GROUP, so without it a watchdog would reach this test runner too.
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+        def _cleanup():
+            if proc.poll() is None:
+                claude_cli.kill_tree(proc)
+                proc.wait(timeout=5)
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe and not pipe.closed:
+                    pipe.close()
+
+        self.addCleanup(_cleanup)
+        return proc
+
+    def test_bootstrap_truncates_a_stale_transcript_and_appends_from_two_fds(self):
+        """A re-dispatch after a wall reuses the path, so the dead attempt's bytes must go. The
+        reopen is O_APPEND because the supervisor writes to the same file through a second fd."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "sub", "t.jsonl")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as fh:
+            fh.write("STALE\n")
+        sink = claude_cli.open_transcript(path, {"type": "otto-meta", "prompt": "hi"},
+                                          gc=lambda: None)
+        self.addCleanup(sink.close)
+        with open(path) as fh:
+            self.assertNotIn("STALE", fh.read())
+        with open(path, "a") as second:                 # the supervisor's fd
+            second.write(claude_cli.transcript_line({"type": "supervisor"}))
+        sink.write(claude_cli.transcript_line({"type": "stream"}))
+        sink.flush()
+        with open(path) as fh:
+            kinds = [json.loads(line)["type"] for line in fh]
+        self.assertEqual(kinds, ["otto-meta", "supervisor", "stream"],
+                         "two O_APPEND fds must interleave at EOF, not clobber each other")
+
+    def test_a_run_with_no_transcript_gets_no_sink(self):
+        self.assertIsNone(claude_cli.open_transcript("", {"type": "otto-meta"}))
+        claude_cli.close_transcript(None, stderr="x", timed_out=True, timeout=1)   # must not raise
+
+    def test_the_closing_records_separate_a_kill_from_a_slow_exit(self):
+        """`after_result` is the whole point: a turn that produced a result and was merely slow to
+        exit is not a timeout, and reading it as one spent a rung of `max_harness_retries`."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "t.jsonl")
+        sink = claude_cli.open_transcript(path, {"type": "otto-meta"}, gc=lambda: None)
+        claude_cli.close_transcript(sink, stderr="boom", timed_out=True, timeout=5,
+                                    after_result=True)
+        with open(path) as fh:
+            rec = [json.loads(line) for line in fh]
+        self.assertEqual(rec[-2]["type"], "stderr")
+        self.assertEqual(rec[-2]["text"], "boom")
+        self.assertEqual(rec[-1], {"type": "otto-timeout", "after_s": 5, "after_result": True})
+        self.assertTrue(sink.closed)
+
+    def test_the_watchdog_kills_a_hung_child_and_records_that_it_did(self):
+        proc = self._spawn("import time; time.sleep(30)")
+        started = time.time()
+        timed_out, timer = claude_cli.arm_watchdog(proc, 1)
+        proc.wait()
+        timer.cancel()
+        self.assertTrue(timed_out.is_set(), "the kill must be recorded, or it reads as a clean exit")
+        self.assertLess(time.time() - started, 15, "the watchdog did not fire")
+
+    def test_a_clean_exit_is_never_recorded_as_a_timeout(self):
+        proc = self._spawn("print('done')")
+        timed_out, timer = claude_cli.arm_watchdog(proc, 30)
+        proc.wait()
+        timer.cancel()
+        self.assertFalse(timed_out.is_set())
+
+    def test_stderr_is_drained_so_a_chatty_child_cannot_block_on_its_own_pipe(self):
+        proc = self._spawn("import sys; sys.stderr.write('E!')")
+        thread, buf = claude_cli.drain_stderr(proc)
+        proc.wait()
+        thread.join(5)
+        self.assertEqual((buf[0] if buf else "").strip(), "E!")
+
+    def test_the_abort_watch_kills_on_signal_and_is_a_no_op_without_one(self):
+        class Abort:
+            def __init__(self):
+                self.reason = "supervisor"
+                self._event = threading.Event()
+
+            def wait(self, seconds):
+                return self._event.wait(seconds)
+
+        proc = self._spawn("import time; time.sleep(30)")
+        abort = Abort()
+        claude_cli.watch_abort(proc, abort)
+        abort._event.set()
+        started = time.time()
+        proc.wait()
+        self.assertLess(time.time() - started, 15, "the abort did not reach the child")
+        claude_cli.watch_abort(proc, None)          # must not raise, must start no thread
+
+    def test_neither_runtime_rebuilds_the_scaffold_it_shares(self):
+        """A second copy is where the two backends start drifting — which is exactly how only one
+        of the three data fences ever learned to escape its own delimiter."""
+        for name in ("codex_cli.py", "local_runtime.py"):
+            with self.subTest(module=name):
+                with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name)) as fh:
+                    src = fh.read()
+                self.assertNotIn('open(transcript, "w").close()', src,
+                                 f"{name} bootstraps its own transcript — use open_transcript")
+                self.assertNotIn("threading.Timer(timeout", src,
+                                 f"{name} arms its own watchdog — use arm_watchdog")
+
+
 class ContextTrimTests(unittest.TestCase):
     """`--allowedTools` grants permission but unloads nothing, so the trimming is done by
     `--disallowedTools`/`--setting-sources`. Both are easy to silently break: dropping a tool

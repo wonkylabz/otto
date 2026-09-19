@@ -24,6 +24,7 @@ import re
 
 import config
 import gateway
+import lexicon
 import storage
 from ui import trace
 
@@ -188,10 +189,8 @@ def _distill(text):
 
 
 def _keywords(text):
-    """Significant words for overlap matching — mirrors `memory._keywords` (and through it
-    `registry.Capability.score`), so a convention is ranked the way facts and caps already are."""
-    text = re.sub(r"https?://\S+", " ", (text or "").lower())
-    return {w for w in re.findall(r"[a-z]+", text) if len(w) > 3}
+    """Significant words for ranking a rule against the request, via the shared `lexicon.tokens`."""
+    return lexicon.tokens(text, digits=False)
 
 
 def _budget():

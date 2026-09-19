@@ -11,6 +11,7 @@ import os
 import re
 
 import config
+import lexicon
 import repos
 import storage
 
@@ -104,11 +105,12 @@ _RANK_STOP = set(
 
 
 def _rank_tokens(text):
-    """Tokens for lexical matching. Pasted URLs are stripped first: their path segments (e.g. a
-    CI build URL's "buildConfiguration/.../Infrastructure") inject topic nouns that skew the
-    shortlist toward topic-matching read caps and can prune the cap that does the actual action."""
-    text = re.sub(r"https?://\S+", " ", (text or "").lower())
-    return [w for w in re.findall(r"[a-z0-9]+", text) if len(w) > 2 and w not in _RANK_STOP]
+    """Tokens for lexical matching. A LIST, not a set — `rank` counts term frequency.
+
+    The shared tokenizer is `lexicon.tokens`; the two arguments below are the only thing that
+    made this a separate function. A cap's description is a one-line summary, so a 3-char floor
+    keeps "api"/"ci", and `_RANK_STOP` carries the filler that summary style drowns in."""
+    return lexicon.tokens(text, min_len=3, stop=_RANK_STOP, as_set=False)
 
 
 def rank(request, caps):

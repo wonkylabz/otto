@@ -594,64 +594,74 @@ def verify_capability(payload: dict) -> dict:
                          steers=payload.get("steers"))
 
 
-@activity.defn
-@_heartbeats("qa")
-def qa_capability(payload: dict) -> dict:
-    """Run the configured QA capability (default agent:sre-qa, config.QA_CAP) against an opened
-    PR, for the post-PR QA loop. PRE-AUTHORIZED: enabling the loop is the grant, so this runs
-    without a gate (sre-qa self-limits its apply/destroy to dev/staging). Returns the QA
-    transcript + metadata, or {missing:True} if the QA cap isn't registered/enabled."""
-    cap = _cap(config.QA_CAP)
+# The two post-PR loops are one parameterised body in `wf_postpr._LOOPS`; this is the same seam,
+# one layer down. `capability` and `judge` were 16 and 5 lines each, identical but for the cap
+# constant, the request builder and two return-key names — the exact shape `_LOOPS` exists to hold.
+# Temporal registers an activity by NAME, so the two thin `@activity.defn` wrappers stay.
+_POST_PR = {
+    "qa":     {"cap_setting": "QA_CAP",     "request": "qa_review_request",
+               "cap_field": "qa_cap",       "risk_field": "qa_risk",     "label": "QA"},
+    "review": {"cap_setting": "REVIEW_CAP", "request": "review_request",
+               "cap_field": "review_cap",   "risk_field": "review_risk", "label": "review"},
+}
+
+
+def _post_pr_capability(kind, payload):
+    """Run one post-PR loop's capability against an opened PR. PRE-AUTHORIZED: enabling the loop
+    is the grant, so this runs without a gate. Returns the transcript + metadata, or
+    {missing:True} if that loop's cap isn't registered/enabled."""
+    spec = _POST_PR[kind]
+    want = getattr(config, spec["cap_setting"])
+    cap = _cap(want)
     if cap is None:
-        activity.logger.info(f"QA requested but cap '{config.QA_CAP}' is not registered/enabled")
-        return {"missing": True, "qa_cap": config.QA_CAP}
+        activity.logger.info(f"{spec['label']} requested but cap '{want}' is not "
+                             "registered/enabled")
+        return {"missing": True, spec["cap_field"]: want}
     mcp_tools, mcp_path = _mcp()
-    req = engine.qa_review_request(payload["pr_url"], payload.get("repo"), payload["request"])
+    req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
+                                           payload["request"])
     _warm_conventions(engine._resolve_project(None, payload.get("repo")))
     att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                              mcp_config_path=mcp_path, wid=payload.get("wid"))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
-            "tokens": att.get("tokens"), "model": att.get("model"), "duration_s": att.get("duration_s"),
-            "qa_cap": cap.name, "qa_risk": cap.risk}
+            "tokens": att.get("tokens"), "model": att.get("model"),
+            "duration_s": att.get("duration_s"),
+            spec["cap_field"]: cap.name, spec["risk_field"]: cap.risk}
+
+
+def _judge_post_pr(judge, payload):
+    """Classify one post-PR transcript into {verdict: pass|fail|inconclusive, critique}, judged
+    against the target repo's own CLAUDE.md conventions (both loops are repo-mode only)."""
+    return judge(payload["request"], payload["result"],
+                 project=engine._resolve_project(None, payload.get("repo")))
+
+
+@activity.defn
+@_heartbeats("qa")
+def qa_capability(payload: dict) -> dict:
+    """Run the configured QA capability (default agent:sre-qa, config.QA_CAP) against an opened
+    PR, for the post-PR QA loop (sre-qa self-limits its apply/destroy to dev/staging)."""
+    return _post_pr_capability("qa", payload)
 
 
 @activity.defn
 def judge_qa(payload: dict) -> dict:
-    """Classify a QA transcript into {verdict: pass|fail|inconclusive, critique}, judged
-    against the target repo's own CLAUDE.md conventions (QA loop is repo-mode only)."""
-    return engine.judge_qa(payload["request"], payload["result"],
-                           project=engine._resolve_project(None, payload.get("repo")))
+    """Classify a QA transcript (pass=validated, fail=still broken)."""
+    return _judge_post_pr(engine.judge_qa, payload)
 
 
 @activity.defn
 @_heartbeats("review")
 def review_capability(payload: dict) -> dict:
     """Run the configured review capability (default: the stock code-reviewer, config.REVIEW_CAP)
-    against an opened PR, for the post-PR code-review loop. PRE-AUTHORIZED (enabling the loop is
-    the grant); the reviewer is read-only (it inspects the PR via `gh`). Returns the review
-    transcript + metadata, or {missing:True} if the review cap isn't registered/enabled."""
-    cap = _cap(config.REVIEW_CAP)
-    if cap is None:
-        activity.logger.info(f"review requested but cap '{config.REVIEW_CAP}' is not "
-                             "registered/enabled")
-        return {"missing": True, "review_cap": config.REVIEW_CAP}
-    mcp_tools, mcp_path = _mcp()
-    req = engine.review_request(payload["pr_url"], payload.get("repo"), payload["request"])
-    _warm_conventions(engine._resolve_project(None, payload.get("repo")))
-    att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
-                             mcp_config_path=mcp_path, wid=payload.get("wid"))
-    return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
-            "tokens": att.get("tokens"), "model": att.get("model"),
-            "duration_s": att.get("duration_s"), "review_cap": cap.name, "review_risk": cap.risk}
+    against an opened PR. The reviewer is read-only — it inspects the PR via `gh`."""
+    return _post_pr_capability("review", payload)
 
 
 @activity.defn
 def judge_review(payload: dict) -> dict:
-    """Classify a review transcript into {verdict: pass|fail|inconclusive, critique} (pass=clean,
-    fail=has must/should-fix findings), judged against the target repo's own CLAUDE.md
-    conventions (the review loop is repo-mode only)."""
-    return engine.judge_review(payload["request"], payload["result"],
-                               project=engine._resolve_project(None, payload.get("repo")))
+    """Classify a review transcript (pass=clean, fail=has must/should-fix findings)."""
+    return _judge_post_pr(engine.judge_review, payload)
 
 
 @activity.defn

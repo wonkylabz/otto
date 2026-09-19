@@ -14,6 +14,7 @@ import claude_cli
 import codex_cli
 import config
 import conventions
+import facade
 import gateway
 import local_runtime
 from audit import _audit
@@ -22,13 +23,7 @@ from memory import _resolve_project
 from ui import trace
 
 
-def _eng():
-    """The engine facade — tests monkeypatch attributes there (engine._claude,
-    engine._run_ladder, engine.replan_steps, ...), so patch-sensitive values and cross-calls
-    resolve through it at call time, never bind at import. Same contract as the other
-    extracted layers' _eng."""
-    import engine
-    return engine
+_eng = facade.eng   # the ONE implementation (see facade.py)
 
 
 # --- Planner: decompose into an ordered chain of atomic steps -------------

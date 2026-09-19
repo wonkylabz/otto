@@ -10,18 +10,14 @@ import os
 import re
 
 import config
+import facade
 import gateway
 import registry
 from contracts import CONVERSATION_AUDIENCE, _DIRECT_REPLY_FORMAT, task_text
 from ui import trace
 
 
-def _eng():
-    """The engine facade — tests monkeypatch attributes there, so patch-sensitive values and
-    cross-calls resolve through it at call time, never bind at import. Same contract as the
-    other extracted layers' _eng."""
-    import engine
-    return engine
+_eng = facade.eng   # the ONE implementation (see facade.py)
 
 
 # --- Router #1: which capability? -----------------------------------------

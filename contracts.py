@@ -408,12 +408,22 @@ def task_text(request):
     return head or (request or "")
 
 
+def fence_block(text, mark):
+    """Wrap untrusted text as a delimited DATA block, neutralising a spoofed closing fence in the
+    body so the text cannot break out of it. PURE.
+
+    The ONE implementation. It used to be three — this, `board.issue_to_request` and
+    `pr_review.pr_to_request` — and only this one escaped the delimiter, so a ticket or PR title
+    containing the closing marker walked straight out of its own fence and read as instructions to
+    the executor. That is what a duplicated decision costs: the hardening was written once and the
+    other two copies stayed at the version before it."""
+    body = (text or "").replace(mark, " ".join(mark))
+    return f"{mark}\n{body}\n{mark}"
+
+
 def _fenced(text):
-    """Wrap untrusted user/ticket text as a delimited data block so it can't pose as an
-    instruction to a classifier. Neutralises a spoofed closing fence in the body so the text
-    can't break out of the block. PURE. Callers pair it with _DATA_FENCE_PREAMBLE."""
-    body = (text or "").replace("|||", "| | |")
-    return f"|||\n{body}\n|||"
+    """The classifier-prompt fence: `|||` markers, paired with `_DATA_FENCE_PREAMBLE`. PURE."""
+    return fence_block(text, "|||")
 
 
 

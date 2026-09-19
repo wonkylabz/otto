@@ -448,46 +448,25 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
                 "guard": guard, "read_guard": guard == "bwrap",
                 "wall_reason": "cli_missing", "wall_detail": detail[:2000],
                 "tools_used": [], "tools_failed": []}
-    sink = None
-    if transcript:
-        claude_cli.gc_transcripts()
-        os.makedirs(os.path.dirname(transcript), exist_ok=True)
-        open(transcript, "w").close()
-        sink = open(transcript, "a")
+    sink = claude_cli.open_transcript(transcript, {
+        "type": "otto-meta", "backend": "codex", "prompt": prompt, "model": model,
+        "system_context": system_context, "effort": config.effort_level(effort),
+        "sandbox": sandbox, "cwd": cwd, "at": time.time(),
+        # WHICH guard served this turn. The fallback enforces the writes and NOT the read
+        # deny-set, so a transcript that cannot say which one ran cannot answer whether
+        # this run could have read the key store.
+        "guard": guard, "read_guard": guard == "bwrap",
+        "argv": [a for a in cmd if a != full_prompt],
+        "supervised": on_event is not None, **(meta or {})})
+    if sink and steer is not None:
         sink.write(claude_cli.transcript_line({
-            "type": "otto-meta", "backend": "codex", "prompt": prompt, "model": model,
-            "system_context": system_context, "effort": config.effort_level(effort),
-            "sandbox": sandbox, "cwd": cwd, "at": time.time(),
-            # WHICH guard served this turn. The fallback enforces the writes and NOT the read
-            # deny-set, so a transcript that cannot say which one ran cannot answer whether
-            # this run could have read the key store.
-            "guard": guard, "read_guard": guard == "bwrap",
-            "argv": [a for a in cmd if a != full_prompt],
-            "supervised": on_event is not None, **(meta or {})}))
-        if steer is not None:
-            sink.write(claude_cli.transcript_line({
-                "type": "otto-steer-unsupported", "at": time.time(),
-                "text": "codex exec has no mid-turn user-message channel"}))
+            "type": "otto-steer-unsupported", "at": time.time(),
+            "text": "codex exec has no mid-turn user-message channel"}))
         sink.flush()
 
-    timed_out = threading.Event()
-
-    def _kill():
-        timed_out.set()
-        claude_cli.kill_tree(proc)
-
-    stderr_buf = []
-    threading.Thread(target=claude_cli._drain, args=(proc.stderr, stderr_buf),
-                     daemon=True).start()
-    watchdog = threading.Timer(timeout, _kill)
-    watchdog.start()
-    if abort is not None:
-        def _abort_watch():
-            while proc.poll() is None:
-                if abort.wait(0.5):
-                    claude_cli.kill_tree(proc)
-                    return
-        threading.Thread(target=_abort_watch, daemon=True).start()
+    timed_out, watchdog = claude_cli.arm_watchdog(proc, timeout)
+    _stderr_thread, stderr_buf = claude_cli.drain_stderr(proc)
+    claude_cli.watch_abort(proc, abort)
 
     session, answer, usage, errors = None, None, {}, []
     # `turn.completed` is THE end-of-turn marker, and the only one — this backend has no single
@@ -537,15 +516,8 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
     finally:
         watchdog.cancel()
         stderr = (stderr_buf[0] if stderr_buf else "").strip()
-        if sink:
-            if stderr:
-                sink.write(claude_cli.transcript_line({"type": "stderr",
-                                                       "text": stderr[:20_000]}))
-            if timed_out.is_set():
-                sink.write(claude_cli.transcript_line(
-                    {"type": "otto-timeout", "after_s": timeout,
-                     "after_result": answer is not None}))
-            sink.close()
+        claude_cli.close_transcript(sink, stderr=stderr, timed_out=timed_out.is_set(),
+                                    timeout=timeout, after_result=answer is not None)
         # `-o` is the primary answer and the stream the fallback: the file holds exactly the
         # final message, while the stream needs the last-wins rule above to get there. Both are
         # only an ANSWER at all once the turn declared itself finished.

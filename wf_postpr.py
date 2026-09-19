@@ -65,6 +65,19 @@ _LOOPS = {
         "fix_lead": "A code review of this PR raised findings. Address them, ",
         "blocked_lead": "Review raised findings but",
         "unfinished_lead": "Review raised findings but",
+        # The human-facing appendix, one line per verdict. Declarative because the WORDING is the
+        # only thing that ever differed between the two loops' summaries — the assembly around it
+        # (the rounds suffix, the critique clip, the fall-through to failure) was copied verbatim.
+        "summary": {
+            "cap_default": "review",
+            "pass": "✅ **Code review ({cap}): clean**{fixes} — no blocking findings.",
+            "inconclusive": "⚠️ **Code review ({cap}): INCONCLUSIVE**{fixes} — couldn't assess "
+                            "it; PR left draft for a human.{crit}",
+            "unavailable": "_Code review was requested but the review capability (`{cap}`) isn't "
+                           "registered/enabled._",
+            "failed": "❌ **Code review ({cap}): unaddressed findings**{fixes} — PR left draft "
+                      "for human review.{crit}",
+        },
     },
     "qa": {
         "attr": "_qa",
@@ -80,6 +93,15 @@ _LOOPS = {
         "fix_lead": "The QA validation of this PR did not pass. Address these findings, ",
         "blocked_lead": "QA failed but",
         "unfinished_lead": "QA failed and",
+        "summary": {
+            "cap_default": "QA",
+            "pass": "✅ **{cap}: PASS**{fixes} — the PR is empirically validated and safe to merge.",
+            "inconclusive": "⚠️ **{cap}: INCONCLUSIVE**{fixes} — couldn't be proven either way; "
+                            "PR left draft for a human.{crit}",
+            "unavailable": "_QA was requested but the QA capability (`{cap}`) isn't "
+                           "registered/enabled._",
+            "failed": "❌ **{cap}: still FAILING**{fixes} — PR left draft for human review.{crit}",
+        },
     },
 }
 
@@ -232,39 +254,21 @@ class PostPrMixin:
         """Empirically validate the opened PR, fixing QA failures on the same branch."""
         return await self._run_fix_loop("qa", request, cap, repo, pr_url)
 
-    def _review_summary(self, review):
-        """Human-facing appendix describing the code-review outcome, appended to the result."""
-        if not review:
-            return ""
-        state = review.get("state")
-        cap, rounds = review.get("review_cap") or "review", review.get("rounds", 0)
-        fixes = f" after {rounds} fix round{'s' if rounds != 1 else ''}" if rounds else ""
-        crit = (review.get("critique") or "").strip()
-        crit = f"\n\n{crit[:800]}" if crit else ""
-        if state == "pass":
-            return f"\n\n✅ **Code review ({cap}): clean**{fixes} — no blocking findings."
-        if state == "inconclusive":
-            return (f"\n\n⚠️ **Code review ({cap}): INCONCLUSIVE**{fixes} — couldn't assess it; "
-                    f"PR left draft for a human.{crit}")
-        if state == "unavailable":
-            return (f"\n\n_Code review was requested but the review capability (`{cap}`) isn't "
-                    "registered/enabled._")
-        return (f"\n\n❌ **Code review ({cap}): unaddressed findings**{fixes} — PR left draft for "
-                f"human review.{crit}")
+    def _loop_summary(self, kind, outcome):
+        """Human-facing appendix describing one post-PR loop's outcome, appended to the result.
 
-    def _qa_summary(self, qa):
-        """Human-facing appendix describing the QA outcome, appended to the result."""
-        if not qa:
+        This was `_review_summary` and `_qa_summary` — 19 and 16 lines, structurally identical down
+        to a byte-identical pluralisation expression and critique clip, differing only in wording.
+        `_LOOPS` was built to hold exactly that kind of difference, and the summaries were the one
+        thing left outside it. An unknown state falls through to the failure line: a verdict nobody
+        anticipated must read as "a human should look", never as silence."""
+        if not outcome:
             return ""
-        state, cap, rounds = qa.get("state"), qa.get("qa_cap") or "QA", qa.get("rounds", 0)
+        spec = _LOOPS[kind]["summary"]
+        cap = outcome.get(_LOOPS[kind]["cap_field"]) or spec["cap_default"]
+        rounds = outcome.get("rounds", 0)
         fixes = f" after {rounds} fix round{'s' if rounds != 1 else ''}" if rounds else ""
-        crit = (qa.get("critique") or "").strip()
+        crit = (outcome.get("critique") or "").strip()
         crit = f"\n\n{crit[:800]}" if crit else ""
-        if state == "pass":
-            return f"\n\n✅ **{cap}: PASS**{fixes} — the PR is empirically validated and safe to merge."
-        if state == "inconclusive":
-            return (f"\n\n⚠️ **{cap}: INCONCLUSIVE**{fixes} — couldn't be proven either way; "
-                    f"PR left draft for a human.{crit}")
-        if state == "unavailable":
-            return f"\n\n_QA was requested but the QA capability (`{cap}`) isn't registered/enabled._"
-        return f"\n\n❌ **{cap}: still FAILING**{fixes} — PR left draft for human review.{crit}"
+        line = spec.get(outcome.get("state")) or spec["failed"]
+        return "\n\n" + line.format(cap=cap, fixes=fixes, crit=crit)

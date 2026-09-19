@@ -2105,6 +2105,145 @@ class SetupWizardTests(unittest.TestCase):
         self.assertNotIn(written, out.getvalue())
 
 
+class EngineFacadeBudgetTests(unittest.TestCase):
+    """`engine.py` is a facade: it re-exports the API of the seven modules split out of it, and
+    callers keep addressing `engine.X`. That is deliberate — but it is also the thing that makes
+    the split cosmetic rather than structural, because every extracted module still has to resolve
+    its patch-sensitive seams back through the facade (`facade.eng`) at call time.
+
+    The facade exists for the TEST SUITE, not for production: production never assigns to an
+    `engine` attribute; the suite does, hundreds of times. Nothing bounded it, so the natural
+    direction of travel is for every newly extracted name to be re-exported "just in case" and the
+    seam to widen forever.
+
+    So this is a ratchet, in the spirit of `ClaudeMdBudgetTests`: it carries NO headroom. Adding a
+    re-export fails the suite until the constant is raised, which is a visible line in the diff and
+    a moment to ask whether the caller could import from the owning module instead. Raising it is
+    allowed; raising it silently is not."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    # The modules split out of engine.py, whose API it re-exports.
+    LAYERS = frozenset({"audit", "contracts", "plans", "routing", "intents", "judging", "memory"})
+    # 140 at the time the ratchet was introduced. It only goes DOWN without discussion.
+    MAX_REEXPORTS = 140
+
+    def _reexports(self):
+        with open(os.path.join(self.ROOT, "engine.py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        return {n.module: len(n.names) for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) and n.module in self.LAYERS}
+
+    def test_the_facade_does_not_grow_silently(self):
+        counts = self._reexports()
+        total = sum(counts.values())
+        self.assertLessEqual(
+            total, self.MAX_REEXPORTS,
+            f"engine.py now re-exports {total} names ({counts}), over the {self.MAX_REEXPORTS} "
+            f"ratchet. Import from the owning module if you can; if the facade really must grow, "
+            f"raise MAX_REEXPORTS in the same commit so it shows up in the diff.")
+
+    def test_no_layer_binds_a_facade_name_by_value(self):
+        """`from engine import X` at module scope is the real hazard — it captures the object and
+        a later `engine.X = fake` is never seen. This is what `_eng()` exists to prevent."""
+        for mod in sorted(self.LAYERS):
+            path = os.path.join(self.ROOT, f"{mod}.py")
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            with self.subTest(module=mod):
+                self.assertNotIn("from engine import", src,
+                                 f"{mod}.py binds a facade name by value — go through _eng()")
+
+    def test_every_layer_resolves_the_facade_through_the_one_helper(self):
+        """Six modules each carried their own four-line `_eng()`, four of them documented as
+        "same contract as audit._eng". One contract is one function — a second copy is where the
+        next drift starts."""
+        for mod in sorted(self.LAYERS - {"contracts"}):
+            path = os.path.join(self.ROOT, f"{mod}.py")
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            if "_eng" not in src:
+                continue
+            with self.subTest(module=mod):
+                self.assertNotIn("def _eng(", src,
+                                 f"{mod}.py defines its own _eng — use facade.eng")
+
+    def test_the_facade_is_reached_through_the_module_never_by_value(self):
+        """The guarantee that matters, stated exactly: `engine.X` read through the MODULE stays
+        live, so a test replacing `engine._DB` is seen. Binding the VALUE (`from engine import
+        _DB`) is what breaks it.
+
+        Mutation testing is why this is worded this way — replacing the call-time import with a
+        module-scope one changed no behaviour at all, so the old name overclaimed."""
+        import audit as audit_mod
+        import engine as engine_mod
+        import facade
+        sentinel = object()
+        original = engine_mod._DB
+        try:
+            engine_mod._DB = sentinel
+            self.assertIs(facade.eng()._DB, sentinel)
+            self.assertIs(audit_mod._eng()._DB, sentinel)
+            self.assertIs(facade.eng(), engine_mod, "the helper must hand back the live module")
+        finally:
+            engine_mod._DB = original
+
+
+class TokenizerSingleImplementationTests(unittest.TestCase):
+    """`lexicon.tokens` is the ONE keyword tokenizer.
+
+    It used to be five — `registry._rank_tokens`, `memory._keywords`, `knowledge._keywords`,
+    `conventions._keywords`, `mcp_client._words` — each with a docstring claiming to mirror the
+    others, and all five had already drifted on the character class, the length threshold and the
+    return type. Prose could not hold them together, so this does: a module that grows its own
+    `re.findall(r"[a-z...]+")` tokenizer fails here rather than diverging in silence.
+
+    The differences that remain are ARGUMENTS (`min_len`, `stop`, `digits`, `as_set`) — visible in
+    the diff when one changes, which is the whole point."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    # Every module that tokenizes a request, a fact, a rule or a tool description.
+    CONSUMERS = ("registry.py", "memory.py", "knowledge.py", "conventions.py", "mcp_client.py")
+    # A word-splitting findall over a lowercased alphabet: the shape all five copies had.
+    TOKENIZER = re.compile(r"""findall\(\s*r?["'][^"']*\[a-z""")
+
+    def _src(self, name):
+        with open(os.path.join(self.ROOT, name)) as fh:
+            return fh.read()
+
+    def test_no_consumer_carries_its_own_tokenizer(self):
+        for name in self.CONSUMERS:
+            with self.subTest(module=name):
+                hits = self.TOKENIZER.findall(self._src(name))
+                self.assertEqual(
+                    hits, [],
+                    f"{name} tokenizes on its own ({hits}). Five copies claiming in prose to "
+                    f"mirror each other had already drifted three ways — call lexicon.tokens().")
+
+    def test_every_consumer_routes_through_lexicon(self):
+        for name in self.CONSUMERS:
+            with self.subTest(module=name):
+                self.assertIn("lexicon.tokens(", self._src(name),
+                              f"{name} is listed as a tokenizer consumer but never calls it.")
+
+    def test_lexicon_is_the_only_place_the_url_strip_lives(self):
+        """URL stripping is the one step no caller may opt out of — a pasted link's path segments
+        are topic nouns the asker never said, and they choose the shortlist and the MCP fleet."""
+        self.assertIn("_URL.sub", self._src("lexicon.py"))
+        for name in self.CONSUMERS:
+            with self.subTest(module=name):
+                self.assertNotIn("https?://", self._src(name),
+                                 f"{name} strips URLs itself; lexicon.tokens already does.")
+
+    def test_callers_keep_the_behaviour_they_had(self):
+        """The de-duplication was behaviour-preserving, measured byte-identical over 316 real
+        texts. `digits=False` is what preserves it for the three that split a word at its digits —
+        aligning them is a ranking change with its own measurement, not a refactor."""
+        for name in ("memory.py", "conventions.py", "mcp_client.py"):
+            with self.subTest(module=name):
+                self.assertIn("digits=False", self._src(name))
+        self.assertIn("as_set=False", self._src("registry.py"))   # rank counts term frequency
+
+
 class ResidentRuleGuardTests(unittest.TestCase):
     """Deterministic guards for CLAUDE.md's resident rules, paying down `RuleEnforcementTests`.
 
@@ -2816,7 +2955,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # up in the diff. The history of every bump is in git log, not here.
     # 8045 -> 8055 (#58): the layer table now names `wf_*.py`. `OttoWorkflow` is four files, and
     # the table is the only index from a file to the rules a session must read before editing it.
-    MAX_BYTES = 8055          # resident tier — the per-session tax
+    # 8055 -> 8034: the ladder rule got SHORTER because the thing it describes did. The loop's
+    # decisions moved into `ladder.py`, so the rule no longer has to explain a three-copy mirror
+    # and instruct a reader to keep it in step by hand — the ceiling ratchets DOWN by what left.
+    MAX_BYTES = 8034          # resident tier — the per-session tax
     # 78897 -> 77758 (#56): `gateway-backends.md` had reached 18 KB, digested into every
     # convention judge. Split into gateway/backends/walls and `tools-mcp.md`, and the prose
     # restating a guard test's own docstring pruned out of every file. Both ceilings ratchet
