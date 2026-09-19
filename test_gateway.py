@@ -5723,6 +5723,26 @@ class SubprocessScaffoldTests(unittest.TestCase):
         self.assertLess(time.time() - started, 15, "the abort did not reach the child")
         claude_cli.watch_abort(proc, None)          # must not raise, must start no thread
 
+    def test_both_runtimes_join_the_drain_before_reading_what_it_collected(self):
+        """The drain fills its buffer from another thread, so reading it unjoined can see "" on a
+        child that died talking. stderr is what CLASSIFIES a wall: a version manager's "no version
+        set" read as empty burns the whole ladder instead of latching `cli_missing`."""
+        for name in ("claude_cli.py", "codex_cli.py"):
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name)) as fh:
+                src = fh.read()
+            with self.subTest(module=name):
+                read_at = src.index("stderr_buf[0] if stderr_buf")
+                self.assertIn("join(timeout=", src[:read_at][-400:],
+                              f"{name} reads the stderr buffer without joining its drain first")
+
+    def test_the_drain_buffer_is_populated_once_joined(self):
+        proc = self._spawn("import sys,time; time.sleep(0.2); sys.stderr.write('late failure')")
+        thread, buf = claude_cli.drain_stderr(proc)
+        proc.wait()
+        thread.join(5)
+        self.assertEqual((buf[0] if buf else "").strip(), "late failure",
+                         "a child that writes stderr just before exiting must still be captured")
+
     def test_neither_runtime_rebuilds_the_scaffold_it_shares(self):
         """A second copy is where the two backends start drifting — which is exactly how only one
         of the three data fences ever learned to escape its own delimiter."""

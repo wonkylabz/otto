@@ -417,7 +417,16 @@ def fence_block(text, mark):
     containing the closing marker walked straight out of its own fence and read as instructions to
     the executor. That is what a duplicated decision costs: the hardening was written once and the
     other two copies stayed at the version before it."""
-    body = (text or "").replace(mark, " ".join(mark))
+    if len(mark) < 2:
+        raise ValueError("a fence marker must be at least 2 chars to be escapable")
+    body = text or ""
+    # REPEATED, not a single pass. `str.replace` is non-overlapping, so on a run of five marker
+    # characters it rewrites the first three and leaves the last two abutting the tail of what it
+    # just inserted — reforming an intact marker (`"""""` -> `" " """`). The same holds at 8, 11,
+    # and every 3k+2. Each pass inserts spaces and so strictly shortens the surviving runs, which
+    # is what makes this terminate.
+    while mark in body:
+        body = body.replace(mark, " ".join(mark))
     return f"{mark}\n{body}\n{mark}"
 
 

@@ -879,8 +879,6 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # ISOLATED clone (+ draft PR) instead of mutating the live local checkout — even without an
         # explicit repo-edit label / repo pick. Decided AFTER routing + write-intent so a read run
         # never needlessly clones. (The `if repo:` force-write above already covers explicit repo.)
-        # (repo_hint is None on resume / when no candidate, so this short-circuits before the
-        # fresh-branch-only `subtask` local is referenced.)
         if repo_hint and not repo and not subtask and cap["risk"] == "write":
             repo = repo_hint
             self._repo = repo

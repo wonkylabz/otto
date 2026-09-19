@@ -514,6 +514,11 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=None, resume_sessio
         proc.wait()
     finally:
         watchdog.cancel()
+        # JOIN before reading the buffer. The drain fills it from another thread, so reading it
+        # unjoined can see "" on a child that died talking — and stderr is exactly what classifies
+        # a Codex wall: a version manager's "no version set" read as empty burns the whole ladder
+        # instead of latching `cli_missing` (claude_cli does the same before its own read).
+        _stderr_thread.join(timeout=5)
         stderr = (stderr_buf[0] if stderr_buf else "").strip()
         claude_cli.close_transcript(sink, stderr=stderr, timed_out=timed_out.is_set(),
                                     timeout=timeout, after_result=answer is not None)
