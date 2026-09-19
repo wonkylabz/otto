@@ -4,7 +4,7 @@
 # parsing a shell script.
 [project]
 name = "otto-orchestrator"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local agentic orchestrator for your Claude Code subagents and skills, with routing, approval gates, verification and a durable Temporal run pipeline."
 readme = "README.md"
 license = "MIT"
