@@ -19,6 +19,10 @@ with workflow.unsafe.imports_passed_through():
     # Pure string/enum module — no I/O, no clock — so calling it from workflow code is
     # deterministic and keeps the auth-wall wording in ONE place (engine uses the same function).
     import error_classifier
+    # The ladder's control flow, shared with engine._ladder_core. Pure (dataclasses + arithmetic,
+    # no I/O, no clock, no settings read), which is what lets deterministic workflow code consume
+    # the SAME decisions the sync path makes instead of re-deriving them.
+    import ladder
     # Pure prompt-text module — no I/O, no clock. Only BRAINSTORM_AUDIENCE is read here; the
     # contract text itself is interpolated activity-side (engine._output_contract).
     import contracts
@@ -864,7 +868,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # edit-intent LLM) and, if so, set repo_hint so we auto-engage below — transparently (the
         # gate shows the clone target). The picker stays as an explicit OVERRIDE. Skipped on resume
         # (repo-mode is fresh-only) and for sub-tasks; the board path already carries repo_hint.
-        if (not repo and not repo_hint and not resume and not params.get("subtask")
+        if (not repo and not repo_hint and not resume and not subtask
                 and not unattended and cap["risk"] == "write"):
             sug = await workflow.execute_activity(
                 suggest_repo, {"request": request, "name": cap["name"]},
@@ -875,9 +879,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # ISOLATED clone (+ draft PR) instead of mutating the live local checkout — even without an
         # explicit repo-edit label / repo pick. Decided AFTER routing + write-intent so a read run
         # never needlessly clones. (The `if repo:` force-write above already covers explicit repo.)
-        # (repo_hint is None on resume / when no candidate, so this short-circuits before the
-        # fresh-branch-only `subtask` local is referenced.)
-        if repo_hint and not repo and not params.get("subtask") and cap["risk"] == "write":
+        if repo_hint and not repo and not subtask and cap["risk"] == "write":
             repo = repo_hint
             self._repo = repo
             workflow.logger.info(f"auto-engaging repo-mode for write run -> {repo}")
@@ -911,7 +913,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # that does not contain the code — `web-a6122d6c` spent the full 909s ceiling doing
         # exactly that. Cheap (`gh` only, no clone) and cached on self, so provisioning below
         # reuses it instead of asking again.
-        if repo and not resume and not params.get("subtask"):
+        if repo and not resume and not subtask:
             self._pr_target = await workflow.execute_activity(
                 resolve_pr_target, {"repo": repo, "request": request},
                 start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY) or {}
@@ -1114,7 +1116,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         if pr and pr.get("pr_url") and params.get("review", True):
             self._enter("REVIEW")
             review = await self._run_review_loop(request, cap, repo, pr["pr_url"])
-            notes.append(self._review_summary(review))
+            notes.append(self._loop_summary("review", review))
             self._leave("REVIEW")
             # A review that didn't come back clean needs a human (PR stays draft).
             if review.get("state") in ("fail", "inconclusive"):
@@ -1128,7 +1130,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         if params.get("qa") and pr and pr.get("pr_url") and not self._needs_human:
             self._enter("QA")
             qa = await self._run_qa_loop(request, cap, repo, pr["pr_url"])
-            notes.append(self._qa_summary(qa))
+            notes.append(self._loop_summary("qa", qa))
             self._leave("QA")
             # QA that didn't cleanly pass needs a human (PR stays draft) — same Blocked routing.
             if qa.get("state") in ("fail", "inconclusive"):
@@ -1230,7 +1232,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # Opt-in clean-finish push (OTTO_NTFY_ON_COMPLETE; the activity drops it when off), and
         # UNATTENDED ONLY — see run-pipeline.md. Needs-human runs already pushed above; swarm
         # children stay quiet (one ping per task, not per sub-task).
-        if not self._needs_human and not params.get("subtask") and unattended:
+        if not self._needs_human and not subtask and unattended:
             await self._notify(f"Otto finished: {cap['name']}",
                                cap=cap, repo=repo, reply_to=reply_to, unattended=unattended,
                                note=(f"PR: {pr['pr_url']}" if pr and pr.get("pr_url") else None),
@@ -1389,22 +1391,25 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
             # line, which is both a better verifier and the whole premise of the mode.
             out, attempt = await self._brainstorm_turn(request, cap, cwd, repo)
             return out, None, attempt, out["workflow"]
-        n = max(1, self._setting("max_attempts"))
-        # HARNESS deaths get their OWN bounded budget. They are not judgements — no judge read any
-        # output — so spending a rung of `n` on one both shortens the real ladder and drags the
-        # final-rung model escalation forward onto a timeout, which escalating cannot fix. Measured
-        # over the trail, 21% of recorded verify failures were harness deaths. `judged` therefore
-        # drives `final`/exhaustion; `attempt` stays the PHYSICAL index (transcript filename, audit
-        # row) and keeps incrementing, so two attempts never collide on it.
-        spare = max(0, self._setting("max_harness_retries"))
-        wid, critique, out, verdict, attempt = workflow.info().workflow_id, None, None, None, 1
-        local_disabled, local_disabled_reason = False, None
-        judged, attempt = 0, 0
-        kills = 0
-        max_kills = max(0, self._setting("max_supervisor_kills"))
+        # Every counter and every rung rule lives in `ladder` — the harness-vs-judged accounting,
+        # the final-rung escalation, the kill budget and the local-write latch. Read the settings
+        # ONCE, here, through the workflow's recorded snapshot: a replay must not re-read the
+        # mutable store, and `ladder` never reads it at all.
+        limits = ladder.Limits.of(self._setting("max_attempts"),
+                                  self._setting("max_harness_retries"),
+                                  self._setting("max_supervisor_kills"),
+                                  self._setting("local_fallback"),
+                                  config.WRITE_LOCAL_ESCALATE_REASON)
+        state = ladder.start(limits)
+        wid, out, verdict = workflow.info().workflow_id, None, None
+        # Bound before the loop although `while True` always enters it: this is the value the
+        # method RETURNS, and a name bound only inside a loop is the hazard
+        # `WorkflowComplexityTests` exists to catch. It is the PHYSICAL attempt index — a budget
+        # stop breaks before the attempt is recorded, and that intended attempt still counts here.
+        attempt = 0
         while True:
-            attempt += 1
-            final = judged == n - 1
+            nxt = ladder.plan_attempt(state, limits)
+            attempt, final = nxt.attempt, nxt.final
             self._attempt = attempt
             # Hard cost ceiling: stop BEFORE launching another attempt and route to needs-human.
             # (Never fires on attempt 1 — spend starts at 0 and a 0 budget knob is disabled.)
@@ -1421,9 +1426,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                 out = await workflow.execute_activity(
                     run_capability,
                     {"request": request, "name": cap["name"], "attempt": attempt,
-                     "critique": critique, "escalate": final, "downshift": downshift,
-                     "wid": wid, "cwd": cwd, "repo": repo, "local_disabled": local_disabled,
-                     "local_disabled_reason": local_disabled_reason,
+                     "critique": state.critique, "escalate": final, "downshift": downshift,
+                     "wid": wid, "cwd": cwd, "repo": repo,
+                     "local_disabled": state.local_disabled,
+                     "local_disabled_reason": state.local_disabled_reason,
                      # Recall past solved-task approaches on a fresh top-level run; a swarm sub-task
                      # (subtask=True) skips it so it doesn't pull in the parent task's methods (issue #66).
                      "recall": recall, "audience": self._audience,
@@ -1437,9 +1443,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                      # Per-chat composer overrides (memory checkbox + model picker).
                      "memory_enabled": self._memory_enabled, "model_override": self._model_override,
                      "effort": self._effort,
-                     # Arm the supervisor's kill switch only while a rung remains for its critique
-                     # to steer and the run has kills left to spend. Mirrors engine._ladder_core.
-                     "supervise_enforce": (not final and kills < max_kills)},
+                     # Arm the supervisor's kill switch only while a rung remains for its
+                     # critique to steer and the run has kills left to spend (ladder.plan_attempt).
+                     "supervise_enforce": nxt.supervise_enforce},
                     start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY_EXEC)
             except exceptions.ActivityError:
@@ -1451,9 +1457,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                        "is_error": True, "cost": 0, "tokens": None, "model": None,
                        "attempt": attempt}
             wid = out["workflow"]
-            if out.get("killed_by_supervisor"):
-                kills += 1
-            local_disabled = local_disabled or out.get("local_incapable", False)
+            state = ladder.record_attempt(
+                state, nxt, killed=bool(out.get("killed_by_supervisor")),
+                local_incapable=out.get("local_incapable", False))
             self._account(out)
             if out.get("local_strict_stop"):
                 # Strict mode (OTTO_LOCAL_FALLBACK=0): local couldn't run and Claude may not
@@ -1498,18 +1504,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                 # Errored/timed-out attempt: a failed attempt, not valid output. Skip the verifier
                 # (don't judge the "(timed out)" string) and let the retry/escalation ladder run.
                 # A supervisor-killed attempt steers the next rung with the supervisor's own
-                # critique (mirrors engine.error_verdict — kept inline: workflow code is
-                # deterministic-only, and this is pure string work).
-                res = str(out["result"])
-                if "(aborted by supervisor:" in res:
-                    reason = res.split("(aborted by supervisor:", 1)[1].strip().rstrip(")").strip()
-                    verdict = {"passed": False, "source": "supervisor",
-                               "critique": ("the mid-run supervisor stopped the previous attempt "
-                                            f"because it was off-course: {reason} — take a "
-                                            "different approach this time.")}
-                else:
-                    verdict = {"passed": False, "source": "harness",
-                               "critique": "prior attempt errored or timed out: " + res[:200]}
+                # critique. This was re-implemented inline, string parse and all, on the grounds
+                # that workflow code is deterministic-only — but the function is PURE, and
+                # `imports_passed_through` is exactly how such a module is called from here.
+                verdict = ladder.error_verdict(out["result"])
             else:
                 verdict = await workflow.execute_activity(
                     verify_capability,
@@ -1534,38 +1532,15 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                  "fallback_detail": out.get("fallback_detail"), "repo": repo},
                 learn=verdict["passed"] or final)
             self._verified = verdict["passed"]
-            if verdict["passed"]:
+            # The whole of what happens next — the issue-#172 local write escalation, the
+            # harness-vs-judged rung accounting and both exhaustion conditions — is
+            # `ladder.next_step`, the same call `engine._ladder_core` makes.
+            step = ladder.next_step(state, limits, verdict,
+                                    write_local=out.get("write_local", False))
+            state = step.state
+            if step.stop:
+                self._harness_stop = step.reason == ladder.HARNESS_EXHAUSTED
                 break
-            # Safe local write escalation (issue #172): a WRITE cap that ran locally and FAILED
-            # verify escalates off local — the rest of the ladder (incl. the final strongest-model
-            # rung) runs on Claude instead of retrying the same weak local model, which would
-            # dead-end or ship a shallow PR. Mirrors engine.execute; latched like local_disabled.
-            # Strict mode keeps a verify-failed local run LOCAL — it retries on the same local
-            # model and lands in needs-human rather than being rescued by Claude.
-            # ... but NOT on a harness death: no judge read the attempt, so there is no evidence
-            # about the model. Spared from the rung accounting ten lines below for that exact
-            # reason, and it must be spared here too — otherwise a local model that merely ran out
-            # of tokens is banished from the rest of the run (`web-a056884d`: 75k output tokens,
-            # finish_reason=length, then three Claude attempts ending on Opus). Mirrors
-            # engine._ladder_core, and the budget-death rule in gateway-backends.md.
-            if (self._setting("local_fallback") and not local_disabled
-                    and out.get("write_local") and verdict.get("source") != "harness"):
-                local_disabled = True
-                local_disabled_reason = config.WRITE_LOCAL_ESCALATE_REASON
-            critique = verdict["critique"]
-            # Spend a rung. A HARNESS death draws on `spare` instead: it is not evidence about the
-            # capability, so it neither shortens the judged ladder nor triggers escalation. A
-            # SUPERVISOR kill DOES spend a judged rung — enforce-mode is a deliberate intervention
-            # that config.MAX_VERIFY_ATTEMPTS is documented to bound.
-            if verdict.get("source") == "harness":
-                spare -= 1
-                if spare < 0:
-                    self._harness_stop = True
-                    break
-            else:
-                judged += 1
-                if judged >= n:
-                    break
         return out, verdict, attempt, wid
 
     async def _notify(self, title, *, cap=None, repo=None, reply_to=None, unattended=False,

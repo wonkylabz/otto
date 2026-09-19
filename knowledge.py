@@ -21,6 +21,7 @@ import uuid
 
 import config
 import gateway
+import lexicon
 import storage
 from ui import trace
 
@@ -147,10 +148,8 @@ def _chunk(text):
 
 
 def _keywords(text):
-    """Significant tokens (>3 chars, URLs stripped) — mirrors registry.Capability.score /
-    engine._keywords so keyword fallback ranks like routing does."""
-    text = re.sub(r"https?://\S+", " ", (text or "").lower())
-    return {w for w in re.findall(r"[a-z0-9]+", text) if len(w) > 3}
+    """Significant tokens for the keyword fallback, via the shared `lexicon.tokens`."""
+    return lexicon.tokens(text)
 
 
 def _cosine(a, b):

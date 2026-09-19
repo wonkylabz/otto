@@ -1046,25 +1046,22 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                        f"{effort_level or 'default'} -> {effort_sent or 'unset'} "
                        f"(endpoint quirk on tool-carrying turns)")
 
-    sink = None
-    if transcript:
-        gc_sessions()
-        os.makedirs(os.path.dirname(transcript), exist_ok=True)
-        open(transcript, "w").close()
-        sink = open(transcript, "a")
-        _emit(sink, None, {"type": "otto-meta", "prompt": prompt, "model": m.get("model"),
-                           "cwd": cwd, "at": time.time(), "runtime": "local",
-                           # WHICH CLASS of model this endpoint serves: this runtime dispatches
-                           # both a laptop vLLM and a vendor API, and `runtime: local` alone
-                           # told the board's chip they were the same thing — a hosted frontier
-                           # model was labelled "local ·" for as long as that was the only field.
-                           "kind": gateway.model_kind(m),
-                           "tools": sorted(offered_names), "bash_mode": bash_mode,
-                           "effort": effort_level, "effort_sent": effort_sent,
-                           "mcp": sorted(mcp_servers or []) if mcp else [],
-                           "mcp_errors": (mcp.errors if mcp else {}),
-                           "mcp_trimmed": (mcp.trimmed if mcp else 0),
-                           "supervised": on_event is not None})
+    # `gc_sessions` (not gc_transcripts): this runtime's sweep also collects the stored
+    # session files a local resume reads back.
+    sink = claude_cli.open_transcript(transcript, {
+        "type": "otto-meta", "prompt": prompt, "model": m.get("model"),
+        "cwd": cwd, "at": time.time(), "runtime": "local",
+        # WHICH CLASS of model this endpoint serves: this runtime dispatches
+        # both a laptop vLLM and a vendor API, and `runtime: local` alone
+        # told the board's chip they were the same thing — a hosted frontier
+        # model was labelled "local ·" for as long as that was the only field.
+        "kind": gateway.model_kind(m),
+        "tools": sorted(offered_names), "bash_mode": bash_mode,
+        "effort": effort_level, "effort_sent": effort_sent,
+        "mcp": sorted(mcp_servers or []) if mcp else [],
+        "mcp_errors": (mcp.errors if mcp else {}),
+        "mcp_trimmed": (mcp.trimmed if mcp else 0),
+        "supervised": on_event is not None}, gc=gc_sessions)
 
     # No literal default here: a hardcoded one is invisible to every env knob, and the last
     # one (900s) silently outlived a Claude path that had already moved to 1100s.

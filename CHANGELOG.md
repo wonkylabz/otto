@@ -81,6 +81,14 @@ changelog that restates it is a second copy of `git log`.
   request could put markup on the page of whoever triggered it. Nothing for an operator to do;
   the API is still unauthenticated and local-only, which is what bounded this to begin with.
 
+- **A GitHub ticket or PR title can no longer break out of its own data fence.** Text Otto did
+  not write — an issue body from the board queue, a pull request title from the review queue —
+  is wrapped in a fence and labelled as data rather than instructions. The fence was written
+  three times and only one copy escaped a closing marker found inside the text, so a ticket
+  containing `"""` ended it early and whatever followed read as instructions to the run.
+  All three now share one implementation. Nothing for an operator to do; the capability's
+  static risk and the approval gate were, and remain, the real guard.
+
 ## [0.1.0] - 2026-09-04
 
 Initial public release.

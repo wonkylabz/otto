@@ -8,17 +8,14 @@ judge receives, and the resume/error result guards.
 
 import config
 import conventions
+import facade
 import gateway
+import ladder
 from contracts import CONVERSATION_AUDIENCE, _write_gate_note
 from ui import trace
 
 
-def _eng():
-    """The engine facade — tests monkeypatch attributes there, so patch-sensitive values and
-    cross-calls resolve through it at call time, never bind at import. Same contract as
-    audit._eng / memory._eng."""
-    import engine
-    return engine
+_eng = facade.eng   # the ONE implementation (see facade.py)
 
 
 def _parse_verdict(text):
@@ -579,32 +576,74 @@ def qa_review_request(pr_url, repo, request):
         "or INCONCLUSIVE (could not be empirically proven either way — say why).")
 
 
-def judge_qa(request, qa_result, project=None):
-    """Read the QA capability's transcript and distil it to {verdict, critique} where
-    verdict is 'pass'|'fail'|'inconclusive'. Runs on the 'verify' tier (a cheap judge over
-    QA's own findings, not a fresh test). FAIL's critique is folded into the next fix round;
-    INCONCLUSIVE and FAIL-after-budget both stop the loop for a human. `project` injects the
-    target repo's own CLAUDE.md conventions (see verify())."""
-    if not qa_result or qa_result == "(no output)":
-        return {"verdict": "inconclusive", "critique": "The QA capability produced no output."}
-    trace("QA", "judging QA transcript")
+# Both post-PR judges read a transcript and answer PASS/FAIL/INCONCLUSIVE about the PR. They were
+# two 27-line functions already sharing a parser and an adverse predicate, differing only in the
+# prose below — so the scaffold (the empty guard, the conventions block, the transcript clip, the
+# re-sampling of an adverse verdict) is written once and the prose is data.
+_TRANSCRIPT_JUDGES = {
+    "qa": {
+        "tag": "QA",
+        "noun": "QA",
+        "empty": "The QA capability produced no output.",
+        "intro": "You are reading the transcript of a QA/test agent that was asked to empirically "
+                 "validate a pull request. Classify the OUTCOME it reached — not the writing "
+                 "quality.",
+        "label": "QA transcript",
+        "verdicts": "  PASS — QA empirically proved the change works and is safe to merge.\n"
+                    "  FAIL — QA found a concrete defect, regression, or unmet requirement.\n"
+                    "  INCONCLUSIVE — QA could not prove it either way (e.g. blocked, partial, "
+                    "or its own verdict was inconclusive).",
+        "closing": "On the next line(s), give a short, specific summary of what's wrong or "
+                   "unproven so the next fix attempt can act on it (omit if PASS).",
+    },
+    "review": {
+        "tag": "REVIEW",
+        "noun": "review",
+        "empty": "The review capability produced no output.",
+        "intro": "You are reading the transcript of a code reviewer that reviewed a pull request. "
+                 "Classify the OUTCOME — does the PR need changes before it can merge? Judge the "
+                 "findings, not the writing quality.",
+        "label": "Review transcript",
+        "verdicts": "  PASS — no must-fix or should-fix findings; the PR is clean to merge.\n"
+                    "  FAIL — the review raised must-fix or should-fix findings (correctness, "
+                    "security, blast-radius, robustness, unmet requirement).\n"
+                    "  INCONCLUSIVE — the review couldn't assess it (empty diff, blocked, or its "
+                    "own verdict was unclear).",
+        "closing": "On the next line(s), list the concrete findings to address so the next fix "
+                   "attempt can act on them (omit if PASS).",
+    },
+}
+
+
+def _judge_transcript(kind, request, result, project=None):
+    """Distil one post-PR transcript to {verdict, critique}, verdict 'pass'|'fail'|'inconclusive'.
+
+    Runs on the 'verify' tier — a cheap judge over the capability's own findings, not a fresh
+    test. FAIL's critique is folded into the next fix round; INCONCLUSIVE and FAIL-after-budget
+    both stop the loop for a human. `project` injects the target repo's own CLAUDE.md conventions
+    (see verify()). The verdict is re-sampled if adverse: `claude -p` has no temperature or seed,
+    so one sample is a coin flip on a clean PR (`confirm_adverse`)."""
+    spec = _TRANSCRIPT_JUDGES[kind]
+    if not result or result == "(no output)":
+        return {"verdict": "inconclusive", "critique": spec["empty"]}
+    trace(spec["tag"], f"judging {spec['noun']} transcript")
     conv = conventions.judge_block(project, request) if project else None
     prompt = (
-        "You are reading the transcript of a QA/test agent that was asked to empirically "
-        "validate a pull request. Classify the OUTCOME it reached — not the writing quality.\n\n"
+        spec["intro"] + "\n\n"
         + (conv + "\n\n" if conv else "")
         + f"Original request the PR addresses: {request}\n\n"
-        f"QA transcript:\n{qa_result[:6000]}\n\n"
+        f"{spec['label']}:\n{result[:6000]}\n\n"
         "Reply with PASS, FAIL, or INCONCLUSIVE on the first line:\n"
-        "  PASS — QA empirically proved the change works and is safe to merge.\n"
-        "  FAIL — QA found a concrete defect, regression, or unmet requirement.\n"
-        "  INCONCLUSIVE — QA could not prove it either way (e.g. blocked, partial, "
-        "or its own verdict was inconclusive).\n"
-        "On the next line(s), give a short, specific summary of what's wrong or unproven so "
-        "the next fix attempt can act on it (omit if PASS).")
+        + spec["verdicts"] + "\n"
+        + spec["closing"])
     verdict = confirm_adverse("verify", prompt, _parse_qa_verdict, _qa_adverse)
-    trace("QA", f"verdict={verdict['verdict']} — {verdict['critique'][:120]}")
+    trace(spec["tag"], f"verdict={verdict['verdict']} — {verdict['critique'][:120]}")
     return verdict
+
+
+def judge_qa(request, qa_result, project=None):
+    """Judge a QA transcript: pass=empirically validated, fail=a concrete defect."""
+    return _judge_transcript("qa", request, qa_result, project)
 
 
 def review_request(pr_url, repo, request):
@@ -640,55 +679,18 @@ def review_request(pr_url, repo, request):
 
 
 def judge_review(request, review_result, project=None):
-    """Read the review capability's transcript and distil it to {verdict, critique} where
-    verdict is 'pass' (clean) | 'fail' (must/should-fix findings) | 'inconclusive'. Runs on the
-    'verify' tier. FAIL's critique (the findings) is folded into the next fix round; INCONCLUSIVE
-    and FAIL-after-budget both stop the loop for a human. Reuses the pass/fail/inconclusive
-    vocabulary of judge_qa so _parse_qa_verdict maps it directly. `project` injects the target
-    repo's own CLAUDE.md conventions (see verify())."""
-    if not review_result or review_result == "(no output)":
-        return {"verdict": "inconclusive", "critique": "The review capability produced no output."}
-    trace("REVIEW", "judging review transcript")
-    conv = conventions.judge_block(project, request) if project else None
-    prompt = (
-        "You are reading the transcript of a code reviewer that reviewed a pull request. "
-        "Classify the OUTCOME — does the PR need changes before it can merge? Judge the "
-        "findings, not the writing quality.\n\n"
-        + (conv + "\n\n" if conv else "")
-        + f"Original request the PR addresses: {request}\n\n"
-        f"Review transcript:\n{review_result[:6000]}\n\n"
-        "Reply with PASS, FAIL, or INCONCLUSIVE on the first line:\n"
-        "  PASS — no must-fix or should-fix findings; the PR is clean to merge.\n"
-        "  FAIL — the review raised must-fix or should-fix findings (correctness, security, "
-        "blast-radius, robustness, unmet requirement).\n"
-        "  INCONCLUSIVE — the review couldn't assess it (empty diff, blocked, or its own "
-        "verdict was unclear).\n"
-        "On the next line(s), list the concrete findings to address so the next fix attempt can "
-        "act on them (omit if PASS).")
-    verdict = confirm_adverse("verify", prompt, _parse_qa_verdict, _qa_adverse)
-    trace("REVIEW", f"verdict={verdict['verdict']} — {verdict['critique'][:120]}")
-    return verdict
+    """Judge a review transcript: pass=clean, fail=must/should-fix findings. Shares
+    `_parse_qa_verdict` with `judge_qa` — deliberately the same verdict vocabulary."""
+    return _judge_transcript("review", request, review_result, project)
 
 
 def error_verdict(result):
-    """A synthetic FAILED verdict for an attempt that errored/timed out (is_error). Used so the
-    timed-out `(timed out)` string is never handed to the verifier as if it were real output —
-    the attempt just counts as a failure and the retry/escalation ladder gets its next shot.
-    A supervisor-killed attempt gets the supervisor's own critique as steering — that IS the
-    enforce-mode mechanism: kill, then restart with the course-correction folded in.
+    """A synthetic FAILED verdict for an attempt that errored/timed out (is_error).
 
-    Both carry `source` so they are never mistaken for a judgement downstream. They are shaped
-    like a verify FAIL because the LADDER needs them to be (a failed attempt, steered), but no
-    judge read any output: measured over the trail, 98 of 291 recorded verify failures were one
-    of these two, and `scorecard` was pricing all of them as the capability's fault."""
-    s = str(result)
-    if "(aborted by supervisor:" in s:
-        reason = s.split("(aborted by supervisor:", 1)[1].strip().rstrip(")").strip()
-        return {"passed": False, "source": "supervisor",
-                "critique": ("the mid-run supervisor stopped the previous attempt because it was "
-                             f"off-course: {reason} — take a different approach this time.")}
-    return {"passed": False, "source": "harness",
-            "critique": "prior attempt errored or timed out: " + str(result)[:200]}
+    The body is `ladder.error_verdict` — it sits beside the rung accounting that reads its
+    `source`, so the workflow can call it without importing this module (which reaches the
+    gateway and the conventions cache, neither of which belongs in deterministic code)."""
+    return ladder.error_verdict(result)
 
 
 def _is_duplicated(text, block=400, threshold=3):

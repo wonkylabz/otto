@@ -15,6 +15,7 @@ import re
 import sqlite3
 
 import config
+import facade
 import gateway
 import policy
 import registry
@@ -22,13 +23,7 @@ import storage
 from ui import trace
 
 
-def _eng():
-    """The engine facade. engine.py re-exports this module's API and the ENTIRE test suite
-    monkeypatches attributes there (engine._DB, engine.iter_content_entries,
-    engine._extract_solution, ...) — so any value or cross-call a test may intercept must be
-    resolved through the facade at call time, never bound at import."""
-    import engine
-    return engine
+_eng = facade.eng   # the ONE implementation (see facade.py)
 
 
 def audit_repo_changes(wid, request, changed):

@@ -55,6 +55,7 @@ import time
 
 import claude_cli
 import config
+import lexicon
 import policy
 import storage
 
@@ -513,13 +514,8 @@ def _record_catalogue(server, spec, tools, failed=False):
         pass
 
 
-_WORD = re.compile(r"[a-z]+")
-# Mirrors `registry._rank_tokens`: a pasted link's path segments ("…/infra/issues/494")
-# inject topic nouns the asker never said, and here they would choose the MCP fleet.
-_URL = re.compile(r"https?://\S+")
-
 # Filler that a TOOL DESCRIPTION is as likely to contain as any request, so an overlap on it
-# carries no information about relevance. The len>3 cut below removes "the"/"and"/"for" but
+# carries no information about relevance. `lexicon.tokens`' length floor removes "the"/"and"/"for" but
 # left the four-letter half of the same class in, and a single such hit is enough to decide
 # the whole fleet: run runbook-rb-e0f48559 offered a New Relic task two Kubernetes tools and
 # nothing else, because "Work on this ticket <url>" shares exactly one word with the
@@ -537,12 +533,12 @@ within would your yours
 
 
 def _words(text):
-    """Significant words, mirroring `engine._keywords` / `registry.Capability.score` so tool
-    selection ranks a request the same way routing shortlists a capability — minus `_STOP`,
-    which mirrors nothing because the thing being ranked here is a tool DESCRIPTION, i.e.
-    prose, not a capability's one-line summary."""
-    text = _URL.sub(" ", (text or "").lower())   # a pasted URL's path is topic noise, not vocabulary
-    return {w for w in _WORD.findall(text) if len(w) > 3 and w not in _STOP}
+    """Significant words for tool selection, via the shared `lexicon.tokens`.
+
+    `_STOP` is the one argument that is this caller's alone: what is ranked here is a tool
+    DESCRIPTION — prose, not a capability's one-line summary — so it drowns in filler the other
+    consumers never see."""
+    return lexicon.tokens(text, stop=_STOP, digits=False)
 
 
 def _score(text, want):

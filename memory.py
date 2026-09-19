@@ -16,7 +16,9 @@ import time
 import uuid
 
 import config
+import facade
 import gateway
+import lexicon
 import registry
 import storage
 import workspace
@@ -24,12 +26,7 @@ from audit import _append_audit, _append_content, _audit, _conn
 from ui import trace
 
 
-def _eng():
-    """The engine facade — tests monkeypatch attributes there (engine._DB, engine._claude,
-    engine._extract_solution, ...), so patch-sensitive values and cross-calls resolve through
-    it at call time, never bind at import. Same contract as audit._eng."""
-    import engine
-    return engine
+_eng = facade.eng   # the ONE implementation (see facade.py)
 
 
 _SOLUTIONS_MAX = 200
@@ -422,10 +419,11 @@ def _remember(cap, request, facts, project=None, verified=None):
 # only on a verified pass, recalled on a similar fresh request and injected as a worked example.
 
 def _keywords(text):
-    """Significant words (>3 chars, URLs stripped) for similarity matching — mirrors
-    registry.Capability.score so recall ranks a request the same way routing shortlists it."""
-    text = re.sub(r"https?://\S+", " ", (text or "").lower())
-    return {w for w in re.findall(r"[a-z]+", text) if len(w) > 3}
+    """Significant words for similarity matching, via the shared `lexicon.tokens`.
+
+    Callers subtract `_FACT_QUERY_STOP` themselves rather than passing it, because the same
+    tokens are wanted unfiltered on the stored-fact side of the overlap."""
+    return lexicon.tokens(text, digits=False)
 
 
 def _extract_solution(request, cap, result):

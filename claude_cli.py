@@ -144,6 +144,90 @@ def _drain(stream, sink):
         pass
 
 
+def open_transcript(path, meta, *, gc=None):
+    """Start a transcript at `path` and write its self-describing `otto-meta` first line.
+
+    The ONE bootstrap for all three backends. It was four lines copied into `claude_cli`,
+    `codex_cli` and `local_runtime`, and the reason each step is there is not obvious from
+    reading them:
+
+    - the stale file at this path is TRUNCATED first, because a re-dispatch after a wall reuses
+      the path and a half-written transcript from the dead attempt would read as this one's;
+    - it is then reopened in APPEND mode rather than kept as the "w" handle, because the
+      supervisor appends its checkpoint lines to the same path from a background thread through a
+      second fd, and O_APPEND is what makes two fds interleave at EOF instead of clobbering;
+    - `gc` runs first so the sweep never races the file just created.
+
+    `gc` defaults to `gc_transcripts`; `local_runtime` passes its own session sweep. Returns the
+    sink, or None when `path` is falsy (a run with no transcript)."""
+    if not path:
+        return None
+    (gc or gc_transcripts)()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").close()
+    sink = open(path, "a")
+    sink.write(transcript_line(meta))
+    sink.flush()
+    return sink
+
+
+def close_transcript(sink, *, stderr="", timed_out=False, timeout=None, after_result=False):
+    """Write a subprocess turn's closing records and close the sink. Safe with `sink=None`.
+
+    `after_result` separates the two cases one line used to conflate: a turn the watchdog CUT
+    OFF, and a finished turn whose process was merely slow to exit. Only the first is a timeout,
+    and reading it as one spent a rung of `max_harness_retries` on a turn that had succeeded."""
+    if not sink:
+        return
+    if stderr:
+        sink.write(transcript_line({"type": "stderr", "text": stderr[:20_000]}))
+    if timed_out:
+        sink.write(transcript_line({"type": "otto-timeout", "after_s": timeout,
+                                    "after_result": after_result}))
+    sink.close()
+
+
+def arm_watchdog(proc, timeout):
+    """Arm the turn's wall clock. Returns (timed_out_event, timer); the caller cancels the timer
+    in its own `finally`. The event is what tells the teardown a kill happened rather than an
+    ordinary exit."""
+    timed_out = threading.Event()
+
+    def _kill():
+        timed_out.set()
+        kill_tree(proc)
+
+    timer = threading.Timer(timeout, _kill)
+    timer.start()
+    return timed_out, timer
+
+
+def watch_abort(proc, abort):
+    """Kill `proc` if the supervisor signals an abort. No-op when `abort` is None.
+
+    POLLS rather than waiting outright so the thread dies with the child — a bare wait() leaks
+    one blocked-forever daemon thread per run."""
+    if abort is None:
+        return
+
+    def _abort_watch():
+        while proc.poll() is None:
+            if abort.wait(0.5):
+                kill_tree(proc)
+                return
+
+    threading.Thread(target=_abort_watch, daemon=True).start()
+
+
+def drain_stderr(proc):
+    """Start draining the child's stderr. Returns (thread, buf); `buf[0]` holds the text once
+    joined. Unread, a chatty child fills the pipe buffer and blocks on its own write."""
+    buf = []
+    thread = threading.Thread(target=_drain, args=(proc.stderr, buf), daemon=True)
+    thread.start()
+    return thread, buf
+
+
 def _note_tools(event, seen, worked, failed):
     """Record which tools this turn called, and whether each call actually RETURNED anything.
 
@@ -312,42 +396,26 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
 
     if streaming_in:
         _send_user(prompt)
-    sink = None
-    if transcript:
-        gc_transcripts()
-        os.makedirs(os.path.dirname(transcript), exist_ok=True)
-        open(transcript, "w").close()  # truncate any stale file at this path
-        # Reopened in append mode (O_APPEND) rather than kept as the initial "w" handle: the
-        # supervisor (issue #143) appends its own checkpoint lines to this same path from a
-        # background thread via a second fd, and O_APPEND is what keeps concurrent appends
-        # from two fds atomic-at-EOF instead of one clobbering the other's bytes.
-        sink = open(transcript, "a")
-        # A meta first line so the transcript is self-describing (the stream itself never
-        # echoes the invocation). Consumers skip unknown types. `meta` lets the caller stamp
-        # extra facts (e.g. fallback_from when this run replaces a failed local attempt —
-        # the board's model chip reads them).
-        # `system_context` is recorded ALONGSIDE the prompt, not folded into it. Everything Otto
-        # tells a run that is not the request itself travels this argument — the approved plan,
-        # the workspace-mismatch note, the output contract, recalled memory — and none of it was
-        # in the transcript, so Debug could not answer "what was this model actually told?".
-        # Measured the hard way: a check for the mismatch note in `prompt` came back False on a
-        # run that had been given one, because the note was never in that field to begin with.
-        sink.write(transcript_line({
-            "type": "otto-meta", "prompt": prompt, "model": model,
-            "system_context": system_context,
-            # Same reason as system_context: effort changes what the model did, so a
-            # transcript that cannot say which level served the run cannot answer "was this
-            # a max-effort attempt or not?".
-            "effort": effort,
-            "cwd": cwd, "at": time.time(),
-            "supervised": on_event is not None, **(meta or {})}))
-        sink.flush()
-    timed_out = threading.Event()
-
-    def _kill():
-        timed_out.set()
-        kill_tree(proc)
-
+    # A meta first line so the transcript is self-describing (the stream itself never
+    # echoes the invocation). Consumers skip unknown types. `meta` lets the caller stamp
+    # extra facts (e.g. fallback_from when this run replaces a failed local attempt —
+    # the board's model chip reads them).
+    # `system_context` is recorded ALONGSIDE the prompt, not folded into it. Everything Otto
+    # tells a run that is not the request itself travels this argument — the approved plan,
+    # the workspace-mismatch note, the output contract, recalled memory — and none of it was
+    # in the transcript, so Debug could not answer "what was this model actually told?".
+    # Measured the hard way: a check for the mismatch note in `prompt` came back False on a
+    # run that had been given one, because the note was never in that field to begin with.
+    sink = open_transcript(transcript, {
+        "type": "otto-meta", "prompt": prompt, "model": model,
+        "system_context": system_context,
+        # Same reason as system_context: effort changes what the model did, so a
+        # transcript that cannot say which level served the run cannot answer "was this
+        # a max-effort attempt or not?".
+        "effort": effort,
+        "cwd": cwd, "at": time.time(),
+        "supervised": on_event is not None, **(meta or {})})
+    timed_out, watchdog = arm_watchdog(proc, timeout)
     steer_thread = None
     if steer is not None:
         def _steer_watch():
@@ -373,20 +441,8 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
         steer_thread = threading.Thread(target=_steer_watch, daemon=True)
         steer_thread.start()
 
-    stderr_buf = []
-    stderr_thread = threading.Thread(target=_drain, args=(proc.stderr, stderr_buf), daemon=True)
-    stderr_thread.start()
-    watchdog = threading.Timer(timeout, _kill)
-    watchdog.start()
-    if abort is not None:
-        def _abort_watch():
-            # Poll rather than a bare wait() so this thread exits with the child instead of
-            # leaking one blocked-forever daemon thread per run.
-            while proc.poll() is None:
-                if abort.wait(0.5):
-                    kill_tree(proc)
-                    return
-        threading.Thread(target=_abort_watch, daemon=True).start()
+    stderr_thread, stderr_buf = drain_stderr(proc)
+    watch_abort(proc, abort)
 
     final, tail = None, ""
     # Every tool the turn ACTUALLY called, harvested from the stream it is already parsing.
@@ -438,16 +494,8 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
             steer_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
         stderr = (stderr_buf[0] if stderr_buf else "").strip()
-        if sink:
-            if stderr:
-                sink.write(transcript_line({"type": "stderr", "text": stderr[:20_000]}))
-            if timed_out.is_set():
-                # `after_result` distinguishes the two cases the one line used to conflate: a
-                # turn the watchdog cut off, and a finished turn whose process was merely slow
-                # to exit. Only the first is a timeout.
-                sink.write(transcript_line({"type": "otto-timeout", "after_s": timeout,
-                                            "after_result": final is not None}))
-            sink.close()
+        close_transcript(sink, stderr=stderr, timed_out=timed_out.is_set(),
+                         timeout=timeout, after_result=final is not None)
 
     # A tool that succeeded even once was available. One that ONLY ever failed was not — and an
     # output reporting that source as blocked is telling the truth, so the judge must be told.

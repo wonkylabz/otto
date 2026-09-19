@@ -48,6 +48,7 @@ import urllib.parse
 import urllib.request
 
 import config
+import ingress
 import privacy
 import slack_state
 import storage
@@ -1687,17 +1688,10 @@ def start_run(wid, params):
 
     With `resume` set (a follow-up in a watched thread) the workflow skips routing/clarification and
     continues the bound session; `chat_key` then points at the ORIGINAL run so the Chat thread keeps
-    the whole conversation instead of splitting one per message."""
-    import estop
-    import temporal_client as tc
-    if not tc.OK:
-        return "failed"
-    # Last gate before a workflow exists (activities.poll_slack refuses earlier, before the cursor
-    # moves). "failed" — not "duplicate" — so the caller does NOT advance the cursor and the
-    # message is still there to answer once the stop is released.
-    if estop.blocked("slack"):
-        return "failed"
-    from temporalio.common import WorkflowIDReusePolicy
+    the whole conversation instead of splitting one per message.
+
+    A blocked pause returns 'failed', NOT 'duplicate' — the caller must leave the cursor where it
+    is, so the message is still there to answer once the stop is released."""
     full = {"request": params["request"], "unattended": True,
             "cap": params.get("cap"), "approval": params.get("approval", "ask"),
             "reply_to": params.get("reply_to"),
@@ -1709,21 +1703,7 @@ def start_run(wid, params):
                             else ["slack"])}
     if params.get("resume"):
         full["resume"] = params["resume"]
-
-    async def _go():
-        from workflows import OttoWorkflow
-        c = await tc.client()
-        await c.start_workflow(OttoWorkflow.run, full, id=wid, task_queue=tc.TASK_QUEUE,
-                               id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE)
-        return "started"
-
-    try:
-        return tc.run(_go())
-    except Exception as e:  # noqa: BLE001 - already-started is the common, expected case
-        if "already" in str(e).lower():
-            return "duplicate"
-        trace("SLACK", f"start_run {wid} failed: {str(e)[:140]}")
-        return "failed"
+    return ingress.start_run(wid, full, estop_key="slack", trace_tag="SLACK")
 
 
 def gate_open(wid):
