@@ -3309,6 +3309,38 @@ class PlanVisibilityTests(unittest.TestCase):
             claude_cli.TRANSCRIPTS = orig
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_the_chat_tails_the_preview_too_not_only_an_attempt(self):
+        """Issue #127: the board's chip was fixed off the preview transcript and the CHAT was
+        left blind — it polled /api/progress only under `runActive && state==="running"`, and
+        the preview phase has no attempt, so a 900s Opus pass showed a bare "Working…".
+
+        The phase flag must be DERIVED from the workflow's own PLAN timings, never latched: a
+        stored boolean stays true after PLAN finishes and paints the preview's dead transcript
+        over a live attempt. And the plan branch must be the one that paints PLAN — writing
+        RUN off a "Planning" part would report a run as executing before it was approved."""
+        ui = ui_src()
+        poll = ui[ui.index("/api/progress?id="):]
+        self.assertIn("(runActive || planActive)", ui)
+        # derived per poll from st.times, not a flag something sets once
+        self.assertIn("const planActive", ui)
+        self.assertIsNone(re.search(r"planActive\s*=\s*true", ui))
+        self.assertIn("times.PLAN.dur==null", ui)
+        # the preview's part paints PLAN; only a real attempt paints RUN
+        self.assertLess(poll.index("pg.part===PLAN_PART"), poll.index('setNode("RUN","active"'))
+        plan_branch = poll[poll.index("pg.part===PLAN_PART"):poll.index('setNode("RUN","active"')]
+        self.assertIn('setNode("PLAN","active"', plan_branch)
+        self.assertIn("pg.idle_s>120", plan_branch)   # flagged sooner than an attempt's 180s
+        # BOTH branches test the part, or the window between approval and the attempt's sink
+        # opening (see the server-side test) paints the preview's stale file as a stalled RUN.
+        self.assertIn("pg.found && runActive && pg.part!==PLAN_PART", ui)
+        # the count is HELD, not written straight into a node repainted 4x more often than polled
+        self.assertIn("let planDetail=", ui)
+        self.assertIn('setNode("PLAN","active",planDetail', ui)
+        # the server has to label it, or the client is inferring a phase the workflow calls
+        # "running" — and the two spellings of the label have to be the same string.
+        self.assertIn('_PROGRESS_PART_PLAN = "Planning"', open("server.py").read())
+        self.assertIn('const PLAN_PART="Planning"', ui)
+
     def test_a_transcript_without_kind_still_reads_as_local(self):
         """The chip's second return value used to be the `runtime == "local"` boolean. Every
         transcript written before the meta line carried `kind` must keep the label it had —
