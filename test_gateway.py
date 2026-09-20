@@ -31,7 +31,6 @@ import codex_cli
 import config
 import doctor
 import contracts
-import audit
 import engine
 import estop
 import file_safety
