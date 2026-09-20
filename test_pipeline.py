@@ -4014,3 +4014,50 @@ class BrainstormModeTests(unittest.TestCase):
         # A bound session locks it, rather than leaving a live checkbox that does nothing.
         self.assertIn("applyBrainstorm();", html)
         self.assertIn("c.disabled=true;", html)
+
+
+class StageTimingWiringTests(unittest.TestCase):
+    """The workflow half of issue #129: the stage map is computed on every run and, until now,
+    reached nothing durable. These read the pipeline source (four files, via
+    `test_support.workflow_src()`) because the write is one kwarg on an activity payload — a
+    behavioural test would need a full Temporal run per path, and the paths that matter most are
+    the terminal ones a happy-path run never takes."""
+
+    def test_every_attempt_audit_carries_the_stage_map(self):
+        """`_audit_attempt` is the ONE funnel every attempt row goes through, and the only write
+        EVERY run makes — a clean run writes no terminal row at all. Put the map anywhere else
+        and the runs that complete normally, which is most of them, record nothing."""
+        src = workflow_src()
+        i = src.index("record_attempt, {**payload")
+        self.assertIn('"times": dict(self._times)', src[i:i + 200],
+                      "the attempt audit no longer carries self._times — every clean run's "
+                      "stage timings die with its Temporal execution again")
+
+    def test_every_terminal_finalize_carries_the_stage_map(self):
+        """A needs-human run's terminal row is the only write made with RUN already closed, so
+        it is the richest snapshot the trail ever gets. There are six `finalize_terminal` call
+        sites across three files and they are copies of each other — one missed is one whole
+        class of failure (a gate timeout, a dead swarm child) recording no timings at all."""
+        src = workflow_src()
+        sites = [m.start() for m in re.finditer(r"\bfinalize_terminal,\n", src)]
+        self.assertGreaterEqual(len(sites), 5, "the call sites moved — re-point this guard")
+        for i in sites:
+            payload = src[i:i + 500]
+            self.assertIn('"times": self._times', payload,
+                          "a finalize_terminal payload at offset %d drops the stage map" % i)
+
+    def test_the_map_is_snapshotted_not_handed_over_live(self):
+        """`self._times` is mutated for the rest of the run. The attempt payload is built inside
+        a dict literal Temporal serializes immediately, but copying says so — and the alternative
+        reads as safe right up until someone moves the build above the `execute_activity`."""
+        self.assertIn("dict(self._times)", workflow_src())
+
+    def test_the_stage_labels_the_pipeline_opens_are_all_known_to_the_aggregate(self):
+        """`audit.STAGE_ORDER` is the display order for the Admin table and the run drawer. A
+        label the pipeline opens but the list doesn't know still reports (it sorts last), but it
+        reports in the wrong place — so the two must be kept in step deliberately."""
+        import audit
+        opened = set(re.findall(r'self\._enter\("([A-Z]+)"\)', workflow_src()))
+        self.assertTrue(opened, "no _enter calls found — the reader is pointed at the wrong src")
+        self.assertEqual(opened - set(audit.STAGE_ORDER), set(),
+                         "a pipeline stage is missing from audit.STAGE_ORDER")

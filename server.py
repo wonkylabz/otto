@@ -31,6 +31,7 @@ import config
 import conventions
 import delivery
 import doctor
+import audit          # stage_timings/run_times/STAGE_ORDER — off the facade (engine's re-export ratchet)
 import engine
 import estop
 import events
@@ -353,12 +354,17 @@ def _run_detail(wid):
             "verified": e.get("verified"), "critique": c.get("critique"),
             "result": c.get("result"), "events": events, "events_truncated": truncated})
     attempts.sort(key=lambda x: x["attempt"])
+    # Where the run actually spent itself, stage by stage (issue #129). Merged across the run's
+    # rows because `_times` only grows and each row is a snapshot of it at that write — see
+    # engine.run_times. Empty for any run recorded before this shipped.
+    times = audit.run_times(meta_rows)
     final = next((a["result"] for a in reversed(attempts) if a.get("result")), None)
     if not final:
         final = next((c.get("result") for c in reversed(content_rows) if c.get("result")), None)
     return {"found": True, "wid": wid, "request": request, "cap": cap, "risk": risk,
             "repo": repo, "needs_human": needs_human, "terminal": terminal,
-            "attempts": attempts, "result": final}
+            "attempts": attempts, "result": final, "times": times,
+            "stage_order": list(audit.STAGE_ORDER)}
 
 
 def _run_model(wid):
@@ -848,7 +854,13 @@ def _stats():
     from the audit trail (rotation-aware, no Temporal) joined with the gateway's per-tier
     call/fallback counters. Feeds the table beside each cap's exec-model dropdown so a
     downgrade-to-local decision has evidence, not gut feel."""
-    return {"caps": engine.scorecard(engine.iter_audit_entries()), "gateway": gateway.stats()}
+    # ONE scan of the trail feeding both aggregates — it is read off disk and rotation-aware,
+    # so a second pass for the stage medians would double the cost of every Admin load.
+    entries = list(engine.iter_audit_entries())
+    return {"caps": engine.scorecard(entries), "gateway": gateway.stats(),
+            # Median/p90 wall time per pipeline stage (issue #129) — the "where does Otto's time
+            # go" number, and what makes #126's pre-attempt work measurable.
+            "stages": audit.stage_timings(entries)}
 
 
 def _audit_view(wid="", cap="", verified=""):

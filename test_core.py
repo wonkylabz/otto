@@ -2984,7 +2984,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # later edit could silently undo — the credential stays a var NAME, a Claude-tier move
     # never leaves a Codex model, the connector guard covers both subprocess backends, and the
     # Execution select does not offer a control this backend cannot honour.
-    MAX_RULES_BYTES = 83009   # fetched tier — bounded, but looser; it is not always loaded
+    # 83009 -> 83448 (#129): stage timings are now on the audit row. Two rules, because both
+    # are things a later reader gets WRONG by default: the map is run-level but lands on
+    # attempt rows (so a single row is never authoritative — merge it), and its denominator is
+    # judged runs, which is not the denominator beside it on the same screen.
+    MAX_RULES_BYTES = 83448   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

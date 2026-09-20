@@ -678,6 +678,10 @@ def record_attempt(payload: dict) -> None:
                               fallback_from=payload.get("fallback_from"),
                               fallback_reason=payload.get("fallback_reason"),
                               fallback_detail=payload.get("fallback_detail"),
+                              # Per-stage wall time for the run around this attempt (issue #129).
+                              # Audited from INSIDE the RUN span, so RUN/DELIVER are still open
+                              # here — every consumer merges across the run's rows.
+                              times=payload.get("times"),
                               project=engine._resolve_project(cap, payload.get("repo")))
 
 
@@ -814,7 +818,7 @@ def finalize_terminal(payload: dict) -> dict:
     wid = payload.get("wid")
     engine.record_terminal(wid, payload.get("request", ""), payload.get("cap"),
                            payload.get("reason", "failed"), detail=payload.get("detail", ""),
-                           repo=payload.get("repo"))
+                           repo=payload.get("repo"), times=payload.get("times"))
     import privacy
     # The terminal `detail` is free text of unknown provenance — a caught exception string, a
     # delivery status carrying the Slack channel id, a strict-stop message. The REASON is already

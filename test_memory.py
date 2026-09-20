@@ -13,6 +13,7 @@ import unittest
 import claude_cli
 import config
 import delivery
+import audit
 import engine
 import memory
 import gateway
@@ -1621,3 +1622,124 @@ class ScorecardTests(unittest.TestCase):
         self.assertNotIn("guard:in-place-edit", cards)
         self.assertIn("agent:x", cards)
 
+
+
+class StageTimingTests(unittest.TestCase):
+    """Per-stage run timings, persisted on the audit row (issue #129).
+
+    `OttoWorkflow._times` has always been computed — the board's stage chip reads it live — and
+    always thrown away with the Temporal execution at the retention horizon. The trail is the
+    permanent record, so "where does Otto's time go" could only ever be answered from
+    `duration_s`: the ATTEMPT, not the run around it. These pin the write, the merge and the
+    aggregate; the guards that the workflow actually passes the map live in test_pipeline."""
+
+    def _row(self, wid, attempt=1, verified=True, times=None, **kw):
+        r = {"workflow": wid, "capability": "agent:x", "attempt": attempt,
+             "verified": verified, "at": "2026-09-20T10:00:00", "cost_usd": 0}
+        if times is not None:
+            r["times"] = times
+        r.update(kw)
+        return r
+
+    def test_the_audit_row_carries_the_stage_map(self):
+        """The whole point: `_audit` is the funnel every attempt passes through, so it is where
+        the map has to land. Written through a real db so the JSON round-trip is covered too."""
+        cap = _cap_stub()
+        times = {"ROUTER": {"start": 1000, "dur": 400}, "RUN": {"start": 1400, "dur": None}}
+        engine._audit("wf-times-1", "req", cap, "result", 0.0, attempt=1, verified=True,
+                      times=times)
+        rows = [e for e in engine.audit_entries_for("wf-times-1")]
+        self.assertTrue(rows, "no audit row was written")
+        self.assertEqual(rows[-1]["times"], times)
+
+    def test_a_run_with_no_timings_writes_no_key(self):
+        """Every pre-#129 row in the live trail has no `times`, and a row carrying an empty map
+        would read as 'this run took no time in any stage' rather than 'not recorded'."""
+        engine._audit("wf-times-2", "req", _cap_stub(), "r", 0.0, attempt=1, times={})
+        self.assertNotIn("times", engine.audit_entries_for("wf-times-2")[-1])
+
+    def test_the_terminal_row_carries_the_stage_map(self):
+        """A needs-human run's terminal row is written from DELIVER, which is the ONLY write in
+        the pipeline that happens with RUN already closed — so it is the richest snapshot the
+        trail ever gets and it must not be the one path that drops it."""
+        times = {"RUN": {"start": 10, "dur": 900}}
+        engine.record_terminal("wf-times-3", "req", "agent:x", "verify_exhausted", times=times)
+        self.assertEqual(engine.audit_entries_for("wf-times-3")[-1]["times"], times)
+
+    def test_the_map_is_merged_across_a_runs_rows_closed_span_winning(self):
+        """`_times` only grows and each row is a snapshot of it at that write, so no single row
+        is authoritative. An attempt row is written from INSIDE the RUN span (RUN still open);
+        the terminal row that follows closes it, and the merge has to prefer the closed one
+        whichever order the rows are read in."""
+        rows = [
+            self._row("w1", attempt=1, times={"ROUTER": {"start": 0, "dur": 50},
+                                              "RUN": {"start": 50, "dur": None}}),
+            self._row("w1", attempt=2, times={"ROUTER": {"start": 0, "dur": 50},
+                                              "RUN": {"start": 50, "dur": 700},
+                                              "DELIVER": {"start": 750, "dur": 30}}),
+        ]
+        merged = audit.run_times(rows)
+        self.assertEqual(merged["RUN"]["dur"], 700)
+        self.assertEqual(merged["DELIVER"]["dur"], 30)
+        self.assertEqual(audit.run_times(list(reversed(rows)))["RUN"]["dur"], 700,
+                         "a later row that REOPENED the span would have won on row order alone")
+
+    def test_an_open_span_survives_the_merge_as_open(self):
+        """A stage that never closed is a finding — a run that died inside it — so it must stay
+        visible rather than being dropped for having no duration."""
+        merged = audit.run_times([self._row("w1", times={"RUN": {"start": 5, "dur": None}})])
+        self.assertIn("RUN", merged)
+        self.assertIsNone(merged["RUN"]["dur"])
+
+    def test_medians_are_over_judged_runs_only(self):
+        """Same denominator as `scorecard`, for the same reason: a resume has no pre-attempt
+        chain at all, so counting it would drag every median toward zero and the number would
+        say less the more Otto is used conversationally."""
+        rows = [
+            self._row("w1", times={"ROUTER": {"start": 0, "dur": 100}}),
+            self._row("w2", times={"ROUTER": {"start": 0, "dur": 300}}),
+            # A resume: an attempt row with no verdict at all.
+            self._row("w3", verified=None, times={"ROUTER": {"start": 0, "dur": 9000}}),
+        ]
+        out = audit.stage_timings(rows)
+        self.assertEqual(out["runs"], 2)
+        router = {s["stage"]: s for s in out["stages"]}["ROUTER"]
+        self.assertEqual(router["runs"], 2)
+        self.assertEqual(router["p50_ms"], 300)     # nearest-rank over [100, 300]
+        self.assertEqual(router["total_ms"], 400)
+
+    def test_an_open_span_is_counted_not_averaged(self):
+        """RUN and DELIVER are still open on the attempt rows a CLEAN run writes, so a high
+        `open` count is the expected reading — but a stage with an open span must not contribute
+        a zero (or its start timestamp) to the median."""
+        rows = [
+            self._row("w1", times={"RUN": {"start": 0, "dur": 500}}),
+            self._row("w2", times={"RUN": {"start": 0, "dur": None}}),
+        ]
+        run = {s["stage"]: s for s in audit.stage_timings(rows)["stages"]}["RUN"]
+        self.assertEqual(run["runs"], 1)
+        self.assertEqual(run["open"], 1)
+        self.assertEqual(run["p50_ms"], 500)
+
+    def test_stages_come_back_in_pipeline_order(self):
+        """The table is read top-to-bottom as the order a run passes through, so alphabetical
+        (CLARIFY, DELIVER, GATE, PLAN, ROUTER, RUN) would misdescribe the pipeline."""
+        rows = [self._row("w1", times={"DELIVER": {"start": 9, "dur": 1},
+                                       "ROUTER": {"start": 0, "dur": 1},
+                                       "GATE": {"start": 2, "dur": 1}})]
+        self.assertEqual([s["stage"] for s in audit.stage_timings(rows)["stages"]],
+                         ["ROUTER", "GATE", "DELIVER"])
+
+    def test_an_unknown_stage_is_reported_not_dropped(self):
+        """Adding an `_enter` label must never make that stage silently invisible here."""
+        rows = [self._row("w1", times={"ROUTER": {"start": 0, "dur": 1},
+                                       "NEWSTAGE": {"start": 1, "dur": 2}})]
+        stages = [s["stage"] for s in audit.stage_timings(rows)["stages"]]
+        self.assertEqual(stages, ["ROUTER", "NEWSTAGE"], "an unlisted stage must sort last, "
+                                                         "not vanish")
+
+    def test_a_trail_with_no_timings_aggregates_to_nothing(self):
+        """Every row written before this shipped has no `times`; the aggregate has to read as
+        'nothing recorded', not as a pipeline that takes zero time."""
+        out = audit.stage_timings([self._row("w1")])
+        self.assertEqual(out, {"stages": [], "runs": 0})

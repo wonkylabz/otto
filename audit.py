@@ -431,6 +431,80 @@ def scorecard(entries):
     return out
 
 
+# The pipeline's stages in the order a run passes through them — the display order for the
+# aggregate below and for the run-detail drawer. A stage the trail holds but this list doesn't
+# is still reported, appended after these, so adding an `_enter` label never silently drops it.
+STAGE_ORDER = ("DECOMPOSE", "ROUTER", "CLARIFY", "PLAN", "GATE", "RUN", "PR", "REVIEW", "QA",
+               "DELIVER")
+
+
+def run_times(rows):
+    """Merge one run's per-stage timings out of its audit rows: `{stage: {start, dur}}`.
+
+    A run writes several rows and `_times` only ever grows, so the map is merged rather than
+    taken from any single row — per stage the last CLOSED span wins, falling back to an open one
+    so a stage that never finished is still visible as started. Pure; `rows` is one workflow's
+    entries in trail order."""
+    merged = {}
+    for r in rows:
+        for stage, t in (r.get("times") or {}).items():
+            if not isinstance(t, dict):
+                continue
+            prev = merged.get(stage)
+            if prev is None or (t.get("dur") is not None):
+                merged[stage] = t
+    return merged
+
+
+def stage_timings(entries):
+    """Median/p90 wall time per pipeline stage over JUDGED runs — "where does Otto's time go".
+
+    The counterpart to `scorecard`: same trail, same "judged runs only" denominator (a resume
+    has no pre-attempt chain to measure and would drag every median down), rolled up by STAGE
+    instead of by capability. This is the number #126 has to be measured against; nothing
+    recorded it before issue #129, so the question could only ever be answered from `duration_s`
+    — the attempt, not the run around it.
+
+    Pure over an iterable of audit entries, like `scorecard`, so it is testable against a
+    fixture trail. A stage whose span never closed contributes nothing to its median but is
+    counted in `open`, because a stage that routinely fails to close is itself a finding."""
+    by_wid, judged = {}, set()
+    for e in entries:
+        wid = e.get("workflow")
+        if not wid:
+            continue
+        by_wid.setdefault(wid, []).append(e)
+        if e.get("attempt") is not None and e.get("verified") is not None:
+            judged.add(wid)
+    per_stage, runs = {}, 0
+    for wid in judged:
+        merged = run_times(by_wid[wid])
+        if not merged:
+            continue
+        runs += 1
+        for stage, t in merged.items():
+            agg = per_stage.setdefault(stage, {"durs": [], "open": 0})
+            if t.get("dur") is None:
+                agg["open"] += 1
+            else:
+                agg["durs"].append(t["dur"])
+
+    def _pct(vals, q):
+        # Nearest-rank, on a sorted copy. Small n by design (a few hundred runs), so no
+        # interpolation games — the p90 of 5 samples is the 5th, and saying so is honest.
+        return vals[min(len(vals) - 1, int(q * len(vals)))] if vals else None
+
+    out = []
+    for stage, agg in per_stage.items():
+        durs = sorted(agg["durs"])
+        out.append({"stage": stage, "runs": len(durs), "open": agg["open"],
+                    "p50_ms": _pct(durs, 0.5), "p90_ms": _pct(durs, 0.9),
+                    "total_ms": sum(durs)})
+    order = {s: i for i, s in enumerate(STAGE_ORDER)}
+    out.sort(key=lambda r: (order.get(r["stage"], len(order)), r["stage"]))
+    return {"stages": out, "runs": runs}
+
+
 _GH_PR_URL = r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+"
 # Anchored to the exact markers workflows.py appends around a PR *this run itself* opened or
 # pushed to (`**Opened draft PR**`/`**Updated PR**`/`(opened by the capability`) — a bare URL
@@ -532,7 +606,7 @@ def _append_content(wid, at, request=None, result=None, attempt=None, detail=Non
 def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=None,
            model=None, repo=None, outcome=None, reason=None, needs_human=None, duration_s=None,
            backend=None, fallback_from=None, fallback_reason=None, fallback_detail=None,
-           critique=None,
+           critique=None, times=None,
            verdict_source=None, verdict_model=None):
     at = datetime.datetime.now().isoformat(timespec="seconds")
     entry = {
@@ -579,6 +653,15 @@ def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=
     # the chat-shaped output itself.
     if duration_s is not None:
         entry["duration_s"] = round(duration_s, 1)
+    # Per-STAGE wall time for the run around this attempt (OttoWorkflow._times) — where the run
+    # actually spent itself, not just how long the model took. Computed on every run since the
+    # board's stage chip shipped and, until issue #129, thrown away with the Temporal execution
+    # at the retention horizon; the audit trail is the only permanent record. Written through
+    # `_audit` for the same reason `model` is normalized here: it is the funnel both ladders and
+    # both backends pass through. A run writes several rows and the map only grows, so every
+    # consumer merges per stage, last non-null `dur` winning (`stage_timings`).
+    if times:
+        entry["times"] = times
     if attempt is not None:
         entry["attempt"] = attempt
     if verified is not None:
@@ -639,7 +722,7 @@ def accept_run(wid, request, cap, result="", repo=None):
     return {"ok": True}
 
 
-def record_terminal(wid, request, cap, reason, detail="", repo=None):
+def record_terminal(wid, request, cap, reason, detail="", repo=None, times=None):
     """Write a durable terminal audit row for a run that ended needing a human — a FAILED/dead
     workflow, verify-exhaustion, a QA fail/inconclusive, a budget stop, or a failed delivery.
 
@@ -663,6 +746,10 @@ def record_terminal(wid, request, cap, reason, detail="", repo=None):
     }
     if repo:
         entry["repo"] = repo
+    # The RICHEST timing snapshot a needs-human run produces: written from the DELIVER stage, so
+    # unlike the attempt rows (audited from inside RUN) it carries RUN/REVIEW/QA closed.
+    if times:
+        entry["times"] = times
     _append_audit(entry)
     _append_content(wid, at, request=request, result=detail)
     trace("TERMINAL", f"{wid} needs-human: {reason}")

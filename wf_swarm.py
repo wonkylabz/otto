@@ -95,7 +95,7 @@ class SwarmMixin:
                 {"wid": workflow.info().workflow_id, "request": request, "cap": cap,
                  "reason": "swarm_child_failed", "detail": self._needs_human["detail"],
                  "reply_to": params.get("reply_to"), "repo": params.get("repo"),
-                 "unattended": unattended},
+                 "unattended": unattended, "times": self._times},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
         record = result
         if self._needs_human:

@@ -31,6 +31,7 @@ import codex_cli
 import config
 import doctor
 import contracts
+import audit
 import engine
 import estop
 import file_safety
@@ -4767,6 +4768,56 @@ class RunDetailTests(unittest.TestCase):
     def test_unknown_wid(self):
         import server
         self.assertFalse(server._run_detail("web-nope")["found"])
+
+    def test_the_drawer_gets_the_runs_stage_breakdown_merged(self):
+        """Issue #129: the stage map is the only answer to "where did this run's 11 minutes go",
+        and the live board chip that used to be its one reader dies with the Temporal execution.
+        Merged across the run's rows, because each row is a snapshot of a map that only grows —
+        the attempt row is written from inside RUN, the terminal row closes it."""
+        import server
+        cap = registry.Capability("agent", "x", "d")
+        engine._audit("web-x3", "do a thing", cap, "wip", 0.1, attempt=1, verified=False,
+                      times={"ROUTER": {"start": 0, "dur": 400},
+                             "RUN": {"start": 400, "dur": None}})
+        engine.record_terminal("web-x3", "do a thing", cap, "verify_exhausted",
+                               times={"ROUTER": {"start": 0, "dur": 400},
+                                      "RUN": {"start": 400, "dur": 90000},
+                                      "DELIVER": {"start": 90400, "dur": 120}})
+        d = server._run_detail("web-x3")
+        self.assertEqual(d["times"]["ROUTER"]["dur"], 400)
+        self.assertEqual(d["times"]["RUN"]["dur"], 90000)
+        self.assertEqual(d["times"]["DELIVER"]["dur"], 120)
+        # The drawer renders in pipeline order, which it cannot know client-side.
+        self.assertEqual(d["stage_order"][:2], ["DECOMPOSE", "ROUTER"])
+
+    def test_a_pre_129_run_reports_no_timings_rather_than_zeroes(self):
+        """Every row already in the live trail has no `times`. An empty map is the honest
+        answer; a map of zeroes would read as a pipeline that costs nothing."""
+        import server
+        engine._audit("web-x4", "r", registry.Capability("agent", "x", "d"), "ok", 0, attempt=1)
+        self.assertEqual(server._run_detail("web-x4")["times"], {})
+
+    def test_stats_carries_the_stage_aggregate_off_one_trail_scan(self):
+        """The Admin panel's load time is its slowest fetch, and the trail is read off disk —
+        so the two aggregates must share the scan rather than each taking their own."""
+        import server
+        cap = registry.Capability("agent", "x", "d")
+        engine._audit("web-x5", "r", cap, "ok", 0, attempt=1, verified=True,
+                      times={"ROUTER": {"start": 0, "dur": 250}})
+        seen = []
+        real = engine.iter_audit_entries
+
+        def counting():
+            seen.append(1)
+            return real()
+        engine.iter_audit_entries = counting
+        try:
+            out = server._stats()
+        finally:
+            engine.iter_audit_entries = real
+        self.assertEqual(len(seen), 1, "the trail was scanned more than once per Admin load")
+        router = {s["stage"]: s for s in out["stages"]["stages"]}["ROUTER"]
+        self.assertEqual(router["p50_ms"], 250)
 
 
 class CapLocalLatchTests(unittest.TestCase):

@@ -246,9 +246,18 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
 
         Learning is best-effort in both directions: it gets its own generous budget, its failure
         is swallowed here AND in the activity (nothing a run delivers depends on what it learns),
-        and a `_RETRY` repeat is harmless because `_remember` dedupes facts."""
+        and a `_RETRY` repeat is harmless because `_remember` dedupes facts.
+
+        Every attempt row carries the run's per-stage timings (issue #129): this is the ONE place
+        every attempt audit passes through, and the only write that EVERY run makes — a clean run
+        writes no terminal row at all. It is a run-level map on an attempt row by design, since
+        the trail has no run-level row to hang it on and appending one would be a new activity
+        command at the end of the workflow, which is a replay break for anything in flight
+        (`WorkflowReplayCompatibilityTests`). The cost is that RUN and DELIVER are still OPEN
+        here — they close after the ladder — so consumers merge across a run's rows and a needs-
+        human run's terminal row, written from DELIVER, is the one that closes them."""
         await workflow.execute_activity(
-            record_attempt, {**payload, "remember": False},
+            record_attempt, {**payload, "remember": False, "times": dict(self._times)},
             start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
         if not learn:
             return
@@ -288,7 +297,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                     {"wid": workflow.info().workflow_id, "request": self._request,
                      "cap": self._cap, "reason": "workflow_error",
                      "detail": _failure_detail(e),
-                     "reply_to": params.get("reply_to"), "repo": self._repo},
+                     "reply_to": params.get("reply_to"), "repo": self._repo,
+                     "times": self._times},
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
             except Exception:  # noqa: BLE001 - finalizer is best-effort; never mask the original error
                 pass
@@ -563,7 +573,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                             finalize_terminal,
                             {"wid": workflow.info().workflow_id, "request": request, "cap": cap,
                              "reason": "gate_timeout", "reply_to": reply_to, "repo": repo,
-                             "unattended": unattended},
+                             "unattended": unattended, "times": self._times},
                             start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                     # BOTH endings deliver, not just the expiry. A plain decline used to return
                     # here in silence: the asker got an ack, then nothing, ever — the same gap the
@@ -1001,7 +1011,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                         finalize_terminal,
                         {"wid": out["workflow"], "request": request, "cap": cap,
                          "reason": "delivery_failed", "detail": delivered.get("status", ""),
-                         "reply_to": None, "repo": repo},
+                         "reply_to": None, "repo": repo, "times": self._times},
                         start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
             await self._record_chat(params, request, result, out.get("session_id"), cap)
             return {"result": result, "session_id": out.get("session_id"),
@@ -1193,7 +1203,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                 finalize_terminal,
                 {"wid": wid, "request": request, "cap": cap,
                  "reason": self._needs_human["reason"], "reply_to": reply_to, "repo": repo,
-                 "unattended": unattended},
+                 "unattended": unattended, "times": self._times},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
 
         reply, result = self._shape_result(result, notes)
@@ -1224,7 +1234,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                 await workflow.execute_activity(
                     finalize_terminal,
                     {"wid": wid, "request": request, "cap": cap, "reason": "delivery_failed",
-                     "detail": delivered.get("status", ""), "reply_to": None, "repo": repo},
+                     "detail": delivered.get("status", ""), "reply_to": None, "repo": repo,
+                     "times": self._times},
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
         await self._record_chat(params, request, result, out.get("session_id"), cap)
         self._leave("DELIVER")

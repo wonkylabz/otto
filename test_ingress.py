@@ -7054,3 +7054,48 @@ class UiErrorEscapingTests(unittest.TestCase):
                         ('"', "&quot;"), ("'", "&#39;")):
             self.assertIn(ent, body, "esc() no longer maps %r to %s" % (ch, ent))
         self.assertIn("""/[&<>"']/g""", body, "esc()'s character class lost a quote")
+
+
+class StageTimingUiTests(unittest.TestCase):
+    """The two screens that read the persisted stage map (issue #129): the run-detail drawer
+    (one run) and Admin → Pipeline timings (the aggregate). Read through `ui_src()`, which
+    re-inlines every asset in document order — the only reader that keeps a grep guard meaning
+    anything after the UI split."""
+
+    def test_the_run_drawer_renders_the_stage_breakdown(self):
+        src = ui_src()
+        self.assertIn("function _dbgStagesHtml(", src)
+        # Rendered from the response, not recomputed: the drawer's whole point is that it works
+        # after the Temporal execution (and its live `times` query) is gone.
+        self.assertIn("_dbgStagesHtml(r.times, r.stage_order)", src)
+
+    def test_the_drawer_shows_an_unclosed_span_rather_than_dropping_it(self):
+        """RUN and DELIVER are still open on the attempt rows a clean run writes. Silently
+        omitting them would make the busiest stage of every successful run look unmeasured
+        instead of unclosed — a wrong reading, not a missing one."""
+        src = ui_src()
+        i = src.index("function _dbgStagesHtml(")
+        self.assertIn("open", src[i:i + 1200])
+        self.assertIn("t.dur==null", src[i:i + 1200])
+
+    def test_admin_has_its_own_pipeline_timings_section_fed_by_api_stats(self):
+        src = ui_src()
+        self.assertIn("function stagesSection(", src)
+        self.assertIn("${stagesSection(STAGE_STATS)}", src)
+        self.assertIn("STAGE_STATS=(stats&&stats.stages)", src,
+                      "the section renders whatever STAGE_STATS holds — unset, it is silently "
+                      "empty on every load")
+
+    def test_the_aggregate_states_its_denominator_on_screen(self):
+        """`runs` here is JUDGED runs, not all runs — the same denominator split that made
+        `/api/stats` report two different totals for the same noun. Unlabelled, a reader joins
+        it to the header's run count and concludes timings are missing for most runs."""
+        i = ui_src().index("function stagesSection(")
+        body = ui_src()[i:i + 2200]
+        self.assertIn("judged run", body)
+
+    def test_an_empty_aggregate_says_so_instead_of_rendering_an_empty_table(self):
+        """Every row already in the trail predates this, so the first load after the upgrade
+        has nothing — and a bare table with no rows reads as broken."""
+        i = ui_src().index("function stagesSection(")
+        self.assertIn("No stage timings recorded yet", ui_src()[i:i + 1200])
