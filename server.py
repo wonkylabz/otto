@@ -198,12 +198,18 @@ async def _wf_origin_chat_key(wid):
 # vocabulary, not a phrase the chat can show.
 _PROGRESS_PARTS = {"rev": "review round", "revfix": "review fix", "qa": "QA round",
                    "qafix": "QA fix", "fix": "QA fix"}
+# The approval preview's own transcript ("<wid>-plan.jsonl") is a part too — a full agentic pass
+# on the preview tier with a 900s budget, during which the chat had nothing at all to show. The
+# client renders this LABEL, so it must not need to infer the phase from a state the workflow
+# reports as plain "running".
+_PROGRESS_PART_PLAN = "Planning"
 
 
 def _run_progress(wid):
     """Live execution progress for one run, read from its streaming transcript (issue #97,
     first cut — #89 flushes per line, so tailing the file is safe while it's being written).
-    Returns the NEWEST attempt's last activity line, event count, and how stale the file is,
+    Returns the NEWEST attempt's last activity line, event count, and how stale the file is
+    — or, before any attempt exists, the approval preview's (issue #127) —
     so the chat can show WHAT a run is doing and whether it looks stuck. File reads only —
     no Temporal, no worker, no LLM — and the wid is pattern-validated because it lands in a
     filesystem path."""
@@ -219,20 +225,26 @@ def _run_progress(wid):
     # and reports a working run as stuck. A swarm child ("<wid>-sN-aM") stays excluded: it is its
     # own run with its own card.
     best, best_attempt, best_part, best_key = None, 0, None, ()
+    plan_name = os.path.basename(claude_cli.plan_transcript_path(wid))
     for name in names:
         m = re.fullmatch(re.escape(wid) + r"(?:-(revfix|rev|qafix|qa|fix)(\d+))?-a(\d+)\.jsonl", name)
-        if not m:
+        is_plan = not m and name == plan_name
+        if not m and not is_plan:
             continue
-        kind, rnd, attempt = m.group(1), m.group(2), int(m.group(3))
+        kind, rnd, attempt = (m.group(1), m.group(2), int(m.group(3))) if m else (None, None, 0)
         path = os.path.join(claude_cli.TRANSCRIPTS, name)
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
             continue
-        key = (mtime, int(rnd) if rnd else -1, attempt)
+        # The preview RANKS BELOW every attempt rather than competing on mtime: it is the phase
+        # before execution, so once any `-aN` exists the preview is over and tailing it would
+        # report the run as idle for however long the attempt has been running.
+        key = (0 if is_plan else 1, mtime, int(rnd) if rnd else -1, attempt)
         if key > best_key:
             best, best_attempt, best_key = path, attempt, key
-            best_part = f"{_PROGRESS_PARTS[kind]} {int(rnd) + 1}" if kind else None
+            best_part = (_PROGRESS_PART_PLAN if is_plan
+                         else (f"{_PROGRESS_PARTS[kind]} {int(rnd) + 1}" if kind else None))
     if not best:
         return {"found": False}
     try:

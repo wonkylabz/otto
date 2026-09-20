@@ -738,6 +738,48 @@ class HttpApiTests(unittest.TestCase):
             claude_cli.TRANSCRIPTS = orig
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_progress_tails_the_plan_preview_before_any_attempt(self):
+        """Issue #127: the preview is a full agentic pass with a 900s budget and the chat showed
+        NOTHING for all of it. Its transcript is deliberately `<wid>-plan.jsonl` (never `-a0`), so
+        the attempt pattern could never match it and /api/progress answered `found: false` for the
+        whole phase. It must be served — labelled, so the client needn't infer the phase — and it
+        must rank BELOW every attempt: once execution starts the preview is over, and tailing it
+        would report a busy run as idle for as long as the attempt has been running."""
+        import claude_cli
+        tmp = tempfile.mkdtemp(prefix="otto-planprog-")
+        orig, claude_cli.TRANSCRIPTS = claude_cli.TRANSCRIPTS, tmp
+        try:
+            meta = {"type": "otto-meta", "prompt": "x"}
+            tool = {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "workflows.py"}}]}}
+            with open(claude_cli.plan_transcript_path("web-plan"), "w") as f:
+                f.write(json.dumps(meta) + "\n")
+                f.write(json.dumps(tool) + "\n")
+            st, body = _get(self.base, "/api/progress?id=web-plan")
+            self.assertEqual(st, 200)
+            self.assertTrue(body["found"])
+            self.assertEqual(body["part"], "Planning")
+            self.assertEqual(body["events"], 2)
+            self.assertIn("workflows.py", body["last"])
+            # An attempt outranks it even when the preview's file is NEWER on disk — the
+            # (mtime, ...) key alone would hand the chat a finished preview mid-execution.
+            att = os.path.join(tmp, "web-plan-a1.jsonl")
+            with open(att, "w") as f:
+                f.write(json.dumps(meta) + "\n")
+            os.utime(att, (time.time() - 600, time.time() - 600))
+            st, body = _get(self.base, "/api/progress?id=web-plan")
+            self.assertIsNone(body["part"])
+            self.assertEqual(body["attempt"], 1)
+            self.assertEqual(body["events"], 1)
+            # A swarm child's own preview stays the child's: the parent card never shows it.
+            with open(claude_cli.plan_transcript_path("web-plan-s1"), "w") as f:
+                f.write(json.dumps(meta) + "\n")
+            st, body = _get(self.base, "/api/progress?id=web-plan")
+            self.assertEqual(body["attempt"], 1)
+        finally:
+            claude_cli.TRANSCRIPTS = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_progress_unknown_or_hostile_wid_not_found(self):
         st, body = _get(self.base, "/api/progress?id=no-such-run")
         self.assertEqual(st, 200)

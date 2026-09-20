@@ -339,15 +339,32 @@ async function watchLoop(wid, chatId, content, sess, flags){
       setNode("RUN","active","executing…",{startMs:times.RUN&&times.RUN.start}); runActive=true;
       showThinking(content, cap?("Running "+cap.name+"…"):"Running…");
     }
-    // Live RUN progress (issue #97, first cut): while executing, tail the run's streaming
-    // transcript (/api/progress) so the chat shows what the agent is DOING — last tool call,
-    // event count, verify-retry attempt — and flags a stall, instead of a bare "Working…".
+    // Live progress (issue #97, first cut; #127 extends it to the PLAN preview): tail the run's
+    // streaming transcript (/api/progress) so the chat shows what the agent is DOING — last tool
+    // call, event count, verify-retry attempt — and flags a stall, instead of a bare "Working…".
     // Every 4th poll (~1.8s); swarm parents have no transcript of their own, so they skip it.
-    if(runActive && st.state==="running" && !isSwarm && (progressTick++ % 4 === 0)){
+    // The preview is a full agentic pass with a 900s budget and the workflow reports plain
+    // "running" for all of it, so `runActive` cannot stand in for "there is a transcript to
+    // tail". Derived, never a latched flag: it must go false again the moment PLAN finishes.
+    const planActive = !previewDone && !gateDone && !!(times.PLAN && times.PLAN.start && times.PLAN.dur==null);
+    if((runActive || planActive) && st.state==="running" && !isSwarm && (progressTick++ % 4 === 0)){
       try{
         const pg=await (await fetch("/api/progress?id="+encodeURIComponent(wid))).json();
         if(!alive()) return;
-        if(pg.found){
+        // The preview's transcript ranks below every attempt server-side, so `part` naming it is
+        // proof the run has not started executing yet — paint PLAN, never RUN, off it. A 900s
+        // Opus pass that has stopped writing is exactly what the reader needs flagged, and it is
+        // flagged sooner than an attempt's: there is no verify pause here to explain the silence.
+        if(pg.found && pg.part==="Planning" && !runActive){
+          setNode("PLAN","active","previewing what it will do… · "+pg.events+" events",
+                  {startMs:times.PLAN&&times.PLAN.start});
+          if(pg.idle_s>120){
+            showThinking(content,"⚠ the plan preview hasn't written for "+Math.round(pg.idle_s/60)+" min — still thinking, or possibly stuck");
+          } else if(pg.last){
+            showThinking(content, pg.last+" · "+Math.round(pg.idle_s)+"s ago · planning");
+          }
+        }
+        else if(pg.found && runActive){
           const att=(pg.attempt>1)?(" · attempt "+pg.attempt):"";
           // Which post-PR round is writing, when one is: a review/QA round is the run's OWN work
           // and its transcript is what `idle_s` now measures, so name it rather than let a busy
