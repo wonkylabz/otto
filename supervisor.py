@@ -37,6 +37,7 @@ widen the toolset, the permissions or the deny list.
 """
 import json
 import os
+import contextvars
 import threading
 import time
 
@@ -268,7 +269,12 @@ class Supervisor:
 
     @staticmethod
     def _thread_spawn(fn):
-        t = threading.Thread(target=fn, daemon=True)
+        # The watcher runs on its own thread, and a ContextVar does NOT cross one — neither ours
+        # nor the one Temporal keeps its activity context in. Spawned bare, every [SUPERVISE]
+        # line landed in the trace log with no run id (measured), which is exactly the narrative
+        # the audit-runs skill greps a wid for. Copying the context carries both.
+        ctx = contextvars.copy_context()
+        t = threading.Thread(target=lambda: ctx.run(fn), daemon=True)
         t.start()
         return t
 

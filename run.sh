@@ -5,6 +5,19 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Bound the RAW stdio logs. `>>` (issue #128) stopped them being wiped on every restart, which
+# also removed the only thing that bounded them — and under systemd this script IS the service,
+# so the worker's stdout is this file rather than the journal, trace lines included. No fd can
+# be rotated from the shell once the redirect is open, so the roll happens HERE, before each
+# one: one generation kept, the rest is the in-process log's job (data/logs/, TTL'd).
+roll_log() {
+  local max="${OTTO_STDIO_LOG_MAX_BYTES:-8388608}" sz=0
+  [ -f "$1" ] || return 0
+  sz=$(wc -c <"$1" 2>/dev/null || echo 0)
+  if [ "$sz" -ge "$max" ]; then mv -f "$1" "$1.1" || true; fi
+  return 0
+}
+
 # Local config: load a gitignored .env if present (e.g. OTTO_EVENT_SECRET for the event
 # ingress). `set -a` exports every assignment so the worker + server inherit them.
 if [ -f .env ]; then
@@ -51,8 +64,9 @@ else
   # (workflow list, cluster health) keeps answering while EVERY history op — submit,
   # describe, schedule describe — times out, so the stack looks up while nothing runs.
   mkdir -p data
+  roll_log /tmp/otto-temporal.log
   "$TCLI" server start-dev --db-filename "$(pwd)/data/temporal.db" \
-    --sqlite-pragma journal_mode=WAL >/tmp/otto-temporal.log 2>&1 &
+    --sqlite-pragma journal_mode=WAL >>/tmp/otto-temporal.log 2>&1 &
   pids+=($!)
   sleep 3
 fi
@@ -70,8 +84,15 @@ fi
   || echo "temporal retention: could not set (board falls back to its own archive)"
 
 # 2) worker
-echo "worker: starting (log -> /tmp/otto-worker.log)…"
-"$PY" worker.py >/tmp/otto-worker.log 2>&1 &
+# `>>`, not `>`. These three files are the RAW stdio of each process — tracebacks, third-party
+# chatter, anything that never went through `ui.trace` — and `>` threw the lot away on every
+# start, which the repo's own "restart the worker after changing any module it imports" makes a
+# per-edit event. They stay under /tmp because they are unrotatable (the fd is fixed at launch)
+# and unscrubbable from a shell; the curated, scrubbed, rotated, run-attributed trace stream is
+# `data/logs/<stream>-<date>.log`, written in-process by `ui.trace` (issue #128).
+roll_log /tmp/otto-worker.log
+echo "worker: starting (traces -> data/logs/, raw stdio -> /tmp/otto-worker.log)…"
+"$PY" worker.py >>/tmp/otto-worker.log 2>&1 &
 pids+=($!)
 sleep 1
 
@@ -79,8 +100,9 @@ sleep 1
 # serviced immediately instead of waiting for this to exit first; a plain foreground
 # child defers the cleanup trap until it exits on its own, so a signal to run.sh
 # (e.g. from launchd) never reaches it and the whole tree hangs.
-echo "web server: starting…"
-"$PY" server.py &
+roll_log /tmp/otto-server.log
+echo "web server: starting (traces -> data/logs/, raw stdio -> /tmp/otto-server.log)…"
+"$PY" server.py >>/tmp/otto-server.log 2>&1 &
 pids+=($!)
 
 # Supervise: ANY child dying is fatal to the whole stack. A bare `wait` here blocked on

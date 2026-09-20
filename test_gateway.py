@@ -7452,6 +7452,16 @@ class ReadDenyTests(unittest.TestCase):
             self.assertTrue(file_safety.is_read_denied(self._p(*rel)),
                             f"{os.path.join(*rel)} must not be readable by an arbitrary run")
 
+    def test_the_durable_trace_log_is_read_denied(self):
+        """Issue #128 created a new durable sink under `data/`, in a SUBDIRECTORY — the existing
+        `data/*.log` glob (the frozen pre-SQLite audit copies) does not reach it. Without the
+        subdir on the list, the newest piece of Otto's runtime state would be the one piece
+        every run can read: routing decisions, wall reasons, and whatever a trace interpolated,
+        for the whole TTL."""
+        for name in ("worker-2026-09-21.log", "server-2026-09-21T120000.log"):
+            self.assertTrue(file_safety.is_read_denied(self._p("logs", name)),
+                            f"data/logs/{name} is readable by an arbitrary run")
+
     def test_the_credential_stores_are_read_denied(self):
         """Not Otto's state — the operator's. `web-51db95a8` is the case: a local run with no
         Atlassian connector walked ~/.netrc, the 1Password config, ~/.claude.json and Cursor's

@@ -852,6 +852,17 @@ CAP_LOCAL_LATCH_TTL_S = float(os.environ.get("OTTO_CAP_LOCAL_LATCH_TTL_S", str(2
 # the run-detail view and live chat progress. Swept opportunistically after this TTL.
 TRANSCRIPT_TTL_H = float(os.environ.get("OTTO_TRANSCRIPT_TTL_H", "168"))
 
+# The durable trace log (issue #128): `ui.trace` is the richest debug stream Otto produces —
+# routing decisions, wall reasons, non-reproduced adverse verdicts, supervisor verdicts, local
+# latches — and it went to stdout, which `run.sh` sent to a file it TRUNCATED on every start.
+# The repo's own discipline is to restart the worker after touching any module it imports, so
+# the documented workflow destroyed the evidence on every iteration. Same TTL as transcripts,
+# and the same reason: it is forensic material, not a permanent record. 0 on either disables.
+TRACE_LOG_TTL_H = float(os.environ.get("OTTO_TRACE_LOG_TTL_H", "168"))
+# Rolled at this size as well as at the day boundary — a service that is never restarted would
+# otherwise write one file forever, and the TTL sweep cannot reap the file still being appended.
+TRACE_LOG_MAX_BYTES = int(os.environ.get("OTTO_TRACE_LOG_MAX_BYTES", str(8 * 1024 * 1024)))
+
 # Push notifications (issue #92): when OTTO_NTFY_TOPIC is set, the human-blocking
 # transitions (awaiting approval, awaiting clarification, terminal needs-human) push to
 # ntfy.sh — or a self-hosted server via OTTO_NTFY_URL. Unset = feature off. The topic name

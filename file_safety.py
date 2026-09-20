@@ -160,6 +160,11 @@ def denied_globs(allow_cwd=None):
         os.path.join(config.DATA_DIR, "*.json"),
         # ... the execution transcripts, for the same reason as the trail.
         os.path.join(config.DATA_DIR, "transcripts", "**"),
+        # ... and the durable trace log (issue #128), which is now the only record of a run that
+        # survives a worker restart. Read-denying it without this left a run with Bash able to
+        # truncate the evidence of itself — the same self-erasure the trail and the ESTOP
+        # sentinel are on this list for. A subdirectory, so nothing above reaches it.
+        os.path.join(config.DATA_DIR, "logs", "**"),
         # ... and the global-pause sentinel. Deleting it RELEASES the pause, so without this a
         # run can hand itself the one lever an operator has for stopping Otto — the same
         # self-escalation as ~/.claude/settings.json above, and the reason `rm` had to be
@@ -193,6 +198,11 @@ def _otto_state_globs():
         os.path.join(d, "otto.db*"),          # audit trail, memory, chats, solutions, knowledge
         os.path.join(d, "*.json"),            # models.json carries endpoint API keys in plaintext
         os.path.join(d, "*.log"),             # the frozen pre-SQLite audit copies
+        # The durable trace log (issue #128). A SUBDIRECTORY, so `*.log` above does not reach
+        # it — and without this line the one piece of Otto's runtime state every run could read
+        # would be the newest one: routing decisions, wall reasons, and whatever a trace
+        # interpolated, for the whole TTL.
+        os.path.join(d, "logs", "**"),
         os.path.join(d, "transcripts", "**"),  # every other run's full tool-by-tool transcript
         os.path.join(d, "local-sessions", "**"),
         os.path.join(d, "memory", "**"),

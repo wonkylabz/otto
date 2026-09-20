@@ -18,7 +18,8 @@ the web UI or a running server.
 | `data/otto.db`'s `audit_content` table | Same `workflow`+`at` keys, but with the FULL result text/critique (the `audit` table only has metadata) | columns: `id`, `at`, `workflow`, `attempt`, `data` |
 | `data/audit.log` / `data/audit-content.log` (pre-migration history, frozen) | Same shape as above, one JSON object per line — only present if this install predates the SQLite migration; not written to anymore | JSON lines |
 | `data/transcripts/<wid>-a<attempt>.jsonl` | The raw `claude -p` / local-runtime stream for one attempt — every tool call, tool result, and the final `result` event | JSON lines, `otto-meta` first line has `cwd` + the full prompt |
-| `/tmp/otto-worker.log` | Live trace lines from the worker process (`[RUN]`, `[VERIFY]`, `[SUPERVISE]`, `[ESCALATE]`, `[GATE]`, `[ROUTER]`, `[WORKSPACE]`...) | Plain text, no timestamps — order-only |
+| `data/logs/<stream>-<date>.log` | Trace lines from the worker and the server (`[RUN]`, `[VERIFY]`, `[SUPERVISE]`, `[ESCALATE]`, `[GATE]`, `[ROUTER]`, `[WORKSPACE]`...) — durable across restarts, scrubbed, TTL `TRACE_LOG_TTL_H` | `<iso ts> [<wid>] [TAG] msg`; the wid is present whenever a run was in scope |
+| `/tmp/otto-worker.log`, `/tmp/otto-server.log`, `/tmp/otto-temporal.log` | RAW stdio for each process — tracebacks and third-party chatter that never went through `ui.trace`. Appended, so a restart keeps the history, but cleared by the OS on reboot | Plain text |
 | `data/service.log` | Process-level: service start/stop, crashes, port binding | Plain text |
 | `data/dismissed.json`, `/api/needs-you` (if server is up) | Runs currently flagged for human attention | JSON |
 
@@ -86,11 +87,14 @@ crash, or a supervisor kill) — always cross-reference the transcript or the cr
    for reasoning errors: wrong `cwd`/repo, repeating a failing command, ignoring the actual
    ticket, etc.
 
-4. **Cross-check the worker log for supervisor/escalation narrative.** `/tmp/otto-worker.log`
-   has no timestamps, so match by workflow id and sequence, not by time:
+4. **Cross-check the trace log for supervisor/escalation narrative.** Every line carries its
+   own timestamp AND the run it belongs to, so filter by wid rather than reading an
+   interleaving of every concurrent run:
    ```bash
-   grep -A2 -B2 '<wid>' /tmp/otto-worker.log
+   grep -h '\[<wid>\]' data/logs/*.log          # one run's whole journey, in order
    ```
+   It survives a worker restart. For a crash with no trace line behind it, the traceback is in
+   the raw stdio at `/tmp/otto-worker.log`.
 
 5. **Classify each real finding**, don't just list outcomes:
    - **Otto bug** (routing/gate/supervisor/workflow logic did the wrong thing) → propose a

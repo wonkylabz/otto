@@ -7,6 +7,7 @@ decomposition (`plan_steps`/`replan_steps`), the approval gate's read-only plan 
 (`run_plan` and helpers). `_clipped` lives here; judging.py reaches it through the facade.
 """
 import concurrent.futures
+import contextvars
 import json
 import re
 
@@ -848,7 +849,12 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
                           f"{', '.join(s['id'] for s in wave)}  ({len(pending) - len(wave)} queued)")
             outcomes = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave)) as pool:
-                futs = {pool.submit(_exec, s, snap): s for s in wave}
+                # Each step gets its OWN copy of this context: a ContextVar (ours, and the one
+                # Temporal keeps its activity context in) does not cross a thread, so submitted
+                # bare every wave step's traces lost the run id — and a Context cannot be run
+                # twice concurrently, so one shared copy is not an option.
+                futs = {pool.submit(contextvars.copy_context().run, _exec, s, snap): s
+                        for s in wave}
                 for fut in concurrent.futures.as_completed(futs):
                     outcomes[futs[fut]["id"]] = fut.result()
         # Integrate the wave in PLAN order (deterministic results/synthesis, not completion order).

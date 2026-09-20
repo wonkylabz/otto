@@ -2989,7 +2989,13 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # attempt rows (a single row is never authoritative — merge it), the measured stage set
     # differs per run (so nothing may sum across stages), and "judged runs" is ONE predicate
     # two aggregates share — the second spelling of it was already written and already wrong.
-    MAX_RULES_BYTES = 83690   # fetched tier — bounded, but looser; it is not always loaded
+    # 83690 -> 85044 (#128): the trace log became durable, so it is now a sink with the same
+    # obligations a transcript has. Six rules, each one measured: the deny globs do not reach a
+    # subdirectory (and read-deny alone let a run erase itself), a day stamp bounds nothing on a
+    # service nobody restarts, a second-resolution rolled name silently DELETES its predecessor,
+    # the wid needs no per-activity wiring but DOES need carrying across a thread, and `>>` took
+    # away the only bound the raw stdio logs had. None of them is guessable from the code.
+    MAX_RULES_BYTES = 85044   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

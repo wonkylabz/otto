@@ -29,6 +29,8 @@ data/tickets
 !data/.gitkeep
 data/codex-home
 data/local-sessions
+# The durable trace log (ui.py, issue #128) — forensic evidence about runs, swept on a TTL.
+data/logs
 # Isolated repo clones (workspace.py). Each is a full checkout WITH its own .git, so an
 # in-flight repo-mode run otherwise surfaces as an untracked embedded repo in `git status`.
 data/workspaces
