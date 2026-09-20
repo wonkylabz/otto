@@ -119,14 +119,24 @@ def gc_logs(ttl_h=None):
             pass
 
 
-def _close():
-    """Drop the cached handle so the next write reopens. Caller holds `_LOCK`."""
+def _close_locked():
+    """Drop the cached handle so the next write reopens. Caller MUST hold `_LOCK`."""
     if _SINK["fh"] is not None:
         try:
             _SINK["fh"].close()
         except OSError:
             pass
     _SINK["fh"], _SINK["path"], _SINK["bytes"] = None, None, 0
+
+
+def _close():
+    """`_close_locked` for a caller that does NOT hold the lock — the atexit hook and the tests.
+
+    Two of the three callers were unlocked while the docstring claimed otherwise, and at exit a
+    daemon thread (`slack_socket`) can be mid-`_write`: the broad except made that harmless and
+    invisible, which is the worse of the two. Split so the claim is true at both spellings."""
+    with _LOCK:
+        _close_locked()
 
 
 def _sink(now):
@@ -138,7 +148,7 @@ def _sink(now):
     path = _log_path(now)
     if _SINK["path"] == path and _SINK["fh"] is not None:
         return _SINK["fh"]
-    _close()
+    _close_locked()
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         size = os.path.getsize(path) if os.path.exists(path) else 0
@@ -154,7 +164,7 @@ def _sink(now):
         _SINK["path"], _SINK["bytes"] = path, size
         gc_logs()
     except OSError:
-        _close()
+        _close_locked()
     return _SINK["fh"]
 
 
@@ -190,7 +200,7 @@ def _write(line, wid):
             # TTL sweep cannot reap the file still being appended to.
             if config.TRACE_LOG_MAX_BYTES and _SINK["bytes"] >= config.TRACE_LOG_MAX_BYTES:
                 path = _SINK["path"]
-                _close()
+                _close_locked()
                 try:
                     rolled = _rolled_name(now)
                     if rolled:

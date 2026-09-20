@@ -7135,6 +7135,19 @@ class TraceLogWiringTests(unittest.TestCase):
                      and not ln.strip().startswith("#")]
         self.assertEqual(offenders, [], "a truncating redirect is back: %s" % offenders)
 
+    def test_the_appending_logs_are_bounded(self):
+        """`>` was ugly but it WAS the bound. Appending removed it, and under systemd this
+        script is the service — so the worker's stdout is that file, trace lines included, with
+        no rotation, no TTL and no cap. Measured on the live file: 124 of 126 lines were traces.
+        No fd can be rotated from the shell once the redirect is open, so the roll has to happen
+        before each one."""
+        sh = self._sh()
+        self.assertIn("roll_log()", sh, "nothing bounds the appending stdio logs")
+        for log in ("/tmp/otto-worker.log", "/tmp/otto-server.log", "/tmp/otto-temporal.log"):
+            self.assertIn(f"roll_log {log}", sh, f"{log} is never rolled")
+            self.assertLess(sh.index(f"roll_log {log}"), sh.index(f">>{log}"),
+                            f"{log} is rolled AFTER its redirect is already open")
+
     def test_every_long_lived_process_has_a_log(self):
         """`server.py` had none at all — its stderr went wherever run.sh was launched from,
         which under a service manager is nowhere anyone looks."""

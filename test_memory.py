@@ -1966,3 +1966,44 @@ class TraceLogTests(unittest.TestCase):
         filename."""
         self.assertRegex(ui._stream_name(), r"^[A-Za-z0-9_.-]+$")
         self.assertNotIn(" ", ui._stream_name())
+
+    def test_the_log_is_WRITE_denied_as_well_as_read_denied(self):
+        """Read-deny alone left a run with Bash able to `rm` or truncate the only record of
+        itself that survives a restart — the same self-erasure the audit trail and the ESTOP
+        sentinel are on the write list for. Measured: write_denied was False while the
+        transcripts beside it were True."""
+        import file_safety
+        p = os.path.join(config.DATA_DIR, "logs", "worker-2026-09-21.log")
+        self.assertTrue(file_safety.is_denied(p), "data/logs is writable by an arbitrary run")
+        self.assertTrue(file_safety.is_read_denied(p))
+        # ...and the exemption that makes repo-mode possible is untouched.
+        self.assertFalse(file_safety.is_denied(
+            os.path.join(config.DATA_DIR, "workspaces", "r", "f.py")))
+
+    def test_the_wid_survives_a_thread_boundary_when_the_context_is_copied(self):
+        """A ContextVar does not cross a thread — neither ours nor the one Temporal keeps its
+        activity context in. Every trace from the supervisor's watcher thread and from a
+        plan-mode wave step therefore landed with no run id, which is exactly the [SUPERVISE]
+        narrative the audit-runs skill greps a wid for."""
+        import contextvars
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        token = ui.set_run("web-thread")
+        try:
+            got = {}
+            t = threading.Thread(target=lambda: got.update(naive=ui.current_run()))
+            t.start()
+            t.join()
+            self.assertIsNone(got["naive"], "a bare thread kept it — this guard proves nothing")
+            ctx = contextvars.copy_context()
+            t = threading.Thread(target=lambda: ctx.run(
+                lambda: got.update(copied=ui.current_run())))
+            t.start()
+            t.join()
+            self.assertEqual(got["copied"], "web-thread")
+            with ThreadPoolExecutor(1) as ex:
+                self.assertEqual(
+                    ex.submit(contextvars.copy_context().run, ui.current_run).result(),
+                    "web-thread")
+        finally:
+            ui._WID.reset(token)

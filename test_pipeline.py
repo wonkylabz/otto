@@ -4061,3 +4061,25 @@ class StageTimingWiringTests(unittest.TestCase):
         self.assertTrue(opened, "no _enter calls found — the reader is pointed at the wrong src")
         self.assertEqual(opened - set(audit.STAGE_ORDER), set(),
                          "a pipeline stage is missing from audit.STAGE_ORDER")
+
+
+class TraceRunAttributionTests(unittest.TestCase):
+    """Issue #128's attribution half, at the two places a run's id is DROPPED: a ContextVar does
+    not cross a thread, so anything Otto spawns has to carry the context over explicitly or its
+    traces land anonymous. Source guards, because both are threads inside an activity and the
+    behaviour is pinned in `test_memory.TraceLogTests`."""
+
+    def test_the_supervisor_watcher_thread_carries_the_context(self):
+        src = inspect.getsource(supervisor.Supervisor._thread_spawn)
+        self.assertIn("copy_context()", src,
+                      "the watcher is spawned bare — every [SUPERVISE] line loses its run id")
+        self.assertIn("ctx.run", src)
+
+    def test_each_plan_wave_step_gets_its_OWN_context_copy(self):
+        """A `Context` cannot be run twice concurrently, so one copy shared across the wave is
+        not an option — it has to be per submit."""
+        src = inspect.getsource(plans)
+        i = src.index("ThreadPoolExecutor(max_workers=len(wave))")
+        body = src[i:i + 700]
+        self.assertIn("contextvars.copy_context().run", body)
+        self.assertIn("for s in wave", body)

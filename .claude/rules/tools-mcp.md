@@ -63,7 +63,9 @@ Both backends append `data/transcripts/<wid>-a<attempt>.jsonl` (TTL `TRANSCRIPT_
 
 `ui.trace` writes the console AND `data/logs/<stream>-<date>.log` (TTL `TRACE_LOG_TTL_H`) — the richest debug stream Otto has, and the only one that outlives a restart.
 
-- **It is a durable sink, so it is SCRUBBED and READ-DENIED like a transcript** — `data/*.log` does not reach a subdirectory, and the file holds whatever a trace interpolated for the whole TTL (`TraceLogTests`, `ReadDenyTests`).
+- **It is a durable sink, so it is SCRUBBED and both READ- and WRITE-denied like a transcript** — `data/*.log` reaches no subdirectory, and read-deny alone let a run `rm` the only record of itself (`TraceLogTests`, `ReadDenyTests`).
 - **Appended, never truncated, and rolled on a BYTE COUNTER** — `run.sh`'s `>` wiped it on every restart, and a day stamp bounds nothing on a service that is never restarted (`TraceLogTests`).
 - **A rolled name must be unique** — `os.replace` DELETES its target, and two rolls in one second left 2 files of 5 (`TraceLogTests`).
 - **The wid comes free from `activity.info()`** (measured inside a real sync activity); `ui.set_run` is for everything that is not one (`TraceLogTests`).
+- **Anything Otto SPAWNS must carry the context over** (`contextvars.copy_context`, per submit) — no ContextVar crosses a thread, ours or Temporal's, so the supervisor watcher and every plan wave step traced anonymously (`TraceRunAttributionTests`).
+- **`run.sh`'s `>>` removed the only bound the raw stdio logs had** — it rolls them itself before opening each redirect; an open fd cannot be rotated from a shell (`TraceLogWiringTests`).
