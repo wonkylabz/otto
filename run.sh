@@ -52,7 +52,7 @@ else
   # describe, schedule describe — times out, so the stack looks up while nothing runs.
   mkdir -p data
   "$TCLI" server start-dev --db-filename "$(pwd)/data/temporal.db" \
-    --sqlite-pragma journal_mode=WAL >/tmp/otto-temporal.log 2>&1 &
+    --sqlite-pragma journal_mode=WAL >>/tmp/otto-temporal.log 2>&1 &
   pids+=($!)
   sleep 3
 fi
@@ -70,8 +70,14 @@ fi
   || echo "temporal retention: could not set (board falls back to its own archive)"
 
 # 2) worker
-echo "worker: starting (log -> /tmp/otto-worker.log)…"
-"$PY" worker.py >/tmp/otto-worker.log 2>&1 &
+# `>>`, not `>`. These three files are the RAW stdio of each process — tracebacks, third-party
+# chatter, anything that never went through `ui.trace` — and `>` threw the lot away on every
+# start, which the repo's own "restart the worker after changing any module it imports" makes a
+# per-edit event. They stay under /tmp because they are unrotatable (the fd is fixed at launch)
+# and unscrubbable from a shell; the curated, scrubbed, rotated, run-attributed trace stream is
+# `data/logs/<stream>-<date>.log`, written in-process by `ui.trace` (issue #128).
+echo "worker: starting (traces -> data/logs/, raw stdio -> /tmp/otto-worker.log)…"
+"$PY" worker.py >>/tmp/otto-worker.log 2>&1 &
 pids+=($!)
 sleep 1
 
@@ -79,8 +85,8 @@ sleep 1
 # serviced immediately instead of waiting for this to exit first; a plain foreground
 # child defers the cleanup trap until it exits on its own, so a signal to run.sh
 # (e.g. from launchd) never reaches it and the whole tree hangs.
-echo "web server: starting…"
-"$PY" server.py &
+echo "web server: starting (traces -> data/logs/, raw stdio -> /tmp/otto-server.log)…"
+"$PY" server.py >>/tmp/otto-server.log 2>&1 &
 pids+=($!)
 
 # Supervise: ANY child dying is fatal to the whole stack. A bare `wait` here blocked on

@@ -2,7 +2,9 @@
 
 Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
+import contextlib
 import inspect
+import io
 import json
 import os
 import re
@@ -21,6 +23,7 @@ import knowledge
 import privacy
 import registry
 import supervisor
+import ui
 
 try:                                       # the Temporal layer — absent under a bare python3
     import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
@@ -1814,3 +1817,152 @@ class StageTimingTests(unittest.TestCase):
         self.assertEqual((run["runs"], run["open"]), (0, 1))
         self.assertNotIn("DELIVER", [s["stage"] for s in out["stages"]],
                          "a stage never entered at write time must be absent, not zero")
+
+
+class TraceLogTests(unittest.TestCase):
+    """The durable trace log (issue #128). `ui.trace` is the richest debug stream Otto produces —
+    routing picks, wall reasons, non-reproduced adverse verdicts, supervisor verdicts, local
+    latches — and it went to stdout, which `run.sh` sent to a file it TRUNCATED on every start.
+    The repo's own discipline is to restart the worker after touching any module it imports, so
+    the documented workflow destroyed every trace line on every iteration.
+
+    A log that now survives a restart is a new durable sink, so it is tested like one: scrubbed,
+    appended, bounded, reaped, and attributable to a run."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="otto-log-")
+        self._o = (ui.LOG_DIR, ui._STREAM, config.TRACE_LOG_TTL_H, config.TRACE_LOG_MAX_BYTES)
+        ui.LOG_DIR, ui._STREAM = os.path.join(self.d, "logs"), "worker"
+        ui._close()
+
+    def tearDown(self):
+        ui._close()
+        (ui.LOG_DIR, ui._STREAM, config.TRACE_LOG_TTL_H,
+         config.TRACE_LOG_MAX_BYTES) = self._o
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def _files(self):
+        return sorted(os.listdir(ui.LOG_DIR)) if os.path.isdir(ui.LOG_DIR) else []
+
+    def _text(self):
+        out = []
+        for f in self._files():
+            with open(os.path.join(ui.LOG_DIR, f), encoding="utf-8") as fh:
+                out.append(fh.read())
+        return "".join(out)
+
+    def test_a_trace_line_lands_in_a_dated_file(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            ui.trace("ROUTER", "picked sre-minion")
+        self.assertEqual(len(self._files()), 1)
+        self.assertRegex(self._files()[0], r"^worker-\d{4}-\d{2}-\d{2}\.log$")
+        self.assertIn("[ROUTER] picked sre-minion", self._text())
+
+    def test_the_console_still_gets_the_line(self):
+        """Silencing stdout to avoid a duplicate would take the traces out of the terminal and
+        out of `journalctl` — the first two places anyone looks."""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ui.trace("GATE", "write needs approval")
+        self.assertIn("write needs approval", buf.getvalue())
+
+    def test_a_credential_is_scrubbed_on_the_way_to_disk_AND_the_console(self):
+        """The one-writer argument transcripts already make (`claude_cli.transcript_line`): this
+        file survives restarts and holds whatever a trace interpolated for the whole TTL, and a
+        live Atlassian token reached a durable sink through exactly that gap once already
+        (`web-51db95a8`). Asserted on a REAL vendor key shape, not one drawn from the regex."""
+        key = "sk-ant-api03-AbCdEf1234567890AbCdEf1234567890AbCdEf12"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ui.trace("RUN", f"curl -H 'Authorization: Bearer {key}' https://api.example.com")
+        self.assertNotIn(key, self._text())
+        self.assertNotIn(key, buf.getvalue())
+        self.assertIn("api.example.com", self._text(), "the scrub ate the line, not the secret")
+
+    def test_a_restart_appends_rather_than_truncating(self):
+        """THE bug. `run.sh` opened the log with `>`; reopening with `w` here would just move
+        that truncation into the process, and the evidence would still die on every restart."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            ui.trace("ORCH", "before the restart")
+            ui._close()                      # what a process exit does
+            ui.trace("ORCH", "after the restart")
+        self.assertIn("before the restart", self._text())
+        self.assertIn("after the restart", self._text())
+
+    def test_the_line_carries_the_run_it_belongs_to(self):
+        """The worker runs workflows concurrently, so without this the file is one unreadable
+        interleaving and no line can be joined to its audit row or its transcript."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            token = ui.set_run("web-1a2b3c")
+            try:
+                ui.trace("GATEWAY", "tier exec -> opus")
+            finally:
+                ui._WID.reset(token)
+            ui.trace("GATEWAY", "no run in scope")
+        self.assertIn("[web-1a2b3c] [GATEWAY] tier exec -> opus", self._text())
+        self.assertNotIn("[web-1a2b3c] [GATEWAY] no run", self._text())
+
+    def test_an_explicit_wid_beats_the_bound_one(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            token = ui.set_run("web-bound")
+            try:
+                ui.trace("RUN", "about another run", wid="slack-other")
+            finally:
+                ui._WID.reset(token)
+        self.assertIn("[slack-other]", self._text())
+
+    def test_the_live_file_is_rolled_on_SIZE_not_only_on_the_date(self):
+        """The path only changes at the day boundary, so a size check there alone bounds nothing
+        on a service that is never restarted — which is the steady state this log exists for.
+        The TTL sweep cannot help: it reaps by mtime and the file being appended to is always
+        fresh."""
+        config.TRACE_LOG_MAX_BYTES = 300
+        with contextlib.redirect_stdout(io.StringIO()):
+            for i in range(20):
+                ui.trace("RUN", f"line {i} " + "x" * 40)
+        files = self._files()
+        self.assertGreater(len(files), 1, "the log grew unbounded inside one day")
+        for f in files:
+            self.assertLessEqual(os.path.getsize(os.path.join(ui.LOG_DIR, f)), 400)
+
+    def test_rolling_twice_in_one_second_loses_nothing(self):
+        """`os.replace` onto an existing name DELETES it, and a second-resolution stamp is not
+        unique — measured, 20 lines at a 300-byte cap left 2 files instead of 5 and the rest
+        were silently gone. Evidence a log drops is worse than a log nobody rotated."""
+        config.TRACE_LOG_MAX_BYTES = 300
+        with contextlib.redirect_stdout(io.StringIO()):
+            for i in range(20):
+                ui.trace("RUN", f"line {i} " + "x" * 40)
+        self.assertEqual(sum(1 for ln in self._text().splitlines() if "[RUN]" in ln), 20)
+
+    def test_old_logs_are_reaped_and_the_ttl_can_be_switched_off(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            ui.trace("RUN", "seed")
+        old = os.path.join(ui.LOG_DIR, "worker-1999-01-01.log")
+        with open(old, "w") as fh:
+            fh.write("ancient\n")
+        os.utime(old, (0, 0))
+        ui.gc_logs()
+        self.assertFalse(os.path.exists(old))
+        with open(old, "w") as fh:
+            fh.write("ancient\n")
+        os.utime(old, (0, 0))
+        ui.gc_logs(ttl_h=0)
+        self.assertTrue(os.path.exists(old), "0 must disable the sweep, not reap everything")
+
+    def test_an_unwritable_log_dir_never_breaks_a_trace(self):
+        """A trace is evidence ABOUT a run, never part of it — and this one is called from the
+        gateway, the router and the supervisor, all of them mid-run."""
+        ui._close()
+        ui.LOG_DIR = "/proc/otto-cannot-write-here"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ui.trace("RUN", "still reaches the console")
+        self.assertIn("still reaches the console", buf.getvalue())
+
+    def test_the_stream_name_is_a_safe_filename(self):
+        """argv[0] is only a script path when a script was run: `python -c` leaves "-c" and
+        `python -m unittest` leaves that whole phrase, space included — and it becomes a
+        filename."""
+        self.assertRegex(ui._stream_name(), r"^[A-Za-z0-9_.-]+$")
+        self.assertNotIn(" ", ui._stream_name())

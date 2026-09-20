@@ -7115,3 +7115,30 @@ class StageTimingUiTests(unittest.TestCase):
         has nothing — and a bare table with no rows reads as broken."""
         i = ui_src().index("function stagesSection(")
         self.assertIn("No stage timings recorded yet", ui_src()[i:i + 1200])
+
+
+class TraceLogWiringTests(unittest.TestCase):
+    """`run.sh`'s half of issue #128. The in-process sink is tested in `test_memory.TraceLogTests`;
+    what only the shell can get wrong is throwing the RAW stdio away on every start."""
+
+    def _sh(self):
+        with open("run.sh", encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_no_process_log_is_opened_with_a_truncating_redirect(self):
+        """THE bug in the issue: `"$PY" worker.py >/tmp/otto-worker.log` — `>` truncates, and
+        the repo's own "restart the worker after changing any module it imports" makes that a
+        per-edit event. These files carry the tracebacks that never went through `ui.trace`, so
+        losing them loses the only record of a crash."""
+        offenders = [ln.strip() for ln in self._sh().splitlines()
+                     if re.search(r"(?<![>\-0-9])>(?!>)\s*[^\s>]*\.log\b", ln)
+                     and not ln.strip().startswith("#")]
+        self.assertEqual(offenders, [], "a truncating redirect is back: %s" % offenders)
+
+    def test_every_long_lived_process_has_a_log(self):
+        """`server.py` had none at all — its stderr went wherever run.sh was launched from,
+        which under a service manager is nowhere anyone looks."""
+        sh = self._sh()
+        for proc in ("worker.py", "server.py"):
+            line = next(ln for ln in sh.splitlines() if f'"$PY" {proc}' in ln)
+            self.assertIn(">>", line, f"{proc} has no appending log redirect")

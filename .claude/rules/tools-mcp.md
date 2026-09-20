@@ -58,3 +58,12 @@
 - **Every transcript line is scrubbed as it is written** (`claude_cli.transcript_line`, the ONE writer for both backends) — a run handling a credential otherwise leaves it in plaintext for the whole TTL; forensics needs the shape, never the bytes (`RedactTests`).
 
 Both backends append `data/transcripts/<wid>-a<attempt>.jsonl` (TTL `TRANSCRIPT_TTL_H`). Live: `/api/progress`; full: `/api/run/detail`.
+
+## The trace log
+
+`ui.trace` writes the console AND `data/logs/<stream>-<date>.log` (TTL `TRACE_LOG_TTL_H`) — the richest debug stream Otto has, and the only one that outlives a restart.
+
+- **It is a durable sink, so it is SCRUBBED and READ-DENIED like a transcript** — `data/*.log` does not reach a subdirectory, and the file holds whatever a trace interpolated for the whole TTL (`TraceLogTests`, `ReadDenyTests`).
+- **Appended, never truncated, and rolled on a BYTE COUNTER** — `run.sh`'s `>` wiped it on every restart, and a day stamp bounds nothing on a service that is never restarted (`TraceLogTests`).
+- **A rolled name must be unique** — `os.replace` DELETES its target, and two rolls in one second left 2 files of 5 (`TraceLogTests`).
+- **The wid comes free from `activity.info()`** (measured inside a real sync activity); `ui.set_run` is for everything that is not one (`TraceLogTests`).
