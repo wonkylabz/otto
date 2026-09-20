@@ -1705,8 +1705,8 @@ class StageTimingTests(unittest.TestCase):
         self.assertEqual(out["runs"], 2)
         router = {s["stage"]: s for s in out["stages"]}["ROUTER"]
         self.assertEqual(router["runs"], 2)
-        self.assertEqual(router["p50_ms"], 300)     # nearest-rank over [100, 300]
-        self.assertEqual(router["total_ms"], 400)
+        self.assertEqual(router["p50_ms"], 100)     # nearest-rank over [100, 300]
+        self.assertEqual(router["p90_ms"], 300)
 
     def test_an_open_span_is_counted_not_averaged(self):
         """RUN and DELIVER are still open on the attempt rows a CLEAN run writes, so a high
@@ -1743,3 +1743,74 @@ class StageTimingTests(unittest.TestCase):
         'nothing recorded', not as a pipeline that takes zero time."""
         out = audit.stage_timings([self._row("w1")])
         self.assertEqual(out, {"stages": [], "runs": 0})
+
+    def test_the_median_column_reports_the_LOWER_of_two_samples(self):
+        """`int(q*n)` is the obvious spelling of nearest-rank and is off by one at the median:
+        it makes the p50 of two samples the LARGER, under a column headed Median. Honest for
+        p90, mildly wrong for p50 — and at the sample sizes this table runs at, p50 IS the
+        number a reader acts on."""
+        rows = [self._row("w%d" % i, times={"RUN": {"start": 0, "dur": d}})
+                for i, d in enumerate([100, 300])]
+        run = {s["stage"]: s for s in audit.stage_timings(rows)["stages"]}["RUN"]
+        self.assertEqual(run["p50_ms"], 100)
+        self.assertEqual(run["p90_ms"], 300)
+        # …and the p90 of five samples is still the fifth, which is what the comment promises.
+        five = [self._row("v%d" % i, times={"RUN": {"start": 0, "dur": d}})
+                for i, d in enumerate([10, 20, 30, 40, 500])]
+        self.assertEqual({s["stage"]: s for s in
+                          audit.stage_timings(five)["stages"]}["RUN"]["p90_ms"], 500)
+
+    def test_the_denominator_is_scorecards_by_judge_not_a_second_spelling(self):
+        """Three places assert these two aggregates share a denominator — the docstring, the
+        on-screen copy, and `.claude/rules/memory-privacy.md`, which every conventions judge
+        digests. `verified is not None` alone is NOT that denominator: measured on the live
+        trail it counted 634 runs against scorecard's 547, 68 of the difference post-PR rounds.
+        A post-PR round is a verdict about the PR, not about the run's pipeline, and its wid
+        carries stage spans from a one-shot fix loop that is not a pipeline at all."""
+        rows = [
+            self._row("w1", times={"ROUTER": {"start": 0, "dur": 100}}),
+            # A post-PR review round: judged, but not a run of the pipeline.
+            self._row("w1-rev0", times={"ROUTER": {"start": 0, "dur": 9000}}),
+            # A supervisor kill dressed as a failed verdict so the ladder can steer on it.
+            self._row("w2", verified=False, times={"ROUTER": {"start": 0, "dur": 9000}}),
+            {"workflow": "w2", "capability": "agent:x", "outcome": "supervisor_kill",
+             "attempt": 1, "at": "2026-09-20T10:00:00", "cost_usd": 0},
+        ]
+        out = audit.stage_timings(rows)
+        self.assertEqual(out["runs"], 1, "a post-PR round or a supervisor kill was counted")
+        self.assertEqual({s["stage"]: s for s in out["stages"]}["ROUTER"]["p50_ms"], 100)
+
+    def test_both_aggregates_observe_the_one_judge_predicate(self):
+        """What the two SHARE is `by_judge`, not a run count — `scorecard`'s unit is
+        capability x run and this one's is the run, which on the live trail is 579 against 547
+        for the same 43 wids that carry rows under two capabilities. So pin the predicate
+        itself: rejecting everything through it must empty BOTH, or one of them has grown a
+        private copy again."""
+        rows = [self._row("w1", times={"ROUTER": {"start": 0, "dur": 100}})]
+        self.assertEqual(audit.stage_timings(rows)["runs"], 1)
+        self.assertEqual(sum(c["runs"] for c in audit.scorecard(rows)), 1)
+        real = audit.by_judge
+        audit.by_judge = lambda r, killed: False
+        try:
+            self.assertEqual(audit.stage_timings(rows)["runs"], 0)
+            self.assertEqual(sum(c["runs"] for c in audit.scorecard(rows)), 0)
+        finally:
+            audit.by_judge = real
+
+    def test_no_cross_stage_proportion_is_reported(self):
+        """A clean run's only rows are attempt rows, written from inside the RUN span and before
+        PR/REVIEW/QA/DELIVER are ever entered — so RUN arrives open and everything below it is
+        ABSENT, not open. A share-of-total over that stage set reported PLAN at 88% of a total
+        that never contained RUN: wrong, not merely incomplete. Per-stage `runs` is the reading;
+        nothing may re-introduce a figure that sums across stages."""
+        clean = self._row("w1", times={"ROUTER": {"start": 0, "dur": 3000},
+                                       "PLAN": {"start": 3000, "dur": 330000},
+                                       "RUN": {"start": 333000, "dur": None}})
+        out = audit.stage_timings([clean])
+        for s in out["stages"]:
+            self.assertNotIn("total_ms", s)
+            self.assertNotIn("share", s)
+        run = {s["stage"]: s for s in out["stages"]}["RUN"]
+        self.assertEqual((run["runs"], run["open"]), (0, 1))
+        self.assertNotIn("DELIVER", [s["stage"] for s in out["stages"]],
+                         "a stage never entered at write time must be absent, not zero")

@@ -7086,6 +7086,22 @@ class StageTimingUiTests(unittest.TestCase):
                       "the section renders whatever STAGE_STATS holds — unset, it is silently "
                       "empty on every load")
 
+    def test_the_table_reports_no_share_of_a_total_it_cannot_have(self):
+        """A clean run records RUN as open and the stages below it not at all, so a percentage
+        across stages divides by a different stage set on every run — it read PLAN at 88% of a
+        total that never contained RUN. The per-stage count is the honest column."""
+        i = ui_src().index("function stagesSection(")
+        body = ui_src()[i:i + 2600]
+        self.assertNotIn("total_ms", body, "a cross-stage proportion is back")
+        self.assertIn(">Measured<", body)
+
+    def test_the_table_says_which_stages_are_measured_on_every_run(self):
+        """Without it a reader joins RUN's median to the header's judged-run count and reads a
+        number drawn from needs-human runs alone as the whole pipeline's."""
+        i = ui_src().index("function stagesSection(")
+        body = ui_src()[i:i + 2600]
+        self.assertIn("only measured on a run that ended needing a human", body)
+
     def test_the_aggregate_states_its_denominator_on_screen(self):
         """`runs` here is JUDGED runs, not all runs — the same denominator split that made
         `/api/stats` report two different totals for the same noun. Unlabelled, a reader joins

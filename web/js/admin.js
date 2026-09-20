@@ -197,27 +197,26 @@ function stageDur(ms){
   const m=Math.floor(ms/60000); return m+"m "+Math.round((ms%60000)/1000)+"s";
 }
 /* Where a run's wall time actually goes, stage by stage (issue #129), over the same JUDGED-runs
-   denominator the reliability chips use — a resume has no pre-attempt chain and would drag every
-   median down. Read straight off the audit trail, so it survives the Temporal retention horizon
-   the live board's stage chip dies at. `open` counts runs whose span never closed: RUN and
-   DELIVER are still open on the attempt rows every clean run writes, so a high count there is
-   expected and is itself the honest reading, not a gap to hide. */
+   denominator (`audit.by_judge`) the reliability chips use — a resume has no pre-attempt chain
+   and would drag every median down. Read straight off the audit trail, so it survives the
+   Temporal retention horizon the live board's stage chip dies at.
+
+   Coverage is stated PER STAGE and never summed into a share of the whole: an attempt row is
+   written from inside the RUN span, so a clean run records RUN as open and everything after it
+   not at all. A percentage across stages would divide by a different stage set on every run. */
 function stagesSection(st){
   const rows=(st&&st.stages)||[], runs=(st&&st.runs)||0;
   const body=!rows.length
     ? `<p class="sub" style="margin:10px 0">No stage timings recorded yet — they are written from the first run after this shipped.</p>`
-    : `<p class="sub" style="margin:10px 0 10px">Median and p90 wall time per pipeline stage over <b>${runs}</b> judged run${runs===1?'':'s'}. Everything above <b>RUN</b> is what a run pays before the model is asked anything.</p>`
+    : `<p class="sub" style="margin:10px 0 10px">Median and p90 wall time per pipeline stage over <b>${runs}</b> judged run${runs===1?'':'s'}. Everything above <b>RUN</b> is what a run pays before the model is asked anything, and is measured on every run. <b>RUN</b> and the stages below it are written while RUN is still open, so they are only measured on a run that ended needing a human — read each row's own <b>Measured</b> count, not the total.</p>`
       +`<table class="ctable"><thead><tr><th>Stage</th>
-         <th class="r" title="runs whose span closed, and so count toward the medians">Runs</th>
+         <th class="r" title="judged runs whose span for this stage closed — the only ones behind the two medians">Measured</th>
          <th class="r">Median</th><th class="r">p90</th>
-         <th class="r" title="share of the total measured wall time across every stage">Share</th>
-         <th class="r" title="runs that entered this stage but whose span never closed — RUN and DELIVER close after the last audit write, so they are expected here">Open</th></tr></thead><tbody>`
-      +(()=>{ const tot=rows.reduce((a,r)=>a+(r.total_ms||0),0);
-              return rows.map(r=>`<tr><td><span class="nm">${esc(r.stage)}</span></td>
-                <td class="r">${r.runs}</td><td class="r">${stageDur(r.p50_ms)}</td>
-                <td class="r">${stageDur(r.p90_ms)}</td>
-                <td class="r">${tot?Math.round(100*(r.total_ms||0)/tot)+"%":"—"}</td>
-                <td class="r">${r.open||""}</td></tr>`).join(""); })()
+         <th class="r" title="judged runs that entered this stage but whose span never closed at the last audit write — expected for RUN and below">Open</th></tr></thead><tbody>`
+      +rows.map(r=>`<tr><td><span class="nm">${esc(r.stage)}</span></td>
+          <td class="r">${r.runs}</td><td class="r">${stageDur(r.p50_ms)}</td>
+          <td class="r">${stageDur(r.p90_ms)}</td>
+          <td class="r">${r.open||""}</td></tr>`).join("")
       +`</tbody></table>`;
   return `<div class="asection coll collapsed" data-sect="stages"><h3><span class="secttoggle" title="collapse / expand">
       <span class="gcaret">&#9662;</span>Pipeline timings<span class="sectcount" title="judged runs with stage timings recorded">${runs}</span></span></h3>
