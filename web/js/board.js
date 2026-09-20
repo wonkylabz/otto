@@ -412,6 +412,25 @@ function _dbgTraceHtml(events){
     return `<span class="${cls}">${esc(l)}</span>`;
   }).join("\n")+`</div>`;
 }
+// One run's stage breakdown, from the audit trail (issue #129) — the same `_times` map the
+// live board chip reads, but PERSISTED, so it is still here after the Temporal execution has
+// aged out. A stage whose span never closed is shown as open rather than dropped: RUN and
+// DELIVER close after the last audit write, so "open" is the honest reading, not missing data.
+function _dbgStagesHtml(times, order){
+  const names=Object.keys(times||{});
+  if(!names.length) return "";
+  const rank=s=>{ const i=(order||[]).indexOf(s); return i<0?999:i; };
+  names.sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b));
+  const fmt=ms=>ms<10000?(ms/1000).toFixed(1)+"s":(ms<60000?Math.round(ms/1000)+"s"
+              :Math.floor(ms/60000)+"m "+Math.round((ms%60000)/1000)+"s");
+  const closed=names.filter(n=>times[n]&&times[n].dur!=null);
+  const max=Math.max(1,...closed.map(n=>times[n].dur));
+  return `<div class="dbgsec">stage timings</div><div class="dbgmeta">`+names.map(n=>{
+    const t=times[n]||{};
+    if(t.dur==null) return `<span class="k" title="this span never closed">${esc(n)} · open</span>`;
+    return `<span class="k" title="${Math.round(100*t.dur/max)}% of the longest stage">${esc(n)} · ${fmt(t.dur)}</span>`;
+  }).join(" &nbsp;·&nbsp; ")+`</div>`;
+}
 async function openRunDebug(wid, capLabel, ui){
   if(!wid) return;
   const modal=document.getElementById("cardModal"), title=document.getElementById("cardModalTitle"),
@@ -449,6 +468,7 @@ async function openRunDebug(wid, capLabel, ui){
   }).join("");
   body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')
     +`<div class="dbgmeta">${meta.join(" &nbsp;·&nbsp; ")}</div>`
+    +_dbgStagesHtml(r.times, r.stage_order)
     +(r.request?`<div class="dbgsec">request</div><div class="dbgresult" style="margin-bottom:14px">${esc((r.request||'').slice(0,2000))}</div>`:'')
     +(r.terminal&&r.terminal.detail?`<div class="dbgsec">terminal detail</div><div class="dbgresult" style="margin-bottom:14px">${esc((r.terminal.detail||'').slice(0,2000))}</div>`:'')
     +(atts||`<p class="sub">No attempts recorded yet — the run is still in flight, or it ended before executing.</p>`);

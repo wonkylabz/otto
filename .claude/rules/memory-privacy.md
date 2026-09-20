@@ -59,6 +59,9 @@ It lives in `_TLDR_SHAPE`, interpolated into `_REPORT_FORMAT`/`_SINGLE_TURN_CONT
 
 `/api/stats`: `used` = all-time runs, but pass/escalation/fallback rates and avg cost are over **judged runs only** — the two denominators differ, and "judged" excludes supervisor kills and harness deaths (`verdict_source`).
 
+- **Per-stage `times` is a RUN-level map on ATTEMPT rows** — merge across a run's rows, closed span winning (`audit.run_times`): an attempt is audited from INSIDE the RUN span, so a clean run leaves RUN open and PR/REVIEW/QA/DELIVER absent (`StageTimingTests`).
+- **Stage coverage is reported PER STAGE, never summed** — the measured stage set differs per run, so a share-of-total read PLAN at 88% of a total that never held RUN (`StageTimingTests`).
+- **One judged-run PREDICATE, `audit.by_judge`** — `scorecard` (per cap x run) and `stage_timings` (per run) share it, not a count; a second `verified is not None` spelling counted 634 runs against 547 (`StageTimingTests`).
 - **A verdict records WHICH judge reached it** (`verdict_source` + `verdict_model`) — without the model, a bad capability and a bad judge leave identical rows, so `false_fails` can't be split by judge.
 - **`model` and `verdict_model` are canonical model IDs, normalized in `_audit`** (`gateway.model_id`) — local paths hand over a pool entry's editable LABEL, and a second namespace in the column `scorecard` groups by never joins a judge to its executor (`ModelIdNamespaceTests`).
 - **Judge-side spend is booked by the gateway, not the trail** — an audit row exists only for an execution attempt, so `gateway._claude_tier` is the ONE place a tier call's cost lands (`stats().overhead_usd`); a bare `_claude_complete` is invisible (`GatewayCostLedgerTests`).

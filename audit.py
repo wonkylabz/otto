@@ -10,6 +10,7 @@ memory/solutions/behaviors stores (still in engine.py) share.
 import contextlib
 import datetime
 import json
+import math
 import os
 import re
 import sqlite3
@@ -310,6 +311,32 @@ def prune_board_cards(before):
 _POST_PR_WID = re.compile(r"-(rev|qa)\d+$")
 
 
+def killed_attempts(entries):
+    """The (workflow, attempt) pairs a supervisor KILLED, from their own outcome rows."""
+    return {(e["workflow"], e.get("attempt")) for e in entries
+            if e.get("outcome") == "supervisor_kill" and e.get("workflow")}
+
+
+def by_judge(r, killed):
+    """True when this attempt's verdict came from the VERIFIER — the one denominator every
+    reliability figure is over.
+
+    Module-level, and the ONLY copy: `scorecard` and `stage_timings` both claim to share it (on
+    screen, in the docstrings and in `.claude/rules/memory-privacy.md`), and a second
+    `verified is not None` spelling made that claim false — measured on the live trail, 634 runs
+    against scorecard's 547, 68 of the difference post-PR rounds.
+
+    A row written before `verdict_source` existed carries none: assume judge (that WAS the only
+    verdict recorded, so history does not silently re-rate itself) unless the trail shows a
+    supervisor kill for the same attempt, or the workflow id shows it was a post-PR round."""
+    src = r.get("verdict_source")
+    if src:
+        return src == "judge"
+    if _POST_PR_WID.search(r.get("workflow") or ""):
+        return False
+    return (r.get("workflow"), r.get("attempt")) not in killed
+
+
 def scorecard(entries):
     """Per-capability reliability aggregates from the audit trail (issue #102) — the evidence
     base for the "cheapest capable model per unit of work" north star and for judging whether a
@@ -361,21 +388,9 @@ def scorecard(entries):
         agg["used"] += 1
         agg["last_at"] = max(agg["last_at"], max((r.get("at") or "") for r in rows))
 
-    def _by_judge(r):
-        """True when this attempt's verdict came from the verifier. A row written before
-        `verdict_source` existed carries none: assume judge (that WAS the only verdict recorded,
-        so history does not silently re-rate itself) unless the trail shows a supervisor kill for
-        the same attempt, or the workflow id shows it was a post-PR round."""
-        src = r.get("verdict_source")
-        if src:
-            return src == "judge"
-        if _POST_PR_WID.search(r.get("workflow") or ""):
-            return False
-        return (r.get("workflow"), r.get("attempt")) not in killed
-
     for (cap, wid), rows in runs.items():
         rows.sort(key=lambda r: r.get("attempt") or 0)
-        judged = [r for r in rows if r.get("verified") is not None and _by_judge(r)]
+        judged = [r for r in rows if r.get("verified") is not None and by_judge(r, killed)]
         if not judged:
             continue
         agg = _agg(cap)
@@ -429,6 +444,92 @@ def scorecard(entries):
             "recent": sorted(agg["recent"], key=lambda r: r["at"])[-12:]})
     out.sort(key=lambda c: (c["used"], c["runs"]), reverse=True)
     return out
+
+
+# The pipeline's stages in the order a run passes through them — the display order for the
+# aggregate below and for the run-detail drawer. A stage the trail holds but this list doesn't
+# is still reported, appended after these, so adding an `_enter` label never silently drops it.
+STAGE_ORDER = ("DECOMPOSE", "ROUTER", "CLARIFY", "PLAN", "GATE", "RUN", "PR", "REVIEW", "QA",
+               "DELIVER")
+
+
+def run_times(rows):
+    """Merge one run's per-stage timings out of its audit rows: `{stage: {start, dur}}`.
+
+    A run writes several rows and `_times` only ever grows, so the map is merged rather than
+    taken from any single row — per stage the last CLOSED span wins, falling back to an open one
+    so a stage that never finished is still visible as started. Pure; `rows` is one workflow's
+    entries in trail order."""
+    merged = {}
+    for r in rows:
+        for stage, t in (r.get("times") or {}).items():
+            if not isinstance(t, dict):
+                continue
+            prev = merged.get(stage)
+            if prev is None or (t.get("dur") is not None):
+                merged[stage] = t
+    return merged
+
+
+def stage_timings(entries):
+    """Median/p90 wall time per pipeline stage over JUDGED runs — "where does Otto's time go".
+
+    The counterpart to `scorecard`: same trail, the SAME `by_judge` predicate (not a second
+    `verified is not None` spelling of it — that counted post-PR rounds and supervisor kills),
+    rolled up by STAGE instead of by capability. The PREDICATE is shared, not the unit: a run
+    carrying two capabilities is two rows to `scorecard` and one pipeline to this. This
+    is the number #126 has to be measured against; nothing recorded it before issue #129, so the
+    question could only ever be answered from `duration_s` — the attempt, not the run around it.
+
+    COVERAGE IS PER STAGE, and deliberately not summed into a share of the whole. Every attempt
+    row is written from INSIDE the RUN span and before `_enter("PR"/"REVIEW"/"QA"/"DELIVER")`,
+    so on a clean run RUN arrives open and the stages after it are ABSENT — not open, absent.
+    Only a run that writes a terminal row (needs-human, from DELIVER) closes them. A proportion
+    across stages would therefore divide by a different stage set per run and report PLAN at 88%
+    of a total that never contained RUN; `runs` per stage is the honest reading instead.
+
+    Pure over an iterable of audit entries, like `scorecard`, so it is testable against a
+    fixture trail."""
+    killed = killed_attempts(entries)
+    by_wid, judged = {}, set()
+    for e in entries:
+        wid = e.get("workflow")
+        if not wid:
+            continue
+        by_wid.setdefault(wid, []).append(e)
+        if (e.get("attempt") is not None and e.get("verified") is not None
+                and by_judge(e, killed)):
+            judged.add(wid)
+    per_stage, runs = {}, 0
+    for wid in judged:
+        merged = run_times(by_wid[wid])
+        if not merged:
+            continue
+        runs += 1
+        for stage, t in merged.items():
+            agg = per_stage.setdefault(stage, {"durs": [], "open": 0})
+            if t.get("dur") is None:
+                agg["open"] += 1
+            else:
+                agg["durs"].append(t["dur"])
+
+    def _pct(vals, q):
+        # Nearest-rank on a sorted copy: index ceil(q*n)-1. Small n by design, so no
+        # interpolation games — the p90 of 5 samples is the 5th. `int(q*n)` (the obvious
+        # spelling) is off by one at the median: it makes the p50 of two samples the LARGER,
+        # under a column headed Median.
+        if not vals:
+            return None
+        return vals[max(0, math.ceil(q * len(vals)) - 1)]
+
+    out = []
+    for stage, agg in per_stage.items():
+        durs = sorted(agg["durs"])
+        out.append({"stage": stage, "runs": len(durs), "open": agg["open"],
+                    "p50_ms": _pct(durs, 0.5), "p90_ms": _pct(durs, 0.9)})
+    order = {s: i for i, s in enumerate(STAGE_ORDER)}
+    out.sort(key=lambda r: (order.get(r["stage"], len(order)), r["stage"]))
+    return {"stages": out, "runs": runs}
 
 
 _GH_PR_URL = r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+"
@@ -532,7 +633,7 @@ def _append_content(wid, at, request=None, result=None, attempt=None, detail=Non
 def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=None,
            model=None, repo=None, outcome=None, reason=None, needs_human=None, duration_s=None,
            backend=None, fallback_from=None, fallback_reason=None, fallback_detail=None,
-           critique=None,
+           critique=None, times=None,
            verdict_source=None, verdict_model=None):
     at = datetime.datetime.now().isoformat(timespec="seconds")
     entry = {
@@ -579,6 +680,15 @@ def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=
     # the chat-shaped output itself.
     if duration_s is not None:
         entry["duration_s"] = round(duration_s, 1)
+    # Per-STAGE wall time for the run around this attempt (OttoWorkflow._times) — where the run
+    # actually spent itself, not just how long the model took. Computed on every run since the
+    # board's stage chip shipped and, until issue #129, thrown away with the Temporal execution
+    # at the retention horizon; the audit trail is the only permanent record. Written through
+    # `_audit` for the same reason `model` is normalized here: it is the funnel both ladders and
+    # both backends pass through. A run writes several rows and the map only grows, so every
+    # consumer merges per stage, last non-null `dur` winning (`stage_timings`).
+    if times:
+        entry["times"] = times
     if attempt is not None:
         entry["attempt"] = attempt
     if verified is not None:
@@ -639,7 +749,7 @@ def accept_run(wid, request, cap, result="", repo=None):
     return {"ok": True}
 
 
-def record_terminal(wid, request, cap, reason, detail="", repo=None):
+def record_terminal(wid, request, cap, reason, detail="", repo=None, times=None):
     """Write a durable terminal audit row for a run that ended needing a human — a FAILED/dead
     workflow, verify-exhaustion, a QA fail/inconclusive, a budget stop, or a failed delivery.
 
@@ -663,6 +773,10 @@ def record_terminal(wid, request, cap, reason, detail="", repo=None):
     }
     if repo:
         entry["repo"] = repo
+    # The RICHEST timing snapshot a needs-human run produces: written from the DELIVER stage, so
+    # unlike the attempt rows (audited from inside RUN) it carries RUN/REVIEW/QA closed.
+    if times:
+        entry["times"] = times
     _append_audit(entry)
     _append_content(wid, at, request=request, result=detail)
     trace("TERMINAL", f"{wid} needs-human: {reason}")

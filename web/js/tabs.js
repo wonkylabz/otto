@@ -1,6 +1,6 @@
 "use strict";
 /* ---- tabs ---- */
-let adminLoaded=false, POLICY_STATE=null, MODEL_STATE=null, saveTimer=null, GATEWAY_STATS=null, SCORECARD={};
+let adminLoaded=false, POLICY_STATE=null, MODEL_STATE=null, saveTimer=null, GATEWAY_STATS=null, SCORECARD={}, STAGE_STATS=null;
 let MODEL_HEALTH={};   // {model name: {ok, detail, at, via}} — last known outcome per pool entry
 let MCP_ISSUES=0;      // broken enabled MCP servers, kept so the badge can be recomputed without a re-render
 let SECRETS=null;      // config.secret_status() — presence + source per secret, NEVER a value
