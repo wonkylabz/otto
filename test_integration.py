@@ -780,6 +780,30 @@ class HttpApiTests(unittest.TestCase):
             claude_cli.TRANSCRIPTS = orig
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_after_approval_the_preview_is_still_the_only_transcript(self):
+        """The rank prefix only wins once an `-aN` file EXISTS. Between the human approving and
+        `run_json` opening the attempt's sink — memory recall, conventions, a repo clone and its
+        base refresh — the preview is the ONLY match, and its `idle_s` has been accumulating for
+        the whole gate wait. The server is right to serve it; what this pins is that it keeps
+        SAYING so, because `part` is the client's only way to tell that window from a stalled
+        attempt (it painted "executing… · 1 events · ⚠ stuck for 30 min" on every approval)."""
+        import claude_cli
+        tmp = tempfile.mkdtemp(prefix="otto-postgate-")
+        orig, claude_cli.TRANSCRIPTS = claude_cli.TRANSCRIPTS, tmp
+        try:
+            p = claude_cli.plan_transcript_path("web-gate")
+            with open(p, "w") as f:
+                f.write(json.dumps({"type": "otto-meta", "prompt": "x"}) + "\n")
+            os.utime(p, (time.time() - 1800, time.time() - 1800))
+            st, body = _get(self.base, "/api/progress?id=web-gate")
+            self.assertTrue(body["found"])
+            self.assertEqual(body["part"], "Planning")
+            self.assertGreater(body["idle_s"], 600)
+            self.assertEqual(body["attempt"], 0)      # never an attempt number the chat can show
+        finally:
+            claude_cli.TRANSCRIPTS = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_progress_unknown_or_hostile_wid_not_found(self):
         st, body = _get(self.base, "/api/progress?id=no-such-run")
         self.assertEqual(st, 200)

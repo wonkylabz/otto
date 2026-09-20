@@ -50,6 +50,11 @@ buildPipe();
 // the elapsed-since-then offset.
 // details that mean a stage was bypassed rather than actually run — painted muted (see .skipped CSS)
 const SKIP_DETAILS=new Set(["skipped","no questions","read-only · auto-approved","no approval needed"]);
+// /api/progress's label for the approval preview's own transcript (server._PROGRESS_PART_PLAN).
+// Named, not inlined, because BOTH progress branches test it and they must agree: whichever one
+// forgets paints the other phase's line — the preview's stale file over a live attempt, or an
+// attempt's tool calls onto the PLAN node.
+const PLAN_PART="Planning";
 function setNode(lbl,state,detail,opts){ opts=opts||{}; const n=[...pipeEl.children].find(c=>c.dataset.lbl===lbl); if(!n)return;
   if(state) pipeEl.classList.remove("idle");
   const wasTerminal=/\b(done|failed)\b/.test(n.className);
@@ -168,6 +173,11 @@ async function watchLoop(wid, chatId, content, sess, flags){
   // that both used to be called "PLAN" in this pipe, which is what made the diagram misrepresent
   // when the real planning work happens (it runs right before GATE, not right after INGRESS).
   let decomposeDone=!!flags.decomposeDone, previewDone=false, swarmShown=false, isSwarm=false, progressTick=0;
+  // PLAN's node repaints on every 450ms poll but the transcript is tailed every 4th, so writing
+  // the event count straight into setNode showed it one poll in four and blank for three. HOLD
+  // the last detail line instead; RUN never had this because its setNode is latched behind
+  // `!runActive`. Seeded with the countless text a preview shows before its first event lands.
+  let planDetail="previewing what it will do…";
   const alive = ()=> myWatch===liveWatch && activeChat && activeChat.id===chatId;
   const capOf = (st)=> st.cap || (sess && sess.cap) || null;
   while(true){
@@ -220,7 +230,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
         setNode("CLARIFY","done","no questions",{durMs:times.CLARIFY.dur}); clarDone=true;
       }
       if(times.PLAN && times.PLAN.dur!=null){ setNode("PLAN","done","previewed",{durMs:times.PLAN.dur}); previewDone=true; }
-      else if(times.PLAN && times.PLAN.start) setNode("PLAN","active","previewing what it will do…",{startMs:times.PLAN.start});
+      else if(times.PLAN && times.PLAN.start) setNode("PLAN","active",planDetail,{startMs:times.PLAN.start});
     }
 
     if(st.state==="awaiting_clarification" && !clarDone){
@@ -355,16 +365,21 @@ async function watchLoop(wid, chatId, content, sess, flags){
         // proof the run has not started executing yet — paint PLAN, never RUN, off it. A 900s
         // Opus pass that has stopped writing is exactly what the reader needs flagged, and it is
         // flagged sooner than an attempt's: there is no verify pause here to explain the silence.
-        if(pg.found && pg.part==="Planning" && !runActive){
-          setNode("PLAN","active","previewing what it will do… · "+pg.events+" events",
-                  {startMs:times.PLAN&&times.PLAN.start});
+        if(pg.found && pg.part===PLAN_PART && !runActive){
+          planDetail="previewing what it will do… · "+pg.events+" events";
+          setNode("PLAN","active",planDetail,{startMs:times.PLAN&&times.PLAN.start});
           if(pg.idle_s>120){
             showThinking(content,"⚠ the plan preview hasn't written for "+Math.round(pg.idle_s/60)+" min — still thinking, or possibly stuck");
           } else if(pg.last){
             showThinking(content, pg.last+" · "+Math.round(pg.idle_s)+"s ago · planning");
           }
         }
-        else if(pg.found && runActive){
+        // Symmetric to the branch above, and load-bearing rather than tidy: the server's rank
+        // prefix only wins once an `-aN` file EXISTS, and between approval and `run_json` opening
+        // that sink (memory recall, conventions, a repo clone + base refresh) the preview is still
+        // the only match. Without this test the RUN line painted "executing… · 1 events" and a
+        // stall warning counting the whole human gate wait, the instant anyone approved.
+        else if(pg.found && runActive && pg.part!==PLAN_PART){
           const att=(pg.attempt>1)?(" · attempt "+pg.attempt):"";
           // Which post-PR round is writing, when one is: a review/QA round is the run's OWN work
           // and its transcript is what `idle_s` now measures, so name it rather than let a busy

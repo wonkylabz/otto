@@ -3323,15 +3323,23 @@ class PlanVisibilityTests(unittest.TestCase):
         self.assertIn("(runActive || planActive)", ui)
         # derived per poll from st.times, not a flag something sets once
         self.assertIn("const planActive", ui)
-        self.assertNotIn("planActive=true", ui)
+        self.assertIsNone(re.search(r"planActive\s*=\s*true", ui))
         self.assertIn("times.PLAN.dur==null", ui)
         # the preview's part paints PLAN; only a real attempt paints RUN
-        self.assertLess(poll.index('pg.part==="Planning"'), poll.index('setNode("RUN","active"'))
-        plan_branch = poll[poll.index('pg.part==="Planning"'):poll.index('setNode("RUN","active"')]
+        self.assertLess(poll.index("pg.part===PLAN_PART"), poll.index('setNode("RUN","active"'))
+        plan_branch = poll[poll.index("pg.part===PLAN_PART"):poll.index('setNode("RUN","active"')]
         self.assertIn('setNode("PLAN","active"', plan_branch)
         self.assertIn("pg.idle_s>120", plan_branch)   # flagged sooner than an attempt's 180s
-        # the server has to label it, or the client is inferring a phase the workflow calls "running"
+        # BOTH branches test the part, or the window between approval and the attempt's sink
+        # opening (see the server-side test) paints the preview's stale file as a stalled RUN.
+        self.assertIn("pg.found && runActive && pg.part!==PLAN_PART", ui)
+        # the count is HELD, not written straight into a node repainted 4x more often than polled
+        self.assertIn("let planDetail=", ui)
+        self.assertIn('setNode("PLAN","active",planDetail', ui)
+        # the server has to label it, or the client is inferring a phase the workflow calls
+        # "running" — and the two spellings of the label have to be the same string.
         self.assertIn('_PROGRESS_PART_PLAN = "Planning"', open("server.py").read())
+        self.assertIn('const PLAN_PART="Planning"', ui)
 
     def test_a_transcript_without_kind_still_reads_as_local(self):
         """The chip's second return value used to be the `runtime == "local"` boolean. Every

@@ -2995,11 +2995,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # service nobody restarts, a second-resolution rolled name silently DELETES its predecessor,
     # the wid needs no per-activity wiring but DOES need carrying across a thread, and `>>` took
     # away the only bound the raw stdio logs had. None of them is guessable from the code.
-    # 85044 -> 85318 (#127): the chat was blind for the whole 900s plan preview. One rule, and
-    # it is the trap the fix walks into twice: the workflow's state says `running` through the
-    # preview too, so the phase must be derived from `times.PLAN` every poll — latch it and the
-    # dead preview transcript paints over a live attempt.
-    MAX_RULES_BYTES = 85318   # fetched tier — bounded, but looser; it is not always loaded
+    # 85044 -> 85321 (#127): the chat was blind for the whole 900s plan preview. One rule, and
+    # it names the trap the fix fell into in review: the server's rank prefix only wins once an
+    # `-aN` file EXISTS, so between approval and the attempt's sink opening the preview is still
+    # the only match — whichever branch forgets to test the label paints the other phase's line.
+    MAX_RULES_BYTES = 85321   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
