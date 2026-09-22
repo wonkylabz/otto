@@ -184,7 +184,10 @@ function resolveMood(){
   const f=MOOD.fleet||{};
   if(f.stage) return stageMood(f.stage, f.sub);      // this one earns a sub - it says WHERE
   if(f.waiting) return {state:"thinking", say:"waiting on you", sub:f.sub};
-  if(f.needs) return {state:"error", say:"something needs a look", sub:f.sub};
+  // A run that ended needing review is not a failed one - it did the work and is asking a
+  // question. The error pose (shake, scowl, arms folded) told the reader something BROKE,
+  // which is the wrong thing to make someone feel before they have read the card.
+  if(f.needs) return {state:"shrug", say:"something needs a look", sub:f.sub};
   return (Date.now()-MOOD.quietSince > MASCOT_IDLE_SLEEP_MS)
     ? {state:"sleeping", say:"", sub:"", quiet:true}
     : {state:"idle", say:"", sub:"", quiet:true};
