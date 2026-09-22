@@ -82,6 +82,8 @@ if ! "$PYTHON" -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= tup
       $'or point this script at one:\n' \
       "    PYTHON=python$PY_MIN ./install.sh"
 fi
+# Debian names the venv package after the interpreter's OWN major.minor, not after "python3".
+PY_XY="$("$PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 
 if ! command -v claude >/dev/null 2>&1; then
   die "claude CLI not found on PATH. Otto runs your existing Claude Code" \
@@ -105,13 +107,20 @@ fi
 log "python venv: creating/upgrading .venv"
 if ! "$PYTHON" -m venv --upgrade-deps .venv 2>/tmp/otto-venv.err; then
   if grep -qi "ensurepip is not available\|No module named venv" /tmp/otto-venv.err && command -v apt-get >/dev/null 2>&1; then
-    log "system is missing the venv module — installing python3-venv via apt (sudo)…"
+    # python3-venv tracks the DEFAULT interpreter. Under PYTHON=python3.12 on a 3.11 host it
+    # installs ensurepip for the wrong one and the retry fails identically, so ask for the
+    # package that matches $PYTHON and only fall back to the generic name.
+    VENV_PKG="python${PY_XY}-venv"
+    log "system is missing the venv module for $PYTHON — installing $VENV_PKG via apt (sudo)…"
     sudo apt-get update -y
-    sudo apt-get install -y python3-venv
-    "$PYTHON" -m venv --upgrade-deps .venv
+    sudo apt-get install -y "$VENV_PKG" || sudo apt-get install -y python3-venv \
+      || die "could not install $VENV_PKG — install it yourself and re-run: sudo apt install $VENV_PKG"
+    "$PYTHON" -m venv --upgrade-deps .venv \
+      || die "still cannot create .venv with $PYTHON after installing $VENV_PKG (see the error above)"
   else
     cat /tmp/otto-venv.err >&2
-    die "failed to create .venv (see error above)"
+    die "failed to create .venv (see error above)." \
+        "On Debian/Ubuntu the missing piece is usually: sudo apt install python${PY_XY}-venv"
   fi
 fi
 rm -f /tmp/otto-venv.err
