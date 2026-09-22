@@ -58,6 +58,7 @@ _KNOWN_CLAUDE = [
     ("claude-opus",   "claude-opus-4-8"),
     ("claude-sonnet", "claude-sonnet-5"),
     ("claude-haiku",  "claude-haiku-4-5-20251001"),
+    ("claude-fable",  "claude-fable-5-1"),
 ]
 
 _LAST = {}   # task -> {"model": name, "fell_back": bool}  (what actually ran)
@@ -448,12 +449,7 @@ def _normalize(cfg):
     read-modify-write can apply the same view inside storage's lock (see `_mutate`)."""
     if cfg is None:
         cfg = _default_cfg()
-    # Migration: drop the discontinued 'fable' model from older saved pools. It isn't a
-    # real available model, and Claude-tier entries can't be removed from the Admin UI, so
-    # users would otherwise be stuck with it.
     pool = cfg.get("pool") or _default_cfg()["pool"]
-    removed = {m["name"] for m in pool if "fable" in (m.get("model", "") + m.get("name", ""))}
-    pool = [m for m in pool if m["name"] not in removed]
     # Migration: refresh Claude-tier model ids from _KNOWN_CLAUDE (the source of truth). A
     # saved pool pins the id it was created with (e.g. "claude-sonnet" -> "claude-sonnet-4-6"),
     # so a model bump in the fallback list wouldn't otherwise reach an existing install — the
@@ -464,13 +460,10 @@ def _normalize(cfg):
         if m.get("name") in _known:
             m["model"] = _known[m["name"]]
     cfg["pool"] = pool
-    # Backfill any task tier missing from an older saved config (e.g. "memory"), and repoint
-    # any assignment/override that referenced a removed model at the default.
+    # Backfill any task tier missing from an older saved config (e.g. "memory").
     default = next((m["name"] for m in pool if "sonnet" in m["model"]), pool[0]["name"])
     assign = cfg.setdefault("assign", {})
     for t in TASKS:
-        if assign.get(t) in removed:
-            assign[t] = default
         assign.setdefault(t, default)
     # "preview" used to be REPOINTED here whenever it held a non-Claude model, because
     # `claude -p --permission-mode plan` is the only thing that could write a plan and a
@@ -482,8 +475,6 @@ def _normalize(cfg):
     # Per-capability execution overrides (capability name -> pool model name). Empty by
     # default; falls back to the phase-level execution model below.
     cap_exec = cfg.setdefault("cap_exec", {})
-    for cap in [c for c, mdl in cap_exec.items() if mdl in removed]:
-        cap_exec.pop(cap)
     # Per-capability LOCAL execution overrides (issue #42): a deliberately separate map from
     # cap_exec (Claude-only) so the narrow tool-free carve-out never weakens that seam.
     cap_local = cfg.setdefault("cap_local_exec", {})
@@ -502,7 +493,7 @@ def _normalize(cfg):
         "cap_exec": {c: m for c, m in cap_exec.items() if m not in pool_names},
         "cap_local_exec": {c: m for c, m in cap_local.items() if m not in pool_names},
     }
-    for cap in [c for c, mdl in cap_local.items() if mdl in removed or mdl not in pool_names]:
+    for cap in [c for c, mdl in cap_local.items() if mdl not in pool_names]:
         cap_local.pop(cap)
     return _hydrate(cfg)
 
