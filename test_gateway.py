@@ -2962,6 +2962,35 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class DeleteClaudeRowTests(unittest.TestCase):
+    """Admin can remove a Claude row now (it is re-addable from the picker). Two consequences
+    that were unreachable while those rows were undeletable are what these pin."""
+
+    def test_an_empty_pool_is_refilled_with_the_default_tiers(self):
+        # Which is why the UI refuses the LAST entry instead of saving it: the delete would
+        # round-trip and the same three rows would come back, reading as "nothing happened".
+        out = gateway._normalize({"pool": [], "assign": {}})
+        self.assertEqual([m["name"] for m in out["pool"]],
+                         [n for n, _ in gateway._KNOWN_CLAUDE])
+
+    def test_a_pool_with_no_claude_entry_falls_back_to_the_router_model(self):
+        # What the last-Claude confirmation warns about: the fallback still works, on a model id
+        # that is NOT a pool label, so no row in the Admin table names it.
+        cfg = gateway._normalize({"pool": [{"name": "q", "provider": "openai", "model": "q",
+                                            "base_url": "http://x/v1"}], "assign": {}})
+        self.assertEqual([m["name"] for m in cfg["pool"]], ["q"])       # not refilled
+        self.assertEqual(gateway._default_claude(cfg), config.ROUTER_MODEL)
+
+    def test_the_models_api_names_the_router_model(self):
+        # The warning has to state WHICH model, so Admin needs the value — it is a config
+        # constant, not anything the pool can derive.
+        import server
+        src = inspect.getsource(server.Handler._dispatch_get
+                                if hasattr(server.Handler, "_dispatch_get")
+                                else server.Handler.do_GET)
+        self.assertIn('"router_model": config.ROUTER_MODEL', src)
+
+
 class ProbeCandidateTests(unittest.TestCase):
     """`probe_candidate` checks a model the operator is about to ADD, before it is stored.
 

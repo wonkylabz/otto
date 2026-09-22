@@ -1151,6 +1151,11 @@ class Handler(BaseHTTPRequestHandler):
                                         "dangling": cfg.get("dangling", {}),
                                         "kinds": list(gateway.KINDS),
                                         "hosted_hosts": list(gateway.HOSTED_HOSTS),
+                                        # What a Claude fallback lands on when the pool holds no
+                                        # Claude entry at all — now reachable, since Admin can
+                                        # delete those rows. It is a model id, NOT a pool label,
+                                        # so nothing in the table would otherwise name it.
+                                        "router_model": config.ROUTER_MODEL,
                                         "health": health,
                                         "tasks": gateway.TASKS}))
         elif self.path == "/api/settings":
