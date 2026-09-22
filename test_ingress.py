@@ -312,8 +312,9 @@ class JobReorderUiTests(unittest.TestCase):
 
     def test_a_poll_cannot_re_render_the_list_mid_drag(self):
         # pollTrigger refreshes every 3s while a run is in flight; a re-render mid-drag drops the
-        # dragged row on the floor.
-        self.assertIn("if(_dragJob) return;", self.src)
+        # dragged row on the floor. POLL_SKIP, not a bare return: a drag is not evidence the
+        # server is healthy, so it must not reset a backoff either (`PollerBackoffTests`).
+        self.assertRegex(self.src, r"if\(_dragJob\) return POLL_SKIP;")
 
     def test_a_drag_abandoned_outside_the_list_re_renders_rather_than_lying(self):
         # dragover moves the rows live, so a cancelled drag leaves the screen showing an order
@@ -5167,10 +5168,24 @@ class PollerBackoffTests(unittest.TestCase):
     """Six module-level `setInterval`s polled `/api/*` at a fixed rate for the life of the tab,
     with every failure swallowed by an empty catch. A BACKGROUNDED Board tab with the server
     down still made ~0.6 req/s forever and reported nothing — the two halves of that (no
-    visibility check, no backoff) are what `util.poll` centralises."""
+    visibility check, no backoff) are what `util.poll` centralises.
+
+    The assertions are written against WHITESPACE-INSENSITIVE patterns on purpose: re-spacing
+    `delay=ms` to `delay = ms` is the most likely way the reset gets reintroduced, and a guard
+    an ordinary reformat walks through is not one."""
 
     def _html(self):
         return ui_src()
+
+    def _poll(self):
+        fn = re.search(r"function poll\(fn, ms, cap\)\{.*?\n\}", self._html(), re.S)
+        self.assertIsNotNone(fn, "util.poll is gone or was renamed")
+        return fn.group(0)
+
+    def _line(self, needle):
+        hits = [l for l in self._html().splitlines() if needle in l]
+        self.assertEqual(len(hits), 1, f"expected exactly one line containing {needle!r}")
+        return hits[0]
 
     def test_every_network_poller_goes_through_poll(self):
         """A seventh `setInterval` hitting the API is the whole bug coming back. The three left
@@ -5181,38 +5196,70 @@ class PollerBackoffTests(unittest.TestCase):
                      "poll(pollAdminBadge, 15000)", "poll(pollBoardBadge, 15000)",
                      "poll(applyMood, 20000)"):
             self.assertIn(name, html)
-        survivors = re.findall(r"(\w+\s*=\s*)?setInterval\(", html)
-        self.assertEqual(len([s for s in survivors if not s]), 0,
+        bare = re.findall(r"(?<![=\w])\s*setInterval\(", html)
+        self.assertEqual(len(bare), 0,
                          "a setInterval with no clearInterval owner came back — route it "
                          "through `poll` (issue #49)")
 
     def test_poll_skips_a_hidden_tab_and_ticks_on_return(self):
         """Pausing alone is not the fix: a tab that resumes on the next scheduled tick shows
         stale data for up to a full period at the exact moment someone is looking at it."""
-        fn = re.search(r"function poll\(fn, ms, cap\)\{.*?\n\}", self._html(), re.S).group(0)
-        self.assertIn("if(document.hidden){ arm(); return; }", fn)
-        self.assertIn('document.addEventListener("visibilitychange"', fn)
-        self.assertIn("if(!document.hidden) tick()", fn)
+        fn = self._poll()
+        self.assertRegex(fn, r"if\s*\(\s*document\.hidden\s*\)\s*\{\s*arm\(\)\s*;\s*return\s*;\s*\}")
+        self.assertIn('addEventListener("visibilitychange"', fn)
+        self.assertRegex(fn, r"if\s*\(\s*!\s*document\.hidden\s*\)\s*tick\(\)")
 
     def test_the_backoff_doubles_caps_and_resets_only_on_success(self):
         """Consecutive failures, not elapsed time: one bad tick in a healthy run must not slow
         the poller down, and a cap is what keeps a recovered server found again."""
-        fn = re.search(r"function poll\(fn, ms, cap\)\{.*?\n\}", self._html(), re.S).group(0)
-        self.assertIn("delay = ok ? ms : Math.min(delay*2, ceiling)", fn)
-        self.assertIn("cap||60000", fn)
+        fn = self._poll()
+        self.assertRegex(fn, r"Math\.min\s*\(\s*delay\s*\*\s*2\s*,\s*ceiling\s*\)")
+        self.assertRegex(fn, r"cap\s*\|\|\s*60000")
         # Returning to a tab must NOT reset the backoff — visibility says nothing about the
         # server, and re-arming at full rate is the storm this fixes, one tab switch later.
         after = fn.split('addEventListener("visibilitychange"')[1]
-        self.assertNotIn("delay=ms", after)
+        self.assertNotRegex(after, r"delay\s*=[^=]", "the visibility handler writes `delay`")
+
+    def test_a_skipped_tick_is_neither_a_success_nor_a_failure(self):
+        """A poller whose view is on another IN-APP tab attempts nothing. Counting that as a
+        success reset the backoff on every tick, so a board poller sat behind the Chat tab
+        re-armed at full rate against a server that had done nothing to earn it."""
+        fn = self._poll()
+        self.assertRegex(fn, r"if\s*\(\s*out\s*!==\s*POLL_SKIP\s*\)")
+        html = self._html()
+        self.assertRegex(html, r"const POLL_SKIP\s*=\s*Symbol\(")
+        # Every early return that means "the view is elsewhere" must carry it, not fall off
+        # the end of the arrow — which is the shape that read as a success.
+        for view in ("boardview", "chatview", "schedulesview"):
+            self.assertRegex(html, view + r"\"\);\n\s*if\([^)]*\)\s*return POLL_SKIP;")
+
+    def test_a_tick_cannot_overlap_itself(self):
+        """The visibility handler calls `tick` DIRECTLY, so clearing the armed timer does not
+        cover it: flipping away and back during a slow fetch re-enters with nothing to clear,
+        and both ticks then write `delay` — the loser's write being the one that stands."""
+        fn = self._poll()
+        self.assertRegex(fn, r"if\s*\(\s*running\s*\)\s*return\s*;")
+        self.assertRegex(fn, r"finally\s*\{\s*running\s*=\s*false")
+
+    def test_the_disposer_detaches_the_listener(self):
+        """Clearing the timeout alone leaves the poller revivable: the next tab return calls
+        `tick`, which re-arms it."""
+        self.assertRegex(self._poll(), r'\bdocument\.removeEventListener\("visibilitychange"')
 
     def test_a_failed_read_tells_poll_it_failed(self):
         """The loaders paint their own error and return, so the failure never reached a caller.
         `false` is the signal; without it the backoff can never engage for the three biggest
         pollers, which is every /api read on the tab."""
-        html = self._html()
         for painted in ("Couldn't load the board", "Couldn't load jobs", "Couldn't load your chats"):
-            line = next(l for l in html.splitlines() if painted in l)
-            self.assertIn("return false;", line, f"{painted!r} still swallows its failure")
+            self.assertIn("return false;", self._line(painted),
+                          f"{painted!r} still swallows its failure")
+
+    def test_every_polled_loader_reads_through_getJSON(self):
+        """A bare `fetch(...).json()` resolves on a 500 with a JSON body, so a SICK server (as
+        opposed to a dead one) never reaches the catch: it renders as an empty store and
+        reports success to the poller, which is the one case the backoff exists for."""
+        for path in ("/api/board", "/api/chats", "/api/runbooks"):
+            self.assertRegex(self._html(), r'getJSON\("' + re.escape(path) + r'"\)')
 
 
 class EstopUiTests(unittest.TestCase):

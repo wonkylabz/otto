@@ -3,7 +3,8 @@
    chat, tabs and the mascot, so every module above must already have run. */
 poll(()=>{
   const bv=document.getElementById("boardview");
-  if(bv && !bv.hidden) return loadBoard(true);
+  if(!bv || bv.hidden) return POLL_SKIP;   // another in-app tab: nothing attempted, nothing learned
+  return loadBoard(true);
 }, 3500);
 
 /* keep the chat sidebar fresh — unattended runs (board/schedule/event) create or append
@@ -12,16 +13,17 @@ poll(()=>{
    scroll/selection, so this poll is invisible while you read. */
 poll(()=>{
   const cv=document.getElementById("chatview");
-  if(cv && !cv.hidden) return loadChatList();
+  if(!cv || cv.hidden) return POLL_SKIP;
+  return loadChatList();
 }, 5000);
 
 /* keep the schedules list fresh while it's open — the job list itself doesn't
    change from this tab, but last_run / next_run do as jobs fire in the background */
 poll(()=>{
   const sv=document.getElementById("schedulesview");
-  if(!sv || sv.hidden) return;
+  if(!sv || sv.hidden) return POLL_SKIP;
   const jf=document.getElementById("job-form");
-  if(jf && jf.innerHTML.trim()) return; // don't clobber an open add/edit form
+  if(jf && jf.innerHTML.trim()) return POLL_SKIP; // don't clobber an open add/edit form
   return loadJobs(true);
 }, 15000);
 

@@ -39,7 +39,7 @@ poll(pollAdminBadge, 15000);
 pollAdminBadge();
 async function pollBoardBadge(){
   const bv=document.getElementById("boardview");
-  if(bv && !bv.hidden) return;            // Board tab open — loadBoard owns the badge AND the mascot
+  if(bv && !bv.hidden) return POLL_SKIP;   // Board tab open — loadBoard owns the badge AND the mascot
   try{
     const d=await (await fetch("/api/needs-you")).json();
     const c=d.counts||{}, bk=d.buckets||{};
