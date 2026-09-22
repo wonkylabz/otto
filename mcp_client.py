@@ -129,27 +129,26 @@ def _env_refs(value, out):
 
 
 def claude_env_refs():
-    """Env var names the defs `claude -p` can spawn reference as `${VAR}`.
+    """Env var names the defs `claude -p` can spawn reference as `${VAR}` — and which the
+    strip must therefore re-admit to the CLI's own environment.
 
-    The Claude door does NOT resolve a def's values on our side — `policy.active_mcp_config`
-    writes the config to disk, so resolving there would put the secret in a file, and Claude
-    Code expands `${VAR}` itself out of ITS OWN environment (`env_for`'s docstring). That
-    makes an env reference the portable spelling Otto's Admin form documents — and a blanket
-    strip would break it silently, the server simply starting without its credential.
+    ONLY the operator's `~/.claude.json`, which `claude -p` reads whether Otto passes it or
+    not: nothing on our side rewrites that file, so its `${VAR}` can be expanded by nobody but
+    Claude Code, out of the environment we hand it.
 
-    So the reference is what exempts a name: every value of every def that actually reaches
-    the CLI — the ACTIVATED half of Otto's registry (an inert def must not widen the
-    environment of every run), plus the operator's own `~/.claude.json`, which `claude -p`
-    reads whether Otto passes it or not — and not only the `env` map — a remote entry's `headers`
-    and an `args` entry carry credentials in the same spelling. A source that fails to load
-    costs the exemption, never the run: the strip is the safe direction."""
+    Otto's OWN registry is deliberately NOT a source any more. Its defs are resolved before
+    they reach disk (`resolved_def`), so a reference there needs no exemption — and an
+    exemption is the wrong shape for one: it widens the environment of EVERY run, the run's
+    own Bash included, to wire up a single server. Wiring a Slack server to
+    `${OTTO_SLACK_USER_TOKEN}` used to publish that token to every capability Otto runs.
+
+    A source that fails to load costs the exemption, never the run: the strip is the safe
+    direction."""
     out = set()
-    for source in (_user_mcp_raw,
-                   lambda: (policy.active_mcp_config(policy.load()) or {}).get("mcpServers")):
-        try:
-            _env_refs(source() or {}, out)
-        except Exception:  # noqa: BLE001 — a broken store must not cost the run
-            pass
+    try:
+        _env_refs(_user_mcp_raw() or {}, out)
+    except Exception:  # noqa: BLE001 — a broken store must not cost the run
+        pass
     return out
 
 
@@ -172,28 +171,70 @@ def claude_env():
     return _inherited_env(keep=claude_env_refs())
 
 
+def resolve_env_map(env):
+    """A def's `env` map with every VALUE resolved: env var > `OTTO_SECRET_COMMAND` > the
+    literal (`${VAR}` expanded). Mirrors `gateway.request_headers` exactly.
+
+    ONE implementation, because BOTH doors now resolve — `env_for` for the server Otto spawns
+    itself, and `resolved_def` for the config `claude -p` spawns one from. A second copy
+    drifts, and the drift is invisible until a server starts without its credential.
+
+    The bare-name -> secret lookup is confined to `env` values on purpose: it is the only
+    field where a bare string is an indirection rather than content, and `config.secret` runs
+    the operator's helper, which must not fire once per `args` entry."""
+    out = {}
+    for k, v in (env or {}).items():
+        out[str(k)] = str(config.secret(v) if isinstance(v, str) and config.secret(v)
+                          else _expand(v))
+    return out
+
+
+def _expand_deep(v):
+    """`${VAR}` expansion through a def's nested values — `args` entries and a remote def's
+    `headers` carry credentials in the same spelling as `env` does."""
+    if isinstance(v, dict):
+        return {k: _expand_deep(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_expand_deep(x) for x in v]
+    return _expand(v)
+
+
+def resolved_def(d):
+    """One def with every credential reference resolved — the form the CLAUDE door writes.
+
+    Issue: the Claude door used to write the def verbatim and let Claude Code expand `${VAR}`
+    out of its OWN environment. That only worked because `claude_env` re-admitted every
+    referenced name to the CLI — which handed it to the run's Bash as well, so wiring one
+    server to a token published that token to every capability Otto runs. A vault-only secret
+    never reached this door at all, since Claude Code cannot call `OTTO_SECRET_COMMAND`.
+
+    Resolving here closes both: the value travels in `data/.mcp-active.json` (0600, and
+    read-denied to every run including an Otto-cwd one — `file_safety._secret_store_globs`),
+    which is a narrower audience than an environment variable every subprocess inherits."""
+    return {k: (resolve_env_map(v) if k == "env" else _expand_deep(v))
+            for k, v in (d or {}).items()}
+
+
+def resolved_config(active):
+    """`policy.active_mcp_config`'s payload, resolved for writing. None passes through."""
+    if not active:
+        return active
+    return {**active,
+            "mcpServers": {n: resolved_def(d) for n, d in (active.get("mcpServers") or {}).items()}}
+
+
 def env_for(spec):
-    """The environment a def's subprocess gets: the operator's own, plus the def's `env` with
-    each VALUE resolved.
+    """The environment a def's subprocess gets: the operator's own, plus its own `env`
+    resolved (`resolve_env_map`).
 
-    Resolution mirrors `gateway.request_headers` exactly — env var > `OTTO_SECRET_COMMAND` >
-    the literal — so a server that needs a credential can name one instead of storing it:
-    `{"CONFLUENCE_API_TOKEN": "MY_CONFLUENCE_TOKEN"}` keeps the token in the vault, and
-    `${MY_CONFLUENCE_TOKEN}` reads it from the worker's env. A literal still works and is
-    still stored in plaintext in `data/mcp-servers.json`, which is why the Admin form says so.
-
-    The Claude door (`policy.active_mcp_config`) deliberately does NOT resolve: its config is
-    written to disk for `claude -p`, so resolving there would put the secret in a file. Claude
-    Code expands `${VAR}` itself, which is why an env reference is the portable spelling and a
-    vault-only secret reaches the local backend alone.
+    A server that needs a credential names one instead of storing it:
+    `{"CONFLUENCE_API_TOKEN": "MY_CONFLUENCE_TOKEN"}` keeps the token in the vault. A literal
+    still works and is still stored in plaintext in `data/mcp-servers.json`, which is why the
+    Admin form says so.
 
     The operator's own environment is inherited MINUS Otto's credentials (`_inherited_env`) —
     a stdio server is third-party code we spawn, and it needed no secret of ours to run."""
-    env = _inherited_env()
-    for k, v in (spec.get("env") or {}).items():
-        env[str(k)] = str(config.secret(v) if isinstance(v, str) and config.secret(v)
-                          else _expand(v))
-    return env
+    return {**_inherited_env(), **resolve_env_map(spec.get("env"))}
 
 
 def _is_stdio(d):

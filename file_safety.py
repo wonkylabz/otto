@@ -259,6 +259,12 @@ def _secret_store_globs():
         # Editor history: a copy of every version of every file, tokens included.
         os.path.join(home, ".config", "Cursor", "User", "History", "**"),
         os.path.join(home, ".config", "Code", "User", "History", "**"),
+        # The `--mcp-config` payload Otto writes for `claude -p`. It carries every registered
+        # server's credential RESOLVED (`mcp_client.resolved_def`) — that resolution is what
+        # keeps those tokens out of every run's environment, so the file it lands in is a pure
+        # credential store and belongs on this list rather than in `_otto_state_globs`, whose
+        # entries an Otto-cwd run is entitled to read.
+        os.path.join(config.DATA_DIR, ".mcp-active.json"),
     ]
 
 
