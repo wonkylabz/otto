@@ -1594,7 +1594,8 @@ function applyModeExclusions(){
   const bsl=document.getElementById("bstoggle");
   if(bs && bsl && !(currentSession && currentSession.cap)){
     bs.disabled=repoOn; if(repoOn) bs.checked=false;
-    if(repoOn) bsl.title = "Not available with a repo picked — repo mode clones and opens a PR, which a read-only conversation has nothing to put in.";
+    bsl.title = repoOn ? "Not available with a repo picked — repo mode clones and opens a PR, which a read-only conversation has nothing to put in."
+                       : BRAINSTORM_HINT;
   }
   // This function is the one place that UNCHECKS a control on the user's behalf, so the
   // collapsed panel's summary is re-read here rather than only from the change event.
