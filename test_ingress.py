@@ -6833,17 +6833,15 @@ class UiAssetLayoutTests(unittest.TestCase):
     # not a thing a human reads before approving, so the planner now opens with '## In short' and
     # the detail sits behind a toggle. The bytes are the summary block, the link-style button and
     # its list reset — the detail stays in the DOM and is only hidden (`PlanSummaryToggleTests`).
-    # -> 122586 for dragging the models list into order, the Jobs tab's idiom on a table: the
-    # ceiling was already AT `app.css`'s size, so the grip's own CSS raises it regardless. The
-    # `admin.js` half is the four drag handlers, the drop that re-sorts the pool to the rendered
-    # order, and the two traps the Jobs tab paid for first — the GRIP is draggable rather than
-    # the row (a draggable row swallows the Turns field's selection) and a drop outside the
-    # table puts the rows back, because dragover has already moved them. Neither path re-renders:
-    # rebuilding the panel resets the page's scroll. The last of the bytes are the two things
-    # measured on the live page: every row query is scoped to `.mpool` (the endpoints table
-    # shares `.mrow`, and unscoped this moved the whole pool into it) and the drag image is a
-    # chip built off-screen, because a <tr> images at the full table width (`ModelOrderTests`).
-    ASSET_MAX = 124362
+    # -> 125275 for dragging the models list into order, the Jobs tab's idiom on a table. It is
+    # `admin.js` that binds now, not `app.css`. The bytes are the four drag handlers, the drop
+    # that re-sorts the pool to the rendered order, and four things each measured on the live
+    # page: the GRIP is draggable rather than the row (a draggable row swallows the Turns field's
+    # selection), a drop outside the table puts the rows back without a re-render (rebuilding
+    # resets the page's scroll), every row query is scoped to `.mpool` (the endpoints table shares
+    # `.mrow`, and unscoped this moved the whole pool into it), and a mid-drag `refreshMcpHealth`
+    # rebuild is held to dragend rather than fired under the drag (`ModelOrderTests`).
+    ASSET_MAX = 125275
 
     def _assets(self):
         out = {}

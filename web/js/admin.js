@@ -111,7 +111,7 @@ async function refreshMcpHealth(rendered){
   // relying on that leaves the label stuck at "Checking…" the moment that stops being true.
   if(btn){ btn.disabled=false; btn.textContent=label; }
   MCP_REFRESHING=false;
-  if(moved) loadAdmin();
+  if(moved && !dragHoldsRender()) loadAdmin();   // a drag in flight takes it at dragend
 }
 
 // Runtime settings (config._SETTING_SPECS): the "run an experiment today" knobs, editable here
@@ -412,7 +412,7 @@ function modelsSection(m){
       <td class="c-phases"><span class="mradios">${radio(p,'routing')}${radio(p,'plan')}${radio(p,'preview')}${radio(p,'clarify')}${radio(p,'memory')}${radio(p,'verify')}${radio(p,'supervise')}${radio(p,'memory_gc')}${radio(p,'execution')}</span></td>
       <td class="c-turns">${(p.provider!=='claude'&&p.provider!=='codex')?`<input type="number" min="1" step="1" data-turns="${esc(p.name)}" value="${p.max_turns||''}" placeholder="60">`:''}</td>
       <td class="c-test"><span class="mtest"><button class="addbtn testbtn" data-testmodel="${esc(p.name)}">test</button><span class="tres" data-tres="${esc(p.name)}"></span></span></td>
-      <td class="c-ord r"><span class="mgrip" draggable="true" title="drag to reorder \u2014 display only, except that a fallback with nothing better to go on takes the FIRST entry">&#10247;</span></td>
+      <td class="c-ord r"><span class="mgrip" draggable="true" title="drag to reorder \u2014 display only, except between models of the SAME tier: escalation, downshift and the Claude fallback each take the FIRST entry whose id matches their tier, so the higher of two opus rows wins">&#10247;</span></td>
       <td class="c-rm r"><button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button></td>
     </tr>`).join("");
   const gs=(typeof GATEWAY_STATS!=="undefined"&&GATEWAY_STATS)||{tasks:{},down:{}};
@@ -556,9 +556,15 @@ function wireModels(el){
    display only with ONE exception, which the grip's tooltip states: a fallback with nothing
    better to go on takes the first entry (`ModelOrderTests`).
 
-   Unlike the Jobs tab this needs no mid-drag render guard: the Admin tab has no poller, so
-   nothing re-renders the table except an action the operator just took. */
-let _dragModel=null, _modelDropped=false, _dragGhost=null;
+   It DOES need the Jobs tab's mid-drag render guard, for a re-render that is not a poll:
+   `refreshMcpHealth` calls `loadAdmin()` on its own up to ~8s after the panel opens when MCP
+   health moved. A drag started in that window lost its row to the rebuild, so `dragend` fired
+   on a detached node, never reached #adminview, and leaked the ghost. */
+let _dragModel=null, _modelDropped=false, _dragGhost=null, _renderAfterDrag=false;
+// A re-render that arrives MID-DRAG is deferred to dragend rather than dropped: the operator
+// keeps their drag, and the MCP health that triggered it still lands. `refreshMcpHealth` is the
+// one caller; anything else that re-renders the panel while dragging belongs here too.
+const dragHoldsRender=()=>{ if(!_dragModel) return false; _renderAfterDrag=true; return true; };
 // The POOL's rows only. `.mrow` is shared with the endpoints table above it — reading it
 // unscoped picked THAT table's tbody and re-parented every model row into it (user-observed).
 const poolRows=el=>[...el.querySelectorAll(".mpool .mrow")];
@@ -576,6 +582,7 @@ function wireModelDrag(el){
     // A purpose-built chip, not a snapshot of anything in the table: a <tr> images at the full
     // ~1300px table width, and the name cell is the AUTO-width column (~700px) — so either one
     // trails off to the right of the cursor.
+    document.querySelectorAll(".mdragimg").forEach(n=>n.remove());   // never leak one per drag
     _dragGhost=document.createElement("div");
     _dragGhost.className="mdragimg";
     _dragGhost.textContent=row.querySelector(".mn").textContent;
@@ -600,6 +607,7 @@ function wireModelDrag(el){
     // Dropped outside the table: the rows moved during dragover but nothing was saved, so the
     // screen is now lying. Put them back.
     if(!_modelDropped) applyPoolOrder(el);
+    if(_renderAfterDrag){ _renderAfterDrag=false; loadAdmin(); }
   };
 }
 

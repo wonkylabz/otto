@@ -2963,8 +2963,8 @@ class ModelEndpointTests(unittest.TestCase):
 
 
 class ModelOrderTests(unittest.TestCase):
-    """Admin reorders the pool with up/down arrows, so the ORDER is now operator intent rather
-    than insertion history — it has to survive a round-trip, and what it decides has to be
+    """Admin reorders the pool by dragging a row's grip, so the ORDER is now operator intent
+    rather than insertion history — it has to survive a round-trip, and what it decides has to be
     written down, because the list carries no sort key for a later edit to re-sort by."""
 
     def setUp(self):
@@ -2986,6 +2986,49 @@ class ModelOrderTests(unittest.TestCase):
         moved["pool"].insert(0, moved["pool"].pop(1))
         gateway.save(moved)
         self.assertEqual([m["name"] for m in gateway.load()["pool"]], ["b", "a", "c"])
+
+    def test_order_picks_the_winner_between_two_models_of_the_SAME_tier(self):
+        """The dependence is wider than "pool[0] is the fallback", and this is the half that bites
+        a real pool: `_default_claude`, `escalation_model_id` and `downshift_model_id` each take
+        the FIRST entry whose id contains their tier keyword. Two opus rows is not exotic — the
+        Claude picker adds any id the catalog lists — and dragging one above the other silently
+        repoints escalation, downshift, the local-failure fallback and the plan preview."""
+        two_opus = lambda first, second: {"pool": [
+            {"name": first, "provider": "claude", "model": first},
+            {"name": second, "provider": "claude", "model": second},
+            {"name": "s", "provider": "claude", "model": "claude-sonnet-5"}], "assign": {}}
+        self.assertEqual(gateway.escalation_model_id(two_opus("claude-opus-4-8", "claude-opus-5")),
+                         "claude-opus-4-8")
+        self.assertEqual(gateway.escalation_model_id(two_opus("claude-opus-5", "claude-opus-4-8")),
+                         "claude-opus-5")
+        two_sonnet = lambda first, second: {"pool": [
+            {"name": first, "provider": "claude", "model": first},
+            {"name": second, "provider": "claude", "model": second}], "assign": {}}
+        self.assertEqual(gateway._default_claude(two_sonnet("claude-sonnet-5", "claude-sonnet-4-6")),
+                         "claude-sonnet-5")
+        self.assertEqual(gateway._default_claude(two_sonnet("claude-sonnet-4-6", "claude-sonnet-5")),
+                         "claude-sonnet-4-6")
+
+    def test_the_grip_tooltip_states_the_same_tier_case(self):
+        # The tooltip is the only place an operator meets this, and it used to say only that a
+        # fallback "with nothing better to go on" takes the first entry — which reads as "order
+        # matters only in a pool missing a tier", the opposite of the case above.
+        ui = ui_src()
+        tip = ui[ui.index('class="mgrip"'):]
+        tip = tip[:tip.index("</span>")]
+        self.assertIn("SAME tier", tip)
+
+    def test_a_mid_drag_re_render_is_deferred_not_fired(self):
+        """`refreshMcpHealth` calls `loadAdmin()` on its own up to ~8s after the panel opens. A
+        drag started in that window lost its row to the rebuild: `dragend` then fired on a
+        detached node, never reached #adminview, so the ghost leaked and the drag was silently
+        dropped. The re-render is held to dragend instead of being skipped, so the MCP health
+        that triggered it still lands."""
+        ui = ui_src()
+        self.assertIn("if(moved && !dragHoldsRender()) loadAdmin();", ui)
+        self.assertIn("if(_renderAfterDrag){ _renderAfterDrag=false; loadAdmin(); }", ui)
+        # And the ghost cannot accumulate even if a rebuild does slip through.
+        self.assertIn('document.querySelectorAll(".mdragimg").forEach(n=>n.remove());', ui)
 
     def test_the_first_entry_is_what_a_sonnet_less_pool_falls_back_to(self):
         # The one place order is not cosmetic, and the reason the column's tooltip says so: with
@@ -3023,7 +3066,10 @@ class ModelOrderTests(unittest.TestCase):
         existing nodes, so neither path has anything to re-render."""
         ui = ui_src()
         body = ui[ui.index("function wireModelDrag("):ui.index("async function saveModelOrder(")]
-        self.assertNotIn("loadAdmin", body,
+        # The ONE re-render on this path is the one a mid-drag `refreshMcpHealth` deferred to
+        # dragend — a drag of the operator's own never triggers a rebuild.
+        self.assertEqual([l.strip() for l in body.splitlines() if "loadAdmin" in l],
+                         ["if(_renderAfterDrag){ _renderAfterDrag=false; loadAdmin(); }"],
                          "a drag path re-renders the panel, which resets the scroll position")
         save = ui[ui.index("async function saveModelOrder("):]
         save = save[:save.index("\n}") + 2]
