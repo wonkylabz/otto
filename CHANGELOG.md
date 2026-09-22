@@ -13,6 +13,12 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **Adding Fable in Admin now works.** A one-off migration for a since-revived model was
+  stripping every pool entry whose name or id contained `fable` on every read, so the model
+  saved without an error and was gone by the time the page reloaded. Fable is also offered as a
+  Claude tier now (`claude-fable` -> `claude-fable-5-1`). An entry you added before this fix was
+  stored, only hidden, so it reappears on upgrade with nothing to re-enter.
+
 - **A browser tab left open no longer polls Otto forever when the server is down.** The UI's
   timers now pause while the tab is in the background and back off when a read fails (doubling
   to 60s, back to full rate on the first success), instead of holding a fixed rate for the life

@@ -2643,7 +2643,9 @@ class ModelMigrationTests(unittest.TestCase):
                                 else server.Handler.do_GET)
         self.assertIn('"dangling": cfg.get("dangling"', src)
 
-    def test_load_prunes_fable(self):
+    def test_load_keeps_fable(self):
+        # A migration used to strip every entry whose name/id contained "fable" on EVERY load,
+        # so adding Fable in Admin saved fine and vanished on the next read, with no error.
         import json, os, tempfile
         orig = gateway._PATH
         gateway._PATH = os.path.join(tempfile.mkdtemp(prefix="otto-mig-"), "models.json")
@@ -2652,15 +2654,15 @@ class ModelMigrationTests(unittest.TestCase):
                 json.dump({
                     "pool": [
                         {"name": "claude-sonnet", "provider": "claude", "model": "claude-sonnet-4-6"},
-                        {"name": "claude-fable", "provider": "claude", "model": "claude-fable-5"},
+                        {"name": "claude-fable", "provider": "claude", "model": "claude-fable-5-1"},
                     ],
                     "assign": {"memory": "claude-fable", "execution": "claude-sonnet"},
                     "cap_exec": {"daily-summary": "claude-fable"},
                 }, f)
             cfg = gateway.load()
-            self.assertFalse(any("fable" in m["model"] for m in cfg["pool"]))
-            self.assertEqual(cfg["assign"]["memory"], "claude-sonnet")     # repointed to default
-            self.assertNotIn("daily-summary", cfg["cap_exec"])             # stale override dropped
+            self.assertIn("claude-fable", [m["name"] for m in cfg["pool"]])
+            self.assertEqual(cfg["assign"]["memory"], "claude-fable")      # pick survives
+            self.assertEqual(cfg["cap_exec"]["daily-summary"], "claude-fable")
         finally:
             gateway._PATH = orig
 
