@@ -54,14 +54,14 @@ _STATS_PATH = os.path.join(config.DATA_DIR, "gateway-stats.json")
 TASKS = ["routing", "plan", "preview", "clarify", "memory", "verify",
          "supervise", "memory_gc", "execution"]
 
-# Fallback list used only when the API can't be queried (no key).
+# Last-resort list: used only when neither the API nor Claude Code's cached catalog answers.
 _KNOWN_CLAUDE = [
     ("claude-opus",   "claude-opus-5-5"),
     ("claude-sonnet", "claude-sonnet-5"),
     ("claude-haiku",  "claude-haiku-4-5-20251001"),
     ("claude-fable",  "claude-fable-5-1"),
 ]
-# Last resort only: the CLI caches its login's live model catalog here, and `claude -p` refreshes it.
+# Claude Code caches its login's live model catalog here; every `claude -p` refreshes it.
 CLI_CATALOG_DIR = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"),
                                "cache", "model-catalog")
 _cli_cat_memo = {}
@@ -113,16 +113,18 @@ def _cli_catalog():
                  if f.endswith(".json")]
         path = max(files, key=os.path.getmtime)
         key = (path, os.path.getmtime(path))
-        if key not in _cli_cat_memo:
-            with open(path) as f:
-                data = json.load(f)
-            rows = ((data.get("catalog") or {}).get("config") or {}).get("models") or []
-            models = [{"id": m["id"], "name": m["id"], "display": m.get("name") or "",
-                       "section": m.get("section") or ""}
-                      for m in rows if isinstance(m, dict) and str(m.get("id", "")).startswith("claude-")]
-            _cli_cat_memo.clear()
-            _cli_cat_memo[key] = (models, (data.get("fetchedAt") or 0) / 1000 or None)
-        return _cli_cat_memo[key]
+        hit = _cli_cat_memo.get("v")   # one slot, replaced whole: server.py is threaded
+        if hit and hit[0] == key:
+            return hit[1]
+        with open(path) as f:
+            data = json.load(f)
+        rows = ((data.get("catalog") or {}).get("config") or {}).get("models") or []
+        models = [{"id": m["id"], "name": m["id"], "display": m.get("name") or "",
+                   "section": m.get("section") or ""}
+                  for m in rows if isinstance(m, dict) and str(m.get("id", "")).startswith("claude-")]
+        out = (models, (data.get("fetchedAt") or 0) / 1000 or None)
+        _cli_cat_memo["v"] = (key, out)
+        return out
     except (OSError, ValueError, TypeError, AttributeError):
         return [], None
 
@@ -169,7 +171,8 @@ def claude_catalog(timeout=15):
     cli, fetched = _cli_catalog()
     if cli:
         age = f"fetched {time.strftime('%Y-%m-%d %H:%M', time.localtime(fetched))}" if fetched else ""
-        return {"ok": True, "source": "cli", "models": cli, "detail": age}
+        note = "; ".join(x for x in (age, detail and f"Anthropic API failed: {detail}") if x)
+        return {"ok": True, "source": "cli", "models": cli, "detail": note}
     if not key:
         detail = ("no ANTHROPIC_API_KEY set and no Claude Code model catalog cached at "
                   f"{CLI_CATALOG_DIR} — run claude once to populate it")
