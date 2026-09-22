@@ -455,7 +455,7 @@ function modelsSection(m){
       <span class="gcaret">&#9662;</span>LLM models<span class="sectcount">${m.pool.length}</span></span>
     <span class="h3btns"><button class="addbtn" id="model-recheck" title="re-test every model for reachability — Claude entries included, so this costs one claude -p turn each">&#8635; Recheck health</button>
     <button class="addbtn addnew" id="add-endpoint" title="an OpenAI-compatible server (vLLM / Ollama / a hosted API): set its URL, key and any extra headers once, then add its models with discover">+ Add endpoint</button>
-    <button class="addbtn addnew" id="add-claude" title="list the Claude models available and add them as picks \u2014 live from the Anthropic API when ANTHROPIC_API_KEY is set, otherwise Otto's built-in list">+ Add Claude</button>
+    <button class="addbtn addnew" id="add-claude" title="list the Claude models available and add them as picks \u2014 from the Anthropic API with ANTHROPIC_API_KEY, else Claude Code's cached model catalog">+ Add Claude</button>
     <button class="addbtn addnew" id="add-model">+ Add model</button></span></h3>
     ${warn}
     <div class="asection-body">
@@ -754,11 +754,8 @@ async function showDiscovery(epName){
 
 
 /* The same pick-and-add flow as an endpoint's discover, for the CLAUDE tier — the one pool the
-   operator could previously only add by typing a model id from memory. The source is stated on
-   the panel because it is not always live: without ANTHROPIC_API_KEY there is nothing to
-   enumerate (claude -p logs in on its own and the CLI has no list command), so the server
-   answers with the built-in list and says why. A stale list that reads as the live one would
-   quietly outlive the next model release. */
+   operator could previously only add by typing a model id from memory. The panel states the
+   source: the API (with a key), Claude Code's cached catalog, else the built-in list + why. */
 async function showClaudeDiscovery(){
   const c=openFormModal("<b>Add Claude models</b><br>the Claude tiers Otto can run through <code>claude -p</code>");
   c.innerHTML=`<div class="aform discpanel"><label>Claude models</label>
@@ -775,9 +772,8 @@ async function showClaudeDiscovery(){
   // claude-sonnet while the API lists claude-sonnet-5, and matching on name would offer a
   // duplicate of every model already in the pool.
   const have=new Set(MODEL_STATE.pool.filter(p=>p.provider==="claude").map(p=>p.model));
-  const src=r.source==="api"
-    ? `${models.length} model${models.length===1?'':'s'} &middot; live from the Anthropic API`
-    : `${models.length} model${models.length===1?'':'s'} &middot; Otto's built-in list${r.detail?` &mdash; ${esc(r.detail)}`:""}`;
+  const via={api:"live from the Anthropic API",cli:"from Claude Code's own model catalog"}[r.source]||"Otto's built-in list";
+  const src=`${models.length} model${models.length===1?'':'s'} &middot; ${via}${r.detail?` &mdash; ${esc(r.detail)}`:""}`;
   body.innerHTML=`<p class="sub" style="margin:0 0 6px">${src}${have.size?` &middot; ${have.size} already added`:""}</p>
     <div class="disclist">${models.map(e=>`<label class="discrow">
       <input type="checkbox" value="${esc(e.id)}" data-name="${esc(e.name||e.id)}" ${have.has(e.id)?'disabled':''}><code>${esc(e.id)}</code>

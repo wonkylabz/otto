@@ -3298,9 +3298,78 @@ class ClaudeCatalogTests(unittest.TestCase):
         cat = gateway.claude_catalog()
         self.assertEqual(cat["source"], "known")
         self.assertIn("ANTHROPIC_API_KEY", cat["detail"])
+        self.assertIn("model catalog", cat["detail"])
         self.assertEqual([m["id"] for m in cat["models"]], [mid for _, mid in gateway._KNOWN_CLAUDE])
         # Named by TIER, not by id: `_normalize` re-pins a tier's id on upgrade.
         self.assertEqual([m["name"] for m in cat["models"]], [n for n, _ in gateway._KNOWN_CLAUDE])
+
+    def _cli_cache(self, models, fetched=1790110215771):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "acct-cc.json"), "w") as f:
+            json.dump({"version": 2, "fetchedAt": fetched,
+                       "catalog": {"config": {"id": "cc", "models": models}}}, f)
+        orig = gateway.CLI_CATALOG_DIR
+        gateway.CLI_CATALOG_DIR = d
+        self.addCleanup(lambda: setattr(gateway, "CLI_CATALOG_DIR", orig))
+
+    def test_no_key_lists_claude_codes_cached_catalog_as_its_own_source(self):
+        # The `claude -p` install has no key, but the CLI caches its login's live catalog.
+        self._key("")
+        self._cli_cache([{"id": "claude-opus-9", "name": "Opus 9", "section": "main"},
+                         {"id": "claude-opus-8", "name": "Opus 8", "section": "overflow"}])
+        cat = gateway.claude_catalog()
+        self.assertEqual(cat["source"], "cli")
+        self.assertEqual([m["id"] for m in cat["models"]], ["claude-opus-9", "claude-opus-8"])
+        self.assertEqual(cat["models"][0]["display"], "Opus 9")
+
+    def test_tier_labels_re_pin_to_the_catalogs_newest_main_model(self):
+        self._cli_cache([{"id": "claude-opus-4-1", "section": "overflow"},
+                         {"id": "claude-opus-9", "section": "main"},
+                         {"id": "claude-opus-8", "section": "main"}])
+        ids = gateway._tier_ids()
+        self.assertEqual(ids["claude-opus"], "claude-opus-9")
+        self.assertEqual(ids["claude-sonnet"], dict(gateway._KNOWN_CLAUDE)["claude-sonnet"])
+        cfg = gateway._normalize({"pool": [{"name": "claude-opus", "provider": "claude",
+                                            "model": "claude-opus-4-1"}]})
+        self.assertEqual(cfg["pool"][0]["model"], "claude-opus-9")
+
+    def test_a_failed_api_is_still_reported_when_the_cli_catalog_answers(self):
+        import types
+        self._key("sk-test")
+        self._cli_cache([{"id": "claude-opus-9", "section": "main"}])
+        orig = gateway.urllib
+        def _boom(req, timeout=None):
+            raise OSError("401 unauthorized")
+        gateway.urllib = types.SimpleNamespace(
+            parse=orig.parse,
+            request=types.SimpleNamespace(Request=orig.request.Request, urlopen=_boom))
+        self.addCleanup(lambda: setattr(gateway, "urllib", orig))
+        cat = gateway.claude_catalog()
+        self.assertEqual(cat["source"], "cli")
+        self.assertIn("401 unauthorized", cat["detail"])
+
+    def test_a_long_claude_probe_error_is_clipped_with_a_marker(self):
+        orig = gateway._claude_complete
+        def _fail(*a, **k):
+            raise RuntimeError("x" * 400)
+        gateway._claude_complete = _fail
+        self.addCleanup(lambda: setattr(gateway, "_claude_complete", orig))
+        ok, detail = gateway._probe({"name": "c", "provider": "claude", "model": "claude-nope"})
+        self.assertFalse(ok)
+        self.assertTrue(detail.endswith("…[clipped]"))
+        self.assertEqual(len(detail), 300 + len(" …[clipped]"))
+
+    def test_an_unreadable_cli_cache_falls_back_to_the_known_list(self):
+        self._key("")
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "x.json"), "w") as f:
+            f.write("{not json")
+        orig = gateway.CLI_CATALOG_DIR
+        gateway.CLI_CATALOG_DIR = d
+        self.addCleanup(lambda: setattr(gateway, "CLI_CATALOG_DIR", orig))
+        self.assertEqual(gateway.claude_catalog()["source"], "known")
 
     def test_an_unreachable_api_degrades_to_the_known_list_with_the_error(self):
         import types
@@ -3945,13 +4014,13 @@ class CapExecTests(unittest.TestCase):
             cfg = self._cfg()
             gateway.save(cfg)
             self.assertEqual(gateway.exec_model_id("daily-summary"), "claude-haiku-4-5-20251001")
-            self.assertEqual(gateway.exec_model_id("sre-minion"), "claude-opus-4-8")  # falls back
+            self.assertEqual(gateway.exec_model_id("sre-minion"), "claude-opus-5-5")  # falls back
             # Clearing the override falls back to the phase default.
             gateway.set_cap_exec("daily-summary", None)
-            self.assertEqual(gateway.exec_model_id("daily-summary"), "claude-opus-4-8")
+            self.assertEqual(gateway.exec_model_id("daily-summary"), "claude-opus-5-5")
             # A local model is rejected — override stays cleared.
             gateway.set_cap_exec("daily-summary", "local")
-            self.assertEqual(gateway.exec_model_id("daily-summary"), "claude-opus-4-8")
+            self.assertEqual(gateway.exec_model_id("daily-summary"), "claude-opus-5-5")
         finally:
             gateway._PATH = orig
 
