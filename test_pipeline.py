@@ -4466,8 +4466,8 @@ class BrainstormModeTests(unittest.TestCase):
         it is there because a toggle that silently does nothing is the bug being fixed."""
         html = ui_src()
         self.assertIn("function applyModeExclusions(){", html)
-        # Wired to all three controls, not just the one that changed last.
-        self.assertIn('if(["repopick","bscheck","plancheck"].includes(e.target.id))', html)
+        # Wired to both controls, not just the one that changed last.
+        self.assertIn('if(["repopick","bscheck"].includes(e.target.id))', html)
         # ...and re-applied when the session binding changes the brainstorm lock.
         i = html.index("function applyBrainstorm(){")
         self.assertIn("applyModeExclusions();", html[i:i + 900])

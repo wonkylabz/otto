@@ -1763,7 +1763,7 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
         # A handoff IS a fresh submit — it re-enters /api/submit, so every setting a normal
         # submit sends must ride along or the visible composer silently doesn't apply.
         call = self._handoff_call(ui_src())
-        for field in ("model_override", "memory_enabled", "repo", "qa", "plan_mode", "auto_approve"):
+        for field in ("model_override", "memory_enabled", "repo", "qa", "auto_approve", "effort"):
             self.assertIn(field, call, f"the handoff re-submit drops {field}")
 
     def test_the_handoff_carries_the_conversation_into_the_fresh_run(self):

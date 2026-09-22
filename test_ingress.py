@@ -5795,7 +5795,7 @@ class ChatViewCollapseTests(unittest.TestCase):
         and every writer of those controls re-reads it."""
         ui = self._ui()
         self.assertIn('id="optsum"', ui, "the collapsed panel has no summary element")
-        for control in ("autoapprove", "bscheck", "plancheck", "memcheck", "repopick"):
+        for control in ("autoapprove", "bscheck", "memcheck", "repopick"):
             self.assertIn(control, ui[ui.index("function syncOptSummary()"):
                                        ui.index("const OPT_COLLAPSED_KEY")],
                           f"{control} can be non-default without the collapsed panel saying so")

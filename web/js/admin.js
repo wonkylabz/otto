@@ -125,7 +125,7 @@ const SETTING_HELP={
   max_attempts:["Verify attempts","Attempts the verify→retry ladder takes; the last one escalates to the strongest Claude tier."],
   conventions_digest_chars:["Repo conventions per judge prompt",
     "Characters of the target repo's own CLAUDE.md rules carried into ONE judging prompt. Sized to fit the repo's whole rule set — too low and the judge enforces whichever rules rank highest for the request rather than the ones the change touched. Lower it only for a small-context judge model."],
-  plan_mode:["Plan-then-execute","Decompose a big task into ordered atomic steps. opt-in = only when a run asks; auto-local = whenever the executor is local."],
+  plan_mode:["Plan-then-execute","Decompose a big task into ordered atomic steps. auto-local = whenever the executor is local (its intended use); opt-in = only when an API caller sends plan_mode."],
   supervise:["Run supervisor","Judge a run mid-attempt for going off-course."],
   supervise_mode:["Supervisor mode","enforce: kill and restart an off-course attempt. shadow: only record what it would have done."],
   budget_soft_tokens:["Soft budget — output tokens","Past this, attempts downshift to the cheapest tier. 0 = off."],
