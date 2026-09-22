@@ -302,7 +302,9 @@ if(mFig) mFig.addEventListener("click", ()=>{ if(mFig.blink) mFig.blink(); });
 // A resize changes the free area the stored fraction is measured against, and can leave a
 // fixed element off-screen - which for a dock with no scroll of its own is unrecoverable.
 window.addEventListener("resize", mascotPlace);
-/* A local ticker, not a poller: nothing on the network changes when a quiet Otto falls
-   asleep, and the 15s badge polls stop being a reliable clock the moment a tab is
-   backgrounded. Cheap - applyMood is a no-op unless the resolved mood actually changed. */
-setInterval(applyMood, 20000);
+/* A local ticker: nothing on the network changes when a quiet Otto falls asleep, so this
+   cannot ride the 15s badge polls. Through `poll` only for its visibility half - a hidden tab
+   has no mood to paint, and the tick on the way back is what stops a returning tab showing the
+   mood it left with. It never fails, so the backoff half never engages. Cheap either way -
+   applyMood is a no-op unless the resolved mood actually changed. */
+poll(applyMood, 20000);

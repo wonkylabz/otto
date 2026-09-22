@@ -154,3 +154,52 @@ async function getJSON(path){
   }
   return data;
 }
+
+/* THE poller. Six module-level `setInterval`s ran at a fixed period for the life of the tab,
+   each swallowing its own failures: with the server down, a BACKGROUNDED Board tab still hit
+   `/api/*` at ~0.6 req/s forever, and said nothing. Two things a bare `setInterval` cannot do:
+
+   - skip a tick while `document.hidden`, and fire once on the way back rather than waiting out
+     the remainder of a period — returning to a tab is the moment its data is most stale;
+   - back off on CONSECUTIVE failures, doubling to a 60s cap and resetting on the first success.
+
+   `setTimeout` re-armed per tick, not `setInterval`: the delay is no longer constant.
+
+   A tick has THREE outcomes, not two. It FAILED if it throws or resolves `false` — the loaders
+   already paint their own error and return, so `false` is how one tells this helper what it
+   just reported to the operator (the one place a falsy return is read rather than ignored;
+   mutating writes still THROW, `postJSON`). It SKIPPED if it resolves `POLL_SKIP`, which leaves
+   the delay untouched: a poller whose view is on another in-app tab attempts nothing, and
+   counting that as a success resets a backoff the dead server has done nothing to earn.
+   Anything else succeeded. */
+const POLL_SKIP = Symbol("poll-skip");
+function poll(fn, ms, cap){
+  const ceiling=cap||60000;
+  let delay=ms, timer=null, running=false;
+  const arm=()=>{ clearTimeout(timer); timer=setTimeout(tick, delay); };
+  async function tick(){
+    // Disarmed FIRST, not just re-armed at the end: `fn` is awaited, so a tick fired by the
+    // visibility handler leaves the scheduled one live across that await — and a slow fetch
+    // outlasting the remaining delay is exactly when it fires, giving two concurrent polls.
+    clearTimeout(timer);
+    // Clearing the timer is not enough on its own: the visibility handler calls `tick` DIRECTLY,
+    // so flipping away and back while a slow fetch is in flight re-enters it with nothing to
+    // clear. Both would then write `delay`, and the loser's write is the one that stands.
+    if(running) return;
+    if(document.hidden){ arm(); return; }
+    running=true;
+    let out;
+    try { out = await fn(); } catch(e){ out=false; }
+    finally { running=false; }
+    if(out!==POLL_SKIP) delay = out===false ? Math.min(delay*2, ceiling) : ms;
+    arm();
+  }
+  // The backoff is deliberately NOT reset here: coming back to a tab says nothing about whether
+  // the server came back, so a dead server gets one probe, not a return to full rate.
+  const onVis=()=>{ if(!document.hidden) tick(); };
+  document.addEventListener("visibilitychange", onVis);
+  arm();
+  // A disposer that left the listener attached would not be one: the next tab return calls
+  // `tick`, which re-arms, and the poller is alive again.
+  return ()=>{ clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); };
+}

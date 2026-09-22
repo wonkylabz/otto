@@ -31,12 +31,14 @@ function jobSection(id, title, hint, rows, empty){
 }
 
 async function loadJobs(silent){
-  if(_dragJob) return;            // a poll must never re-render the list mid-drag
+  if(_dragJob) return POLL_SKIP;   // a poll must never re-render the list mid-drag
   const el=document.getElementById("schedulesview");
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
-  try { data=await (await fetch("/api/runbooks")).json(); }
-  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load jobs (${esc(e.message)}).</p>`; return; }
+  // getJSON, not a bare fetch: a 500 with a JSON body resolves like a 200, so a sick server
+  // rendered as zero jobs AND reported success to the poller, which then never backed off.
+  try { data=await getJSON("/api/runbooks"); }
+  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load jobs (${esc(e.message)}).</p>`; return false; }
   _jobs=data.jobs||[]; JOB_CAPS=data.caps||[];
   /* A dragged order is the operator's and OUTRANKS both default sorts below — that is what
      dragging a row means. It is display-only: the server keeps it in its own file and nothing

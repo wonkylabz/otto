@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A browser tab left open no longer polls Otto forever when the server is down.** The UI's
+  timers now pause while the tab is in the background and back off when a read fails (doubling
+  to 60s, back to full rate on the first success), instead of holding a fixed rate for the life
+  of the tab. Nothing to do: a hidden tab refreshes the moment you switch back to it.
+
 ## [0.2.0] - 2026-09-19
 
 ### Changed

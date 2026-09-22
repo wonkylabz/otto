@@ -81,8 +81,10 @@ function setNode(lbl,state,detail,opts){ opts=opts||{}; const n=[...pipeEl.child
     stageAnchor=t;
   }
 }
-// live-tick the timer of whatever stage is currently active/holding
-setInterval(()=>{ const now=performance.now(); for(const n of pipeEl.children){
+// live-tick the timer of whatever stage is currently active/holding. Through `poll` for its
+// visibility half: at 100ms this is the tab's busiest loop, and it repaints nothing a hidden
+// tab can show. No network, so the backoff half never engages.
+poll(()=>{ const now=performance.now(); for(const n of pipeEl.children){
   if(n.dataset.tstart && /\b(active|gatehold)\b/.test(n.className)){ const tm=n.querySelector(".timer"); if(tm) tm.textContent=fmtDur(now-+n.dataset.tstart); }
 }}, 100);
 
@@ -480,7 +482,7 @@ async function loadChatList(){
   // A failed read used to paint an EMPTY chat list, which reads as "my chats are gone".
   let data;
   try { data=await getJSON("/api/chats"); }
-  catch(e){ el.innerHTML=`<p class="err">Couldn't load your chats (${esc(e.message)}).</p>`; return; }
+  catch(e){ el.innerHTML=`<p class="err">Couldn't load your chats (${esc(e.message)}).</p>`; return false; }
   const items=data.chats||[];
   const present=new Set(items.map(c=>c.id));
   const running=new Set(items.filter(c=>c.run_id).map(c=>c.id));
