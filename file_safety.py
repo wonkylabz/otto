@@ -259,6 +259,11 @@ def _secret_store_globs():
         # Editor history: a copy of every version of every file, tokens included.
         os.path.join(home, ".config", "Cursor", "User", "History", "**"),
         os.path.join(home, ".config", "Code", "User", "History", "**"),
+        # Every `--mcp-config` payload Otto writes for `claude -p` — `.mcp-active.json` and each
+        # project cap's merge of it (`engine._effective_mcp`) — carries the credentials RESOLVED
+        # (`mcp_client.resolved_def`), so the family is a credential store, not Otto state.
+        # The glob must name the dot: `data/*.json` never matches a dotfile, so no bwrap mount.
+        os.path.join(config.DATA_DIR, ".mcp-*.json"),
     ]
 
 
@@ -310,8 +315,8 @@ def read_deny_mounts(cwd=None):
 
     Without these a sandbox is a WRITE guard only, and "read-only" reads as safe when it is not.
     A directory glob is masked with an empty tmpfs; a file is bound over /dev/null.
-    `read_denied_globs` already returns [] for a run entitled to Otto's state (cwd IS Otto's
-    checkout), so that case needs nothing here."""
+    A run entitled to Otto's state (cwd IS Otto's checkout) still gets the credential-store
+    mounts — `read_denied_globs` drops only Otto's state for it."""
     mounts = []
     for pattern in read_denied_globs(allow_cwd=cwd):
         targets = [pattern[:-3]] if pattern.endswith("/**") else sorted(globmod.glob(pattern))

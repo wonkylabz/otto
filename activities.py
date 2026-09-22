@@ -19,6 +19,7 @@ from temporalio import activity
 import config
 import storage
 import engine
+import mcp_client
 import policy
 import registry
 import workspace
@@ -359,8 +360,14 @@ def _mcp():
         # Fixed path shared by every concurrent run in this worker; the content is
         # run-invariant (policy.load()), so an atomic replace is enough — a plain open("w")
         # let a peer's `claude -p --mcp-config` read the file mid-truncate.
+        #
+        # Resolved on the way out (`mcp_client.resolved_def`): this file is the ONLY private
+        # lane Otto has into a server `claude -p` spawns. The alternative — leaving `${VAR}`
+        # for Claude Code to expand — requires re-admitting that name to the CLI's whole
+        # environment, which hands it to the run's own Bash too. `storage` writes through
+        # `mkstemp`, so the file lands 0600, and `file_safety` read-denies it to every run.
         mcp_path = os.path.join(config.DATA_DIR, ".mcp-active.json")
-        storage.write_json(mcp_path, active)
+        storage.write_json(mcp_path, mcp_client.resolved_config(active))
     return mcp_tools, mcp_path
 
 

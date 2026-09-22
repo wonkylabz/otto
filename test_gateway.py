@@ -4511,6 +4511,50 @@ class McpActivationTests(unittest.TestCase):
         self.assertLess(pending.index("esc(m.command"), pending.index("data-actmcp="))
 
 
+class McpConfigResolutionTests(unittest.TestCase):
+    """The `--mcp-config` file is the ONLY private lane Otto has into a server `claude -p`
+    spawns. Everything else it could pass a credential through — the environment — is
+    inherited by the run's own Bash as well."""
+
+    def setUp(self):
+        self._orig = (policy._MCPDEF, policy._PATH, config.DATA_DIR)
+        tmp = tempfile.mkdtemp(prefix="otto-mcpres-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        policy._MCPDEF = os.path.join(tmp, "mcp-servers.json")
+        policy._PATH = os.path.join(tmp, "policy.json")
+        config.DATA_DIR = tmp
+        os.environ["OTTO_RESTEST_TOKEN"] = "xoxp-wire-canary"
+        self.addCleanup(os.environ.pop, "OTTO_RESTEST_TOKEN", None)
+
+    def tearDown(self):
+        policy._MCPDEF, policy._PATH, config.DATA_DIR = self._orig
+
+    def test_the_file_on_disk_carries_the_value_not_the_reference(self):
+        """`activities._mcp` is the single writer, so the resolution has to happen on ITS
+        path — a resolver nothing calls leaves `${VAR}` on disk and the server starts with a
+        literal dollar-sign string as its token."""
+        import activities
+        policy.save_mcp_defs({"slackadmin": {"command": "python3", "args": ["slack_mcp.py"],
+                                             "confirmed": True,
+                                             "env": {"SLACK_TOKEN": "${OTTO_RESTEST_TOKEN}"}}})
+        _tools, path = activities._mcp()
+        self.assertTrue(path and os.path.exists(path))
+        with open(path) as fh:
+            wire = json.load(fh)
+        self.assertEqual(wire["mcpServers"]["slackadmin"]["env"]["SLACK_TOKEN"],
+                         "xoxp-wire-canary")
+
+    def test_the_file_is_not_world_readable(self):
+        """It holds resolved credentials now. `storage` writes through `mkstemp`, which is
+        0600 — asserted rather than assumed, because a plain `open(path, "w")` here would be
+        0644 and nothing else would notice."""
+        import activities
+        policy.save_mcp_defs({"s": {"command": "x", "confirmed": True,
+                                    "env": {"T": "${OTTO_RESTEST_TOKEN}"}}})
+        _tools, path = activities._mcp()
+        self.assertEqual(oct(os.stat(path).st_mode & 0o077), oct(0))
+
+
 class McpUserScopeSpawnTests(unittest.TestCase):
     """The activation gate (issue #4) closed ONE of the two files whose `mcpServers` map is
     spawned as the operator. `~/.claude.json` is the other, and it was writable by any run
@@ -4668,17 +4712,39 @@ class ClaudeCliEnvStripTests(unittest.TestCase):
             gateway._PATH = orig
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_a_var_an_activated_def_names_still_reaches_the_cli(self):
-        """`${VAR}` is expanded by Claude Code itself, so the name must survive the strip."""
+    def test_an_activated_defs_var_is_resolved_into_the_config_not_the_cli_env(self):
+        """Wiring ONE server to a token must not publish it to every run.
+
+        The exemption this replaces did exactly that: `${VAR}` in a def re-admitted that name
+        to the CLI's whole environment so Claude Code could expand it, which handed it to the
+        run's own Bash too. The value now travels in the `--mcp-config` payload instead —
+        0600 and read-denied — and the name stays stripped."""
         os.environ["OTTO_SLACK_BOT_TOKEN"] = "xoxb-leak"
-        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-real"
-        policy.save_mcp_defs({"confluence": {"command": "npx", "args": ["-y", "mcp-confluence"],
-                                             "confirmed": True,
-                                             "env": {"CONFLUENCE_TOKEN": "${ANTHROPIC_API_KEY}"}}})
-        env = mcp_client.claude_env()
-        self.assertEqual(env.get("ANTHROPIC_API_KEY"), "sk-ant-real")
-        # The exemption is per-NAME, not an amnesty: everything else still goes.
-        self.assertNotIn("OTTO_SLACK_BOT_TOKEN", env)
+        defs = {"confluence": {"command": "npx", "args": ["-y", "mcp-confluence"],
+                               "confirmed": True,
+                               "env": {"CONFLUENCE_TOKEN": "${OTTO_SLACK_BOT_TOKEN}"}}}
+        policy.save_mcp_defs(defs)
+        self.assertNotIn("OTTO_SLACK_BOT_TOKEN", mcp_client.claude_env())
+        wire = mcp_client.resolved_config(policy.active_mcp_config(policy.load()))
+        self.assertEqual(wire["mcpServers"]["confluence"]["env"]["CONFLUENCE_TOKEN"],
+                         "xoxb-leak")
+
+    def test_a_vault_only_secret_now_reaches_the_claude_door(self):
+        """A bare NAME is an indirection `config.secret` resolves. Claude Code cannot call
+        `OTTO_SECRET_COMMAND`, so before this resolution such a def started the server with
+        the literal string 'MY_VAULT_TOKEN' as its credential and failed silently."""
+        calls = []
+        orig = config.secret
+        config.secret = lambda n, d="": ("vault-value" if n == "MY_VAULT_TOKEN" else orig(n, d))
+        try:
+            d = {"command": "npx", "args": ["-y", "x"], "env": {"TOK": "MY_VAULT_TOKEN"}}
+            self.assertEqual(mcp_client.resolved_def(d)["env"]["TOK"], "vault-value")
+            # ... and the helper is NOT run once per argv entry — only `env` values are names.
+            config.secret = lambda n, d="": calls.append(n) or ""
+            mcp_client.resolved_def({"command": "npx", "args": ["-y", "mcp-thing"]})
+            self.assertEqual(calls, [])
+        finally:
+            config.secret = orig
 
     def test_an_inert_def_does_not_widen_the_environment(self):
         """Registering a def and running it are two acts (`policy.mcp_confirmed`) — an
@@ -7823,6 +7889,41 @@ class ReadDenyTests(unittest.TestCase):
                     ("memory", "m.md")]:
             self.assertTrue(file_safety.is_read_denied(self._p(*rel)),
                             f"{os.path.join(*rel)} must not be readable by an arbitrary run")
+
+    def test_the_resolved_mcp_config_is_denied_to_an_otto_cwd_run_too(self):
+        """`data/.mcp-active.json` carries every registered server's credential RESOLVED — that
+        resolution is what keeps those tokens out of every run's environment, so the file it
+        lands in is a credential store, not ordinary runtime state. `_otto_state_globs` would
+        exempt the audit-runs run, which is entitled to the trail and to nothing's bytes."""
+        path = self._p(".mcp-active.json")
+        self.assertTrue(file_safety.is_read_denied(path))
+        self.assertTrue(file_safety.is_read_denied(path, allow_cwd=os.path.dirname(config.DATA_DIR)),
+                        "a run whose cwd IS Otto's checkout must still not read the tokens")
+
+    def test_a_project_caps_merged_mcp_config_is_denied_like_the_active_one(self):
+        """`engine._effective_mcp` merges `.mcp-active.json` into `data/.mcp-<cap>.json`, so the
+        merge carries the same resolved tokens and must be denied to the Otto-cwd run too."""
+        root = os.path.dirname(os.path.abspath(config.DATA_DIR))
+        path = self._p(".mcp-aws-cost-report.json")
+        self.assertTrue(file_safety.is_read_denied(path))
+        self.assertTrue(file_safety.is_read_denied(path, allow_cwd=root))
+
+    def test_the_merged_mcp_config_gets_a_sandbox_mount(self):
+        """`glob.glob("data/*.json")` skips dotfiles, so without the family glob a local/Codex
+        run's Bash could `cat` the merge from inside bwrap."""
+        root = os.path.dirname(os.path.abspath(config.DATA_DIR))
+        path = self._p(".mcp-some-cap.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("{}")
+        try:
+            for cwd in (None, root):
+                m = file_safety.read_deny_mounts(cwd=cwd)
+                real = os.path.realpath(path)
+                self.assertTrue(any(m[i] == "--ro-bind" and m[i + 2] in (path, real)
+                                    for i in range(len(m) - 2)), f"no mount for cwd={cwd}")
+        finally:
+            os.remove(path)
 
     def test_the_durable_trace_log_is_read_denied(self):
         """Issue #128 created a new durable sink under `data/`, in a SUBDIRECTORY — the existing

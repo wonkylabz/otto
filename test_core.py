@@ -3068,7 +3068,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # later edit gets wrong: order is NOT cosmetic between same-tier rows (escalation, downshift
     # and the Claude fallback each take the first id matching their tier), and the `<colgroup>` is
     # the column geometry, so a `th` added without its `<col>` shifts every column after it.
-    MAX_RULES_BYTES = 86704   # fetched tier — bounded, but looser; it is not always loaded
+    # 86704 -> 86931: the Claude door RESOLVES a def's credential instead of leaving `${VAR}`
+    # for Claude Code. Two rules where there was one, because the old exemption and the new
+    # resolution are opposite mechanisms: one widened every run's environment to wire a single
+    # server, the other keeps the value in a 0600 read-denied file only that server is handed.
+    MAX_RULES_BYTES = 86931   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
