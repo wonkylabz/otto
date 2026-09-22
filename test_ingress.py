@@ -6839,8 +6839,11 @@ class UiAssetLayoutTests(unittest.TestCase):
     # order, and the two traps the Jobs tab paid for first — the GRIP is draggable rather than
     # the row (a draggable row swallows the Turns field's selection) and a drop outside the
     # table puts the rows back, because dragover has already moved them. Neither path re-renders:
-    # rebuilding the panel resets the page's scroll (`ModelOrderTests`).
-    ASSET_MAX = 123476
+    # rebuilding the panel resets the page's scroll. The last of the bytes are the two things
+    # measured on the live page: every row query is scoped to `.mpool` (the endpoints table
+    # shares `.mrow`, and unscoped this moved the whole pool into it) and the drag image is a
+    # chip built off-screen, because a <tr> images at the full table width (`ModelOrderTests`).
+    ASSET_MAX = 124041
 
     def _assets(self):
         out = {}

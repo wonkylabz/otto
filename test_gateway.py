@@ -3031,15 +3031,31 @@ class ModelOrderTests(unittest.TestCase):
         # The abandoned drag still has to put the rows back — dragover moved them.
         self.assertIn("if(!_modelDropped) applyPoolOrder(el);", ui)
 
-    def test_the_drag_image_is_the_name_cell_not_the_whole_row(self):
-        """A row snapshot is the full table width (~1300px) and the offsets anchor it 16px in,
-        so the ghost sprawled off to the right of the cursor (user-observed)."""
+    def test_every_row_query_on_the_drag_path_is_scoped_to_the_pool_table(self):
+        """`.mrow` is the ENDPOINTS table's row class too — it sits directly above the pool in
+        the same panel. Unscoped, `applyPoolOrder` took the first `.mrow` it found (an endpoint),
+        so `rows[0].parentNode` was the endpoints tbody and every model row was appended into it:
+        two tables merged into one, the pool emptied, on a drag the operator merely abandoned."""
         ui = ui_src()
-        # Scoped to the models block: the Jobs tab drags a div row, where a full-row snapshot is
-        # the right image and its own `setDragImage(row, …)` must keep working.
+        block = ui[ui.index("let _dragModel="):ui.index("/* The rendered order is the truth")]
+
+        # every .mrow selector on this path must carry the .mpool prefix
+        self.assertEqual([m for m in re.findall(r'"(\.[^"]*\bmrow\b[^"]*)"', block)
+                          if not m.startswith(".mpool ")], [],
+                         "an unscoped .mrow query on the drag path also matches the endpoints "
+                         "table's rows")
+
+    def test_the_drag_image_is_a_built_chip_that_is_cleaned_up(self):
+        """Neither a `<tr>` nor a cell works as the image: the row images at the full ~1300px
+        table width and the name cell is the auto-width column (~700px), so both trail off to
+        the right of the cursor (user-observed). A chip built off-screen is sized by its own
+        text — measured at 71px — and has to be removed, or one is leaked per drag."""
+        ui = ui_src()
         block = ui[ui.index("function wireModelDrag("):ui.index("function applyPoolOrder(")]
-        self.assertIn('setDragImage(row.querySelector("td")', block)
-        self.assertNotIn("setDragImage(row,", block)
+        self.assertIn("setDragImage(_dragGhost", block)
+        self.assertNotIn("setDragImage(row", block)
+        self.assertIn("if(_dragGhost) _dragGhost.remove();", block)
+        self.assertIn(".mdragimg {", ui)
 
 
 class DeleteClaudeRowTests(unittest.TestCase):

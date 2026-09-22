@@ -558,25 +558,34 @@ function wireModels(el){
 
    Unlike the Jobs tab this needs no mid-drag render guard: the Admin tab has no poller, so
    nothing re-renders the table except an action the operator just took. */
-let _dragModel=null, _modelDropped=false;
+let _dragModel=null, _modelDropped=false, _dragGhost=null;
+// The POOL's rows only. `.mrow` is shared with the endpoints table above it — reading it
+// unscoped picked THAT table's tbody and re-parented every model row into it (user-observed).
+const poolRows=el=>[...el.querySelectorAll(".mpool .mrow")];
 function wireModelDrag(el){
   // Property assignment, not addEventListener: #admin outlives every render, so listeners
   // would stack one deep per render (same contract as the Jobs list).
   el.ondragstart=e=>{
     const grip=e.target.closest(".mgrip");
     if(!grip) return;
-    const row=grip.closest(".mrow");
+    const row=grip.closest(".mpool .mrow");
+    if(!row) return;
     _dragModel=row.dataset.model; _modelDropped=false;
     e.dataTransfer.effectAllowed="move";
     e.dataTransfer.setData("text/plain", _dragModel);  // Firefox starts no drag without a payload
-    // The NAME cell, not the row: a row snapshot is the full ~1300px table width, and the
-    // offsets anchor it 24px in — so the ghost sprawled off to the right of the cursor.
-    e.dataTransfer.setDragImage(row.querySelector("td"), 16, 14);
+    // A purpose-built chip, not a snapshot of anything in the table: a <tr> images at the full
+    // ~1300px table width, and the name cell is the AUTO-width column (~700px) — so either one
+    // trails off to the right of the cursor.
+    _dragGhost=document.createElement("div");
+    _dragGhost.className="mdragimg";
+    _dragGhost.textContent=row.querySelector(".mn").textContent;
+    document.body.appendChild(_dragGhost);
+    e.dataTransfer.setDragImage(_dragGhost, 14, 14);
     row.classList.add("dragging");
   };
   el.ondragover=e=>{
-    const from=_dragModel && el.querySelector(".mrow.dragging");
-    const row=e.target.closest(".mrow");
+    const from=_dragModel && el.querySelector(".mpool .mrow.dragging");
+    const row=e.target.closest(".mpool .mrow");
     if(!from || !row || row.parentNode!==from.parentNode) return;
     e.preventDefault();                                // the ONLY thing that makes a drop legal
     e.dataTransfer.dropEffect="move";
@@ -585,8 +594,9 @@ function wireModelDrag(el){
   };
   el.ondrop=e=>{ if(_dragModel){ e.preventDefault(); _modelDropped=true; saveModelOrder(el); } };
   el.ondragend=()=>{
-    el.querySelectorAll(".mrow.dragging").forEach(r=>r.classList.remove("dragging"));
-    _dragModel=null;
+    el.querySelectorAll(".mpool .mrow.dragging").forEach(r=>r.classList.remove("dragging"));
+    if(_dragGhost) _dragGhost.remove();
+    _dragGhost=null; _dragModel=null;
     // Dropped outside the table: the rows moved during dragover but nothing was saved, so the
     // screen is now lying. Put them back.
     if(!_modelDropped) applyPoolOrder(el);
@@ -597,7 +607,7 @@ function wireModelDrag(el){
    may re-render the panel: renderAdmin rebuilds every section, which drops the page's scroll
    position — a drop halfway down the models table jumped the operator back to the top. */
 function applyPoolOrder(el){
-  const rows=[...el.querySelectorAll(".mrow")];
+  const rows=poolRows(el);
   const body=rows.length && rows[0].parentNode;
   if(!body) return;
   // A find over the rendered rows rather than a [data-model="…"] selector: a model name is not
@@ -608,7 +618,7 @@ function applyPoolOrder(el){
 /* The rendered order is the truth after a drop — reorder the pool to match it, rather than
    recomputing the move from indices the DOM has already changed. */
 async function saveModelOrder(el){
-  const order=[...el.querySelectorAll(".mrow")].map(r=>r.dataset.model);
+  const order=poolRows(el).map(r=>r.dataset.model);
   _dragModel=null;
   MODEL_STATE.pool.sort((a,b)=>order.indexOf(a.name)-order.indexOf(b.name));
   await saveModels();
