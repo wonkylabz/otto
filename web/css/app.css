@@ -454,12 +454,6 @@
   .optpanel .repohint, .optpanel .opthint { color: var(--dim); }
   .optpanel .opthint { font-style: italic; }
   .optpanel .opthint[hidden] { display: none; }
-  /* A fixed, non-configurable state (the always-on PR review) reads as a quiet status chip,
-     never a toggle — there's nothing to turn off, so it must not look interactive. */
-  .fixedchip { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--accent); }
-  .fixedchip svg { width: 12px; height: 12px; flex: none; }
-  .fixedchip.off { color: var(--dim); }
-  .fixedchip.off svg { opacity: .5; }
   /* A real per-run toggle keeps a native checkbox (a11y + keyboard) but is SKINNED as the same
      pill switch Admin uses (.switch), so a chat-level setting reads as the same kind of control
      as an admin one instead of a bare browser checkbox dropped into a polished page. */

@@ -849,12 +849,6 @@ function applyBrainstorm(){
 function selectedRepo(){ const s=document.getElementById("repopick"); return s ? s.value : ""; }
 // Post-PR QA loop is only meaningful in repo-mode (it validates the opened PR).
 function selectedQA(){ const c=document.getElementById("qacheck"); return !!(c && c.checked && selectedRepo()); }
-// Code review runs on every repo-mode PR unconditionally (workflows.py: params.get("review", True))
-// — there is no UI control for it because there is nothing to control.
-// Plan-then-execute opt-in (design doc 2026-07-16): force a strong model to break the task into
-// atomic steps a local executor runs one at a time. Not repo-scoped; the toggle is only shown when
-// the backend has plan mode enabled (OTTO_PLAN_MODE != off), so a hidden/unchecked box is false.
-function selectedPlan(){ const c=document.getElementById("plancheck"); return !!(c && c.checked); }
 // Memory defaults ON — absent box (shouldn't happen) also reads as on, never silently off.
 function selectedMemory(){ const c=document.getElementById("memcheck"); return !c || c.checked; }
 // Pre-authorize this chat's writes: skips the approval gate AND its plan preview. Defaults OFF —
@@ -873,8 +867,6 @@ function applyApprovalHint(){
 function selectedModelOverride(){ const s=document.getElementById("modelpick"); return s ? s.value : ""; }
 function selectedEffort(){ const s=document.getElementById("effortpick"); return s ? s.value : ""; }
 // Populates the composer's model-override picker from the same pool Admin → Models edits.
-// Lives in the "Run mode" bar alongside Memory — both always visible, unlike the plan-mode
-// toggle in that same bar which only shows when the backend has plan_mode enabled.
 async function loadModelPicker(){
   let pool=[];
   try { pool=(await (await fetch("/api/models")).json()).pool||[]; } catch(e){ return; }
@@ -993,16 +985,6 @@ async function refreshHealth(){
     TEMPORAL = !!(h.temporal && h.connected);
     applyEstop(h.estop);      // rides the same payload — no extra request per turn
     applyVersion(h);          // likewise: a restart onto a new build repaints on the next turn
-    // Plan-then-execute opt-in toggle: shown only when the backend enabled it AND we're on the
-    // durable path (the workflow is what reads params.plan_mode). Off → hide + uncheck. Only the
-    // toggle itself hides — Memory/Model share this bar and stay visible regardless (#runbar was
-    // folded into #planbar as "Run mode" so the composer doesn't grow a lone extra settings row).
-    const pt=document.getElementById("plantoggle");
-    if(pt){ const avail=TEMPORAL && h.plan_mode && h.plan_mode!=="off";
-            pt.hidden=!avail; const c=document.getElementById("plancheck");
-            // Default OFF — plan-then-execute is heavy (decompose → step-by-step → replans) and the
-            // wrong shape for most reads; it's per-request opt-in. Just uncheck when unavailable.
-            if(c && !avail) c.checked=false; }
   } catch(e){ TEMPORAL=false; }
   if(TEMPORAL && !was) loadRepos();    // late upgrade: the repo picker was skipped at load
 }
@@ -1035,7 +1017,7 @@ async function submit(text){
     if(bs){ pin=bs; pinReq=text; }
   }
   // Temporal is required (issue #278) — without it /api/submit 503s and the error renders here.
-  return submitTemporal(text, pin, pinReq, selectedRepo(), selectedQA(), selectedPlan(), selectedMemory(), selectedModelOverride(), carry, selectedEffort());
+  return submitTemporal(text, pin, pinReq, selectedRepo(), selectedQA(), selectedMemory(), selectedModelOverride(), carry, selectedEffort());
 }
 
 async function continueTemporal(text){
@@ -1071,7 +1053,7 @@ async function continueTemporal(text){
     let rid;
     try { rid=(await api("/api/submit",{request:task+carryContextForSubmit(true), cap: sess.cap.name,
                                         repo: selectedRepo()||undefined, qa: selectedQA()||undefined,
-                                        plan_mode: selectedPlan()||undefined, memory_enabled: selectedMemory(),
+                                        memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: out.rebind.model,
                                         effort: selectedEffort()||undefined})).id; }
@@ -1099,7 +1081,7 @@ async function continueTemporal(text){
     // of a design discussion — measured on chat 9af2f11d, where five handoffs each restarted
     // the thread from a single sentence and every later resume was bound to the new session.
     try { hid=(await api("/api/submit",{request:task+carryContextForSubmit(true), repo: selectedRepo()||undefined, qa: selectedQA()||undefined,
-                                        plan_mode: selectedPlan()||undefined, memory_enabled: selectedMemory(),
+                                        memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: selectedModelOverride()||undefined,
                                         effort: selectedEffort()||undefined})).id; }
@@ -1116,7 +1098,7 @@ async function continueTemporal(text){
   maybeSuggestRule(text, sess.cap);   // implicit: a follow-up that reads as a correction → offer to save it
 }
 
-async function submitTemporal(text, pinCap, pinReq, repo, qa, plan, memory, modelOverride, carry, effort){
+async function submitTemporal(text, pinCap, pinReq, repo, qa, memory, modelOverride, carry, effort){
   if(busy) return; text=(text||"").trim(); if(!text) return;
   busy=true; sendBtn.disabled=true; input.value=""; autosize(); hideSlash();
   userMsg(text);
@@ -1132,7 +1114,7 @@ async function submitTemporal(text, pinCap, pinReq, repo, qa, plan, memory, mode
 
   let id;
   const req = (pinCap ? (pinReq||"") : text) + (carry||"");   // pinned: request is the args after /cap; carry appends prior context
-  try { id=(await api("/api/submit",{request:req, cap: pinCap?pinCap.name:undefined, repo: repo||undefined, qa: qa||undefined, plan_mode: plan||undefined, memory_enabled: memory, model_override: modelOverride||undefined, effort: effort||undefined, auto_approve: selectedAutoApprove()||undefined})).id; }
+  try { id=(await api("/api/submit",{request:req, cap: pinCap?pinCap.name:undefined, repo: repo||undefined, qa: qa||undefined, memory_enabled: memory, model_override: modelOverride||undefined, effort: effort||undefined, auto_approve: selectedAutoApprove()||undefined})).id; }
   catch(e){ setNode(pinCap?"ROUTER":"DECOMPOSE","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start workflow (${esc(e.message)}).</p>`; return finishTurn(); }
 
   setRun(id);
@@ -1587,8 +1569,6 @@ async function loadRepos(){
   syncQAToggle();
 }
 // The "QA the PR" checkbox is only meaningful when a repo is picked (it acts on the opened PR).
-// Code review isn't a checkbox at all (it always runs), so it isn't gated here — only dimmed
-// the same way, for visual consistency with the row it sits in.
 function syncQAToggle(){
   const sel=document.getElementById("repopick");
   if(!sel) return;
@@ -1596,24 +1576,13 @@ function syncQAToggle(){
   const c=document.getElementById("qacheck");
   if(c){ c.disabled=!on; if(!on) c.checked=false; }
   const tog=document.getElementById("qatoggle"); if(tog) tog.classList.toggle("off",!on);
-  const always=document.getElementById("reviewalways"); if(always) always.classList.toggle("off",!on);
   const hint=document.getElementById("prhint"); if(hint) hint.hidden=on;
 }
-// Three Run-mode controls are MUTUALLY EXCLUSIVE, and each conflict was silent before this:
-//   Brainstorm x Repo          — an explicit repo pick forces cap.risk to write, so a read-only
-//                                conversation got a plan preview, an approval card and a clone.
-//   Brainstorm x Break-into-steps — plan-then-execute wins over the ladder outright, so the
-//                                brainstorm turn never ran at all; the musing was decomposed
-//                                into atomic steps, each with its own verify ladder.
-//   Repo x Break-into-steps    — PRE-EXISTING: `_may_plan_steps` excludes repo-mode, so the box
-//                                stayed tickable and did nothing.
-// The workflow resolves all three on its own (stale tab, scripted client), always toward the
-// narrower mode — but a control that silently does nothing is the bug this exists to prevent,
-// so the loser is DISABLED and says why. `title` carries the reason: it is the established home
-// for tab copy in this UI, and these rows have no room for prose.
+// Brainstorm x Repo are MUTUALLY EXCLUSIVE: an explicit repo pick forces cap.risk to write, so a
+// read-only conversation got a plan preview, an approval card and a clone. The workflow resolves
+// it too; the loser is DISABLED here and says why in its `title`.
 function applyModeExclusions(){
   const repo=document.getElementById("repopick"), bs=document.getElementById("bscheck");
-  const plan=document.getElementById("plancheck");
   const bsOn=!!(bs && bs.checked && !bs.disabled);
   if(repo){
     repo.disabled=bsOn;
@@ -1622,20 +1591,10 @@ function applyModeExclusions(){
                     : "Otto auto-detects when a request edits one of your repos and runs it in an isolated clone → draft PR. Pick a repo here only to force or override that.";
   }
   const repoOn=!!(repo && repo.value);
-  if(plan){
-    const off=bsOn||repoOn;
-    plan.disabled=off; if(off) plan.checked=false;
-    const l=document.getElementById("plantoggle");
-    if(l) l.title = bsOn ? "Not available while brainstorming — breaking a conversation into atomic steps replaces the conversation."
-                  : repoOn ? "Not available in repo mode — a repo run always takes the single-capability path."
-                  : "For a big task with several distinct parts: break it into small atomic steps up front and run each one at a time on the local executor, instead of one long single-shot attempt. Different from the read-only plan preview you approve at the write gate — this changes HOW the work is executed, not just what you see before approving it.";
-  }
   const bsl=document.getElementById("bstoggle");
   if(bs && bsl && !(currentSession && currentSession.cap)){
-    const off=repoOn||!!(plan&&plan.checked);
-    bs.disabled=off; if(off) bs.checked=false;
-    if(off) bsl.title = repoOn ? "Not available with a repo picked — repo mode clones and opens a PR, which a read-only conversation has nothing to put in."
-                               : "Not available with step-by-step execution — that replaces the conversation with a decomposed task.";
+    bs.disabled=repoOn; if(repoOn) bs.checked=false;
+    if(repoOn) bsl.title = "Not available with a repo picked — repo mode clones and opens a PR, which a read-only conversation has nothing to put in.";
   }
   // This function is the one place that UNCHECKS a control on the user's behalf, so the
   // collapsed panel's summary is re-read here rather than only from the change event.
@@ -1652,7 +1611,6 @@ function syncOptSummary(){
   const repo=sel("repopick"); if(repo) bits.push("repo: "+repo);
   if(on("qacheck")) bits.push("QA in staging");
   if(on("bscheck")) bits.push("brainstorm");
-  if(on("plancheck")) bits.push("step-by-step");
   if(!on("memcheck")) bits.push("no memory");
   if(on("autoapprove")) bits.push("auto approve");
   const m=sel("modelpick"); if(m) bits.push("model: "+m);
@@ -1678,7 +1636,7 @@ document.addEventListener("change",e=>{ if(!e.target) return;
   if(e.target.closest("#optpanel")) syncOptSummary();
   if(e.target.id==="repopick") syncQAToggle();
   if(e.target.id==="autoapprove") applyApprovalHint();
-  if(["repopick","bscheck","plancheck"].includes(e.target.id)){ applyModeExclusions(); syncQAToggle(); }
+  if(["repopick","bscheck"].includes(e.target.id)){ applyModeExclusions(); syncQAToggle(); }
 });
 const slashPop=document.getElementById("slashpop");
 function slashFragment(){

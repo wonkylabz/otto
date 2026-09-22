@@ -107,14 +107,10 @@
           <div class="optrow">
             <span class="optlabel" title="Otto auto-detects when a request edits one of your repos and runs it in an isolated clone → draft PR. Pick a repo here only to force or override that.">Repo</span>
             <select id="repopick"><option value="">Auto-detect</option></select>
-            <span class="repohint">Repo writes run in a clone &rarr; draft PR</span>
+            <span class="repohint">Repo writes run in a clone &rarr; draft PR, code-reviewed automatically</span>
           </div>
           <div class="optrow" id="propts">
             <span class="optlabel">On the draft PR</span>
-            <span class="fixedchip off" id="reviewalways" title="A read-only code review runs on every opened PR, with a fix→re-review loop until it's clean. Not optional — there's no toggle because there's nothing to turn off.">
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8.5 6.5 12 13 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Code review &amp; fix — always on
-            </span>
             <label class="opt off" id="qatoggle" title="After the draft PR opens, run sre-qa against it and loop fix→re-QA until it passes (dev/staging only).">
               <input type="checkbox" id="qacheck" disabled><span class="pill" aria-hidden="true"></span> QA in staging
             </label>
@@ -127,16 +123,15 @@
             <label class="opt" id="bstoggle" title="Think out loud with Otto instead of handing it a task. Pins the built-in brainstorm capability: it argues a position, offers options and asks the question that decides it, in a few sentences — no TLDR, no plan, no approval gate, and no verify pass. Applies when you START a chat; the chat then stays in this mode.">
               <input type="checkbox" id="bscheck"><span class="pill" aria-hidden="true"></span> Brainstorm
             </label>
-            <label class="opt" id="plantoggle" hidden title="For a big task with several distinct parts: break it into small atomic steps up front and run each one at a time on the local executor, instead of one long single-shot attempt. Different from the read-only plan preview you approve at the write gate — this changes HOW the work is executed, not just what you see before approving it.">
-              <input type="checkbox" id="plancheck"><span class="pill" aria-hidden="true"></span> Break into steps first (multi-part tasks)
-            </label>
             <label class="opt" id="memtoggle" title="Include Otto's stored memory (facts, past solutions, behaviour rules) as context for this chat's run. Uncheck to run this chat with no memory recall.">
               <input type="checkbox" id="memcheck" checked><span class="pill" aria-hidden="true"></span> Memory
             </label>
             <label class="opt" id="autoapprovetoggle" title="Otto normally pauses before a write to show you the plan it is about to run and wait for your approval. Turn this on to pre-authorize this chat's writes: no gate, no plan preview — it just executes. Applies to this chat only.">
               <input type="checkbox" id="autoapprove"><span class="pill" aria-hidden="true"></span> Auto approve
             </label>
-            <span class="optlabel inline" title="Override which model executes this chat's run instead of the Admin-configured model. Applies to this chat only — leave on Admin default to follow whatever Admin → Models has set.">Model</span>
+          </div>
+          <div class="optrow">
+            <span class="optlabel" title="Override which model executes this chat's run instead of the Admin-configured model. Applies to this chat only — leave on Admin default to follow whatever Admin → Models has set.">Model</span>
             <select id="modelpick"><option value="">Admin default</option></select>
             <span class="optlabel inline" title="How hard the model thinks before answering: higher reasons longer and costs more. Applies to this chat only — leave on Admin default to follow Admin → Runtime settings. Advisory on local models, whose endpoint may accept the value and ignore it.">Effort</span>
             <select id="effortpick" title="How hard the model thinks before answering. Advisory on local models.">
