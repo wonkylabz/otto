@@ -81,7 +81,8 @@ async function loadAdmin(){
   data.capabilities.forEach(c=>POLICY_STATE.capabilities[c.name]={risk:c.risk,enabled:c.enabled,tool_free:!!c.tool_free});
   data.mcps.forEach(m=>POLICY_STATE.mcps[m.name]={enabled:m.enabled});   // notes are server-owned — /api/mcp/note is their only writer
   MODEL_STATE={pool:models.pool, assign:models.assign, endpoints:models.endpoints||[],
-               kinds:models.kinds||["local","hosted"], hosted_hosts:models.hosted_hosts||[]};
+               kinds:models.kinds||["local","hosted"], hosted_hosts:models.hosted_hosts||[],
+               router_model:models.router_model||""};
   CONV_STATE={}; ((conv&&conv.repos)||[]).forEach(r=>{ CONV_STATE[r.path]=r; });
   applyCaps(data.capabilities);   // keep the "/" popup + counts in sync with admin edits
   SECRETS=(settings&&settings.secrets)||null;
@@ -411,7 +412,7 @@ function modelsSection(m){
       <td class="c-phases"><span class="mradios">${radio(p,'routing')}${radio(p,'plan')}${radio(p,'preview')}${radio(p,'clarify')}${radio(p,'memory')}${radio(p,'verify')}${radio(p,'supervise')}${radio(p,'memory_gc')}${radio(p,'execution')}</span></td>
       <td class="c-turns">${(p.provider!=='claude'&&p.provider!=='codex')?`<input type="number" min="1" step="1" data-turns="${esc(p.name)}" value="${p.max_turns||''}" placeholder="60">`:''}</td>
       <td class="c-test"><span class="mtest"><button class="addbtn testbtn" data-testmodel="${esc(p.name)}">test</button><span class="tres" data-tres="${esc(p.name)}"></span></span></td>
-      <td class="c-rm r">${p.provider!=='claude'?`<button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button>`:''}</td>
+      <td class="c-rm r"><button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button></td>
     </tr>`).join("");
   const gs=(typeof GATEWAY_STATS!=="undefined"&&GATEWAY_STATS)||{tasks:{},down:{}};
   const fb=Object.entries(gs.tasks||{}).filter(([,v])=>(v.calls||0)>0)
@@ -470,10 +471,23 @@ function wireModels(el){
     MODEL_STATE.assign[r.name.slice(3)]=r.value; saveModels();   // as-routing -> routing
   }));
   el.querySelectorAll("[data-delmodel]").forEach(b=>b.addEventListener("click",async()=>{
-    if(!confirm(`Remove model "${b.dataset.delmodel}"?`)) return;
-    MODEL_STATE.pool=MODEL_STATE.pool.filter(p=>p.name!==b.dataset.delmodel);
-    const fallback=(MODEL_STATE.pool.find(p=>p.provider==='claude')||MODEL_STATE.pool[0]).name;
-    for(const t in MODEL_STATE.assign){ if(MODEL_STATE.assign[t]===b.dataset.delmodel) MODEL_STATE.assign[t]=fallback; }
+    const name=b.dataset.delmodel;
+    // The LAST entry cannot go: `_normalize` refills an empty pool with the default tiers, so
+    // the delete would save, reload, and read as "nothing happened".
+    if(MODEL_STATE.pool.length<2){
+      toast("the pool cannot be empty \u2014 the default Claude tiers would be restored on the next read"); return;
+    }
+    // The last CLAUDE row may go too (it is re-addable), but it is not neutral: a fallback then
+    // lands on config.ROUTER_MODEL, a model id no row in this table names.
+    const claudeLeft=MODEL_STATE.pool.filter(p=>p.provider==='claude'&&p.name!==name).length;
+    const wasClaude=(MODEL_STATE.pool.find(p=>p.name===name)||{}).provider==='claude';
+    const warn=(wasClaude&&!claudeLeft)
+      ? `\n\nThis is the last Claude model. Claude fallback, escalation and the plan preview will `
+        +`use ${MODEL_STATE.router_model||"the built-in default"}, which is not in the pool.`
+      : "";
+    if(!confirm(`Remove model "${name}"?${warn}`)) return;
+    MODEL_STATE.pool=MODEL_STATE.pool.filter(p=>p.name!==name);
+    repointAssignments([name]);
     await saveModels(); loadAdmin();
   }));
   el.querySelectorAll("[data-turns]").forEach(inp=>inp.addEventListener("change",()=>{

@@ -13,6 +13,15 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
+- **Claude models can be removed from the pool.** The × was hidden on those rows; it is there
+  now, and the picker adds them back. Two guards come with it: the last entry of all is refused
+  (an empty pool is refilled with the default tiers on the next read, so the delete would look
+  like it did nothing), and removing the last *Claude* row asks first, naming the model that
+  Claude fallback, escalation and the plan preview will use instead — a model id that no row in
+  the table shows.
+
+### Changed
+
 - **Adding a model checks the id before it saves.** A typed model id used to be stored
   unchecked, so a typo landed in the pool with a green "saved" and an empty health column — and
   Claude, Codex and hosted entries are only probed when you ask, so nothing contradicted it

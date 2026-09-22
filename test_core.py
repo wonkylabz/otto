@@ -3061,7 +3061,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 85882 -> 86155: adding a model probes the id first. One rule, and it is the half a later
     # edit drops for being "friendlier": the refusal must stay overridable, because the probe is
     # wrong about a server that is merely down and about an id a vendor serves without listing.
-    MAX_RULES_BYTES = 86155   # fetched tier — bounded, but looser; it is not always loaded
+    # 86155 -> 86434: Admin can delete a Claude row. One rule, and it carries the two things
+    # that only became reachable with it — an empty pool is refilled (so the last entry must be
+    # refused, not saved) and a Claude-less pool still bills Claude, on an id no row names.
+    MAX_RULES_BYTES = 86434   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
