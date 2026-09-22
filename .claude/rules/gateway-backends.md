@@ -8,6 +8,7 @@
 - **An endpoint holds connection facts only** — `max_turns` measures the model, not the server. Legacy per-entry connections auto-adopt on load (`ModelEndpointTests`).
 - **A credential is masked at the API edge; a masked value posted BACK means keep-stored** (`gateway.masked`/`unmask`) — `api_key_env` and header values hold literal keys, so a client-facing body leaks them and defeats the `models.json` read deny (`ModelSecretMaskingTests`).
 - **Every local-endpoint request takes its headers from `gateway.request_headers`** — a hand-rolled dict silently drops the extra headers. Values resolve like `api_key`: env > secret helper > literal.
+- **Adding a model probes it first, and a refusal is not a save** — `probe_candidate` checks a typed id before storing it: hosted/Claude/Codex rows are probed on demand only, so a typo saved with a tick and a blank pill. A second press overrides (`ProbeCandidateTests`).
 - **The Claude picker says whether its list is live** — `claude_catalog` queries the Anthropic API only when `ANTHROPIC_API_KEY` resolves; a `claude -p`-only install has none and the CLI cannot list models, so it answers `source: known` with the reason (`ClaudeCatalogTests`).
 - **`discover_models` groups by `root`, not one row per id** — vLLM lists a served alias and its canonical repo path as separate entries sharing a root, so a raw id list multiplies the model count.
 - The short served name is the offer, the rest ride as `aliases` so an already-added model is recognized under either; the UI states how many were folded in.

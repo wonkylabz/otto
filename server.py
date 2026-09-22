@@ -2218,6 +2218,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(
             {"ok": True, "settings": config.save_settings(body.get("settings") or {})}))
 
+    def _post_models_probe(self, body):
+        """POST /api/models/probe — probe a model the operator is about to ADD, before it is
+        saved. `{entry: {...}}` in, `{ok, detail}` out; nothing is stored either way."""
+        self._send(200, json.dumps(gateway.probe_candidate(body.get("entry") or {})))
+
     def _post_models_test(self, body):
         """POST /api/models/test"""
         self._send(200, json.dumps(gateway.test_model(body.get("name"))))
@@ -2366,6 +2371,7 @@ _POST_ROUTES = {
     "/api/models/caplocal": Handler._post_models_caplocal,
     "/api/models/claude": Handler._post_models_claude,
     "/api/models/discover": Handler._post_models_discover,
+    "/api/models/probe": Handler._post_models_probe,
     "/api/models/recheck": Handler._post_models_recheck,
     "/api/models/test": Handler._post_models_test,
     "/api/needs-you/accept": Handler._post_needs_you_accept,

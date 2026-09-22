@@ -11,6 +11,17 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Adding a model checks the id before it saves.** A typed model id used to be stored
+  unchecked, so a typo landed in the pool with a green "saved" and an empty health column — and
+  Claude, Codex and hosted entries are only probed when you ask, so nothing contradicted it
+  until you pressed `test` on the row. Add now runs that probe first and shows the failure in
+  the form. It is advice, not a gate: press Add again to store the entry anyway, which you want
+  for a server that is temporarily down or a vendor that serves an id it does not list.
+- **`test` on a Codex row stops reporting a missing endpoint.** A Codex entry is not supposed to
+  have one (`codex exec` signs in itself); the row now reports whether the CLI runs.
+
 ### Added
 
 - **Admin lists the Claude models for you.** "+ Add Claude" in the LLM models section offers

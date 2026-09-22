@@ -2962,6 +2962,113 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class ProbeCandidateTests(unittest.TestCase):
+    """`probe_candidate` checks a model the operator is about to ADD, before it is stored.
+
+    Adding validated shape only, so a typo'd id saved with a green tick and sat in the pool with
+    a BLANK health pill — Claude, Codex and hosted entries are probed on demand only (each is a
+    real billed call), so nothing contradicted the tick until someone pressed `test`."""
+
+    def _write(self, cfg):
+        import tempfile
+        gateway._PATH = os.path.join(tempfile.mkdtemp(prefix="otto-cand-"), "models.json")
+        with open(gateway._PATH, "w") as f:
+            json.dump(cfg, f)
+
+    def setUp(self):
+        self._orig_path = gateway._PATH
+        self.addCleanup(lambda: setattr(gateway, "_PATH", self._orig_path))
+        self._write({"pool": [{"name": "claude-sonnet", "provider": "claude", "model": "x"}],
+                     "assign": {"execution": "claude-sonnet"},
+                     "endpoints": [{"name": "gpu-box", "base_url": "https://vllm.x/v1",
+                                    "kind": "local", "api_key_env": "",
+                                    "headers": {"X-Tenant": "sre"}}]})
+
+    def _serves(self, ids, seen=None):
+        import types
+        class _Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps({"data": [{"id": i} for i in ids]}).encode()
+        def _open(req, timeout=None):
+            if seen is not None:
+                seen.update({"url": req.full_url, "headers": dict(req.headers)})
+            return _Resp()
+        orig = gateway.urllib
+        gateway.urllib = types.SimpleNamespace(
+            parse=orig.parse,
+            request=types.SimpleNamespace(Request=orig.request.Request, urlopen=_open))
+        self.addCleanup(lambda: setattr(gateway, "urllib", orig))
+
+    def test_an_id_the_endpoint_does_not_serve_is_refused_with_the_fix(self):
+        self._serves(["qwen3-coder:30b"])
+        r = gateway.probe_candidate({"name": "typo", "provider": "openai",
+                                     "endpoint": "gpu-box", "model": "qwen3-codr:30b"})
+        self.assertFalse(r["ok"])
+        self.assertIn("not found", r["detail"])
+        self.assertIn("fix the id", r["detail"])
+
+    def test_a_candidate_resolves_its_endpoints_url_and_headers(self):
+        # The candidate carries only the endpoint NAME (the form's normal path), so the probe
+        # has to hydrate it the way a stored entry is — including the extra headers a server
+        # behind a proxy demands, or a reachable endpoint reads as unreachable.
+        seen = {}
+        self._serves(["m"], seen)
+        r = gateway.probe_candidate({"name": "n", "provider": "openai",
+                                     "endpoint": "gpu-box", "model": "m"})
+        self.assertTrue(r["ok"], r["detail"])
+        self.assertEqual(seen["url"], "https://vllm.x/v1/models")
+        self.assertEqual(seen["headers"].get("X-tenant"), "sre")
+
+    def test_a_brand_new_endpoints_own_url_is_probed_before_it_is_saved(self):
+        # The form's "+ new endpoint" path: neither the endpoint nor the model exists yet.
+        seen = {}
+        self._serves(["m"], seen)
+        r = gateway.probe_candidate({"name": "n", "provider": "openai", "endpoint": "fresh",
+                                     "base_url": "https://new.x/v1", "model": "m"})
+        self.assertTrue(r["ok"], r["detail"])
+        self.assertEqual(seen["url"], "https://new.x/v1/models")
+
+    def test_probing_a_candidate_stores_nothing(self):
+        # It is not in the pool, so a recorded verdict would be health for a model that may
+        # never be added — and `unhealthy_models` could not attribute it to anything.
+        self._serves(["other"])
+        gateway.probe_candidate({"name": "never-added", "provider": "openai",
+                                 "endpoint": "gpu-box", "model": "nope"})
+        self.assertNotIn("never-added", gateway.model_health())
+
+    def test_a_codex_candidate_is_checked_against_the_CLI_not_a_missing_endpoint(self):
+        # A Codex entry with no endpoint is the normal shape (`codex exec` logs in itself), so
+        # the missing-endpoint verdict would refuse every correct Codex add.
+        calls = []
+        orig = gateway.codex_cli.available
+        gateway.codex_cli.available = lambda cwd=None: (calls.append(1), (True, "codex-cli 0.155.0"))[1]
+        self.addCleanup(lambda: setattr(gateway.codex_cli, "available", orig))
+        r = gateway.probe_candidate({"name": "gpt", "provider": "codex", "model": "gpt-6"})
+        self.assertTrue(r["ok"], r["detail"])
+        self.assertIn("0.155.0", r["detail"])
+        self.assertEqual(len(calls), 1)
+
+    def test_a_pool_models_test_button_still_records_its_verdict(self):
+        # The split must not move health off `test_model`: the badge and probe_models() read it.
+        self._serves(["other"])
+        r = gateway.test_model("pool-typo", cfg={"pool": [{"name": "pool-typo",
+                                                           "provider": "openai",
+                                                           "base_url": "https://vllm.x/v1",
+                                                           "model": "nope"}]})
+        self.assertFalse(r["ok"])
+        self.assertIn("ms", r)
+        self.assertEqual(gateway.model_health()["pool-typo"]["via"], "probe")
+
+    def test_the_endpoint_is_routed(self):
+        import server
+        self.assertIs(server._POST_ROUTES["/api/models/probe"],
+                      server.Handler._post_models_probe)
+
+
 class ClaudeCatalogTests(unittest.TestCase):
     """`claude_catalog` backs Admin's "+ Add Claude" picker. The list is only sometimes live, so
     the source it reports is part of the contract — the UI states it on the panel."""
