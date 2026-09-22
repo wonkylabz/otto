@@ -6701,7 +6701,17 @@ class UiAssetLayoutTests(unittest.TestCase):
     # and a rail cannot be a cell of .jtop without indenting the name away from the request under
     # it. The comment naming that constraint is what stops the next edit moving it inside
     # (`JobReorderTests`).
-    ASSET_MAX = 117963
+    # -> 119339 for the approval gate's re-plan banner: a revision round is a multi-minute agentic
+    # pass whose only acknowledgement was one 12.5px line BELOW the buttons, under a plan long
+    # enough to need scrolling — the stale plan still read as current and the card looked frozen.
+    # The rules that cost the bytes are the ones that carry the state: a top-of-body block, an
+    # echo of the feedback, a clock, and `.planwrap.stale` dimming the plan being replaced. The
+    # dots are shared with `.thinking` rather than duplicated (`PlanRevisionFeedbackTests`).
+    # -> 119817 for the gate's plan summary + "Show the full plan" toggle: a 5000-character plan is
+    # not a thing a human reads before approving, so the planner now opens with '## In short' and
+    # the detail sits behind a toggle. The bytes are the summary block, the link-style button and
+    # its list reset — the detail stays in the DOM and is only hidden (`PlanSummaryToggleTests`).
+    ASSET_MAX = 119817
 
     def _assets(self):
         out = {}

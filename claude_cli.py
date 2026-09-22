@@ -135,6 +135,38 @@ def gc_transcripts(ttl_h=None):
             pass
 
 
+def assistant_texts(path):
+    """Every assistant text block a transcript holds, in order, stripped and non-empty.
+
+    Both backends write the SAME `{"type":"assistant","message":{"content":[{"type":"text",…}]}}`
+    shape (`local_runtime._assistant_event` exists to make that true), so one reader serves all
+    three. Best-effort by contract: a missing, swept, truncated or half-written file yields []
+    rather than raising — every caller is recovering from something already, and a reader that
+    throws turns a degraded result into a dead run.
+    """
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                try:
+                    ev = json.loads(raw)
+                except ValueError:
+                    continue                    # a torn final line: the rest is still good
+                if not isinstance(ev, dict) or ev.get("type") != "assistant":
+                    continue
+                msg = ev.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                for block in msg.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = str(block.get("text") or "").strip()
+                        if text:
+                            out.append(text)
+    except (OSError, TypeError):
+        return []
+    return out
+
+
 def _drain(stream, sink):
     """Read a pipe to EOF into `sink` (list) from a thread, so a chatty stderr can never
     fill its pipe buffer and deadlock the child while we're blocked reading stdout."""

@@ -419,6 +419,16 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                 # signals are dropped and only a decision moves the loop forward.
                 max_revisions = max(0, self._setting("max_plan_revisions"))
                 gate_expired = False
+                # The plan a revision round EDITS, and the one correction it applies. A round used
+                # to amend the request and re-preview from zero, so the planner never saw what it
+                # had just written and re-rolled every decision against the ticket: on
+                # `web-027671e7` the critic's concerns went 5 -> 3 -> 1 -> 3, round 4 breaking two
+                # things round 3 had right. A rewrite that can undo itself does not converge.
+                #   The feedback still folds into `request` as well, and that is not redundant:
+                # `request` is what binds EXECUTION and the judge, so a correction living only in
+                # a plan the reviser might drop would be lost the moment it did
+                # (`PlanRevisionGateTests…folds_into_a_new_plan_and_the_final_request`).
+                revise_base = revise_feedback = None
                 while True:
                     self._enter("PLAN")
                     if authored_doc:
@@ -437,7 +447,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                              "wid": workflow.info().workflow_id,
                              # The preview's cwd is the DEFAULT branch; this tells it where the
                              # code actually is and to read it with `gh pr diff`.
-                             "pr": self._pr_target, "effort": self._effort},
+                             "pr": self._pr_target, "effort": self._effort,
+                             "prior_plan": revise_base, "feedback": revise_feedback},
                             # Must stay above the preview's OWN timeout, and above a local
                             # wall's Claude re-preview after it, or the activity kills the pass
                             # before it can return "" cleanly. _RETRY_EXEC, not _RETRY: this is
@@ -526,6 +537,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                         break
                     self._plan_revisions += 1
                     self._replanning = True
+                    # The base is the plan ON SCREEN — the one the human just read and commented
+                    # on — never an earlier round's. Empty (a timed-out or walled preview) means
+                    # there is nothing to diff against, and the round falls back to re-planning
+                    # from the amended request below.
+                    revise_base, revise_feedback = self._plan, self._plan_feedback
                     request = (f"{request}\n\n(the human reviewing your plan asked for this "
                               f"change before approving — revise the plan accordingly) "
                               f"{self._plan_feedback}")

@@ -9,6 +9,7 @@ import inspect
 import io
 import itertools
 import json
+import subprocess
 import os
 import re
 import shutil
@@ -1334,6 +1335,376 @@ class PlanPreviewPermissionTests(unittest.TestCase):
         self.assertNotIn("Write", config.PLAN_TOOLS)
 
 
+class PlanSummaryGenerationTests(unittest.TestCase):
+    """A 4000-5000 character plan is not what a human reads before clicking approve, so the gate
+    leads with a short outline.
+
+    Otto GENERATES it rather than asking the planner for it, and the measurement is the reason.
+    Folding the request into `_PLAN_INSTRUCTION` and running 5 real previews: 3/5 produced the
+    section at all, none kept the bullet budget (9, 13, 14), and two ran the whole plan under the
+    heading so there was no detail left to split off. Formatting discipline is the thing that
+    fails here — the same failure that lost a plan to a trailing note.
+
+    It is prepended INTO the plan so there is one artefact: what the human reads, what
+    `_approved_plan_note` binds into execution, and what `verify(approved_plan=)` judges are the
+    same string. A summary in a second field can say what the steps do not."""
+
+    _PLAN = "1. Widen the allowlist.\n2. Add the alert.\n\n## Risks\nThe stream may lag."
+
+    def setUp(self):
+        self._complete = gateway.complete
+
+    def tearDown(self):
+        gateway.complete = self._complete
+
+    def _answer(self, text):
+        gateway.complete = lambda *a, **k: text
+
+    def test_the_summary_is_prepended_into_the_plan(self):
+        self._answer("- Widen the allowlist.\n- Add one alert.\n**Touches:** infra, dev, staging.")
+        out = plans.summarize_plan(self._PLAN)
+        self.assertTrue(out.startswith("## In short"))
+        self.assertIn("**Touches:** infra, dev, staging.", out)
+        # The planner's own text survives BELOW the rule, byte for byte.
+        self.assertEqual(plans.strip_summary(out), self._PLAN)
+
+    def test_an_unusable_answer_leaves_the_plan_alone(self):
+        """Fails OPEN, like the critic. A summary is a convenience; the plan is the thing, and a
+        heading over one line (or over nothing) is worse than no heading."""
+        for bad in ("", "NONE", "Sure! Here is a summary of the plan:", "- only one bullet"):
+            self._answer(bad)
+            self.assertEqual(plans.summarize_plan(self._PLAN), self._PLAN, f"{bad!r} got through")
+
+    def test_a_raising_gateway_never_breaks_the_gate(self):
+        def boom(*a, **k):
+            raise RuntimeError("endpoint down")
+        gateway.complete = boom
+        self.assertEqual(plans.summarize_plan(self._PLAN), self._PLAN)
+
+    def test_prose_around_the_bullets_is_dropped_not_rendered(self):
+        # Local models leak a preamble; it would render as the first thing the human reads.
+        self._answer("Here is the summary:\n- Widen the allowlist.\n- Add one alert.\n"
+                     "Let me know if you want more detail.")
+        out = plans.summarize_plan(self._PLAN)
+        self.assertNotIn("Here is the summary", out)
+        self.assertNotIn("Let me know", out)
+        self.assertIn("- Widen the allowlist.", out)
+
+    def test_summarising_twice_does_not_stack_headings(self):
+        # Every revision round re-summarises; without the strip the card grows a heading a round.
+        self._answer("- a\n- b\n**Touches:** infra.")
+        once = plans.summarize_plan(self._PLAN)
+        twice = plans.summarize_plan(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(twice.count("## In short"), 1)
+
+    def test_an_empty_plan_stays_empty(self):
+        # A failed preview must still render the honest "no preview" note, not a summary of "".
+        self._answer("- a\n- b")
+        self.assertEqual(plans.summarize_plan(""), "")
+
+    def test_the_activity_critiques_the_PLAN_then_summarises(self):
+        # The critic must read the planner's steps, not a digest of them — and a summary is not
+        # a thing to find concerns in.
+        src = open("activities.py", encoding="utf-8").read()
+        self.assertLess(src.index("crit = engine.critique_plan"),
+                        src.index("plan = engine.summarize_plan"))
+        # And a revision round edits the PLANNER's text, never Otto's topped copy.
+        self.assertIn('engine.strip_summary(payload.get("prior_plan"))', src)
+
+
+class PlanSummarySplitTests(unittest.TestCase):
+    """`splitPlanSummary` is the client half. It only FINDS the section; it never writes one."""
+
+    _JS = None
+
+    @classmethod
+    def setUpClass(cls):
+        src = ui_src()
+        start = src.index("function splitPlanSummary(text){")
+        cls._JS = src[start:src.index("\n}", start) + 2]
+
+    def _split(self, text):
+        out = subprocess.run(
+            ["node", "-e", self._JS + "\nconsole.log(JSON.stringify("
+             "splitPlanSummary(process.argv[1])));", text],
+            capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    _PLAN = ("## In short\n- Widen the metric allowlist.\n- Add one alert.\n"
+             "**Touches:** the infra repo, dev and staging.\n\n"
+             "## P1 — stream the metric\nEdit the tfvars.\n\n"
+             "## Risks & assumptions\nThe stream may lag.")
+
+    def test_it_splits_the_summary_from_the_detail(self):
+        r = self._split(self._PLAN)
+        self.assertIn("Widen the metric allowlist", r["summary"])
+        self.assertIn("**Touches:**", r["summary"])
+        self.assertNotIn("Edit the tfvars", r["summary"])
+        self.assertIn("## P1", r["detail"])
+        self.assertIn("Risks & assumptions", r["detail"])
+
+    def test_a_body_with_NO_HEADINGS_still_splits(self):
+        """The bug this replaced. Otto writes the rule itself, so the split must not depend on
+        the planner's formatting: live plan `web-5a692338` ran "Here is the plan." and bold
+        "**1. …**" steps under the rule, with no markdown heading anywhere. Splitting on "the
+        next heading" found nothing, `detail` came out empty, and the card failed open to one
+        long view with no toggle."""
+        plan = ("## In short\n- Validate the baseline.\n- Add the condition.\n"
+                "**Touches:** the infra repo, staging and production.\n\n---\n\n"
+                "Here is the plan.\n\n**1. Resolve the load-bearing unknown first.** Run the "
+                "backtest before touching any Terraform.\n\n**2. Open a draft PR.**")
+        r = self._split(plan)
+        self.assertIn("Validate the baseline", r["summary"])
+        self.assertIn("**Touches:**", r["summary"])
+        self.assertTrue(r["detail"].startswith("Here is the plan."))
+        self.assertIn("**2. Open a draft PR.**", r["detail"])
+        # The rule itself belongs to neither half — rendered, it is an <hr> under the bullets.
+        self.assertNotIn("---", r["summary"])
+
+    def test_a_rule_is_only_trusted_when_OTTO_wrote_the_summary(self):
+        # Otto always prepends at position 0. A summary further down is the planner's own, and a
+        # `---` in ITS body is just markdown, not a boundary Otto controls.
+        plan = ("# Title\n\n## In short\n- One thing.\n\n"
+                "## Steps\n1. Do it.\n\n---\n\n## Risks\nNone.")
+        r = self._split(plan)
+        self.assertEqual(r["summary"], "- One thing.")
+        self.assertIn("## Steps", r["detail"])
+        self.assertIn("# Title", r["detail"])
+
+    def test_no_summary_shows_the_WHOLE_plan(self):
+        """Fails OPEN. An older plan, or a model that didn't comply, must render exactly as
+        before — hiding detail behind a summary that does not exist is the one outcome that
+        cannot happen at an approval gate."""
+        plain = "## Plan\n1. Do the thing.\n\n## Risks & assumptions\nNone."
+        r = self._split(plain)
+        self.assertEqual(r["summary"], "")
+        self.assertEqual(r["detail"], plain)
+
+    def test_a_summary_with_nothing_under_it_is_just_the_plan(self):
+        # Otherwise the card is a teaser with an empty drawer behind it.
+        r = self._split("## In short\n- Do the thing.")
+        self.assertEqual(r["summary"], "")
+
+    def test_the_detail_is_hidden_never_dropped(self):
+        # The toggle must only flip visibility: the human has to stay one click from the text
+        # the executor is handed.
+        src = ui_src()
+        block = src[src.index("const {summary, detail} = splitPlanSummary(rest);"):]
+        self.assertIn("planEl.innerHTML=renderMD(detail)", block[:400])
+        self.assertIn("planEl.hidden=!planDetailOpen", block[:400])
+        self.assertNotIn("planEl.remove()", block[:400])
+
+    def test_the_toggle_state_survives_a_revision_repaint(self):
+        # paint() runs again after every round; collapsing the detail under someone who opened
+        # it reads as the plan having shrunk.
+        src = ui_src()
+        self.assertIn("let planDetailOpen=false", src)
+        self.assertLess(src.index("let planDetailOpen=false"), src.index("function paint("))
+
+
+class PlanRevisionIsAnEditTests(unittest.TestCase):
+    """A "request changes" round must EDIT the plan on screen, not re-plan from the ticket.
+
+    It used to do the latter: the feedback was appended to `request` and the preview re-ran with
+    no sight of what it had just produced, so every ordering decision, file path and command was
+    re-derived each round. Measured on `web-027671e7` (2026-09-21) — the critic's concern count
+    went 5 -> 3 -> 1 -> 3 across four rounds, round 4 correcting what round 3 got wrong and
+    breaking two things round 3 had right, at a multi-minute agentic pass per bounce. A rewrite
+    that can undo itself does not converge."""
+
+    _PRIOR = ("1. Read the module locals.tf.\n2. Widen metric_names in the dev tfvars.\n"
+              "3. Add the alert condition.\n\n## Risks & assumptions\nThe stream may lag.")
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="otto-planrev-")
+        self._claude, self._exec_id = engine._claude, gateway.exec_model_id
+        gateway.exec_model_id = lambda *a, **k: "claude-sonnet-5"
+        self._audit_db, engine._DB = engine._DB, os.path.join(self._tmp, "otto.db")
+        self.seen = {}
+
+        def fake_claude(prompt, **kw):
+            self.seen["prompt"] = prompt
+            return {"result": "1. revised\n\n## What changed\n- step 2", "total_cost_usd": 0}
+        engine._claude = fake_claude
+        self.cap = registry.Capability("agent", "sre-minion", "implements a ticket")
+        self.cap.risk = "write"
+
+    def tearDown(self):
+        engine._claude, gateway.exec_model_id = self._claude, self._exec_id
+        engine._DB = self._audit_db
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_the_round_is_handed_the_plan_it_is_revising(self):
+        engine.plan_preview("work on #657", self.cap, prior_plan=self._PRIOR,
+                            feedback="use the per-env alerts module, not the shared one")
+        p = self.seen["prompt"]
+        self.assertIn(self._PRIOR, p, "the reviser cannot edit a plan it was never shown")
+        self.assertIn("use the per-env alerts module", p)
+        # The job has to READ as an edit. "Write a plan, and also consider this" is the bug.
+        self.assertIn("EDIT this plan, not to write a new one", p)
+        self.assertIn("word for word", p)
+        # And the human needs to see what the round touched without re-reading 4000 characters.
+        self.assertIn("What changed", p)
+
+    def test_a_first_round_is_unchanged(self):
+        # No base, no revision block — a fresh preview must not be told it is editing something.
+        engine.plan_preview("work on #657", self.cap)
+        self.assertNotIn("REVISION ROUND", self.seen["prompt"])
+
+    def test_the_edit_instruction_comes_after_the_plan_instruction(self):
+        # `_PLAN_INSTRUCTION` says "write a numbered plan"; the revision block narrows that to
+        # "edit this one". Last word wins, so the narrower job has to be last.
+        engine.plan_preview("work on #657", self.cap, prior_plan=self._PRIOR, feedback="x")
+        p = self.seen["prompt"]
+        self.assertLess(p.index("Produce a concrete, numbered plan"), p.index("REVISION ROUND"))
+
+    def test_the_base_is_clipped_WITH_a_marker_never_silently(self):
+        # An unmarked cut is read as the plan's own content, and the reviser then "restores" the
+        # missing tail by re-deriving it — the exact oscillation this exists to stop.
+        huge = "step\n" * 20_000
+        engine.plan_preview("work on #657", self.cap, prior_plan=huge, feedback="x")
+        self.assertIn("CUT at", self.seen["prompt"])
+
+    def test_the_workflow_hands_over_the_plan_ON_SCREEN(self):
+        src = workflow_src()
+        self.assertIn('"prior_plan": revise_base, "feedback": revise_feedback', src)
+        self.assertIn("revise_base, revise_feedback = self._plan, self._plan_feedback", src)
+
+    def test_the_feedback_still_folds_into_the_request_as_well(self):
+        """Not redundant with the base, and dropping it was a real regression caught by
+        `PlanRevisionGateTests`: `request` is what binds EXECUTION and the judge, so a correction
+        living only in a plan the reviser might drop dies the moment it drops it. The base stops
+        the oscillation; the request is what makes the correction durable."""
+        self.assertIn("the human reviewing your plan asked for this", workflow_src())
+        # And the reviser is told those restatements are already satisfied, or it redoes them.
+        self.assertIn("ALREADY applied in the plan below", plans._revision_note("1. a", "b"))
+
+    def test_an_empty_base_falls_back_to_re_planning_not_to_silence(self):
+        # A timed-out or walled preview leaves nothing to diff against. The round must still
+        # happen off the amended request rather than discarding what the human typed.
+        self.assertEqual(plans._revision_note("", "only touch dev"), "")
+        self.assertEqual(plans._revision_note(None, "only touch dev"), "")
+
+
+class PlanCaptureRecoveryTests(unittest.TestCase):
+    """`run_json` returns the planner's LAST turn and nothing else, so the plan survived only if
+    the model stopped talking after writing it. `_PLAN_INSTRUCTION` asks for that four different
+    ways and it is still a coin flip: plan mode's own scaffolding pushes the model to save the
+    plan to a file and call `ExitPlanMode`, and when that tool is absent the pass ends on a note
+    ABOUT the plan.
+
+    Live case `runbook-rb-e0f48559-11e4cb` (2026-09-21): three previews, two revision rounds, and
+    the approval card read "ExitPlanMode isn't available as a tool in this session, so I can't
+    call it — the plan above is my final output." The real 3698-char plan was one assistant block
+    earlier in the transcript the whole time. The human approves whatever the last turn was, so
+    the capture must not depend on the model's discipline."""
+
+    _NOTE = ("ExitPlanMode isn't available as a tool in this session, so I can't call it — the "
+             "plan above is my final output. It's also saved to `/home/x/.claude/plans/p.md`. "
+             "The numbered plan in my previous message is complete and ready for your review.")
+    _PLAN = ("# infra#657 — allow the verify loop to self-requeue\n\n"
+             "1. Read locals.tf and confirm the mode names.\n" + "2. Widen metric_names.\n" * 60
+             + "\n## Risks & assumptions\nThe stream may lag.")
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="otto-plancap-")
+        self._transcripts, claude_cli.TRANSCRIPTS = claude_cli.TRANSCRIPTS, self._tmp
+        self._claude, self._exec_id = engine._claude, gateway.exec_model_id
+        gateway.exec_model_id = lambda *a, **k: "claude-sonnet-5"
+        self._audit_db, engine._DB = engine._DB, os.path.join(self._tmp, "otto.db")
+        self.cap = registry.Capability("agent", "sre-minion", "implements a ticket")
+        self.cap.risk = "write"
+
+    def tearDown(self):
+        claude_cli.TRANSCRIPTS = self._transcripts
+        engine._claude, gateway.exec_model_id = self._claude, self._exec_id
+        engine._DB = self._audit_db
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _transcript(self, wid, texts):
+        with open(claude_cli.plan_transcript_path(wid), "w") as f:
+            f.write(json.dumps({"type": "otto-meta", "model": "claude-opus-4-8"}) + "\n")
+            for t in texts:
+                f.write(json.dumps({"type": "assistant",
+                                    "message": {"content": [{"type": "text", "text": t}]}}) + "\n")
+
+    def _preview(self, result, wid="web-cap"):
+        engine._claude = lambda p, **kw: {"result": result, "total_cost_usd": 0}
+        return engine.plan_preview("work on issue #657", self.cap, wid=wid)["plan"]
+
+    def test_a_trailing_note_does_not_replace_the_plan_it_describes(self):
+        # The live failure, end to end: the gate must show the plan, not the note about it.
+        self._transcript("web-cap", ["Let me read the module.", self._PLAN, self._NOTE])
+        self.assertEqual(self._preview(self._NOTE), self._PLAN)
+
+    def test_an_intact_plan_is_never_second_guessed(self):
+        # The model obeyed: the final turn IS the plan. Nothing earlier may displace it, or the
+        # recovery becomes its own bug on every well-behaved preview.
+        self._transcript("web-cap", ["A long exploration block. " * 80, self._PLAN])
+        self.assertEqual(self._preview(self._PLAN), self._PLAN)
+
+    def test_a_question_punt_is_left_alone(self):
+        # A preview is allowed to come back with questions instead of steps; the gate renders
+        # them in their own box and BLOCKS approval (`splitPlanQuestions`). Swapping a plan in
+        # over one hides the question and hands back an approvable card nobody scoped.
+        punt = "Which environments should this cover — staging only, or production too?"
+        self._transcript("web-cap", [self._PLAN, punt])
+        self.assertEqual(self._preview(punt), punt)
+
+    def test_an_earlier_block_must_be_long_enough_to_BE_a_plan(self):
+        # Recovering the wrong block is worse than recovering nothing: "" renders the honest
+        # "no preview" note, a stray sentence renders as a plan a human then approves.
+        self._transcript("web-cap", ["Reading locals.tf now.", self._NOTE])
+        self.assertEqual(self._preview(self._NOTE), self._NOTE)
+
+    def test_recovery_survives_a_missing_or_torn_transcript(self):
+        # Every caller here is already recovering from something; a reader that raises turns a
+        # degraded gate into a dead run.
+        self.assertEqual(self._preview(self._NOTE), self._NOTE)      # no file at all
+        with open(claude_cli.plan_transcript_path("web-cap"), "w") as f:
+            f.write(json.dumps({"type": "assistant",
+                                "message": {"content": [{"type": "text", "text": self._PLAN}]}})
+                    + "\n" + '{"type": "assist')                     # half-written final line
+        self.assertEqual(self._preview(self._NOTE), self._PLAN)
+
+    def test_a_failed_pass_still_yields_no_plan(self):
+        # is_error short-circuits BEFORE recovery — a pass that crashed has no plan, and the
+        # transcript of a crashed pass is exactly where a half-formed one would be found.
+        self._transcript("web-cap", [self._PLAN])
+        engine._claude = lambda p, **kw: {"result": "(timed out)", "is_error": True,
+                                          "total_cost_usd": 0}
+        self.assertEqual(engine.plan_preview("x", self.cap, wid="web-cap")["plan"], "")
+
+    def test_the_reader_serves_both_backends_and_ignores_non_text_blocks(self):
+        # `local_runtime._assistant_event` exists to make the shapes identical; one reader or
+        # the recovery works on whichever backend happened to serve the preview.
+        path = os.path.join(self._tmp, "t.jsonl")
+        with open(path, "w") as f:
+            for ev in ({"type": "otto-meta", "model": "m"},
+                       {"type": "assistant", "message": {"content": [
+                           {"type": "tool_use", "name": "Read", "input": {}},
+                           {"type": "text", "text": " kept "}]}},
+                       {"type": "user", "message": {"content": [{"type": "text", "text": "no"}]}},
+                       {"type": "assistant", "message": {"content": [{"type": "text", "text": ""}]}},
+                       {"type": "result", "result": "no"}):
+                f.write(json.dumps(ev) + "\n")
+        self.assertEqual(claude_cli.assistant_texts(path), ["kept"])
+        self.assertEqual(claude_cli.assistant_texts(os.path.join(self._tmp, "nope.jsonl")), [])
+
+    def test_the_planner_is_granted_the_tool_plan_mode_ends_on(self):
+        # Withholding ExitPlanMode does not keep the pass read-only — plan mode does that. It
+        # only denies the model the exit, and 3 of 8 recent previews spent turns hunting for it.
+        self.assertIn("ExitPlanMode", config.PLAN_TOOLS)
+        # ...without loosening anything that writes.
+        self.assertNotIn("Bash", config.PLAN_TOOLS)
+        self.assertNotIn("Edit", config.PLAN_TOOLS)
+        self.assertNotIn("Write", config.PLAN_TOOLS)
+        # The local runtime serves only tools it implements, so the new entry cannot smuggle one
+        # in there, and the scoped-Bash rule parse must be unaffected by a bare tool name.
+        self.assertEqual(config.scoped_bash_rules(config.PLAN_TOOLS)[0], False)
+
+
 class PlanPreviewLocalSessionTests(unittest.TestCase):
     """A resume is bound to the backend that MINTED the session, and the plan preview was the one
     resume path that never checked. `claude -p --resume local-…` is rejected outright ("is not a
@@ -1699,7 +2070,7 @@ class PlanRevisionFeedbackTests(unittest.TestCase):
 
     def _revision_poll(self):
         html = ui_src()
-        m = re.search(r"async function awaitRevision\(\).*?\n      }", html, re.S)
+        m = re.search(r"async function awaitRevision\(.*?\n      }", html, re.S)
         self.assertIsNotNone(m, "the gate's revision poll moved — re-point this test")
         return m.group(0)
 
@@ -1711,10 +2082,80 @@ class PlanRevisionFeedbackTests(unittest.TestCase):
         # otherwise the very first tick repaints the old plan before the workflow has moved.
         self.assertIn("working", poll)
 
-    def test_the_note_is_only_cleared_once_the_new_plan_is_painted(self):
+    def test_the_in_progress_state_is_only_cleared_once_the_new_plan_is_painted(self):
+        # The banner (formerly the note) is the ONLY thing standing in for a multi-minute wait,
+        # so a card that clears it before the repaint has a moment showing neither — which is
+        # indistinguishable from the feedback having been dropped.
         poll = self._revision_poll()
-        paint, clear = poll.index("paint(st.plan"), poll.index("note.hidden=true")
-        self.assertLess(paint, clear, "the note must outlive the repaint, not precede it")
+        paint, clear = poll.index("paint(st.plan"), poll.index("stopReplan();\n          return")
+        self.assertLess(paint, clear, "the banner must outlive the repaint, not precede it")
+
+    def test_a_sent_round_is_ACKNOWLEDGED_not_just_greyed_out(self):
+        """A round is a full agentic pass — minutes. The only acknowledgement was `.revisenote`,
+        one 12.5px accent line BELOW the buttons, under a plan long enough to need scrolling: the
+        stale plan stayed rendered as current, the buttons went grey, and nothing said the
+        feedback had been received. Measured on the live gate: the card read as frozen.
+
+        The banner is the "gotcha" — top of the modal body, where the eye lands."""
+        html = ui_src()
+        self.assertIn('class="replanbar"', html)
+        # It must sit ABOVE the plan, not under the actions where the old note was.
+        self.assertLess(html.index('class="replanbar"'), html.index('class="planwrap"'),
+                        "the acknowledgement is below the plan again — unreachable without "
+                        "scrolling, which is the bug")
+        self.assertIn("re-planning with your feedback", html)
+        # The compact chat card mirrors it, or closing the modal loses the state entirely.
+        self.assertIn('gateStatusEl.textContent="Re-planning with your feedback', html)
+
+    def test_the_round_reads_back_what_was_actually_sent(self):
+        # Without the echo the only evidence the feedback left the browser is the box having
+        # closed — which is exactly what a dropped revision looks like.
+        html = ui_src()
+        self.assertIn("await awaitRevision(fb)", html)
+        self.assertIn("rpSaid.textContent", html)
+        # A reload mid-round never saw what was typed; it must hide the quote, not echo "".
+        self.assertIn("rpSaid.hidden=true", html)
+
+    def test_the_superseded_plan_is_visibly_superseded(self):
+        # Left undimmed, the plan being REPLACED reads as the current one, which is most of why
+        # a multi-minute round looked like nothing had happened.
+        html, css = ui_src(), open(os.path.join("web", "css", "app.css"), encoding="utf-8").read()
+        self.assertIn('planWrap.classList.add("stale")', html)
+        self.assertIn('planWrap.classList.remove("stale")', html)
+        self.assertIn(".gate .planwrap.stale", css)
+
+    def test_the_wait_has_a_clock_and_a_live_tail(self):
+        """A static label on a multi-minute wait reads as a hang. The clock ticks regardless of
+        the network; the tail is the preview's own transcript, and nothing else is polling it
+        while the run loop is parked inside the gate."""
+        html = ui_src()
+        self.assertIn("rpTick=setInterval(paintClock,1000)", html)
+        self.assertIn("/api/progress?id=", html[html.index("async function replanDetail"):])
+        self.assertIn("pg.part===PLAN_PART", html[html.index("async function replanDetail"):])
+
+    def test_every_exit_from_a_round_tears_the_banner_down(self):
+        """A banner that outlives its round is worse than none: it says Otto is still working on
+        a gate that is waiting for a decision. Three ways out — the new plan lands, the run moved
+        on, the poll gave up — and all three must stop the clock."""
+        poll = self._revision_poll()
+        self.assertEqual(poll.count("stopReplan()"), 3,
+                         "an exit path from the revision round leaves the banner (and its "
+                         "1s interval) running")
+
+    def test_opening_the_box_scrolls_it_into_view(self):
+        """The box sits BELOW the actions inside a scrolling `.modalBody`, so on a short window
+        "Request changes" moves the textarea and "Send & re-plan" into the overflow and reads as
+        a button that did nothing. Measured on the live gate at 1185x516: body scrollHeight 347
+        against clientHeight 289 — 58px of it unreachable without scrolling. focus() is not the
+        guarantee; the scroll is."""
+        html = ui_src()
+        m = re.search(r'reviseBtn\.addEventListener\("click".*?\}\);', html, re.S)
+        self.assertIsNotNone(m, "the revise button's handler moved — re-point this test")
+        self.assertIn("scrollIntoView", m.group(0))
+        # The same box is auto-opened from paint() when the plan came back as questions, and that
+        # path is the one the human never clicked — it has to land on screen too.
+        auto = html[html.index("if(rb && rb.hidden)"):]
+        self.assertIn("scrollIntoView", auto[:240])
 
     def test_the_pipeline_diagram_moves_off_the_gate_while_re_planning(self):
         # The run-loop is parked inside gate() for the whole round, so the diagram is frozen on

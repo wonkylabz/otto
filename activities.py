@@ -294,10 +294,25 @@ def plan_capability(payload: dict) -> dict:
                                   pr=payload.get("pr"),
                                   # Same level the execution will run at, so the human approves
                                   # the plan the run actually follows.
-                                  effort=payload.get("effort"))
+                                  effort=payload.get("effort"),
+                                  # A "request changes" round EDITS the plan it is given rather
+                                  # than re-planning from the ticket; without the base, every
+                                  # round re-rolled the decisions the last one got right.
+                                  # The base is the PLANNER's own text: `strip_summary` takes
+                                  # Otto's prepended outline back off, or the reviser reads
+                                  # Otto's bullets as its own work and the next summary stacks
+                                  # a second heading on the first.
+                                  prior_plan=engine.strip_summary(payload.get("prior_plan")),
+                                  feedback=payload.get("feedback"))
     plan = preview["plan"]
+    # Critique the PLAN, summarise it second: the critic must read the planner's own steps, not
+    # a digest of them, and a summary is not a thing to find concerns in.
     crit = engine.critique_plan(payload["request"], cap, plan,
                                 project=engine._resolve_project(cap, payload.get("repo")))
+    # A 5000-character plan is not what a human reads before approving. Prepended into the plan
+    # itself, so the text on the card, the text bound into execution and the text the judge
+    # reads stay one string. Best-effort: on any failure the plan comes back untouched.
+    plan = engine.summarize_plan(plan, cap)
     return {"plan": plan, "concerns": crit["concerns"],
             "cost": preview["cost"], "tokens": preview["tokens"],
             # WHO wrote the plan the human is about to approve. Invisible until now, which is

@@ -43,6 +43,7 @@ from plans import (_PLAN_PROMPT, _extract_step_json, _toposort, _parse_steps, pl
                    _REPLAN_PROMPT, _step_digest, replan_steps, _PLAN_INSTRUCTION, plan_preview,  # noqa: F401
                    _PLAN_CONCERN_CAP, _PLAN_CRITIQUE_CHARS, _PLAN_REQUEST_CHARS, _clipped,  # noqa: F401
                    _parse_plan_concerns, critique_plan, plan_mode_active, _step_prompt,  # noqa: F401
+                   summarize_plan, strip_summary,  # noqa: F401
                    _synthesize_plan, _run_plan_step, _plan_step_caps, run_plan)  # noqa: F401
 from routing import (ROUTE_DESC_CHARS, ROUTE_SHORTLIST, MAX_SWARM, _repo_eligible,  # noqa: F401
                      _shortlist, route, _parse_plan, decompose, merge, plan)  # noqa: F401
