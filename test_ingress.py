@@ -6,6 +6,7 @@ import ast
 import asyncio
 import glob
 import contextlib
+import http.server
 import importlib
 import inspect
 import io
@@ -15,12 +16,14 @@ import re
 import shutil
 import socketserver
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
 import unittest.mock
 import urllib.error
+import urllib.parse
 import urllib.request
 import config
 import contracts
@@ -7295,3 +7298,208 @@ class TraceLogWiringTests(unittest.TestCase):
         for proc in ("worker.py", "server.py"):
             line = next(ln for ln in sh.splitlines() if f'"$PY" {proc}' in ln)
             self.assertIn(">>", line, f"{proc} has no appending log redirect")
+
+
+class SlackAdminMcpTests(unittest.TestCase):
+    """`slack_mcp.py` — the write half of Slack, which no other integration Otto has exposes.
+
+    The server is spawned with `OTTO_*` stripped from its environment, so it reads its token
+    from the def's own `SLACK_TOKEN` and can reach nothing of Otto's. These drive `dispatch`
+    and the JSON-RPC loop directly against a fake Slack."""
+
+    CHANS = [{"id": "C0AAA", "name": "inc-1377", "created": 1749686400, "is_archived": False,
+              "num_members": 4},
+             {"id": "C0BBB", "name": "general", "created": 1600000000, "is_archived": False,
+              "num_members": 90}]
+
+    def setUp(self):
+        import slack_mcp
+        self.mod = slack_mcp
+        self.calls = []
+        os.environ["SLACK_TOKEN"] = "xoxp-test"
+        self.addCleanup(os.environ.pop, "SLACK_TOKEN", None)
+        self.responses = {"conversations.list": {"ok": True, "channels": self.CHANS},
+                          "conversations.archive": {"ok": True},
+                          "conversations.unarchive": {"ok": True}}
+        orig = slack_mcp._call
+
+        def fake(method, params=None, post=False):
+            self.calls.append((method, dict(params or {}), post))
+            return self.responses.get(method, {"ok": False, "error": "unknown_method"})
+        slack_mcp._call = fake
+        self.addCleanup(setattr, slack_mcp, "_call", orig)
+
+    def test_a_channel_name_is_resolved_to_an_id_before_archiving(self):
+        """A run reads names off a report and ids off nothing — `conversations.archive` takes
+        the id, and passing it a name fails `channel_not_found` for a channel that exists."""
+        text, err = self.mod.dispatch("archive_channel", {"channel": "#inc-1377"})
+        self.assertFalse(err, text)
+        self.assertIn(("conversations.archive", {"channel": "C0AAA"}, True), self.calls)
+
+    def test_an_id_is_archived_without_a_lookup(self):
+        """Resolving costs a paged `conversations.list` over the whole workspace; a run that
+        already has the id (it listed them to decide) must not re-pay it per channel."""
+        text, err = self.mod.dispatch("archive_channel", {"channel": "C0AAA"})
+        self.assertFalse(err, text)
+        self.assertEqual([c[0] for c in self.calls], ["conversations.archive"])
+
+    def test_a_slack_error_is_explained_not_echoed(self):
+        """`missing_scope` is the exact failure this server exists to make actionable: Slack's
+        own string does not name the scope, and the run's report is where the operator reads
+        it. A raw code sends them to the API docs (`web`-side, the archive run said only that
+        no token was reachable)."""
+        self.responses["conversations.archive"] = {"ok": False, "error": "missing_scope",
+                                                   "needed": "channels:write"}
+        text, err = self.mod.dispatch("archive_channel", {"channel": "C0AAA"})
+        self.assertTrue(err)
+        self.assertIn("channels:write", text)
+        self.assertIn("reinstall", text.lower())
+
+    def test_an_unknown_error_code_still_reaches_the_reader(self):
+        """The hint table is a courtesy, not a filter — an unmapped code must pass through
+        whole, or a new Slack error reads as a blank failure."""
+        self.responses["conversations.archive"] = {"ok": False, "error": "brand_new_thing"}
+        text, err = self.mod.dispatch("archive_channel", {"channel": "C0AAA"})
+        self.assertTrue(err)
+        self.assertIn("brand_new_thing", text)
+
+    def test_listing_is_filtered_sorted_and_dated(self):
+        """The request that prompted this was 'channels older than 14 days' — a listing with
+        no creation date cannot answer it, and the run would have to open each channel."""
+        text, err = self.mod.dispatch("list_channels", {"name_prefix": "inc-"})
+        self.assertFalse(err, text)
+        self.assertIn("C0AAA", text)
+        self.assertNotIn("general", text)
+        self.assertIn("created=2025-06-12", text)
+
+    def test_archiving_is_a_post(self):
+        """A mutation on a GET is retried by any layer that thinks GETs are safe, and lands
+        the channel id in every URL log on the path."""
+        self.mod.dispatch("archive_channel", {"channel": "C0AAA"})
+        self.assertTrue(self.calls[0][2], "conversations.archive must be POSTed")
+
+    def test_no_token_is_a_result_not_a_crash(self):
+        """The def can be registered before its token is wired, and the server is spawned
+        either way. Asserted against the REAL `_call` — `setUp`'s fake is exactly the layer
+        that would hide it — and it must not reach the network to find out."""
+        import slack_mcp
+        real = importlib.reload(slack_mcp)                # drops setUp's fake for this test
+        self.addCleanup(importlib.reload, slack_mcp)
+        os.environ.pop("SLACK_TOKEN", None)
+        with unittest.mock.patch.object(real.urllib.request, "urlopen",
+                                        side_effect=AssertionError("called out with no token")):
+            self.assertEqual(real._call("conversations.archive"),
+                             {"ok": False, "error": "not_authed"})
+        self.assertIn("must set SLACK_TOKEN", real._explain({"error": "not_authed"}))
+
+    def test_the_jsonrpc_loop_answers_the_three_methods(self):
+        """`mcp_client` speaks one JSON object per line; a server that answers `initialize` and
+        not `tools/list` is discovered as healthy and contributes nothing."""
+        lines = [json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+                 json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+                 json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                             "params": {"name": "archive_channel",
+                                        "arguments": {"channel": "C0AAA"}}}),
+                 json.dumps({"jsonrpc": "2.0", "id": 4, "method": "nope"})]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.mod.serve(iter(l + "\n" for l in lines))
+        out = [json.loads(l) for l in buf.getvalue().strip().splitlines()]
+        self.assertEqual(out[0]["result"]["serverInfo"]["name"], "slack-admin")
+        self.assertEqual({t["name"] for t in out[1]["result"]["tools"]},
+                         {"list_channels", "archive_channel", "unarchive_channel"})
+        self.assertFalse(out[2]["result"]["isError"])
+        self.assertIn("error", out[3])
+
+    def test_the_server_imports_nothing_of_ottos(self):
+        """It runs with `OTTO_*` stripped from its environment, so an Otto import would reach
+        `config.secret` and find nothing — and would drag Temporal into a subprocess spawned
+        per run. Stdlib only, checked on the AST rather than on a grep."""
+        with open("slack_mcp.py", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        local = {os.path.basename(p)[:-3] for p in glob.glob("*.py")}
+        self.assertEqual(set(), imported & local, "slack_mcp must not import Otto's modules")
+
+
+class SlackAdminMcpSpawnTests(unittest.TestCase):
+    """The server as `claude -p` and `local_runtime` actually get it: a real subprocess, spoken
+    to by the real `mcp_client.Session`, against a stand-in Slack.
+
+    Everything else about this server is proved in-process, which proves the dispatch table and
+    nothing about the wire. This is the test that would have caught a def whose credential
+    never resolved (the whole point of the resolution change) or a framing mismatch — both of
+    which present as a server that starts, reports healthy, and contributes nothing."""
+
+    def setUp(self):
+        self.seen = []
+        seen = self.seen
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _reply(self, obj):
+                body = json.dumps(obj).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):                                        # noqa: N802 — stdlib API
+                seen.append(("GET", self.path.split("?")[0].strip("/"),
+                             self.headers.get("Authorization")))
+                self._reply({"ok": True, "channels": [
+                    {"id": "C0AAA", "name": "inc-1377", "created": 1749686400,
+                     "is_archived": False, "num_members": 4}]})
+
+            def do_POST(self):                                       # noqa: N802 — stdlib API
+                n = int(self.headers.get("Content-Length") or 0)
+                form = urllib.parse.parse_qs(self.rfile.read(n).decode())
+                seen.append(("POST", self.path.split("?")[0].strip("/"),
+                             form.get("channel", [None])[0], self.headers.get("Authorization")))
+                self._reply({"ok": True})
+
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        os.environ["FAKE_SLACK_TOKEN"] = "xoxp-e2e-canary"
+        self.addCleanup(os.environ.pop, "FAKE_SLACK_TOKEN", None)
+
+    def _session(self):
+        import mcp_client
+        spec = {"command": sys.executable, "args": ["slack_mcp.py"],
+                "env": {"SLACK_TOKEN": "${FAKE_SLACK_TOKEN}",
+                        "SLACK_API_BASE": f"http://127.0.0.1:{self.srv.server_address[1]}/"}}
+        s = mcp_client.Session("slack-admin", mcp_client.resolved_def(spec))
+        s.start()
+        self.addCleanup(s.close)
+        return s
+
+    def test_a_spawned_server_resolves_its_token_and_archives(self):
+        import mcp_client
+        s = self._session()
+        self.assertEqual({t["name"] for t in s.list_tools()},
+                         {"list_channels", "archive_channel", "unarchive_channel"})
+        out = mcp_client._content_text(s.call("archive_channel", {"channel": "#inc-1377"}))
+        self.assertIn("archived", out)
+        self.assertIn(("POST", "conversations.archive", "C0AAA", "Bearer xoxp-e2e-canary"),
+                      self.seen)
+
+    def test_the_token_travels_in_a_header_never_in_the_url(self):
+        """A query-string token lands in every access log, proxy log and error report on the
+        path — and Otto's own transcript records the tool ARGS, not the URL, so nothing else
+        would show it."""
+        s = self._session()
+        s.call("list_channels", {"name_prefix": "inc-"})
+        self.assertTrue(self.seen)
+        for entry in self.seen:
+            self.assertEqual("Bearer xoxp-e2e-canary", entry[-1])
+        self.assertNotIn("xoxp", json.dumps([e[1] for e in self.seen]))

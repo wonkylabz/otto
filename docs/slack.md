@@ -225,6 +225,66 @@ recognise as an approver. That path keeps the board.
   two answers — one from you, one from the bot. That's usually not what you want: pick one per
   channel.
 
+## Channel administration (optional — archiving)
+
+Everything above is Slack *inbound*: Otto reads and replies. Nothing in it can archive a
+channel, and neither can the claude.ai Slack connector or any off-the-shelf Slack MCP server —
+they are all read/post. `slack_mcp.py` is the write half, registered as an ordinary MCP server
+so a capability picks it up like any other tool.
+
+It exposes three tools: `list_channels` (id, name, creation date, archive state — enough to
+answer "older than N days" without opening each one), `archive_channel` and
+`unarchive_channel`.
+
+### 1. Add the scope
+
+Archiving needs a scope none of the listener scopes imply. Add it to the *same* app, under
+**OAuth & Permissions → Scopes**:
+
+| Token | Public channel | Private channel |
+|---|---|---|
+| User (`xoxp-…`) | `channels:write` | `groups:write` |
+| Bot (`xoxb-…`) | `channels:manage` | `groups:write` |
+
+`channels:manage` exists only as a *Bot* scope — on the User list the equivalent is
+`channels:write`. Reinstall the app afterwards and replace the token in `.env`: a scope added
+without a reinstall is not on the token you already hold.
+
+Two things the scope does **not** override:
+
+- The token's identity must be **in** the channel (a bot must be invited).
+- **Settings → Permissions → Channel Management** can reserve archiving for workspace admins.
+  Slack reports that as `restricted_action`, which reads like a bug and is a policy.
+
+### 2. Register the server
+
+Admin → MCP servers → add, then **activate** it (registering a server and running it are two
+acts). The def:
+
+```json
+{
+  "command": "python3",
+  "args": ["/path/to/otto/slack_mcp.py"],
+  "env": {"SLACK_TOKEN": "${OTTO_SLACK_USER_TOKEN}"}
+}
+```
+
+The `${...}` is resolved by Otto on the way to the `--mcp-config` file, which is `0600` and
+read-denied to every run — the token reaches this server and nothing else. (`OTTO_SECRET_COMMAND`
+works here too: a bare `MY_SLACK_TOKEN` is looked up in the vault rather than the environment.)
+
+Give the capability that needs it the server in Admin → per-cap `mcp`, or name it in the cap's
+`tools:` frontmatter. Archiving is a write, so the run gates for approval like any other.
+
+### 3. Check it
+
+```
+python3 slack_mcp.py <<< '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Should list the three tools. A call that fails reports Slack's error code **and** what to do
+about it — `missing_scope` names the scope to add, rather than sending you to the API docs.
+
 ## Both identities
 
 ### Threads: the other person can carry the conversation on

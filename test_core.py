@@ -3072,7 +3072,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # for Claude Code. Two rules where there was one, because the old exemption and the new
     # resolution are opposite mechanisms: one widened every run's environment to wire a single
     # server, the other keeps the value in a 0600 read-denied file only that server is handed.
-    MAX_RULES_BYTES = 86931   # fetched tier — bounded, but looser; it is not always loaded
+    # 86931 -> 87191: Slack's write half (`slack_mcp.py`). One rule, and the one an edit
+    # actually gets wrong — the server looks like every other Otto module and is the one
+    # that must import none of them, because it runs with `OTTO_*` stripped.
+    MAX_RULES_BYTES = 87191   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
