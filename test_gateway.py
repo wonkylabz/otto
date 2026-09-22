@@ -2962,6 +2962,67 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class ModelOrderTests(unittest.TestCase):
+    """Admin reorders the pool with up/down arrows, so the ORDER is now operator intent rather
+    than insertion history — it has to survive a round-trip, and what it decides has to be
+    written down, because the list carries no sort key for a later edit to re-sort by."""
+
+    def setUp(self):
+        import tempfile
+        self._orig = gateway._PATH
+        self.addCleanup(lambda: setattr(gateway, "_PATH", self._orig))
+        gateway._PATH = os.path.join(tempfile.mkdtemp(prefix="otto-ord-"), "models.json")
+
+    def test_the_order_survives_a_save_and_reload(self):
+        cfg = {"pool": [{"name": "a", "provider": "claude", "model": "claude-opus-4-8"},
+                        {"name": "b", "provider": "openai", "endpoint": "e", "model": "m"},
+                        {"name": "c", "provider": "claude", "model": "claude-sonnet-5"}],
+               "assign": {}, "endpoints": [{"name": "e", "base_url": "http://x/v1",
+                                            "kind": "local"}]}
+        gateway.save(gateway._normalize(cfg))
+        self.assertEqual([m["name"] for m in gateway.load()["pool"]], ["a", "b", "c"])
+        # Moving the local entry to the top must not be undone by hydration or the migrations.
+        moved = gateway.load()
+        moved["pool"].insert(0, moved["pool"].pop(1))
+        gateway.save(moved)
+        self.assertEqual([m["name"] for m in gateway.load()["pool"]], ["b", "a", "c"])
+
+    def test_the_first_entry_is_what_a_sonnet_less_pool_falls_back_to(self):
+        # The one place order is not cosmetic, and the reason the column's tooltip says so: with
+        # no sonnet in the pool the default assignment is pool[0], so reordering repoints it.
+        pool = [{"name": "opus", "provider": "claude", "model": "claude-opus-4-8"},
+                {"name": "haiku", "provider": "claude", "model": "claude-haiku-4-5-20251001"}]
+        self.assertEqual(gateway._normalize({"pool": list(pool), "assign": {}})["assign"]["execution"],
+                         "opus")
+        self.assertEqual(gateway._normalize({"pool": pool[::-1], "assign": {}})["assign"]["execution"],
+                         "haiku")
+
+    def test_the_grip_column_leaves_room_for_the_grip(self):
+        """`.ctable` is table-layout:fixed, so a declared width is enforced — the same slip
+        `ModelColumnFitTests` was written for: size against the content and forget the cell's
+        own padding, and the grip is simply cut off."""
+        ui = ui_src()
+        col = int(re.search(r"\.modtable \.c-ord \{ width: (\d+)px", ui).group(1))
+        pad = int(re.search(r"\.ctable td \{ padding: \d+px (\d+)px", ui).group(1)) * 2
+        grip = int(re.search(r"\.mrow \.mgrip \{ [^}]*font-size: (\d+)px", ui).group(1))
+        self.assertGreaterEqual(col, grip + pad,
+                                f"the grip is {grip}px and the cell spends {pad}px on padding, so "
+                                f"the column needs {grip + pad}px; it declares {col}px")
+
+    def test_the_grip_is_what_is_draggable_not_the_row(self):
+        """A draggable ROW swallows text selection, and this table has a Turns input in it — the
+        Jobs tab hit the same thing, which is why its grip carries the attribute too."""
+        ui = ui_src()
+        self.assertIn('<span class="mgrip" draggable="true"', ui)
+        self.assertNotIn('<tr class="mrow" draggable', ui)
+
+    def test_a_drop_outside_the_table_re_renders_instead_of_lying(self):
+        # dragover has already moved the rows by then, so leaving the screen as-is shows an
+        # order that was never saved (the Jobs tab's `_dropped` contract).
+        ui = ui_src()
+        self.assertIn("if(!_modelDropped) loadAdmin();", ui)
+
+
 class DeleteClaudeRowTests(unittest.TestCase):
     """Admin can remove a Claude row now (it is re-addable from the picker). Two consequences
     that were unreachable while those rows were undeletable are what these pin."""
@@ -7842,6 +7903,22 @@ class ModelColumnFitTests(unittest.TestCase):
                                 f"the input is {inp}px and the cell spends {pad}px on padding, so "
                                 f"the column needs {inp + pad}px; it declares {col}px, which clips "
                                 f"the field under a fixed table-layout")
+
+    def test_the_models_table_has_one_col_per_header_cell(self):
+        """The widths live on the `<colgroup>`, so under `table-layout: fixed` the `<col>` list
+        IS the column geometry — a `.c-x` class on a `th` alone does nothing. Adding a header
+        cell without its `<col>` therefore does not just miss its own width: every column after
+        it inherits the PREVIOUS one's `<col>`, silently. Measured when the grip column landed:
+        it took the 30px meant for the remove column and rendered at 30px against its own
+        declared 36px, with no error anywhere."""
+        ui = ui_src()
+        body = ui[ui.index("function modelsSection("):]
+        body = body[:body.index("\nfunction ")]
+        cols = re.findall(r"<col\b[^>]*>", body[body.index("<colgroup>"):body.index("</colgroup>")])
+        head = body[body.index("<thead>"):body.index("</thead>")]
+        self.assertEqual(len(cols), len(re.findall(r"<th\b", head)),
+                         "the models table's <colgroup> and its header row disagree on the "
+                         "column count — every column past the mismatch takes the wrong width")
 
     def test_the_type_column_leaves_room_for_the_widest_chip(self):
         """80px = the measured 60px chip + the cell's 20px of padding. The models table needs its

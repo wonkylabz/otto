@@ -6833,7 +6833,13 @@ class UiAssetLayoutTests(unittest.TestCase):
     # not a thing a human reads before approving, so the planner now opens with '## In short' and
     # the detail sits behind a toggle. The bytes are the summary block, the link-style button and
     # its list reset — the detail stays in the DOM and is only hidden (`PlanSummaryToggleTests`).
-    ASSET_MAX = 119817
+    # -> 122586 for dragging the models list into order, the Jobs tab's idiom on a table: the
+    # ceiling was already AT `app.css`'s size, so the grip's own CSS raises it regardless. The
+    # `admin.js` half is the four drag handlers, the drop that re-sorts the pool to the rendered
+    # order, and the two traps the Jobs tab paid for first — the GRIP is draggable rather than
+    # the row (a draggable row swallows the Turns field's selection) and a drop outside the
+    # table re-renders, because dragover has already moved the rows (`ModelOrderTests`).
+    ASSET_MAX = 122605
 
     def _assets(self):
         out = {}
