@@ -388,7 +388,104 @@ def _local_wall_reason(out):
     return out.get("wall_reason") or None
 
 
-def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None, effort=None):
+# A trailing note is the model's LAST turn, and the last turn is all `run_json` returns. Below
+# this, a "plan" is a note ABOUT the plan; above it, no note is long enough to be mistaken for
+# one. Sized off the real thing: `_PLAN_INSTRUCTION` demands numbered steps, blast radius and a
+# closing "Risks & assumptions", so a genuine plan runs thousands of characters (the first live
+# one was 9358) while the note that cost `runbook-rb-e0f48559-11e4cb` its plan was 291.
+_PLAN_NOTE_CHARS = 900
+# How long an earlier block must be before it is believable AS the plan. Deliberately well above
+# _PLAN_NOTE_CHARS: recovering the wrong block is worse than recovering nothing, because nothing
+# renders the honest "no preview" gate and a wrong block renders as a plan a human then approves.
+_PLAN_BLOCK_CHARS = 1_200
+
+
+def _recovered_plan(plan, transcript):
+    """The plan, recovered from the transcript when the model's FINAL turn replaced it.
+
+    `run_json` returns the last turn and nothing else, so the plan only survives if the planner
+    stops talking after writing it. `_PLAN_INSTRUCTION` asks for exactly that in four different
+    ways and it is still not reliable: plan mode's own scaffolding pushes the model to save a
+    file and call `ExitPlanMode`, and when that tool is absent (measured: 3 of 8 recent previews
+    went hunting for it) the pass ends on a note SAYING where the plan is instead of being it.
+    Live case `runbook-rb-e0f48559-11e4cb`, 2026-09-21: three previews, ~$4, and the approval
+    card read "ExitPlanMode isn't available as a tool in this session…" while the real 3698-char
+    plan sat one assistant block earlier in the transcript. A prompt cannot fix this — the human
+    is approving whatever the last turn happened to be — so the capture stops depending on it.
+
+    Conservative on purpose; each condition is a way the swap could be WRONG:
+    - Only when the result is short enough to be a note (`_PLAN_NOTE_CHARS`). A real plan that
+      came back intact is never second-guessed.
+    - Only for a substantially longer earlier block (`_PLAN_BLOCK_CHARS`), taking the LAST such
+      one — the plan is the last thing worth saying, and an earlier block is exploration.
+    - Never when the result asks a QUESTION. A preview is allowed to punt with questions instead
+      of steps (`splitPlanQuestions` renders them as their own box and blocks approval); swapping
+      a plan in over one would hide the question and approve work nobody scoped.
+    """
+    if not transcript or len(plan) > _PLAN_NOTE_CHARS or "?" in plan:
+        return plan
+    blocks = [t for t in claude_cli.assistant_texts(transcript)
+              if len(t) >= _PLAN_BLOCK_CHARS and len(t) > len(plan)]
+    if not blocks:
+        return plan
+    trace("PLAN", f"final turn was a {len(plan)}-char note — recovered the "
+                  f"{len(blocks[-1])}-char plan from the transcript")
+    return blocks[-1]
+
+
+# How much of the previous plan the reviser is shown. A plan runs a few thousand characters;
+# this is generous so the base arrives whole, because a CLIPPED base is the oscillation with
+# extra steps — the reviser re-derives whatever fell off the end.
+_PRIOR_PLAN_CHARS = 20_000
+
+
+def _revision_note(prior_plan, feedback):
+    """Turn "plan again, but also…" into "edit THIS plan".
+
+    A revision round used to amend the REQUEST and re-preview from zero: the planner never saw
+    what it had just produced, so every ordering decision, file path and command was re-rolled
+    against the ticket each round. Measured on `web-027671e7` (2026-09-21), where the critic's
+    concern count went 5 -> 3 -> 1 -> 3: round 4 corrected what round 3 got wrong and broke two
+    things round 3 had right. That is the non-monotone rewrite — a correction that can undo
+    itself never converges, and the human pays a multi-minute pass per bounce.
+
+    So the base is the previous plan and the only instruction is a diff against it. Everything
+    the feedback does not touch must come back verbatim; anything the feedback makes wrong may
+    change, but has to be declared. The "What changed" section is what lets the human confirm
+    the round did what they asked and nothing else — without it a 4000-character plan has to be
+    re-read end to end every round to find out.
+    """
+    if not prior_plan:
+        return ""
+    base, cut = _clipped_input(prior_plan, _PRIOR_PLAN_CHARS)
+    return (
+        "\n\n--- REVISION ROUND. You already produced the plan below and a human reviewed it. "
+        "Your job now is to EDIT this plan, not to write a new one.\n\n"
+        "=== THE PLAN YOU PRODUCED ===\n" + base + cut + "\n=== END OF THE PLAN ===\n\n"
+        "What the reviewer asked for:\n" + str(feedback or "").strip() + "\n\n"
+        "Return the SAME plan with that change applied. Rules:\n"
+        "- Every step, ordering decision, file path, command, acceptance criterion and risk the "
+        "feedback does NOT touch must come back word for word. Do not re-derive them, do not "
+        "re-word them, do not re-order them, do not 'improve' them. Re-deriving is how a "
+        "correction to step 4 silently rewrites step 7 — which is the exact failure this round "
+        "exists to avoid.\n"
+        "- Change something the feedback did not name ONLY if the feedback makes it wrong or "
+        "inconsistent, and then say so explicitly.\n"
+        "- Re-read the repo only for what the feedback actually puts in doubt. The rest was "
+        "already verified in the previous round.\n"
+        "- The reviewer's correction wins over your previous reasoning, and over anything in the "
+        "ticket it contradicts. They are looking at the same code you are.\n"
+        "- Earlier rounds' corrections are repeated in the task text above and are ALREADY "
+        "applied in the plan below. Treat them as satisfied unless the plan visibly contradicts "
+        "one; they are not fresh work.\n"
+        "- End with a section headed 'What changed' listing each edit you made in one line each, "
+        "and nothing you left alone. If you changed something the reviewer did not ask for, it "
+        "goes in that list with the reason.\n"
+        "This revised plan is still the LAST thing you say.")
+
+
+def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None, effort=None,
+                 prior_plan=None, feedback=None):
     """Pre-approval dry run: a STRICTLY read-only agentic pass that returns a concrete,
     numbered plan of the operations the capability WOULD perform — so the human approves the
     actual operations, not just the capability name (the gate otherwise fires before any
@@ -419,9 +516,12 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     cwd = cwd or getattr(cap, "cwd", None)
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
     invocation = ((request if resume_session else _invocation(cap, request))
-                  + _pr_branch_note(pr) + _PLAN_INSTRUCTION)
-    trace("PLAN", f"preview for [{cap.kind}] {cap.name}  cwd={cwd or '-'}"
-                  f"{' (resume)' if resume_session else ''}")
+                  + _pr_branch_note(pr) + _PLAN_INSTRUCTION
+                  # After the instruction, not before: a revision round REPLACES "write a plan"
+                  # with "edit this one", and the last word has to be the narrower job.
+                  + _revision_note(prior_plan, feedback))
+    trace("PLAN", f"{'revising' if prior_plan else 'preview'} for [{cap.kind}] {cap.name}  "
+                  f"cwd={cwd or '-'}{' (resume)' if resume_session else ''}")
     # config.PLAN_TIMEOUT_S (900s/15min) bounds ONE pass — `plan_capability`'s activity ceiling
     # (workflows._PLAN_CEILING) must stay above two of them plus the critique, or the activity
     # kills the preview before it ever gets to return "".
@@ -505,6 +605,8 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     if out.get("is_error") or plan == "(no output)":
         trace("PLAN", f"no usable preview — {plan[:80] or 'empty'}")
         plan = ""
+    else:
+        plan = _recovered_plan(plan, transcript)
     # {plan, cost, tokens}: cost/tokens let the caller (the Temporal workflow) count this pass's
     # spend against the run's budget, same shape `_account`/`run_capability` outputs already use.
     return {"plan": plan, "cost": cost, "tokens": tokens, "model": model}
@@ -582,6 +684,84 @@ def _parse_plan_concerns(text):
         if len(out) >= _PLAN_CONCERN_CAP:
             break
     return out
+
+
+# Otto writes this heading and this rule itself, so the client's split is exact rather than a
+# guess at the planner's formatting. A real plan has been "## P1/P2/P3", a "## Plan" with steps
+# 1..8, and "## Recommended outcome: no code change" — there is no shape to parse.
+_SUMMARY_HEAD = "## In short"
+_SUMMARY_RULE = "\n\n---\n\n"
+_SUMMARY_BULLETS = 6
+_SUMMARY_PLAN_CHARS = 24_000
+
+
+def strip_summary(plan):
+    """A plan with any previously prepended summary removed — the planner's own text, nothing
+    else. A revision round must edit THAT: handing back a plan Otto had already topped would
+    make the reviser treat Otto's bullets as its own work, and re-summarising the result would
+    stack a second heading on the first."""
+    plan = (plan or "").strip()
+    if plan.startswith(_SUMMARY_HEAD) and _SUMMARY_RULE in plan:
+        return plan.split(_SUMMARY_RULE, 1)[1].strip()
+    return plan
+
+
+def summarize_plan(plan, cap=None):
+    """Prepend a short '## In short' outline to a plan, for the human who is about to approve it.
+
+    A real plan runs 4000-5000 characters of paths, commands and phasing. That is not a thing
+    anyone reads before clicking a button, so the gate was asking for consent to a wall of text.
+
+    Otto generates this rather than asking the planner for it, and that is the whole design
+    decision. Measured over 5 real previews with the request folded into `_PLAN_INSTRUCTION`:
+    3/5 produced the section at all, none kept to the bullet budget (9, 13 and 14), and two ran
+    the entire plan underneath the heading. Formatting discipline is exactly what fails here —
+    it is the same failure that lost a plan to a trailing note (`_recovered_plan`). A pass Otto
+    controls always produces something or nothing, never something malformed.
+
+    It is prepended INTO the plan rather than carried beside it, so there is one artefact: the
+    text the human reads, the text bound into execution by `_approved_plan_note`, and the text
+    `verify(approved_plan=)` judges are the same string. A summary held in a second field can
+    say what the steps do not, and then the human approves the summary while the run follows
+    the steps.
+
+    Best-effort exactly like `critique_plan`: any failure returns the plan untouched, and the
+    gate renders as it always did. A summary is a convenience; the plan is the thing.
+    """
+    body = strip_summary(plan)
+    if not body:
+        return plan
+    text, note = _clipped_input(body, _SUMMARY_PLAN_CHARS)
+    try:
+        out = gateway.complete(
+            "verify",
+            "Summarise the implementation plan below for the person who has to approve it. They "
+            "have not read it and may not know this codebase.\n\n"
+            "This is an OUTLINE of that plan, never a different one. Every bullet must correspond "
+            "to steps the plan actually lists. Add nothing, recommend nothing, judge nothing, and "
+            "leave out nothing that changes what gets touched — someone who reads only your "
+            "bullets and approves must not be surprised by the detail.\n\n"
+            f"Reply with at most {_SUMMARY_BULLETS} lines starting '- ', one short plain sentence "
+            "each, in the plan's own order, saying what will be DONE. No file paths, no commands, "
+            "no flags, no version numbers, no rationale — name something only where the name IS "
+            "the decision. Then one final line starting '**Touches:** ' naming every place the "
+            "work changes something: repos, services, environments, and any PR it opens. That "
+            "line is the blast surface, so it must be complete even when the bullets are vague.\n"
+            "No preamble, no heading, no closing remarks, nothing else.\n\n"
+            f"Plan:\n{text}{note}",
+        )
+    except Exception as e:  # noqa: BLE001 - a summary must never break the approval gate
+        trace("PLAN", f"summary unavailable — {e}")
+        return plan
+    lines = [ln.strip() for ln in str(out or "").splitlines() if ln.strip()]
+    lines = [ln for ln in lines if ln.startswith(("- ", "* ", "**Touches:"))]
+    # One bullet is not a summary of a multi-step plan, it is a lost round-trip — and an empty
+    # one would render a heading over nothing. Fall back to the plan rather than dress it up.
+    if len(lines) < 2:
+        trace("PLAN", "summary unusable — showing the plan whole")
+        return plan
+    trace("PLAN", f"summarised the plan in {len(lines)} line(s)")
+    return _SUMMARY_HEAD + "\n" + "\n".join(lines) + _SUMMARY_RULE + body
 
 
 def critique_plan(request, cap, plan, project=None):

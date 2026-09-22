@@ -2125,7 +2125,11 @@ class EngineFacadeBudgetTests(unittest.TestCase):
     # The modules split out of engine.py, whose API it re-exports.
     LAYERS = frozenset({"audit", "contracts", "plans", "routing", "intents", "judging", "memory"})
     # 140 at the time the ratchet was introduced. It only goes DOWN without discussion.
-    MAX_REEXPORTS = 140
+    # -> 142 for `summarize_plan`/`strip_summary`: `activities.plan_capability` reaches them the
+    # same way it reaches `critique_plan`, and the integration harnesses patch the gate's model
+    # calls by their `engine.` name — importing `plans` directly there would make the new call
+    # unstubabble in the 19 tests that drive the gate.
+    MAX_REEXPORTS = 142
 
     def _reexports(self):
         with open(os.path.join(self.ROOT, "engine.py"), encoding="utf-8") as fh:

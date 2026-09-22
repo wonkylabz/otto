@@ -1177,6 +1177,46 @@ function splitPlanQuestions(text){
   return {questions:[], rest:text};
 }
 
+// Split a plan into its "## In short" summary and the detail below it.
+//
+// The summary is a section of the PLAN, not a second artifact: a separately generated one can
+// say something the steps do not, and the human approves the summary while the executor follows
+// the steps. Structure varies far too much to derive one client-side — real plans have been
+// "## P1/P2/P3", a "## Plan" with 1..8, and "## Recommended outcome: no code change" — so the
+// planner writes it and this only finds it.
+//
+// Fails OPEN: no recognisable summary (an older plan, a model that didn't comply) means the full
+// plan is shown exactly as before. Hiding detail behind a summary that isn't there is the one
+// outcome that must not happen.
+function splitPlanSummary(text){
+  const t=text||"";
+  const head=/^[ \t]*#{1,4}[ \t]*in short[ \t]*:?[ \t]*$/im.exec(t);
+  if(!head) return {summary:"", detail:t};
+  const after=t.slice(head.index+head[0].length);
+  let cut=null;
+  if(head.index===0){
+    // Otto prepends at position 0 and writes the horizontal rule itself (plans._SUMMARY_RULE),
+    // so this split is EXACT and owes nothing to how the planner formatted the plan below it.
+    // Splitting on "the next heading" instead was a real bug: a live plan whose body was
+    // "Here is the plan." and bold "**1. …**" steps has no heading at all, so the detail came
+    // out empty and the whole thing rendered as one view with no toggle (web-5a692338).
+    const rule=/\n[ \t]*-{3,}[ \t]*\n/.exec(after);
+    if(rule) cut={end:rule.index, resume:rule.index+rule[0].length};
+  }
+  if(!cut){
+    // A summary the PLANNER wrote has no rule to key off — fall back to the next heading.
+    const nxt=/^[ \t]*#{1,4}[ \t]+\S/m.exec(after);
+    if(nxt) cut={end:nxt.index, resume:nxt.index};
+  }
+  if(!cut) return {summary:"", detail:t};
+  const summary=after.slice(0,cut.end).trim();
+  const detail=(t.slice(0,head.index)+after.slice(cut.resume)).trim();
+  // A summary with no detail under it is just a short plan — show it as the plan, not as a
+  // teaser with an empty drawer.
+  if(!summary || !detail) return {summary:"", detail:t};
+  return {summary, detail};
+}
+
 // `revisions`/`maxRevisions`/`wid` are only known on the Temporal path (the direct/no-Temporal
 // gate calls omit them) — that's also exactly when "Request changes" has a workflow to signal,
 // so their absence is what hides the affordance below rather than a separate flag.
@@ -1205,11 +1245,21 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
           <button type="button" class="modalClose" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modalBody gate">
+          <div class="replanbar" hidden>
+            <div class="rphead"><span class="tdots"><i></i><i></i><i></i></span>
+              <span class="rptitle">Got it \u2014 re-planning with your feedback</span>
+              <span class="rpclock"></span></div>
+            <div class="rpsaid" hidden></div>
+            <div class="rpdetail">Otto is re-reading the repo and rewriting the plan. This takes a few minutes \u2014 you can leave this open.</div>
+          </div>
           <div class="whygate"></div>
           <div class="repo"></div>
           <div class="concerns" hidden><div class="clabel"></div><ul></ul></div>
           <div class="questions" hidden><div class="qlabel">&#10068; Otto is asking you</div><ul></ul></div>
-          <div class="planwrap" hidden><div class="planlabel">Planned operations<span class="planby"></span></div><div class="plan result"></div></div>
+          <div class="planwrap" hidden><div class="planlabel"><span class="plantitle">Planned operations</span><span class="planby"></span></div>
+            <div class="plansum result" hidden></div>
+            <button type="button" class="planmore" hidden></button>
+            <div class="plan result"></div></div>
           <div class="nopreviewnote" hidden>⚠ The plan preview didn't produce anything (it may have timed out or hit an error) — you're approving the capability itself, not a reviewed plan.</div>
           <div class="revisenote" hidden></div>
           <div class="actions">
@@ -1245,6 +1295,17 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
     // round replaces both in place (hidden/shown via `hidden`, never removed) instead of the
     // modal being torn down and rebuilt.
     const planWrap=modal.querySelector(".planwrap"), planEl=modal.querySelector(".plan");
+    const sumEl=modal.querySelector(".plansum"), moreBtn=modal.querySelector(".planmore");
+    // Sticky across repaints: a revision round re-paints the card, and collapsing the detail
+    // under someone who had deliberately opened it reads as the plan having shrunk.
+    let planDetailOpen=false;
+    moreBtn.addEventListener("click",()=>{
+      planDetailOpen=!planDetailOpen;
+      planEl.hidden=!planDetailOpen;
+      moreBtn.textContent=(planDetailOpen?"Hide":"Show")+" the full plan";
+      moreBtn.setAttribute("aria-expanded", String(planDetailOpen));
+      if(planDetailOpen) planEl.scrollIntoView({block:"nearest"});
+    });
     const conWrap=modal.querySelector(".concerns"), noPreviewEl=modal.querySelector(".nopreviewnote");
     const qWrap=modal.querySelector(".questions");
     // WHO wrote the plan you are being asked to approve. Nothing said so before, which is how a
@@ -1266,7 +1327,20 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
         qWrap.hidden=false;
       } else qWrap.hidden=true;
       if(rest){
-        planEl.innerHTML=renderMD(rest);
+        // Summary first, detail behind a toggle. The detail is always PRESENT in the DOM — the
+        // toggle only hides it — so the human is never more than one click from the text the
+        // executor is actually handed, and nothing they approve is unreachable.
+        const {summary, detail} = splitPlanSummary(rest);
+        if(summary){
+          sumEl.innerHTML=renderMD(summary); sumEl.hidden=false;
+          planEl.innerHTML=renderMD(detail);
+          planEl.hidden=!planDetailOpen; moreBtn.hidden=false;
+          moreBtn.textContent=(planDetailOpen?"Hide":"Show")+" the full plan";
+          moreBtn.setAttribute("aria-expanded", String(planDetailOpen));
+        } else {
+          sumEl.hidden=true; moreBtn.hidden=true;
+          planEl.innerHTML=renderMD(rest); planEl.hidden=false;
+        }
         planWrap.hidden=false; noPreviewEl.hidden=true;
       } else {
         planWrap.hidden=true;
@@ -1296,7 +1370,8 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
         : "What should change before you approve? e.g. \"only touch dev, not prod\"";
       if(isQuestions && (maxRevisions||0)-(revisions||0)>0){
         const rb=modal.querySelector(".revisebox"), rBtn=modal.querySelector(".revise");
-        if(rb && rb.hidden){ rb.hidden=false; if(rBtn) rBtn.disabled=true; rt.focus(); }
+        if(rb && rb.hidden){ rb.hidden=false; if(rBtn) rBtn.disabled=true; rt.focus();
+          rb.scrollIntoView({block:"nearest"}); }
       }
       // There is no plan to approve yet — only a question — so approving would run blind on
       // whatever the model assumed. Answer (or decline) instead; approving reappears once a
@@ -1341,7 +1416,12 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
     else {
       let left=(maxRevisions||0)-(revisions||0);
       if(left<=0){ reviseBtn.disabled=true; reviseBtn.title="no revision rounds left"; }
-      reviseBtn.addEventListener("click",()=>{ reviseBox.hidden=false; reviseBtn.disabled=true; reviseText.focus(); });
+      // The box sits BELOW the actions inside a scrolling `.modalBody`, so on a short viewport
+      // opening it puts the textarea and "Send & re-plan" in the overflow — the button reads as
+      // having done nothing. Measured on the live gate at 1185x516: body scrollHeight 347 vs
+      // clientHeight 289. Scroll it in explicitly rather than relying on focus() to do it.
+      reviseBtn.addEventListener("click",()=>{ reviseBox.hidden=false; reviseBtn.disabled=true;
+        reviseText.focus(); reviseBox.scrollIntoView({block:"nearest"}); });
       modal.querySelector(".cancel-revise").addEventListener("click",()=>{
         reviseBox.hidden=true; reviseText.value=""; reviseBtn.disabled=left<=0; });
 
@@ -1349,10 +1429,48 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       // full agentic pass (minutes), so the ONLY thing on screen until it lands is the note —
       // which is why it must not be cleared early.
       const note=modal.querySelector(".revisenote");
-      async function awaitRevision(){
+      // "Gotcha, I'll re-plan this", made visible. A round is a full agentic pass — minutes —
+      // and the acknowledgement used to be one 12.5px accent line BELOW the buttons, under a
+      // plan long enough to scroll: the stale plan still read as current, the buttons just went
+      // grey, and nothing said the feedback had been received. See `.replanbar` in app.css.
+      const bar=modal.querySelector(".replanbar"), rpClock=modal.querySelector(".rpclock");
+      const rpSaid=modal.querySelector(".rpsaid"), rpDetail=modal.querySelector(".rpdetail");
+      const _IDLE="Otto is re-reading the repo and rewriting the plan. This takes a few minutes "
+                 +"\u2014 you can leave this open.";
+      let rpTick=null;
+      function startReplan(said){
+        const t0=Date.now();
+        bar.hidden=false;
+        if(said){ rpSaid.textContent="\u201C"+said+"\u201D"; rpSaid.hidden=false; }
+        else { rpSaid.hidden=true; }         // a reload mid-round never saw what was typed
+        rpDetail.textContent=_IDLE;
+        planWrap.classList.add("stale");
+        // A static label on a multi-minute wait reads as a hang; the clock is the cheapest
+        // proof the page is still alive, and it ticks whether or not a poll ever answers.
+        const paintClock=()=>{ const s=Math.round((Date.now()-t0)/1000);
+          rpClock.textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); };
+        paintClock(); clearInterval(rpTick); rpTick=setInterval(paintClock,1000);
+      }
+      function stopReplan(){ clearInterval(rpTick); rpTick=null;
+        bar.hidden=true; planWrap.classList.remove("stale"); }
+      // The preview writes its own transcript, and nothing else is polling it while the run
+      // loop is parked inside this gate — so this is the round's only live signal, not a
+      // second poller competing with one.
+      async function replanDetail(){
+        try {
+          const pg=await (await fetch("/api/progress?id="+encodeURIComponent(wid))).json();
+          if(pg && pg.found && pg.part===PLAN_PART && pg.last){
+            rpDetail.textContent=pg.last+" \u00b7 "+Math.round(pg.idle_s)+"s ago";
+            return;
+          }
+        } catch(e){ /* a failed tail must never look like a failed round */ }
+        rpDetail.textContent=_IDLE;
+      }
+      async function awaitRevision(said){
         const base=revisions||0;
-        note.hidden=false; note.textContent="Revising the plan…";
-        gateStatusEl.textContent="Revising the plan…"; gateStatusEl.classList.remove("isq");
+        note.hidden=true;
+        startReplan(said);
+        gateStatusEl.textContent="Re-planning with your feedback\u2026"; gateStatusEl.classList.remove("isq");
         // `working` is what makes both entry points safe: from the send button the signal may not
         // be processed yet (nothing bumped, nothing replanning), while on a mid-revision reload the
         // counter is ALREADY bumped. Neither reading alone means the new plan is up.
@@ -1363,10 +1481,13 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
           try { st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json(); }
           catch(e){ continue; }
           if(st.state!=="awaiting_approval"){
+            stopReplan();
+            note.hidden=false;
             note.textContent="This run has moved on — reload the chat to see its current state.";
             gateStatusEl.textContent="This run has moved on — reload the chat to see its current state.";
             return;
           }
+          if(tries % 2) replanDetail();          // every other tick — 3s, the tail's own cadence
           if(st.replanning || (st.plan_revisions||0) > base) working=true;
           // The pipeline diagram is driven from here too — it is the only surface showing WHICH
           // stage the run is in, and it is stuck behind this same await.
@@ -1385,12 +1506,14 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
           reviseBtn.disabled=left<=0;
           if(left<=0) reviseBtn.title="no revision rounds left";
           paint(st.plan, st.plan_concerns);
-          // Cleared LAST, once the new plan is actually on screen. "Revising the plan…" is the
-          // only thing standing in for a multi-minute wait, so a card that clears it first has
-          // a moment showing neither — which is what a dropped revision looks like.
-          note.hidden=true;
+          // Torn down LAST, once the new plan is actually on screen. The banner is the only
+          // thing standing in for a multi-minute wait, so a card that clears it first has a
+          // moment showing neither — which is what a dropped revision looks like.
+          stopReplan();
           return;
         }
+        stopReplan();
+        note.hidden=false;
         note.textContent="Still revising — this is taking longer than usual.";
         gateStatusEl.textContent="Still revising — this is taking longer than usual.";
       }
@@ -1406,7 +1529,7 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
           return;
         }
         reviseBox.hidden=true; reviseText.value="";
-        await awaitRevision();
+        await awaitRevision(fb);
       });
 
       // A reload mid-revision rebuilds this card from a state that says awaiting_approval while

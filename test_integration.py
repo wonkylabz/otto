@@ -2219,7 +2219,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         cap = registry.Capability("skill", "evt-write", "does a write")
         cap.risk = "write"
         self._orig = {n: getattr(engine, n)
-                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan")}
+                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         self.verify_unattended = []       # captures the flag the workflow threads to the judge
@@ -2228,6 +2228,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. do the write", "cost": 0, "tokens": None}   # pre-approval preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
 
         def fake_run_attempt(request, cap, *, attempt=1, critique=None, escalate=False,
                              extra_tools=None, mcp_config_path=None, resume_session=None, wid=None, cwd=None,
@@ -3139,7 +3140,7 @@ class WorkflowSignalTests(unittest.IsolatedAsyncioTestCase):
 
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify",
-                       "record_attempt", "record_skip", "plan_preview", "critique_plan", "candidate_repo")}
+                       "record_attempt", "record_skip", "plan_preview", "critique_plan", "summarize_plan", "candidate_repo")}
         self._orig_caps = activities._caps
         activities._caps = [cap]                      # so activities._cap(name) resolves it
 
@@ -3149,6 +3150,7 @@ class WorkflowSignalTests(unittest.IsolatedAsyncioTestCase):
         engine.clarify = lambda request, c: "Which environment?"
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit a file", "cost": 0, "tokens": None}   # pre-approval preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.candidate_repo = lambda request, names: None              # no repo named -> no auto-detect
         engine.verify = lambda request, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
@@ -3231,7 +3233,7 @@ class ResumeWriteGateTests(unittest.IsolatedAsyncioTestCase):
         self.cap = cap
         self._orig = {n: getattr(engine, n) for n in
                       ("run_attempt", "verify", "record_attempt", "record_skip",
-                       "followup_write_intent", "plan_preview", "critique_plan")}
+                       "followup_write_intent", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
 
@@ -3245,6 +3247,7 @@ class ResumeWriteGateTests(unittest.IsolatedAsyncioTestCase):
             return {"plan": "1. post the comments", "cost": 0, "tokens": None}
         engine.plan_preview = _plan
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.verify = lambda request, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
         engine.record_skip = lambda request, c, reason="DENIED", **kw: self.skips.append(reason)
@@ -3335,7 +3338,7 @@ class DiscussionTurnTests(unittest.IsolatedAsyncioTestCase):
         self.cap = cap
         self._orig = {n: getattr(engine, n) for n in
                       ("run_attempt", "verify", "record_attempt", "record_skip",
-                       "followup_write_intent", "plan_preview", "critique_plan")}
+                       "followup_write_intent", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
 
@@ -3352,6 +3355,7 @@ class DiscussionTurnTests(unittest.IsolatedAsyncioTestCase):
             return {"plan": "1. edit the file", "cost": 0, "tokens": None}
         engine.plan_preview = _plan
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.verify = lambda request, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
         engine.record_skip = lambda request, c, reason="DENIED", **kw: self.skips.append(reason)
@@ -3467,7 +3471,7 @@ class UnattendedResumeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         cap.risk = "read"
         self._orig = {n: getattr(engine, n) for n in
                       ("run_attempt", "record_attempt", "followup_write_intent",
-                       "plan_preview", "critique_plan", "record_skip")}
+                       "plan_preview", "critique_plan", "summarize_plan", "record_skip")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         self.intent = {"write": False}
@@ -3546,6 +3550,7 @@ class UnattendedResumeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.intent["write"] = True
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. restart it", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.record_skip = lambda request, c, reason="DENIED", **kw: None
         async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=4) as ex:
@@ -3603,7 +3608,7 @@ class PreAuthorizedGateTests(unittest.IsolatedAsyncioTestCase):
         self.cap = cap
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify", "record_attempt",
-                       "record_skip", "request_write_intent", "plan_preview", "critique_plan",
+                       "record_skip", "request_write_intent", "plan_preview", "critique_plan", "summarize_plan",
                        "candidate_repo")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
@@ -3614,6 +3619,7 @@ class PreAuthorizedGateTests(unittest.IsolatedAsyncioTestCase):
         engine.request_write_intent = lambda request, c: True
         engine.candidate_repo = lambda request, names: None
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.verify = lambda request, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
         engine.record_skip = lambda request, c, reason="DENIED", **kw: None
@@ -3703,7 +3709,7 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
         self.cap = cap
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify", "record_attempt",
-                       "record_skip", "request_write_intent", "plan_preview", "critique_plan", "candidate_repo")}
+                       "record_skip", "request_write_intent", "plan_preview", "critique_plan", "summarize_plan", "candidate_repo")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
 
@@ -3715,6 +3721,7 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
         engine.request_write_intent = lambda request, c: self.intent["write"]
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. create the ticket", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.candidate_repo = lambda request, names: None              # no repo named -> no auto-detect
         engine.verify = lambda request, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
@@ -3867,7 +3874,7 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
         self.cap = cap
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify", "record_attempt",
-                       "record_skip", "plan_preview", "critique_plan", "candidate_repo")}
+                       "record_skip", "plan_preview", "critique_plan", "summarize_plan", "candidate_repo")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         self.preview_requests = []
@@ -3888,6 +3895,7 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
         engine.clarify = lambda request, c: None
         engine.plan_preview = fake_preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.candidate_repo = lambda request, names: None
         engine.verify = lambda request, c, result, project=None, local=False, unattended=False, **k: {
             "passed": True, "critique": ""}
@@ -4521,7 +4529,7 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
         cap.risk = "read"                                 # repo-mode must FORCE the write gate
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify", "record_attempt",
-                       "plan_preview", "critique_plan")}
+                       "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         engine.plan = lambda request, caps, project_root=None: cap
@@ -4531,6 +4539,7 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}   # pre-approval preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         self.cwds = []
 
         def fake_run_attempt(request, cap, *, attempt=1, critique=None, escalate=False,
@@ -4701,12 +4710,13 @@ class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):
         cap = registry.Capability("agent", "sre-minion", "implements a github issue")
         cap.risk = "write"                                # the bound session is already a write
         self._orig = {n: getattr(engine, n) for n in
-                      ("run_attempt", "record_attempt", "plan_preview", "critique_plan", "pr_url_from_run")}
+                      ("run_attempt", "record_attempt", "plan_preview", "critique_plan", "summarize_plan", "pr_url_from_run")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. fix the build config", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         # Every follow-up here asks for a CHANGE, which is what makes the gate + the workspace
         # re-provisioning the subject of these tests. Pinned rather than left to the real
         # classifier: a resumed write session now consults it on every turn (a question becomes a
@@ -5069,7 +5079,7 @@ class WorkflowInteractiveRepoDetectTests(unittest.IsolatedAsyncioTestCase):
         cap.risk = "write"
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify", "record_attempt",
-                       "plan_preview", "critique_plan", "candidate_repo", "repo_edit_intent")}
+                       "plan_preview", "critique_plan", "summarize_plan", "candidate_repo", "repo_edit_intent")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         engine.plan = lambda request, caps, project_root=None: cap
@@ -5079,6 +5089,7 @@ class WorkflowInteractiveRepoDetectTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         # The request names exactly one registered repo, and it genuinely edits that repo's code.
         engine.candidate_repo = lambda request, names: "myrepo"
         engine.repo_edit_intent = lambda request, repo: True
@@ -5165,7 +5176,7 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
         qa_cap.risk = "write"
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify",
-                       "record_attempt", "judge_qa", "plan_preview", "critique_plan")}
+                       "record_attempt", "judge_qa", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [worker_cap, qa_cap]
         engine.plan = lambda request, caps, project_root=None: worker_cap
@@ -5173,6 +5184,7 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
         engine.clarify = lambda request, c: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}   # pre-approval preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
         self.runs = []
@@ -5294,7 +5306,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         review_cap.risk = "read"
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "clarify", "run_attempt", "verify",
-                       "record_attempt", "judge_review", "plan_preview", "critique_plan")}
+                       "record_attempt", "judge_review", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [worker_cap, review_cap]
         engine.plan = lambda request, caps, project_root=None: worker_cap
@@ -5302,6 +5314,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         engine.clarify = lambda request, c: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
         self.runs = []
@@ -5877,7 +5890,7 @@ class WorkflowNeedsHumanTests(unittest.IsolatedAsyncioTestCase):
         cap = registry.Capability("skill", "flaky-report", "produces a report")
         cap.risk = "write"
         self._orig = {n: getattr(engine, n)
-                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan")}
+                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         # Verify never passes — every attempt in the ladder is judged a FAIL.
@@ -5886,6 +5899,7 @@ class WorkflowNeedsHumanTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. do the write", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         self.attempts = []
 
         def fake_run_attempt(request, cap, *, attempt=1, critique=None, escalate=False,
@@ -6011,7 +6025,7 @@ class WorkflowFailureDetailTests(unittest.IsolatedAsyncioTestCase):
         cap = registry.Capability("skill", "flaky-report", "produces a report")
         cap.risk = "read"
         self._orig = {n: getattr(engine, n)
-                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan")}
+                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
 
@@ -6021,6 +6035,7 @@ class WorkflowFailureDetailTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. do it", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.run_attempt = lambda request, cap, *, attempt=1, wid=None, **kw: {
             "workflow": wid or "wf-detail", "attempt": attempt, "cost": 0.0,
             "result": "a report", "session_id": "s", "model": "m",
@@ -6083,7 +6098,7 @@ class WorkflowStrictLocalTests(unittest.IsolatedAsyncioTestCase):
         cap = registry.Capability("skill", "local-report", "produces a report")
         cap.risk = "write"
         self._orig = {n: getattr(engine, n)
-                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan")}
+                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         self.verified = []
@@ -6091,6 +6106,7 @@ class WorkflowStrictLocalTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. do it", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         self.attempts = []
 
         def fake_run_attempt(request, cap, *, attempt=1, wid=None, **kwargs):
@@ -6173,7 +6189,7 @@ class WorkflowClaudeAuthWallTests(unittest.IsolatedAsyncioTestCase):
         cap = registry.Capability("skill", "daily-summary", "posts a summary")
         cap.risk = "write"
         self._orig = {n: getattr(engine, n)
-                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan")}
+                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         self.verified = []
@@ -6181,6 +6197,7 @@ class WorkflowClaudeAuthWallTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. do it", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         self.attempts = []
 
         def fake_run_attempt(request, cap, *, attempt=1, wid=None, **kwargs):
@@ -6261,7 +6278,7 @@ class WorkflowBudgetTests(unittest.IsolatedAsyncioTestCase):
         cap = registry.Capability("skill", "spendy", "does expensive work")
         cap.risk = "write"
         self._orig = {n: getattr(engine, n)
-                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan")}
+                      for n in ("run_attempt", "verify", "record_attempt", "plan_preview", "critique_plan", "summarize_plan")}
         self._orig_caps = activities._caps
         activities._caps = [cap]
         # Verify always FAILs so the ladder would keep going if the budget didn't stop it.
@@ -6270,6 +6287,7 @@ class WorkflowBudgetTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. spend tokens", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         self.attempts = []
 
         def fake_run_attempt(request, cap, *, attempt=1, critique=None, escalate=False,
@@ -6746,10 +6764,11 @@ class GateDeadlineAndDenialIdentityTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [cap]
         self.activities = activities
         self._orig = {n: getattr(engine, n) for n in
-                      ("plan_preview", "critique_plan", "run_attempt", "verify", "record_attempt")}
+                      ("plan_preview", "critique_plan", "summarize_plan", "run_attempt", "verify", "record_attempt")}
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {
             "plan": "1. push the button", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
         engine.record_attempt = lambda *a, **k: None
         self.ran = []
         engine.run_attempt = lambda request, cap, **k: (

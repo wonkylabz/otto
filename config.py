@@ -74,7 +74,13 @@ WRITE_TOOLS = READ_TOOLS + ["Edit", "Write"]
 #   commands (gh hits GitHub) as needing interactive approval a headless `claude -p` can't give
 #   ("This command requires approval") — flaky, and the cause of the "can't read tickets" bug.
 #   Plan mode consistently permits read-only network commands and forbids all mutations.
-PLAN_TOOLS = ["Read", "Grep", "Glob",
+#   ExitPlanMode is how `--permission-mode plan` is MEANT to end, and leaving it out does not
+#   keep the pass read-only (that is plan mode's job) — it just denies the model the exit. Measured
+#   across this box's plan transcripts: 3 of 8 recent previews spent turns hunting for it via
+#   ToolSearch, and the one that gave up ended on "ExitPlanMode isn't available as a tool in this
+#   session" — which, being the last turn, became the plan (plans._recovered_plan is the backstop
+#   for when it still happens). It mutates nothing; it only terminates the turn.
+PLAN_TOOLS = ["Read", "Grep", "Glob", "ExitPlanMode",
               "Bash(gh issue view:*)", "Bash(gh pr view:*)", "Bash(gh pr diff:*)"]
 
 # A scoped Bash rule -- `Bash(gh pr view:*)` -- is Claude Code's spelling, and `claude -p`

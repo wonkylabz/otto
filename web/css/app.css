@@ -228,10 +228,12 @@
   /* A live label wraps to 2-3 lines; centred, the dots floated mid-paragraph away from the
      text they belong to. `margin-top` centres them on the FIRST line instead. */
   .thinking .tdots { display: inline-flex; gap: 4px; flex: none; margin-top: 6px; }
-  .thinking .tdots i { width: 6px; height: 6px; border-radius: 2px; background: var(--accent);
+  /* The re-plan banner reuses this beside a heading, not wrapping body text — no top nudge. */
+  .gate .replanbar .tdots { display: inline-flex; gap: 4px; flex: none; }
+  .thinking .tdots i, .gate .replanbar .tdots i { width: 6px; height: 6px; border-radius: 2px; background: var(--accent);
     animation: tpulse 1.2s ease-in-out infinite; }
-  .thinking .tdots i:nth-child(2) { animation-delay: .18s; }
-  .thinking .tdots i:nth-child(3) { animation-delay: .36s; }
+  .thinking .tdots i:nth-child(2), .gate .replanbar .tdots i:nth-child(2) { animation-delay: .18s; }
+  .thinking .tdots i:nth-child(3), .gate .replanbar .tdots i:nth-child(3) { animation-delay: .36s; }
   .thinking .tlabel { opacity: .9; }
   @keyframes tpulse { 0%, 100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
   /* shadow-mode AI supervisor badge (issue #143) — sits in the message title (.who) while a
@@ -296,6 +298,28 @@
      instead of forcing a blind approve/decline. Sits below the actions, hidden until "Request
      changes" is clicked. */
   .gate .revisenote { font-size: 12.5px; color: var(--accent); margin-top: 10px; }
+  /* The re-plan acknowledgement. A round takes MINUTES and the only sign used to be one 12.5px
+     line BELOW the buttons, under a scrolling plan — the card read as frozen. Top of the body,
+     echoes what was asked for, clocks the wait, and dims the plan it is replacing. */
+  .gate .replanbar { border: 1px solid var(--accent-line); background: var(--accent-soft);
+    border-radius: var(--r-md); padding: 10px 12px; margin-bottom: 14px; }
+  .gate .rphead { display: flex; align-items: center; gap: 9px; }
+  .gate .rptitle { font-size: 13px; font-weight: 600; color: var(--accent); }
+  .gate .rpclock { margin-left: auto; font-family: var(--mono); font-size: 11.5px;
+    color: var(--dim); font-variant-numeric: tabular-nums; }
+  .gate .rpdetail, .gate .rpsaid { font-size: 12px; color: var(--text-2); line-height: 1.55;
+    margin-top: 7px; overflow-wrap: anywhere; }
+  .gate .rpsaid { white-space: pre-wrap; padding-left: 9px;
+    border-left: 2px solid var(--accent-line); }
+  /* The summary is the default read; the detail is one click away and always in the DOM. */
+  .gate .plansum { margin-bottom: 8px; }
+  .gate .plansum ul { margin: 0; padding-left: 18px; }
+  .gate .planmore { background: transparent; border: none; padding: 2px 0; margin-bottom: 8px;
+    color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 2px; }
+  .gate .planmore:hover { filter: brightness(1.15); }
+  .gate .planwrap.stale { opacity: .45; }
+  .gate .planwrap.stale .plantitle { text-decoration: line-through; }
   .gate .revisebox { margin-top: 10px; }
   .gate .revisetext { width: 100%; box-sizing: border-box; resize: vertical; max-height: none;
     flex: none; font-size: 13px; padding: 8px 10px; margin-bottom: 8px; }
