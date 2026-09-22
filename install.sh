@@ -30,6 +30,9 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
+# Minimum Python, stated once: the gate computes its comparison from this string.
+PY_MIN="3.12"
+
 NO_SERVICE=0
 NO_TESTS=0
 GUIDED=0
@@ -64,16 +67,20 @@ fi
 
 # --- 1. hard prerequisites -------------------------------------------------
 
-command -v python3 >/dev/null 2>&1 || die "python3 not found — install Python 3.12+ first."
+# The interpreter the venv is built from. Overridable so a host whose `python3` is too old
+# can still install without touching PATH — the gate below and step 2 read the same variable,
+# or the suggested remedy would be one the re-run ignores.
+PYTHON="${PYTHON:-python3}"
+command -v "$PYTHON" >/dev/null 2>&1 || die "$PYTHON not found — install Python $PY_MIN+ first" \
+    "(or point this script at one: PYTHON=/path/to/python3 ./install.sh)."
 
 # pyproject requires >=3.12. temporalio installs fine on 3.10/3.11, so without this check
 # the run reaches the test suite and dies on a syntax error that looks unrelated.
-PY_MIN="3.12"
-if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 12) else 1)'; then
-  die "python3 is $(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') —" \
+if ! "$PYTHON" -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= tuple(map(int, '$PY_MIN'.split('.'))) else 1)"; then
+  die "$PYTHON is $("$PYTHON" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') —" \
       "Otto needs $PY_MIN+ (see pyproject.toml). Install a newer Python and re-run," \
       $'or point this script at one:\n' \
-      $'    python3.12 -m venv .venv && ./install.sh\n'
+      "    PYTHON=python$PY_MIN ./install.sh"
 fi
 
 if ! command -v claude >/dev/null 2>&1; then
@@ -96,12 +103,12 @@ fi
 # --- 2. venv + deps ----------------------------------------------------------
 
 log "python venv: creating/upgrading .venv"
-if ! python3 -m venv --upgrade-deps .venv 2>/tmp/otto-venv.err; then
+if ! "$PYTHON" -m venv --upgrade-deps .venv 2>/tmp/otto-venv.err; then
   if grep -qi "ensurepip is not available\|No module named venv" /tmp/otto-venv.err && command -v apt-get >/dev/null 2>&1; then
     log "system is missing the venv module — installing python3-venv via apt (sudo)…"
     sudo apt-get update -y
     sudo apt-get install -y python3-venv
-    python3 -m venv --upgrade-deps .venv
+    "$PYTHON" -m venv --upgrade-deps .venv
   else
     cat /tmp/otto-venv.err >&2
     die "failed to create .venv (see error above)"
@@ -189,7 +196,9 @@ if [ -x "$TEMPORAL_BIN" ]; then
   if [ "$TEMPORAL_HAVE" = "$TEMPORAL_CLI_VERSION" ]; then
     log "temporal CLI: already installed (v$TEMPORAL_HAVE)"
   else
-    log "temporal CLI: installed v${TEMPORAL_HAVE:-unknown} != pinned v$TEMPORAL_CLI_VERSION — replacing"
+    # ~/.temporalio/bin is shared with every other Temporal user on this box, so this
+    # moves a NEWER CLI back onto Otto's pin too. Converging on the pin is the point.
+    log "temporal CLI: installed v${TEMPORAL_HAVE:-unknown} != pinned v$TEMPORAL_CLI_VERSION — replacing it with the pin"
     install_temporal_cli
     log "temporal CLI: now v$(installed_temporal_version)"
   fi

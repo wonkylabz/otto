@@ -67,7 +67,9 @@ sudo apt install -y python3-venv                  # venv support (Debian/Ubuntu;
 # Temporal CLI -> ~/.temporalio/bin (linux_amd64; other platforms: see the release checksums.txt)
 curl -sSfL -o temporal.tgz \
   https://github.com/temporalio/cli/releases/download/v1.8.0/temporal_cli_1.8.0_linux_amd64.tar.gz
-sha256sum -c <<<"896c6132d6d969f84c3f2382a31abd9a67a06ed3008c1a37c3573fe81d730e4a  temporal.tgz"
+# sha256sum on Linux, shasum -a 256 on macOS
+echo "896c6132d6d969f84c3f2382a31abd9a67a06ed3008c1a37c3573fe81d730e4a  temporal.tgz" \
+  | { sha256sum -c 2>/dev/null || shasum -a 256 -c; }
 mkdir -p ~/.temporalio/bin && tar -xzf temporal.tgz -C ~/.temporalio/bin temporal
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt

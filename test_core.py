@@ -1372,6 +1372,24 @@ class TemporalPinTests(unittest.TestCase):
         for platform, digest in rows:
             self.assertEqual(len(digest), 64, f"{platform} checksum is not a sha256: {digest!r}")
 
+    def test_the_readme_manual_setup_restates_the_pin_and_checksum_install_sh_uses(self):
+        """README's manual block is a second copy of the CLI version AND of the linux_amd64
+        sha256. Nothing installs from it, so a bump to install.sh orphans it in silence and the
+        reader who skipped the installer verifies against a stale hash — the same drift this
+        file already guards between requirements.txt and pyproject.toml."""
+        with open(os.path.join(self.ROOT, "install.sh"), encoding="utf-8") as f:
+            sh = f.read()
+        with open(os.path.join(self.ROOT, "README.md"), encoding="utf-8") as f:
+            readme = f.read()
+        pin = self._cli_pin()
+        self.assertTrue(f"temporal_cli_{pin}_linux_amd64.tar.gz" in readme,
+                        f"README's manual setup does not download the CLI v{pin} install.sh pins")
+        m = re.search(r'^\s*linux_amd64\)\s*echo "([0-9a-f]{64})"', sh, re.M)
+        self.assertIsNotNone(m, "install.sh must pin a linux_amd64 checksum")
+        self.assertTrue(m.group(1) in readme,
+                        f"README verifies against a checksum install.sh no longer pins "
+                        f"({m.group(1)}) — bump both or neither")
+
     def test_the_cli_pin_is_not_copied_from_the_sdk_pin(self):
         """install.sh's CLI version and the SDK pin are independent schemes. They are read from
         two files, so the only way they match is someone having copied one onto the other."""
