@@ -3054,7 +3054,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # carries the half a later edit reaches for first — a bare `setInterval` is the obvious
     # spelling and reads correct, so the ban has to be written down beside the failure signal
     # (`false`) that a loader painting its own error owes the poller.
-    MAX_RULES_BYTES = 85603   # fetched tier — bounded, but looser; it is not always loaded
+    # 85603 -> 85882: Admin can list the Claude models instead of the operator typing an id.
+    # One rule, and it is the half a later edit drops: the list is only sometimes live, so the
+    # source travels with it — a built-in fallback rendered as the API's answer outlives the
+    # next model release silently, which is how the purged-`fable` entry went unnoticed.
+    MAX_RULES_BYTES = 85882   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

@@ -2962,6 +2962,84 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class ClaudeCatalogTests(unittest.TestCase):
+    """`claude_catalog` backs Admin's "+ Add Claude" picker. The list is only sometimes live, so
+    the source it reports is part of the contract — the UI states it on the panel."""
+
+    def _stub_api(self, payload):
+        import types
+        class _Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps(payload).encode()
+        orig = gateway.urllib
+        gateway.urllib = types.SimpleNamespace(
+            parse=orig.parse,
+            request=types.SimpleNamespace(Request=orig.request.Request,
+                                          urlopen=lambda req, timeout=None: _Resp()))
+        self.addCleanup(lambda: setattr(gateway, "urllib", orig))
+
+    def _key(self, value):
+        orig = gateway.config.secret
+        gateway.config.secret = lambda n, *a, **k: value if n == "ANTHROPIC_API_KEY" else orig(n, *a, **k)
+        self.addCleanup(lambda: setattr(gateway.config, "secret", orig))
+
+    def test_a_key_lists_the_live_api_models_named_by_their_own_id(self):
+        self._key("sk-test")
+        self._stub_api({"data": [{"id": "claude-fable-5-1", "display_name": "Fable 5.1"},
+                                 {"id": "claude-opus-5", "display_name": "Opus 5"},
+                                 {"no": "id"}]})
+        cat = gateway.claude_catalog()
+        self.assertEqual(cat["source"], "api")
+        self.assertEqual([m["id"] for m in cat["models"]], ["claude-fable-5-1", "claude-opus-5"])
+        self.assertEqual(cat["models"][0]["name"], "claude-fable-5-1")
+        self.assertEqual(cat["models"][0]["display"], "Fable 5.1")
+
+    def test_no_key_falls_back_to_the_known_list_and_SAYS_it_is_not_live(self):
+        # The install shape this is written for: Claude runs through `claude -p` on the CLI's own
+        # login, so there is no key to enumerate with and the CLI has no list command. A built-in
+        # list rendered as a live one would outlive the next model release without a word.
+        self._key("")
+        cat = gateway.claude_catalog()
+        self.assertEqual(cat["source"], "known")
+        self.assertIn("ANTHROPIC_API_KEY", cat["detail"])
+        self.assertEqual([m["id"] for m in cat["models"]], [mid for _, mid in gateway._KNOWN_CLAUDE])
+        # Named by TIER, not by id: `_normalize` re-pins a tier's id on upgrade.
+        self.assertEqual([m["name"] for m in cat["models"]], [n for n, _ in gateway._KNOWN_CLAUDE])
+
+    def test_an_unreachable_api_degrades_to_the_known_list_with_the_error(self):
+        import types
+        self._key("sk-test")
+        orig = gateway.urllib
+        def _boom(req, timeout=None):
+            raise OSError("connection refused")
+        gateway.urllib = types.SimpleNamespace(
+            parse=orig.parse,
+            request=types.SimpleNamespace(Request=orig.request.Request, urlopen=_boom))
+        self.addCleanup(lambda: setattr(gateway, "urllib", orig))
+        cat = gateway.claude_catalog()
+        self.assertTrue(cat["ok"])
+        self.assertEqual(cat["source"], "known")
+        self.assertIn("connection refused", cat["detail"])
+
+    def test_the_default_pool_projects_the_catalog_rather_than_re_querying(self):
+        # The suite pins `_discover_claude` off the network (test_support), so the stub is what
+        # a call returns here — assert the real body instead: ONE place queries the API, or the
+        # picker and the default pool can disagree about what exists.
+        import inspect
+        src = inspect.getsource(gateway).split("def _discover_claude(")[1].split("\ndef ")[0]
+        self.assertIn("claude_catalog()", src)
+        self.assertNotIn("api.anthropic.com", src)
+
+    def test_the_endpoint_is_routed(self):
+        import server
+        self.assertIs(server._POST_ROUTES["/api/models/claude"],
+                      server.Handler._post_models_claude)
+
+
 class ModelSecretMaskingTests(unittest.TestCase):
     """`api_key_env` accepts a LITERAL key (gateway.api_key) and an endpoint's header values
     resolve the same way, so both hold real credentials on a live install — and GET /api/models

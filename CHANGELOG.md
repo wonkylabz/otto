@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Admin lists the Claude models for you.** "+ Add Claude" in the LLM models section offers
+  the Claude tiers as picks instead of asking you to type a model id from memory. With
+  `ANTHROPIC_API_KEY` set the list is live from the Anthropic API; without one there is nothing
+  to enumerate (Claude runs through the CLI's own login), so it shows Otto's built-in list and
+  says so on the panel.
+
 ### Fixed
 
 - **Adding Fable in Admin now works.** A one-off migration for a since-revived model was

@@ -453,6 +453,7 @@ function modelsSection(m){
       <span class="gcaret">&#9662;</span>LLM models<span class="sectcount">${m.pool.length}</span></span>
     <span class="h3btns"><button class="addbtn" id="model-recheck" title="re-test every model for reachability — Claude entries included, so this costs one claude -p turn each">&#8635; Recheck health</button>
     <button class="addbtn addnew" id="add-endpoint" title="an OpenAI-compatible server (vLLM / Ollama / a hosted API): set its URL, key and any extra headers once, then add its models with discover">+ Add endpoint</button>
+    <button class="addbtn addnew" id="add-claude" title="list the Claude models available and add them as picks \u2014 live from the Anthropic API when ANTHROPIC_API_KEY is set, otherwise Otto's built-in list">+ Add Claude</button>
     <button class="addbtn addnew" id="add-model">+ Add model</button></span></h3>
     ${warn}
     <div class="asection-body">
@@ -514,6 +515,8 @@ function wireModels(el){
   });
   const add=document.getElementById("add-model");
   if(add) add.addEventListener("click",showModelForm);
+  const addCl=document.getElementById("add-claude");
+  if(addCl) addCl.addEventListener("click",showClaudeDiscovery);
   const addEp=document.getElementById("add-endpoint");
   if(addEp) addEp.addEventListener("click",()=>showEndpointForm());
   el.querySelectorAll("[data-editep]").forEach(b=>b.addEventListener("click",()=>showEndpointForm(b.dataset.editep)));
@@ -648,6 +651,54 @@ async function showDiscovery(epName){
   };
 }
 
+
+/* The same pick-and-add flow as an endpoint's discover, for the CLAUDE tier — the one pool the
+   operator could previously only add by typing a model id from memory. The source is stated on
+   the panel because it is not always live: without ANTHROPIC_API_KEY there is nothing to
+   enumerate (claude -p logs in on its own and the CLI has no list command), so the server
+   answers with the built-in list and says why. A stale list that reads as the live one would
+   quietly outlive the next model release. */
+async function showClaudeDiscovery(){
+  const c=openFormModal("<b>Add Claude models</b><br>the Claude tiers Otto can run through <code>claude -p</code>");
+  c.innerHTML=`<div class="aform discpanel"><label>Claude models</label>
+    <div id="disc-body"><span class="sub">asking the Anthropic API\u2026</span></div></div>`;
+  let r;
+  try { r=await postJSON("/api/models/claude",{}); }
+  catch(err){ r={ok:false,detail:err.message}; }
+  const body=document.getElementById("disc-body");
+  if(!body) return;
+  if(!r.ok){ body.innerHTML=`<span class="tres bad">&#10007; ${esc(r.detail||"could not list the Claude models")}</span>`; return; }
+  const models=r.models||[];
+  if(!models.length){ body.innerHTML="no Claude models to add"; return; }
+  // Already-added is matched on the model ID, not the pool name: the tier entries are named
+  // claude-sonnet while the API lists claude-sonnet-5, and matching on name would offer a
+  // duplicate of every model already in the pool.
+  const have=new Set(MODEL_STATE.pool.filter(p=>p.provider==="claude").map(p=>p.model));
+  const src=r.source==="api"
+    ? `${models.length} model${models.length===1?'':'s'} &middot; live from the Anthropic API`
+    : `${models.length} model${models.length===1?'':'s'} &middot; Otto's built-in list${r.detail?` &mdash; ${esc(r.detail)}`:""}`;
+  body.innerHTML=`<p class="sub" style="margin:0 0 6px">${src}${have.size?` &middot; ${have.size} already added`:""}</p>
+    <div class="disclist">${models.map(e=>`<label class="discrow">
+      <input type="checkbox" value="${esc(e.id)}" data-name="${esc(e.name||e.id)}" ${have.has(e.id)?'disabled':''}><code>${esc(e.id)}</code>
+      <span class="disalias">${esc(e.display||"")}</span>
+      ${have.has(e.id)?'<span class="dishave">added</span>':''}</label>`).join("")}</div>
+    <div class="ferr" id="disc-err"></div>
+    <div class="factions"><button class="btn approve" id="disc-add">Add selected</button>
+      <button class="btn decline" id="disc-cancel">Cancel</button></div>`;
+  document.getElementById("disc-cancel").onclick=closeFormModal;
+  document.getElementById("disc-add").onclick=async()=>{
+    const picks=[...body.querySelectorAll("input[type=checkbox]:checked")];
+    if(!picks.length){ document.getElementById("disc-err").textContent="nothing selected"; return; }
+    const taken=new Set(MODEL_STATE.pool.map(p=>p.name));
+    picks.forEach(i=>{
+      let name=i.dataset.name||i.value, n=2;
+      while(taken.has(name)) name=`${i.dataset.name||i.value} ${n++}`;
+      taken.add(name);
+      MODEL_STATE.pool.push({name, provider:"claude", model:i.value});
+    });
+    await saveModels(); closeFormModal(); loadAdmin();
+  };
+}
 
 /* An endpoint's optional extra headers are edited as `Name: value` lines — the shape a curl
    -H reads like, and the only one that round-trips a dict without a nested row editor.
