@@ -105,8 +105,15 @@ fi
 # --- 2. venv + deps ----------------------------------------------------------
 
 log "python venv: creating/upgrading .venv"
-if ! "$PYTHON" -m venv --upgrade-deps .venv 2>/tmp/otto-venv.err; then
-  if grep -qi "ensurepip is not available\|No module named venv" /tmp/otto-venv.err && command -v apt-get >/dev/null 2>&1; then
+# BOTH streams: venv prints the ensurepip diagnostic with a bare print() — i.e. to STDOUT —
+# while "No module named venv" goes to stderr. Capturing only stderr left the recovery below
+# unreachable, so it had never once fired.
+if ! "$PYTHON" -m venv --upgrade-deps .venv >/tmp/otto-venv.err 2>&1; then
+  # …and that diagnostic is hard-wrapped mid-sentence ("because ensurepip is not\navailable."),
+  # so the match has to run over unwrapped text or it misses on a line boundary.
+  if tr -s '[:space:]' ' ' < /tmp/otto-venv.err \
+       | grep -qiE "ensurepip is not available|No module named venv" \
+     && command -v apt-get >/dev/null 2>&1; then
     # python3-venv tracks the DEFAULT interpreter. Under PYTHON=python3.12 on a 3.11 host it
     # installs ensurepip for the wrong one and the retry fails identically, so ask for the
     # package that matches $PYTHON and only fall back to the generic name.

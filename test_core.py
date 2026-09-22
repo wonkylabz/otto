@@ -1390,6 +1390,21 @@ class TemporalPinTests(unittest.TestCase):
                         f"README verifies against a checksum install.sh no longer pins "
                         f"({m.group(1)}) — bump both or neither")
 
+    def test_the_venv_recovery_can_actually_see_the_failure_it_recovers_from(self):
+        """venv reports a missing ensurepip with a bare print() — STDOUT — and hard-wraps it as
+        "...because ensurepip is not\navailable.". Redirecting only stderr, or matching the
+        sentence line-by-line, silently made the sudo-apt recovery unreachable: it had never
+        fired for anyone. Both halves are invisible failures, so both are pinned here."""
+        with open(os.path.join(self.ROOT, "install.sh"), encoding="utf-8") as f:
+            sh = f.read()
+        self.assertTrue(">/tmp/otto-venv.err 2>&1" in sh,
+                        "install.sh must capture BOTH streams from `python -m venv` — the "
+                        "ensurepip diagnostic goes to stdout, so `2>file` alone captures none")
+        m = re.search(r'^\s*if (tr [^\n]*\n[^\n]*grep[^\n]*)', sh, re.M)
+        self.assertIsNotNone(
+            m, "the ensurepip match must unwrap the text (tr) before grepping — a line-based "
+               "grep for the whole sentence never matches, it spans a newline")
+
     def test_the_cli_pin_is_not_copied_from_the_sdk_pin(self):
         """install.sh's CLI version and the SDK pin are independent schemes. They are read from
         two files, so the only way they match is someone having copied one onto the other."""
