@@ -569,7 +569,9 @@ function wireModelDrag(el){
     _dragModel=row.dataset.model; _modelDropped=false;
     e.dataTransfer.effectAllowed="move";
     e.dataTransfer.setData("text/plain", _dragModel);  // Firefox starts no drag without a payload
-    e.dataTransfer.setDragImage(row, 24, 16);          // drag the ROW, not the grip
+    // The NAME cell, not the row: a row snapshot is the full ~1300px table width, and the
+    // offsets anchor it 24px in — so the ghost sprawled off to the right of the cursor.
+    e.dataTransfer.setDragImage(row.querySelector("td"), 16, 14);
     row.classList.add("dragging");
   };
   el.ondragover=e=>{
@@ -586,9 +588,21 @@ function wireModelDrag(el){
     el.querySelectorAll(".mrow.dragging").forEach(r=>r.classList.remove("dragging"));
     _dragModel=null;
     // Dropped outside the table: the rows moved during dragover but nothing was saved, so the
-    // screen is now lying. Re-render rather than leave it.
-    if(!_modelDropped) loadAdmin();
+    // screen is now lying. Put them back.
+    if(!_modelDropped) applyPoolOrder(el);
   };
+}
+
+/* Re-seat the rendered rows in MODEL_STATE order, MOVING the existing nodes. Neither path here
+   may re-render the panel: renderAdmin rebuilds every section, which drops the page's scroll
+   position — a drop halfway down the models table jumped the operator back to the top. */
+function applyPoolOrder(el){
+  const rows=[...el.querySelectorAll(".mrow")];
+  const body=rows.length && rows[0].parentNode;
+  if(!body) return;
+  // A find over the rendered rows rather than a [data-model="…"] selector: a model name is not
+  // a CSS identifier, and CSS.escape is wrong inside a quoted attribute selector (ui.md).
+  MODEL_STATE.pool.forEach(p=>{ const r=rows.find(x=>x.dataset.model===p.name); if(r) body.appendChild(r); });
 }
 
 /* The rendered order is the truth after a drop — reorder the pool to match it, rather than
@@ -597,7 +611,7 @@ async function saveModelOrder(el){
   const order=[...el.querySelectorAll(".mrow")].map(r=>r.dataset.model);
   _dragModel=null;
   MODEL_STATE.pool.sort((a,b)=>order.indexOf(a.name)-order.indexOf(b.name));
-  await saveModels(); loadAdmin();
+  await saveModels();
 }
 
 /* Any phase/capability still pointing at a removed model must land somewhere real, or the next

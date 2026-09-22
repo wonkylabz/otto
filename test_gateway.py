@@ -3016,11 +3016,30 @@ class ModelOrderTests(unittest.TestCase):
         self.assertIn('<span class="mgrip" draggable="true"', ui)
         self.assertNotIn('<tr class="mrow" draggable', ui)
 
-    def test_a_drop_outside_the_table_re_renders_instead_of_lying(self):
-        # dragover has already moved the rows by then, so leaving the screen as-is shows an
-        # order that was never saved (the Jobs tab's `_dropped` contract).
+    def test_neither_drag_path_re_renders_the_panel(self):
+        """`renderAdmin` rebuilds every section, which drops the page's scroll position — a drop
+        halfway down the models table threw the operator back to the top (user-observed). The
+        rows are already in the right order after a drop, and an abandoned drag re-seats the
+        existing nodes, so neither path has anything to re-render."""
         ui = ui_src()
-        self.assertIn("if(!_modelDropped) loadAdmin();", ui)
+        body = ui[ui.index("function wireModelDrag("):ui.index("async function saveModelOrder(")]
+        self.assertNotIn("loadAdmin", body,
+                         "a drag path re-renders the panel, which resets the scroll position")
+        save = ui[ui.index("async function saveModelOrder("):]
+        save = save[:save.index("\n}") + 2]
+        self.assertNotIn("loadAdmin", save)
+        # The abandoned drag still has to put the rows back — dragover moved them.
+        self.assertIn("if(!_modelDropped) applyPoolOrder(el);", ui)
+
+    def test_the_drag_image_is_the_name_cell_not_the_whole_row(self):
+        """A row snapshot is the full table width (~1300px) and the offsets anchor it 16px in,
+        so the ghost sprawled off to the right of the cursor (user-observed)."""
+        ui = ui_src()
+        # Scoped to the models block: the Jobs tab drags a div row, where a full-row snapshot is
+        # the right image and its own `setDragImage(row, …)` must keep working.
+        block = ui[ui.index("function wireModelDrag("):ui.index("function applyPoolOrder(")]
+        self.assertIn('setDragImage(row.querySelector("td")', block)
+        self.assertNotIn("setDragImage(row,", block)
 
 
 class DeleteClaudeRowTests(unittest.TestCase):

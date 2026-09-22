@@ -6838,8 +6838,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # `admin.js` half is the four drag handlers, the drop that re-sorts the pool to the rendered
     # order, and the two traps the Jobs tab paid for first — the GRIP is draggable rather than
     # the row (a draggable row swallows the Turns field's selection) and a drop outside the
-    # table re-renders, because dragover has already moved the rows (`ModelOrderTests`).
-    ASSET_MAX = 122605
+    # table puts the rows back, because dragover has already moved them. Neither path re-renders:
+    # rebuilding the panel resets the page's scroll (`ModelOrderTests`).
+    ASSET_MAX = 123476
 
     def _assets(self):
         out = {}
