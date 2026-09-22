@@ -542,11 +542,25 @@ class WorkspaceTests(unittest.TestCase):
             self.assertFalse(self.ws.post_plan(tmp, pr, "r1", "   \n "))
             self.assertFalse(self.ws.post_plan(tmp, pr, "r1", None))
             self.assertFalse(self.ws.post_plan(tmp, None, "r1", "1. a real plan"))  # no PR opened
-            self.ws.PLAN_COMMENT = False
-            self.assertFalse(self.ws.post_plan(tmp, pr, "r1", "1. a real plan"))
+            with mock.patch.dict(os.environ, {"OTTO_PLAN_COMMENT": "0"}):
+                self.assertFalse(self.ws.post_plan(tmp, pr, "r1", "1. a real plan"))
         finally:
-            self.ws._run, self.ws.PLAN_COMMENT = orig, True
+            self.ws._run = orig
         self.assertEqual([], calls)              # nothing even asks GitHub
+
+    def test_the_plan_comment_switch_is_read_at_post_time(self):
+        """It is a RUNTIME setting (Admin -> Approval gate), so the toggle has to reach a worker
+        that is already up. Captured into a module constant at import - which is how it started -
+        the switch is stuck at whatever the process booted with and the Admin control silently
+        does nothing until a restart nobody knows to do."""
+        src = open("workspace.py", encoding="utf-8").read()
+        self.assertNotRegex(src, r"(?m)^PLAN_COMMENT\s*=",
+                            "the plan-comment switch is an import-time constant again")
+        i = src.index("def post_plan(")
+        self.assertIn('config.setting("plan_comment")', src[i:i + 900],
+                      "post_plan no longer reads the runtime setting")
+        self.assertIn("plan_comment", config._SETTING_SPECS,
+                      "the setting is gone from the spec, so Admin cannot render it")
 
     def test_post_plan_is_idempotent_across_qa_and_review_rounds(self):
         """`finalize` runs again for every QA/review fix round against the same PR — without the

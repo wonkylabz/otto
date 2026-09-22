@@ -1693,12 +1693,12 @@ class WorkspaceRoundtripTests(unittest.TestCase):
         ws = self.ws.provision("myrepo", "wf-rt-7")
         with open(os.path.join(ws["path"], "NEW.txt"), "w") as f:
             f.write("change\n")
-        orig, self.ws.PLAN_COMMENT = self.ws.PLAN_COMMENT, False
+        os.environ["OTTO_PLAN_COMMENT"] = "0"        # env beats the store, and beats it per call
         try:
             fin = self.ws.finalize("wf-rt-7", title="add NEW.txt", base_head=ws["head"],
                                    plan="1. Add NEW.txt")
         finally:
-            self.ws.PLAN_COMMENT = orig
+            del os.environ["OTTO_PLAN_COMMENT"]
         self.assertTrue(fin["pushed"])
         self.assertEqual(["NEW.txt", "README.md"], sorted(self._pushed_files("otto/wf-rt-7")))
         self.ws.cleanup("wf-rt-7")
