@@ -2194,6 +2194,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001 - a dead endpoint is a UI verdict
                 self._send(200, json.dumps({"ok": False, "detail": str(e)[:180]}))
 
+    def _post_models_claude(self, body):
+        """POST /api/models/claude — the Claude models available to add, and the list's source
+        (`api` when ANTHROPIC_API_KEY could enumerate them, `known` for the built-in fallback)."""
+        self._send(200, json.dumps(gateway.claude_catalog()))
+
     def _post_models_recheck(self, body):
         """POST /api/models/recheck"""
         self._send(200, json.dumps({"ok": True, "health": gateway.probe_models(force=True)}))
@@ -2359,6 +2364,7 @@ _POST_ROUTES = {
     "/api/models": Handler._post_models,
     "/api/models/capexec": Handler._post_models_capexec,
     "/api/models/caplocal": Handler._post_models_caplocal,
+    "/api/models/claude": Handler._post_models_claude,
     "/api/models/discover": Handler._post_models_discover,
     "/api/models/recheck": Handler._post_models_recheck,
     "/api/models/test": Handler._post_models_test,

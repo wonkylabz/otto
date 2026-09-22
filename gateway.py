@@ -100,23 +100,45 @@ def _strict_stop(task, m, what):
     raise LocalFallbackDisabled(m, what, task=task)
 
 
-def _discover_claude():
-    """Query the Anthropic models API if a key is present; else the known list."""
+def claude_catalog(timeout=15):
+    """The Claude models that can be added, and WHERE the list came from — the Admin
+    "discover" flow's source, and what builds the default pool on a fresh install.
+
+    `source` is the honest half. The Anthropic models API is the live list, but it needs
+    ANTHROPIC_API_KEY, and an install that drives Claude through `claude -p` on the CLI's own
+    login has no key and no way to enumerate models (the CLI has no list command). Rather than
+    render an empty picker there, it falls back to `_KNOWN_CLAUDE` and says so, with `detail`
+    naming the reason — a stale built-in list read as a live one is the worse failure.
+
+    An API entry is named by its own id; a fallback entry keeps its TIER label (claude-sonnet),
+    because `_normalize` re-pins those ids on upgrade and a literal id would freeze the bump."""
+    detail = ""
     key = config.secret("ANTHROPIC_API_KEY")
     if key:
         try:
             req = urllib.request.Request(
                 "https://api.anthropic.com/v1/models",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read())
-            models = [{"name": m["id"], "provider": "claude", "model": m["id"]}
-                      for m in data.get("data", [])]
+            models = [{"id": m["id"], "name": m["id"], "display": m.get("display_name") or ""}
+                      for m in (data.get("data") or []) if m.get("id")]
             if models:
-                return models
-        except Exception:  # noqa: BLE001
-            pass
-    return [{"name": n, "provider": "claude", "model": mid} for n, mid in _KNOWN_CLAUDE]
+                return {"ok": True, "source": "api", "models": models, "detail": ""}
+            detail = "the Anthropic API returned no models"
+        except Exception as e:  # noqa: BLE001 - an unreachable API is operator-facing text
+            detail = str(e)[:180]
+    else:
+        detail = ("no ANTHROPIC_API_KEY set — Otto runs Claude through the CLI's own login, "
+                  "which cannot list models")
+    return {"ok": True, "source": "known", "detail": detail,
+            "models": [{"id": mid, "name": n, "display": ""} for n, mid in _KNOWN_CLAUDE]}
+
+
+def _discover_claude():
+    """The default pool's Claude entries: the live API list if there is one, else the known list."""
+    return [{"name": m["name"], "provider": "claude", "model": m["id"]}
+            for m in claude_catalog()["models"]]
 
 
 def _default_cfg():
