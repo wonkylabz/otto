@@ -1,28 +1,28 @@
 "use strict";
 /* Boot and the periodic view refreshes. Loaded LAST on purpose: the startup pass calls into
    chat, tabs and the mascot, so every module above must already have run. */
-setInterval(()=>{
+poll(()=>{
   const bv=document.getElementById("boardview");
-  if(bv && !bv.hidden) loadBoard(true);
+  if(bv && !bv.hidden) return loadBoard(true);
 }, 3500);
 
 /* keep the chat sidebar fresh — unattended runs (board/schedule/event) create or append
    threads server-side with no browser to record them, so without this an open Chat tab never
    shows them until reload. loadChatList() no-ops unless the list actually changed and preserves
    scroll/selection, so this poll is invisible while you read. */
-setInterval(()=>{
+poll(()=>{
   const cv=document.getElementById("chatview");
-  if(cv && !cv.hidden) loadChatList();
+  if(cv && !cv.hidden) return loadChatList();
 }, 5000);
 
 /* keep the schedules list fresh while it's open — the job list itself doesn't
    change from this tab, but last_run / next_run do as jobs fire in the background */
-setInterval(()=>{
+poll(()=>{
   const sv=document.getElementById("schedulesview");
   if(!sv || sv.hidden) return;
   const jf=document.getElementById("job-form");
   if(jf && jf.innerHTML.trim()) return; // don't clobber an open add/edit form
-  loadJobs(true);
+  return loadJobs(true);
 }, 15000);
 
 /* connect + load capabilities */

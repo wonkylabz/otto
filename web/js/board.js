@@ -33,9 +33,9 @@ async function pollAdminBadge(){
     // Same tick keeps the pause current, so a pause engaged from the CLI, another tab, or a
     // `touch data/ESTOP` shows up here within 15s without this page owning a poller.
     applyEstop(d.estop);
-  }catch(e){}
+  }catch(e){ return false; }   // `poll` backs off — a badge is not worth a toast
 }
-setInterval(pollAdminBadge, 15000);
+poll(pollAdminBadge, 15000);
 pollAdminBadge();
 async function pollBoardBadge(){
   const bv=document.getElementById("boardview");
@@ -49,9 +49,9 @@ async function pollBoardBadge(){
     mascotFleet({run:bk.in_flight||[],
                  waiting:(c.awaiting_approval||0)+(c.awaiting_clarification||0),
                  needs:(c.needs_human||0)+(c.failed||0)});
-  }catch(e){}
+  }catch(e){ return false; }
 }
-setInterval(pollBoardBadge, 15000);
+poll(pollBoardBadge, 15000);
 pollBoardBadge();
 // A run "needs review" when it ended needing a human: verify/QA/budget flagged it (needs_human),
 // it was delivered unverified, or the workflow failed outright. Those are pulled OUT of the
@@ -97,7 +97,7 @@ async function loadBoard(silent){
   // getJSON, not a bare fetch: a 500 resolves like a 200, so `data.temporal` came back falsy
   // and a failed read rendered as the "start Otto with ./run.sh" panel — the wrong diagnosis.
   try { data=await getJSON("/api/board"); }
-  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load the board (${esc(e.message)}).</p>`; return; }
+  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load the board (${esc(e.message)}).</p>`; return false; }
   if(!data.temporal){
     el.innerHTML=`<div class="phead"><h1>Swarm board</h1><p class="sub">Needs Temporal — start Otto with <code>./run.sh</code>.</p></div>`;
     _boardSig=null;

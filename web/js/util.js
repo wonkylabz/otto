@@ -154,3 +154,38 @@ async function getJSON(path){
   }
   return data;
 }
+
+/* THE poller. Six module-level `setInterval`s ran at a fixed period for the life of the tab,
+   each swallowing its own failures: with the server down, a BACKGROUNDED Board tab still hit
+   `/api/*` at ~0.6 req/s forever, and said nothing. Two things a bare `setInterval` cannot do:
+
+   - skip a tick while `document.hidden`, and fire once on the way back rather than waiting out
+     the remainder of a period — returning to a tab is the moment its data is most stale;
+   - back off on CONSECUTIVE failures, doubling to a 60s cap and resetting on the first success.
+
+   `setTimeout` re-armed per tick, not `setInterval`: the delay is no longer constant. A tick is
+   a FAILURE when it throws or resolves `false` — the loaders already paint their own error and
+   return, so `false` is how one tells this helper what it just reported to the operator (the
+   one place a falsy return is read rather than ignored; mutating writes still THROW, `postJSON`).
+   A tick skipped because its view is hidden returns undefined and counts as a success. */
+function poll(fn, ms, cap){
+  const ceiling=cap||60000;
+  let delay=ms, timer=null;
+  const arm=()=>{ clearTimeout(timer); timer=setTimeout(tick, delay); };
+  async function tick(){
+    // Disarmed FIRST, not just re-armed at the end: `fn` is awaited, so a tick fired by the
+    // visibility handler leaves the scheduled one live across that await — and a slow fetch
+    // outlasting the remaining delay is exactly when it fires, giving two concurrent polls.
+    clearTimeout(timer);
+    if(document.hidden){ arm(); return; }
+    let ok=true;
+    try { ok = (await fn()) !== false; } catch(e){ ok=false; }
+    delay = ok ? ms : Math.min(delay*2, ceiling);
+    arm();
+  }
+  arm();
+  // The backoff is deliberately NOT reset here: coming back to a tab says nothing about whether
+  // the server came back, so a dead server gets one probe, not a return to full rate.
+  document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) tick(); });
+  return ()=>clearTimeout(timer);
+}

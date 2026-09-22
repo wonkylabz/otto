@@ -36,7 +36,7 @@ async function loadJobs(silent){
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
   try { data=await (await fetch("/api/runbooks")).json(); }
-  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load jobs (${esc(e.message)}).</p>`; return; }
+  catch(e){ if(!silent) el.innerHTML=`<p class="err">Couldn't load jobs (${esc(e.message)}).</p>`; return false; }
   _jobs=data.jobs||[]; JOB_CAPS=data.caps||[];
   /* A dragged order is the operator's and OUTRANKS both default sorts below — that is what
      dragging a row means. It is display-only: the server keeps it in its own file and nothing

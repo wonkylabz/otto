@@ -3050,7 +3050,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # it names the trap the fix fell into in review: the server's rank prefix only wins once an
     # `-aN` file EXISTS, so between approval and the attempt's sink opening the preview is still
     # the only match — whichever branch forgets to test the label paints the other phase's line.
-    MAX_RULES_BYTES = 85321   # fetched tier — bounded, but looser; it is not always loaded
+    # 85321 -> 85603 (#49): every repeating timer routes through `util.poll`. One rule, and it
+    # carries the half a later edit reaches for first — a bare `setInterval` is the obvious
+    # spelling and reads correct, so the ban has to be written down beside the failure signal
+    # (`false`) that a loader painting its own error owes the poller.
+    MAX_RULES_BYTES = 85603   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

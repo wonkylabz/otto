@@ -5163,6 +5163,58 @@ class MascotStateTests(unittest.TestCase):
                       "forgetting a single fact no longer reaches him")
 
 
+class PollerBackoffTests(unittest.TestCase):
+    """Six module-level `setInterval`s polled `/api/*` at a fixed rate for the life of the tab,
+    with every failure swallowed by an empty catch. A BACKGROUNDED Board tab with the server
+    down still made ~0.6 req/s forever and reported nothing — the two halves of that (no
+    visibility check, no backoff) are what `util.poll` centralises."""
+
+    def _html(self):
+        return ui_src()
+
+    def test_every_network_poller_goes_through_poll(self):
+        """A seventh `setInterval` hitting the API is the whole bug coming back. The three left
+        are local tickers with their own lifecycle (a running GC scan, the pipe animation, a
+        run's clock) — they own a `clearInterval`, which is what tells them apart."""
+        html = self._html()
+        for name in ("loadBoard(true)", "loadChatList()", "loadJobs(true)",
+                     "poll(pollAdminBadge, 15000)", "poll(pollBoardBadge, 15000)",
+                     "poll(applyMood, 20000)"):
+            self.assertIn(name, html)
+        survivors = re.findall(r"(\w+\s*=\s*)?setInterval\(", html)
+        self.assertEqual(len([s for s in survivors if not s]), 0,
+                         "a setInterval with no clearInterval owner came back — route it "
+                         "through `poll` (issue #49)")
+
+    def test_poll_skips_a_hidden_tab_and_ticks_on_return(self):
+        """Pausing alone is not the fix: a tab that resumes on the next scheduled tick shows
+        stale data for up to a full period at the exact moment someone is looking at it."""
+        fn = re.search(r"function poll\(fn, ms, cap\)\{.*?\n\}", self._html(), re.S).group(0)
+        self.assertIn("if(document.hidden){ arm(); return; }", fn)
+        self.assertIn('document.addEventListener("visibilitychange"', fn)
+        self.assertIn("if(!document.hidden) tick()", fn)
+
+    def test_the_backoff_doubles_caps_and_resets_only_on_success(self):
+        """Consecutive failures, not elapsed time: one bad tick in a healthy run must not slow
+        the poller down, and a cap is what keeps a recovered server found again."""
+        fn = re.search(r"function poll\(fn, ms, cap\)\{.*?\n\}", self._html(), re.S).group(0)
+        self.assertIn("delay = ok ? ms : Math.min(delay*2, ceiling)", fn)
+        self.assertIn("cap||60000", fn)
+        # Returning to a tab must NOT reset the backoff — visibility says nothing about the
+        # server, and re-arming at full rate is the storm this fixes, one tab switch later.
+        after = fn.split('addEventListener("visibilitychange"')[1]
+        self.assertNotIn("delay=ms", after)
+
+    def test_a_failed_read_tells_poll_it_failed(self):
+        """The loaders paint their own error and return, so the failure never reached a caller.
+        `false` is the signal; without it the backoff can never engage for the three biggest
+        pollers, which is every /api read on the tab."""
+        html = self._html()
+        for painted in ("Couldn't load the board", "Couldn't load jobs", "Couldn't load your chats"):
+            line = next(l for l in html.splitlines() if painted in l)
+            self.assertIn("return false;", line, f"{painted!r} still swallows its failure")
+
+
 class EstopUiTests(unittest.TestCase):
     """The pause control (`web/js/chat.js`, markup in `web/index.html`). Verified in a real browser (click →
     strip + label + server sentinel → submit refused 409 → click → released); what this pins is
