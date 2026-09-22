@@ -7900,6 +7900,31 @@ class ReadDenyTests(unittest.TestCase):
         self.assertTrue(file_safety.is_read_denied(path, allow_cwd=os.path.dirname(config.DATA_DIR)),
                         "a run whose cwd IS Otto's checkout must still not read the tokens")
 
+    def test_a_project_caps_merged_mcp_config_is_denied_like_the_active_one(self):
+        """`engine._effective_mcp` merges `.mcp-active.json` into `data/.mcp-<cap>.json`, so the
+        merge carries the same resolved tokens and must be denied to the Otto-cwd run too."""
+        root = os.path.dirname(os.path.abspath(config.DATA_DIR))
+        path = self._p(".mcp-aws-cost-report.json")
+        self.assertTrue(file_safety.is_read_denied(path))
+        self.assertTrue(file_safety.is_read_denied(path, allow_cwd=root))
+
+    def test_the_merged_mcp_config_gets_a_sandbox_mount(self):
+        """`glob.glob("data/*.json")` skips dotfiles, so without the family glob a local/Codex
+        run's Bash could `cat` the merge from inside bwrap."""
+        root = os.path.dirname(os.path.abspath(config.DATA_DIR))
+        path = self._p(".mcp-some-cap.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("{}")
+        try:
+            for cwd in (None, root):
+                m = file_safety.read_deny_mounts(cwd=cwd)
+                real = os.path.realpath(path)
+                self.assertTrue(any(m[i] == "--ro-bind" and m[i + 2] in (path, real)
+                                    for i in range(len(m) - 2)), f"no mount for cwd={cwd}")
+        finally:
+            os.remove(path)
+
     def test_the_durable_trace_log_is_read_denied(self):
         """Issue #128 created a new durable sink under `data/`, in a SUBDIRECTORY — the existing
         `data/*.log` glob (the frozen pre-SQLite audit copies) does not reach it. Without the
