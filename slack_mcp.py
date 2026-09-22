@@ -37,9 +37,10 @@ _MAX_RETRIES = 3
 # the raw code sends its reader to the API docs; one that reports these does not.
 _ERRORS = {
     "missing_scope":
-        "the token lacks the scope for this call — a user token needs `channels:write` for a "
-        "public channel and `groups:write` for a private one (a bot token: `channels:manage`). "
-        "Add it in the Slack app's OAuth & Permissions, reinstall, and replace the token.",
+        "the token lacks the scope for this call. Listing needs `channels:read` (+ `groups:read` "
+        "for private); archiving needs `channels:write` (+ `groups:write`) on a user token, "
+        "`channels:manage` on a bot. Add it in the Slack app's OAuth & Permissions, reinstall, "
+        "and replace the token.",
     "not_in_channel":
         "the token's identity is not a member of that channel. A bot must be invited; a user "
         "token must belong to someone who has joined it.",
@@ -136,7 +137,8 @@ def _explain(resp):
     hint = _ERRORS.get(code)
     extra = resp.get("needed")
     if code == "missing_scope" and extra:
-        hint = f"{hint} Slack says it needs: {extra}."
+        hint = (f"the token lacks `{extra}`, which this call needs. Add it in the Slack app's "
+                "OAuth & Permissions, reinstall, and replace the token.")
     return f"{code} — {hint}" if hint else code
 
 

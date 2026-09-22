@@ -7355,6 +7355,16 @@ class SlackAdminMcpTests(unittest.TestCase):
         self.assertIn("channels:write", text)
         self.assertIn("reinstall", text.lower())
 
+    def test_missing_scope_names_the_scope_slack_asked_for_not_the_write_one(self):
+        """A token lacking only `channels:read` was told to add `channels:write`, which it
+        already had, so the hint pointed at the wrong fix."""
+        self.responses["conversations.list"] = {"ok": False, "error": "missing_scope",
+                                                "needed": "channels:read"}
+        text, err = self.mod.dispatch("list_channels", {})
+        self.assertTrue(err)
+        self.assertIn("`channels:read`", text)
+        self.assertNotIn("channels:write", text)
+
     def test_an_unknown_error_code_still_reaches_the_reader(self):
         """The hint table is a courtesy, not a filter — an unmapped code must pass through
         whole, or a new Slack error reads as a blank failure."""

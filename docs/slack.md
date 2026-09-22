@@ -238,13 +238,16 @@ answer "older than N days" without opening each one), `archive_channel` and
 
 ### 1. Add the scope
 
-Archiving needs a scope none of the listener scopes imply. Add it to the *same* app, under
+Archiving needs scopes none of the listener scopes imply. Add them to the *same* app, under
 **OAuth & Permissions → Scopes**:
 
 | Token | Public channel | Private channel |
 |---|---|---|
-| User (`xoxp-…`) | `channels:write` | `groups:write` |
-| Bot (`xoxb-…`) | `channels:manage` | `groups:write` |
+| User (`xoxp-…`) | `channels:read`, `channels:write` | `groups:read`, `groups:write` |
+| Bot (`xoxb-…`) | `channels:read`, `channels:manage` | `groups:read`, `groups:write` |
+
+The `:read` scopes are for `conversations.list`, which `list_channels` and every name lookup
+call — without them the server loads, but every call fails `missing_scope`.
 
 `channels:manage` exists only as a *Bot* scope — on the User list the equivalent is
 `channels:write`. Reinstall the app afterwards and replace the token in `.env`: a scope added
