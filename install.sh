@@ -30,6 +30,9 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
+# Minimum Python, stated once: the gate computes its comparison from this string.
+PY_MIN="3.12"
+
 NO_SERVICE=0
 NO_TESTS=0
 GUIDED=0
@@ -64,7 +67,23 @@ fi
 
 # --- 1. hard prerequisites -------------------------------------------------
 
-command -v python3 >/dev/null 2>&1 || die "python3 not found — install Python 3.9+ first."
+# The interpreter the venv is built from. Overridable so a host whose `python3` is too old
+# can still install without touching PATH — the gate below and step 2 read the same variable,
+# or the suggested remedy would be one the re-run ignores.
+PYTHON="${PYTHON:-python3}"
+command -v "$PYTHON" >/dev/null 2>&1 || die "$PYTHON not found — install Python $PY_MIN+ first" \
+    "(or point this script at one: PYTHON=/path/to/python3 ./install.sh)."
+
+# pyproject requires >=3.12. temporalio installs fine on 3.10/3.11, so without this check
+# the run reaches the test suite and dies on a syntax error that looks unrelated.
+if ! "$PYTHON" -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= tuple(map(int, '$PY_MIN'.split('.'))) else 1)"; then
+  die "$PYTHON is $("$PYTHON" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') —" \
+      "Otto needs $PY_MIN+ (see pyproject.toml). Install a newer Python and re-run," \
+      $'or point this script at one:\n' \
+      "    PYTHON=python$PY_MIN ./install.sh"
+fi
+# Debian names the venv package after the interpreter's OWN major.minor, not after "python3".
+PY_XY="$("$PYTHON" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 
 if ! command -v claude >/dev/null 2>&1; then
   die "claude CLI not found on PATH. Otto runs your existing Claude Code" \
@@ -86,15 +105,29 @@ fi
 # --- 2. venv + deps ----------------------------------------------------------
 
 log "python venv: creating/upgrading .venv"
-if ! python3 -m venv --upgrade-deps .venv 2>/tmp/otto-venv.err; then
-  if grep -qi "ensurepip is not available\|No module named venv" /tmp/otto-venv.err && command -v apt-get >/dev/null 2>&1; then
-    log "system is missing the venv module — installing python3-venv via apt (sudo)…"
+# BOTH streams: venv prints the ensurepip diagnostic with a bare print() — i.e. to STDOUT —
+# while "No module named venv" goes to stderr. Capturing only stderr left the recovery below
+# unreachable, so it had never once fired.
+if ! "$PYTHON" -m venv --upgrade-deps .venv >/tmp/otto-venv.err 2>&1; then
+  # …and that diagnostic is hard-wrapped mid-sentence ("because ensurepip is not\navailable."),
+  # so the match has to run over unwrapped text or it misses on a line boundary.
+  if tr -s '[:space:]' ' ' < /tmp/otto-venv.err \
+       | grep -qiE "ensurepip is not available|No module named venv" \
+     && command -v apt-get >/dev/null 2>&1; then
+    # python3-venv tracks the DEFAULT interpreter. Under PYTHON=python3.12 on a 3.11 host it
+    # installs ensurepip for the wrong one and the retry fails identically, so ask for the
+    # package that matches $PYTHON and only fall back to the generic name.
+    VENV_PKG="python${PY_XY}-venv"
+    log "system is missing the venv module for $PYTHON — installing $VENV_PKG via apt (sudo)…"
     sudo apt-get update -y
-    sudo apt-get install -y python3-venv
-    python3 -m venv --upgrade-deps .venv
+    sudo apt-get install -y "$VENV_PKG" || sudo apt-get install -y python3-venv \
+      || die "could not install $VENV_PKG — install it yourself and re-run: sudo apt install $VENV_PKG"
+    "$PYTHON" -m venv --upgrade-deps .venv \
+      || die "still cannot create .venv with $PYTHON after installing $VENV_PKG (see the error above)"
   else
     cat /tmp/otto-venv.err >&2
-    die "failed to create .venv (see error above)"
+    die "failed to create .venv (see error above)." \
+        "On Debian/Ubuntu the missing piece is usually: sudo apt install python${PY_XY}-venv"
   fi
 fi
 rm -f /tmp/otto-venv.err
@@ -113,13 +146,80 @@ TEMPORAL_BIN="$HOME/.temporalio/bin/temporal"
 # requirements.txt. The two are bumped INDEPENDENTLY; copying one number onto the other
 # is what left the SDK pinned at the CLI's 1.8.0 while every run used 1.30.0 (PR #302).
 TEMPORAL_CLI_VERSION="1.8.0"
-if [ -x "$TEMPORAL_BIN" ]; then
-  log "temporal CLI: already installed ($("$TEMPORAL_BIN" --version 2>/dev/null | head -1))"
-else
+
+# sha256 of the release tarballs, copied from the release's own checksums.txt. Bumping
+# TEMPORAL_CLI_VERSION means re-copying these four lines from the new release.
+temporal_sha256() {
+  case "$1" in
+    darwin_amd64) echo "7ea6edf15329e8169233d3e38a0c1f6464cf84ee25140c16ff059ea4f802762e" ;;
+    darwin_arm64) echo "46b4ac2b603e2b68d684da728bccd938a69acfad9c5e1a469d28d00a64e8bc9c" ;;
+    linux_amd64)  echo "896c6132d6d969f84c3f2382a31abd9a67a06ed3008c1a37c3573fe81d730e4a" ;;
+    linux_arm64)  echo "52d2d3e4f35c4ad2d45d0677eae1e1e3c7ba3c7f40a6a42d9a7f34e541c3dd57" ;;
+  esac
+}
+
+installed_temporal_version() {
+  "$TEMPORAL_BIN" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  else return 1
+  fi
+}
+
+install_temporal_cli() {
   command -v curl >/dev/null 2>&1 || die "curl is required to install the Temporal CLI (or install it yourself: https://temporal.download)"
-  log "temporal CLI: installing v$TEMPORAL_CLI_VERSION to ~/.temporalio/bin"
-  curl -sSf https://temporal.download/cli.sh | sh -s -- --version "$TEMPORAL_CLI_VERSION"
+  local os arch platform want tmp tarball
+  case "$(uname -s)" in
+    Linux) os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) die "no pinned Temporal CLI build for $(uname -s) — install it yourself: https://temporal.download" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="amd64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) die "no pinned Temporal CLI build for $(uname -m) — install it yourself: https://temporal.download" ;;
+  esac
+  platform="${os}_${arch}"
+  want="$(temporal_sha256 "$platform")"
+  [ -n "$want" ] || die "no pinned checksum for $platform — install the Temporal CLI yourself: https://temporal.download"
+
+  log "temporal CLI: installing v$TEMPORAL_CLI_VERSION ($platform) to ~/.temporalio/bin"
+  tmp="$(mktemp -d)"
+  tarball="$tmp/temporal.tar.gz"
+  curl -sSfL -o "$tarball" \
+    "https://github.com/temporalio/cli/releases/download/v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_${platform}.tar.gz" \
+    || { rm -rf "$tmp"; die "could not download the Temporal CLI v$TEMPORAL_CLI_VERSION tarball"; }
+
+  local got
+  got="$(sha256_of "$tarball")" || { rm -rf "$tmp"; die "neither sha256sum nor shasum is available — cannot verify the Temporal CLI download"; }
+  if [ "$got" != "$want" ]; then
+    rm -rf "$tmp"
+    die "Temporal CLI checksum mismatch for $platform: expected $want, got $got. Refusing to install."
+  fi
+
+  tar -xzf "$tarball" -C "$tmp" temporal || { rm -rf "$tmp"; die "Temporal CLI tarball has no 'temporal' binary"; }
+  mkdir -p "$(dirname "$TEMPORAL_BIN")"
+  install -m 755 "$tmp/temporal" "$TEMPORAL_BIN"
+  rm -rf "$tmp"
   [ -x "$TEMPORAL_BIN" ] || die "Temporal CLI install did not produce $TEMPORAL_BIN"
+}
+
+if [ -x "$TEMPORAL_BIN" ]; then
+  TEMPORAL_HAVE="$(installed_temporal_version)"
+  if [ "$TEMPORAL_HAVE" = "$TEMPORAL_CLI_VERSION" ]; then
+    log "temporal CLI: already installed (v$TEMPORAL_HAVE)"
+  else
+    # ~/.temporalio/bin is shared with every other Temporal user on this box, so this
+    # moves a NEWER CLI back onto Otto's pin too. Converging on the pin is the point.
+    log "temporal CLI: installed v${TEMPORAL_HAVE:-unknown} != pinned v$TEMPORAL_CLI_VERSION — replacing it with the pin"
+    install_temporal_cli
+    log "temporal CLI: now v$(installed_temporal_version)"
+  fi
+else
+  install_temporal_cli
 fi
 
 # --- 4. .env ------------------------------------------------------------------
