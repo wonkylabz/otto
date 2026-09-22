@@ -3027,7 +3027,10 @@ class ModelOrderTests(unittest.TestCase):
                          "a drag path re-renders the panel, which resets the scroll position")
         save = ui[ui.index("async function saveModelOrder("):]
         save = save[:save.index("\n}") + 2]
-        self.assertNotIn("loadAdmin", save)
+        # A successful drop re-renders nothing. The ONE re-render here is the refused save, which
+        # has to take the rows back off the screen (`test_a_refused_save_does_not_leave_…`).
+        self.assertEqual([l.strip() for l in save.splitlines() if "loadAdmin" in l],
+                         ["if(r && r.error) loadAdmin();"])
         # The abandoned drag still has to put the rows back — dragover moved them.
         self.assertIn("if(!_modelDropped) applyPoolOrder(el);", ui)
 
@@ -3044,6 +3047,17 @@ class ModelOrderTests(unittest.TestCase):
                           if not m.startswith(".mpool ")], [],
                          "an unscoped .mrow query on the drag path also matches the endpoints "
                          "table's rows")
+
+    def test_a_refused_save_does_not_leave_the_new_order_on_screen(self):
+        """The drop path deliberately does not re-render — but a save the server REFUSED leaves
+        the rows showing an order it does not have, the same lie the abandoned drag re-seats to
+        avoid. `error` is the precise signal: `saveModels` returns `ok:false` with `lost_keys`
+        for a save that DID write, so keying on `ok` would revert a successful reorder."""
+        ui = ui_src()
+        save = ui[ui.index("async function saveModelOrder("):]
+        save = save[:save.index("\n}") + 2]
+        self.assertIn("if(r && r.error) loadAdmin();", save)
+        self.assertNotIn("if(!r.ok)", save)
 
     def test_the_drag_image_is_a_built_chip_that_is_cleaned_up(self):
         """Neither a `<tr>` nor a cell works as the image: the row images at the full ~1300px

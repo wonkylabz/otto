@@ -621,7 +621,11 @@ async function saveModelOrder(el){
   const order=poolRows(el).map(r=>r.dataset.model);
   _dragModel=null;
   MODEL_STATE.pool.sort((a,b)=>order.indexOf(a.name)-order.indexOf(b.name));
-  await saveModels();
+  // A REFUSED save must not leave the new order on screen — that is the same lie the abandoned
+  // drag re-seats the rows to avoid, and here the server has the OLD order. `error` is set only
+  // on the throwing path: `ok:false` with `lost_keys` means the models WERE written.
+  const r=await saveModels();
+  if(r && r.error) loadAdmin();
 }
 
 /* Any phase/capability still pointing at a removed model must land somewhere real, or the next

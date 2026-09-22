@@ -6843,7 +6843,7 @@ class UiAssetLayoutTests(unittest.TestCase):
     # measured on the live page: every row query is scoped to `.mpool` (the endpoints table
     # shares `.mrow`, and unscoped this moved the whole pool into it) and the drag image is a
     # chip built off-screen, because a <tr> images at the full table width (`ModelOrderTests`).
-    ASSET_MAX = 124041
+    ASSET_MAX = 124362
 
     def _assets(self):
         out = {}
