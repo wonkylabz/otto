@@ -821,6 +821,8 @@
   .modtable .c-turns { width: 78px; }
   .modtable .c-turns input { width: 56px; }
   .modtable .c-test { width: 150px; }
+  /* the 15px grip + the cell's 20px of padding (ModelOrderTests). */
+  .modtable .c-ord { width: 36px; }
   .modtable .c-rm { width: 30px; }
   /* both cells: the td's 10px .ctable padding otherwise shrinks the radio row 20px inside the
      header's own grid, and the two rows drift apart */
@@ -831,6 +833,15 @@
   @media (max-width: 940px) { .modtable .c-health { display: none; } }
   @media (max-width: 1010px) { .modtable .c-turns { display: none; } }
   .mrow.off { opacity: .5; }
+  .mrow .mgrip { cursor: grab; color: var(--dim); opacity: .3; font-size: 15px; }
+  .mrow:hover .mgrip { opacity: .85; }
+  .mrow .mgrip:active { cursor: grabbing; }
+  .mrow.dragging { opacity: .45; }
+  /* the drag image: built off-screen, so it is sized by its own text rather than by a
+     table cell the fixed layout has already stretched. */
+  .mdragimg { position: fixed; top: -1000px; left: -1000px; padding: 4px 10px;
+    border-radius: var(--r-sm); background: var(--raised); border: 1px solid var(--line);
+    font-family: var(--mono); font-size: 13px; color: var(--text); white-space: nowrap; }
   .mrow .minfo { display: block; min-width: 0; }
   .mrow .minfo .mn { font-family: var(--mono); font-size: 13px; color: var(--text); }
   .mrow .minfo small { display: block; color: var(--dim); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

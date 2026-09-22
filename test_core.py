@@ -3064,7 +3064,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 86155 -> 86434: Admin can delete a Claude row. One rule, and it carries the two things
     # that only became reachable with it — an empty pool is refilled (so the last entry must be
     # refused, not saved) and a Claude-less pool still bills Claude, on an id no row names.
-    MAX_RULES_BYTES = 86434   # fetched tier — bounded, but looser; it is not always loaded
+    # 86434 -> 86704: the models list is dragged into order. One rule, carrying the two halves a
+    # later edit gets wrong: order is NOT cosmetic between same-tier rows (escalation, downshift
+    # and the Claude fallback each take the first id matching their tier), and the `<colgroup>` is
+    # the column geometry, so a `th` added without its `<col>` shifts every column after it.
+    MAX_RULES_BYTES = 86704   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

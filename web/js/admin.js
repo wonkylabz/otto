@@ -111,7 +111,7 @@ async function refreshMcpHealth(rendered){
   // relying on that leaves the label stuck at "Checking…" the moment that stops being true.
   if(btn){ btn.disabled=false; btn.textContent=label; }
   MCP_REFRESHING=false;
-  if(moved) loadAdmin();
+  if(moved && !dragHoldsRender()) loadAdmin();   // a drag in flight takes it at dragend
 }
 
 // Runtime settings (config._SETTING_SPECS): the "run an experiment today" knobs, editable here
@@ -403,8 +403,8 @@ function modelsSection(m){
     <th class="c-health">Health</th>
     <th class="c-phases"><span class="mradios">${PHASE_HELP.map(([l,t])=>`<span class="rc h" title="${esc(t)}">${l}</span>`).join("")}</span></th>
     <th class="c-turns" title="local agent runtime's per-run turn budget (model call + tool round = one turn) — blank uses the global default (60), raise for a stronger model that needs more room">Turns</th>
-    <th class="c-test">Check</th><th class="c-rm"></th></tr></thead>`;
-  const rows=m.pool.map(p=>`<tr class="mrow">
+    <th class="c-test">Check</th><th class="c-ord"></th><th class="c-rm"></th></tr></thead>`;
+  const rows=m.pool.map(p=>`<tr class="mrow" data-model="${esc(p.name)}">
       <td><span class="minfo"><span class="mn">${plabel(p)} · ${esc(pname(p))}</span>
         <small>${p.provider==='claude'?esc(p.model):(p.provider==='codex'&&!p.endpoint?'codex exec · '+esc(p.model||''):esc(p.endpoint||p.base_url||'')+' · '+esc(p.model||''))}</small></span></td>
       <td class="c-tag"><span class="srctag" title="${p.provider==='claude'?'runs through claude -p':'kind is set on the endpoint (edit it to change)'}">${esc(kindOf(p))}</span></td>
@@ -412,6 +412,7 @@ function modelsSection(m){
       <td class="c-phases"><span class="mradios">${radio(p,'routing')}${radio(p,'plan')}${radio(p,'preview')}${radio(p,'clarify')}${radio(p,'memory')}${radio(p,'verify')}${radio(p,'supervise')}${radio(p,'memory_gc')}${radio(p,'execution')}</span></td>
       <td class="c-turns">${(p.provider!=='claude'&&p.provider!=='codex')?`<input type="number" min="1" step="1" data-turns="${esc(p.name)}" value="${p.max_turns||''}" placeholder="60">`:''}</td>
       <td class="c-test"><span class="mtest"><button class="addbtn testbtn" data-testmodel="${esc(p.name)}">test</button><span class="tres" data-tres="${esc(p.name)}"></span></span></td>
+      <td class="c-ord r"><span class="mgrip" draggable="true" title="drag to reorder \u2014 display only, except between models of the SAME tier: escalation, downshift and the Claude fallback each take the FIRST entry whose id matches their tier, so the higher of two opus rows wins">&#10247;</span></td>
       <td class="c-rm r"><button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button></td>
     </tr>`).join("");
   const gs=(typeof GATEWAY_STATS!=="undefined"&&GATEWAY_STATS)||{tasks:{},down:{}};
@@ -462,7 +463,7 @@ function modelsSection(m){
     <p class="sub" style="margin:2px 0 8px">One model per phase — hover a column header for what it does. The cheap phases take a local model happily.</p>
     ${badge}
     <table class="ctable modtable mpool">
-      <colgroup><col><col class="c-tag"><col class="c-health"><col class="c-phases"><col class="c-turns"><col class="c-test"><col class="c-rm"></colgroup>
+      <colgroup><col><col class="c-tag"><col class="c-health"><col class="c-phases"><col class="c-turns"><col class="c-test"><col class="c-ord"><col class="c-rm"></colgroup>
       ${head}<tbody>${rows}</tbody></table></div></div>`;
 }
 
@@ -470,6 +471,7 @@ function wireModels(el){
   el.querySelectorAll('.mradios input[type=radio]').forEach(r=>r.addEventListener("change",()=>{
     MODEL_STATE.assign[r.name.slice(3)]=r.value; saveModels();   // as-routing -> routing
   }));
+  wireModelDrag(el);
   el.querySelectorAll("[data-delmodel]").forEach(b=>b.addEventListener("click",async()=>{
     const name=b.dataset.delmodel;
     // The LAST entry cannot go: `_normalize` refills an empty pool with the default tiers, so
@@ -547,6 +549,91 @@ function wireModels(el){
     repointAssignments(on);
     await saveModels(); loadAdmin();
   }));
+}
+
+/* Reordering the pool by drag, the same idiom as the Jobs tab (`wireJobDrag`). The order is
+   the operator's arrangement — the list has no sort key to re-derive it from — and it is
+   display only with ONE exception, which the grip's tooltip states: a fallback with nothing
+   better to go on takes the first entry (`ModelOrderTests`).
+
+   It DOES need the Jobs tab's mid-drag render guard, for a re-render that is not a poll:
+   `refreshMcpHealth` calls `loadAdmin()` on its own up to ~8s after the panel opens when MCP
+   health moved. A drag started in that window lost its row to the rebuild, so `dragend` fired
+   on a detached node, never reached #adminview, and leaked the ghost. */
+let _dragModel=null, _modelDropped=false, _dragGhost=null, _renderAfterDrag=false;
+// A re-render that arrives MID-DRAG is deferred to dragend rather than dropped: the operator
+// keeps their drag, and the MCP health that triggered it still lands. `refreshMcpHealth` is the
+// one caller; anything else that re-renders the panel while dragging belongs here too.
+const dragHoldsRender=()=>{ if(!_dragModel) return false; _renderAfterDrag=true; return true; };
+// The POOL's rows only. `.mrow` is shared with the endpoints table above it — reading it
+// unscoped picked THAT table's tbody and re-parented every model row into it (user-observed).
+const poolRows=el=>[...el.querySelectorAll(".mpool .mrow")];
+function wireModelDrag(el){
+  // Property assignment, not addEventListener: #admin outlives every render, so listeners
+  // would stack one deep per render (same contract as the Jobs list).
+  el.ondragstart=e=>{
+    const grip=e.target.closest(".mgrip");
+    if(!grip) return;
+    const row=grip.closest(".mpool .mrow");
+    if(!row) return;
+    _dragModel=row.dataset.model; _modelDropped=false;
+    e.dataTransfer.effectAllowed="move";
+    e.dataTransfer.setData("text/plain", _dragModel);  // Firefox starts no drag without a payload
+    // A purpose-built chip, not a snapshot of anything in the table: a <tr> images at the full
+    // ~1300px table width, and the name cell is the AUTO-width column (~700px) — so either one
+    // trails off to the right of the cursor.
+    document.querySelectorAll(".mdragimg").forEach(n=>n.remove());   // never leak one per drag
+    _dragGhost=document.createElement("div");
+    _dragGhost.className="mdragimg";
+    _dragGhost.textContent=row.querySelector(".mn").textContent;
+    document.body.appendChild(_dragGhost);
+    e.dataTransfer.setDragImage(_dragGhost, 14, 14);
+    row.classList.add("dragging");
+  };
+  el.ondragover=e=>{
+    const from=_dragModel && el.querySelector(".mpool .mrow.dragging");
+    const row=e.target.closest(".mpool .mrow");
+    if(!from || !row || row.parentNode!==from.parentNode) return;
+    e.preventDefault();                                // the ONLY thing that makes a drop legal
+    e.dataTransfer.dropEffect="move";
+    const r=row.getBoundingClientRect();
+    if(row!==from) row.parentNode.insertBefore(from, (e.clientY-r.top)>r.height/2 ? row.nextSibling : row);
+  };
+  el.ondrop=e=>{ if(_dragModel){ e.preventDefault(); _modelDropped=true; saveModelOrder(el); } };
+  el.ondragend=()=>{
+    el.querySelectorAll(".mpool .mrow.dragging").forEach(r=>r.classList.remove("dragging"));
+    if(_dragGhost) _dragGhost.remove();
+    _dragGhost=null; _dragModel=null;
+    // Dropped outside the table: the rows moved during dragover but nothing was saved, so the
+    // screen is now lying. Put them back.
+    if(!_modelDropped) applyPoolOrder(el);
+    if(_renderAfterDrag){ _renderAfterDrag=false; loadAdmin(); }
+  };
+}
+
+/* Re-seat the rendered rows in MODEL_STATE order, MOVING the existing nodes. Neither path here
+   may re-render the panel: renderAdmin rebuilds every section, which drops the page's scroll
+   position — a drop halfway down the models table jumped the operator back to the top. */
+function applyPoolOrder(el){
+  const rows=poolRows(el);
+  const body=rows.length && rows[0].parentNode;
+  if(!body) return;
+  // A find over the rendered rows rather than a [data-model="…"] selector: a model name is not
+  // a CSS identifier, and CSS.escape is wrong inside a quoted attribute selector (ui.md).
+  MODEL_STATE.pool.forEach(p=>{ const r=rows.find(x=>x.dataset.model===p.name); if(r) body.appendChild(r); });
+}
+
+/* The rendered order is the truth after a drop — reorder the pool to match it, rather than
+   recomputing the move from indices the DOM has already changed. */
+async function saveModelOrder(el){
+  const order=poolRows(el).map(r=>r.dataset.model);
+  _dragModel=null;
+  MODEL_STATE.pool.sort((a,b)=>order.indexOf(a.name)-order.indexOf(b.name));
+  // A REFUSED save must not leave the new order on screen — that is the same lie the abandoned
+  // drag re-seats the rows to avoid, and here the server has the OLD order. `error` is set only
+  // on the throwing path: `ok:false` with `lost_keys` means the models WERE written.
+  const r=await saveModels();
+  if(r && r.error) loadAdmin();
 }
 
 /* Any phase/capability still pointing at a removed model must land somewhere real, or the next

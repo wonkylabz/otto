@@ -2962,6 +2962,162 @@ class ModelEndpointTests(unittest.TestCase):
             self.assertNotIn('headers["Authorization"]', src, mod)
 
 
+class ModelOrderTests(unittest.TestCase):
+    """Admin reorders the pool by dragging a row's grip, so the ORDER is now operator intent
+    rather than insertion history — it has to survive a round-trip, and what it decides has to be
+    written down, because the list carries no sort key for a later edit to re-sort by."""
+
+    def setUp(self):
+        import tempfile
+        self._orig = gateway._PATH
+        self.addCleanup(lambda: setattr(gateway, "_PATH", self._orig))
+        gateway._PATH = os.path.join(tempfile.mkdtemp(prefix="otto-ord-"), "models.json")
+
+    def test_the_order_survives_a_save_and_reload(self):
+        cfg = {"pool": [{"name": "a", "provider": "claude", "model": "claude-opus-4-8"},
+                        {"name": "b", "provider": "openai", "endpoint": "e", "model": "m"},
+                        {"name": "c", "provider": "claude", "model": "claude-sonnet-5"}],
+               "assign": {}, "endpoints": [{"name": "e", "base_url": "http://x/v1",
+                                            "kind": "local"}]}
+        gateway.save(gateway._normalize(cfg))
+        self.assertEqual([m["name"] for m in gateway.load()["pool"]], ["a", "b", "c"])
+        # Moving the local entry to the top must not be undone by hydration or the migrations.
+        moved = gateway.load()
+        moved["pool"].insert(0, moved["pool"].pop(1))
+        gateway.save(moved)
+        self.assertEqual([m["name"] for m in gateway.load()["pool"]], ["b", "a", "c"])
+
+    def test_order_picks_the_winner_between_two_models_of_the_SAME_tier(self):
+        """The dependence is wider than "pool[0] is the fallback", and this is the half that bites
+        a real pool: `_default_claude`, `escalation_model_id` and `downshift_model_id` each take
+        the FIRST entry whose id contains their tier keyword. Two opus rows is not exotic — the
+        Claude picker adds any id the catalog lists — and dragging one above the other silently
+        repoints escalation, downshift, the local-failure fallback and the plan preview."""
+        two_opus = lambda first, second: {"pool": [
+            {"name": first, "provider": "claude", "model": first},
+            {"name": second, "provider": "claude", "model": second},
+            {"name": "s", "provider": "claude", "model": "claude-sonnet-5"}], "assign": {}}
+        self.assertEqual(gateway.escalation_model_id(two_opus("claude-opus-4-8", "claude-opus-5")),
+                         "claude-opus-4-8")
+        self.assertEqual(gateway.escalation_model_id(two_opus("claude-opus-5", "claude-opus-4-8")),
+                         "claude-opus-5")
+        two_sonnet = lambda first, second: {"pool": [
+            {"name": first, "provider": "claude", "model": first},
+            {"name": second, "provider": "claude", "model": second}], "assign": {}}
+        self.assertEqual(gateway._default_claude(two_sonnet("claude-sonnet-5", "claude-sonnet-4-6")),
+                         "claude-sonnet-5")
+        self.assertEqual(gateway._default_claude(two_sonnet("claude-sonnet-4-6", "claude-sonnet-5")),
+                         "claude-sonnet-4-6")
+
+    def test_the_grip_tooltip_states_the_same_tier_case(self):
+        # The tooltip is the only place an operator meets this, and it used to say only that a
+        # fallback "with nothing better to go on" takes the first entry — which reads as "order
+        # matters only in a pool missing a tier", the opposite of the case above.
+        ui = ui_src()
+        tip = ui[ui.index('class="mgrip"'):]
+        tip = tip[:tip.index("</span>")]
+        self.assertIn("SAME tier", tip)
+
+    def test_a_mid_drag_re_render_is_deferred_not_fired(self):
+        """`refreshMcpHealth` calls `loadAdmin()` on its own up to ~8s after the panel opens. A
+        drag started in that window lost its row to the rebuild: `dragend` then fired on a
+        detached node, never reached #adminview, so the ghost leaked and the drag was silently
+        dropped. The re-render is held to dragend instead of being skipped, so the MCP health
+        that triggered it still lands."""
+        ui = ui_src()
+        self.assertIn("if(moved && !dragHoldsRender()) loadAdmin();", ui)
+        self.assertIn("if(_renderAfterDrag){ _renderAfterDrag=false; loadAdmin(); }", ui)
+        # And the ghost cannot accumulate even if a rebuild does slip through.
+        self.assertIn('document.querySelectorAll(".mdragimg").forEach(n=>n.remove());', ui)
+
+    def test_the_first_entry_is_what_a_sonnet_less_pool_falls_back_to(self):
+        # The one place order is not cosmetic, and the reason the column's tooltip says so: with
+        # no sonnet in the pool the default assignment is pool[0], so reordering repoints it.
+        pool = [{"name": "opus", "provider": "claude", "model": "claude-opus-4-8"},
+                {"name": "haiku", "provider": "claude", "model": "claude-haiku-4-5-20251001"}]
+        self.assertEqual(gateway._normalize({"pool": list(pool), "assign": {}})["assign"]["execution"],
+                         "opus")
+        self.assertEqual(gateway._normalize({"pool": pool[::-1], "assign": {}})["assign"]["execution"],
+                         "haiku")
+
+    def test_the_grip_column_leaves_room_for_the_grip(self):
+        """`.ctable` is table-layout:fixed, so a declared width is enforced — the same slip
+        `ModelColumnFitTests` was written for: size against the content and forget the cell's
+        own padding, and the grip is simply cut off."""
+        ui = ui_src()
+        col = int(re.search(r"\.modtable \.c-ord \{ width: (\d+)px", ui).group(1))
+        pad = int(re.search(r"\.ctable td \{ padding: \d+px (\d+)px", ui).group(1)) * 2
+        grip = int(re.search(r"\.mrow \.mgrip \{ [^}]*font-size: (\d+)px", ui).group(1))
+        self.assertGreaterEqual(col, grip + pad,
+                                f"the grip is {grip}px and the cell spends {pad}px on padding, so "
+                                f"the column needs {grip + pad}px; it declares {col}px")
+
+    def test_the_grip_is_what_is_draggable_not_the_row(self):
+        """A draggable ROW swallows text selection, and this table has a Turns input in it — the
+        Jobs tab hit the same thing, which is why its grip carries the attribute too."""
+        ui = ui_src()
+        self.assertIn('<span class="mgrip" draggable="true"', ui)
+        self.assertNotIn('<tr class="mrow" draggable', ui)
+
+    def test_neither_drag_path_re_renders_the_panel(self):
+        """`renderAdmin` rebuilds every section, which drops the page's scroll position — a drop
+        halfway down the models table threw the operator back to the top (user-observed). The
+        rows are already in the right order after a drop, and an abandoned drag re-seats the
+        existing nodes, so neither path has anything to re-render."""
+        ui = ui_src()
+        body = ui[ui.index("function wireModelDrag("):ui.index("async function saveModelOrder(")]
+        # The ONE re-render on this path is the one a mid-drag `refreshMcpHealth` deferred to
+        # dragend — a drag of the operator's own never triggers a rebuild.
+        self.assertEqual([l.strip() for l in body.splitlines() if "loadAdmin" in l],
+                         ["if(_renderAfterDrag){ _renderAfterDrag=false; loadAdmin(); }"],
+                         "a drag path re-renders the panel, which resets the scroll position")
+        save = ui[ui.index("async function saveModelOrder("):]
+        save = save[:save.index("\n}") + 2]
+        # A successful drop re-renders nothing. The ONE re-render here is the refused save, which
+        # has to take the rows back off the screen (`test_a_refused_save_does_not_leave_…`).
+        self.assertEqual([l.strip() for l in save.splitlines() if "loadAdmin" in l],
+                         ["if(r && r.error) loadAdmin();"])
+        # The abandoned drag still has to put the rows back — dragover moved them.
+        self.assertIn("if(!_modelDropped) applyPoolOrder(el);", ui)
+
+    def test_every_row_query_on_the_drag_path_is_scoped_to_the_pool_table(self):
+        """`.mrow` is the ENDPOINTS table's row class too — it sits directly above the pool in
+        the same panel. Unscoped, `applyPoolOrder` took the first `.mrow` it found (an endpoint),
+        so `rows[0].parentNode` was the endpoints tbody and every model row was appended into it:
+        two tables merged into one, the pool emptied, on a drag the operator merely abandoned."""
+        ui = ui_src()
+        block = ui[ui.index("let _dragModel="):ui.index("/* The rendered order is the truth")]
+
+        # every .mrow selector on this path must carry the .mpool prefix
+        self.assertEqual([m for m in re.findall(r'"(\.[^"]*\bmrow\b[^"]*)"', block)
+                          if not m.startswith(".mpool ")], [],
+                         "an unscoped .mrow query on the drag path also matches the endpoints "
+                         "table's rows")
+
+    def test_a_refused_save_does_not_leave_the_new_order_on_screen(self):
+        """The drop path deliberately does not re-render — but a save the server REFUSED leaves
+        the rows showing an order it does not have, the same lie the abandoned drag re-seats to
+        avoid. `error` is the precise signal: `saveModels` returns `ok:false` with `lost_keys`
+        for a save that DID write, so keying on `ok` would revert a successful reorder."""
+        ui = ui_src()
+        save = ui[ui.index("async function saveModelOrder("):]
+        save = save[:save.index("\n}") + 2]
+        self.assertIn("if(r && r.error) loadAdmin();", save)
+        self.assertNotIn("if(!r.ok)", save)
+
+    def test_the_drag_image_is_a_built_chip_that_is_cleaned_up(self):
+        """Neither a `<tr>` nor a cell works as the image: the row images at the full ~1300px
+        table width and the name cell is the auto-width column (~700px), so both trail off to
+        the right of the cursor (user-observed). A chip built off-screen is sized by its own
+        text — measured at 71px — and has to be removed, or one is leaked per drag."""
+        ui = ui_src()
+        block = ui[ui.index("function wireModelDrag("):ui.index("function applyPoolOrder(")]
+        self.assertIn("setDragImage(_dragGhost", block)
+        self.assertNotIn("setDragImage(row", block)
+        self.assertIn("if(_dragGhost) _dragGhost.remove();", block)
+        self.assertIn(".mdragimg {", ui)
+
+
 class DeleteClaudeRowTests(unittest.TestCase):
     """Admin can remove a Claude row now (it is re-addable from the picker). Two consequences
     that were unreachable while those rows were undeletable are what these pin."""
@@ -7842,6 +7998,22 @@ class ModelColumnFitTests(unittest.TestCase):
                                 f"the input is {inp}px and the cell spends {pad}px on padding, so "
                                 f"the column needs {inp + pad}px; it declares {col}px, which clips "
                                 f"the field under a fixed table-layout")
+
+    def test_the_models_table_has_one_col_per_header_cell(self):
+        """The widths live on the `<colgroup>`, so under `table-layout: fixed` the `<col>` list
+        IS the column geometry — a `.c-x` class on a `th` alone does nothing. Adding a header
+        cell without its `<col>` therefore does not just miss its own width: every column after
+        it inherits the PREVIOUS one's `<col>`, silently. Measured when the grip column landed:
+        it took the 30px meant for the remove column and rendered at 30px against its own
+        declared 36px, with no error anywhere."""
+        ui = ui_src()
+        body = ui[ui.index("function modelsSection("):]
+        body = body[:body.index("\nfunction ")]
+        cols = re.findall(r"<col\b[^>]*>", body[body.index("<colgroup>"):body.index("</colgroup>")])
+        head = body[body.index("<thead>"):body.index("</thead>")]
+        self.assertEqual(len(cols), len(re.findall(r"<th\b", head)),
+                         "the models table's <colgroup> and its header row disagree on the "
+                         "column count — every column past the mismatch takes the wrong width")
 
     def test_the_type_column_leaves_room_for_the_widest_chip(self):
         """80px = the measured 60px chip + the cell's 20px of padding. The models table needs its

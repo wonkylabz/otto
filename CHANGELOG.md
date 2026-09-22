@@ -13,6 +13,12 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
+- **The models list can be dragged into order.** Each row has a grip on the right; drag it to
+  rearrange the pool, the same way the Jobs tab reorders. The order is cosmetic with one
+  exception the grip's tooltip names: between two models of the same tier, the higher row wins —
+  escalation, downshift and the Claude fallback each take the first entry whose id matches their
+  tier, so ordering two opus rows decides which one they use. Dropping a row does not reload the
+  panel, so the page stays where you were reading.
 - **Claude models can be removed from the pool.** The × was hidden on those rows; it is there
   now, and the picker adds them back. Two guards come with it: the last entry of all is refused
   (an empty pool is refilled with the default tiers on the next read, so the delete would look
