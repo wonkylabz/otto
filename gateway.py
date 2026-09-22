@@ -56,11 +56,15 @@ TASKS = ["routing", "plan", "preview", "clarify", "memory", "verify",
 
 # Fallback list used only when the API can't be queried (no key).
 _KNOWN_CLAUDE = [
-    ("claude-opus",   "claude-opus-4-8"),
+    ("claude-opus",   "claude-opus-5-5"),
     ("claude-sonnet", "claude-sonnet-5"),
     ("claude-haiku",  "claude-haiku-4-5-20251001"),
     ("claude-fable",  "claude-fable-5-1"),
 ]
+# Last resort only: the CLI caches its login's live model catalog here, and `claude -p` refreshes it.
+CLI_CATALOG_DIR = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"),
+                               "cache", "model-catalog")
+_cli_cat_memo = {}
 
 _LAST = {}   # task -> {"model": name, "fell_back": bool}  (what actually ran)
 # Local models marked down after a failure: name -> epoch until which they're skipped
@@ -101,17 +105,50 @@ def _strict_stop(task, m, what):
     raise LocalFallbackDisabled(m, what, task=task)
 
 
+def _cli_catalog():
+    """The models Claude Code's own login offers, read from the catalog it caches on disk.
+    Returns `(models, fetched_at_epoch)`, `([], None)` when there is no readable cache."""
+    try:
+        files = [os.path.join(CLI_CATALOG_DIR, f) for f in os.listdir(CLI_CATALOG_DIR)
+                 if f.endswith(".json")]
+        path = max(files, key=os.path.getmtime)
+        key = (path, os.path.getmtime(path))
+        if key not in _cli_cat_memo:
+            with open(path) as f:
+                data = json.load(f)
+            rows = ((data.get("catalog") or {}).get("config") or {}).get("models") or []
+            models = [{"id": m["id"], "name": m["id"], "display": m.get("name") or "",
+                       "section": m.get("section") or ""}
+                      for m in rows if isinstance(m, dict) and str(m.get("id", "")).startswith("claude-")]
+            _cli_cat_memo.clear()
+            _cli_cat_memo[key] = (models, (data.get("fetchedAt") or 0) / 1000 or None)
+        return _cli_cat_memo[key]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return [], None
+
+
+def _tier_ids():
+    """Tier label -> model id: the CLI catalog's first MAIN entry per family, else `_KNOWN_CLAUDE`."""
+    ids = dict(_KNOWN_CLAUDE)
+    seen = set()
+    for m in _cli_catalog()[0]:
+        tier = "-".join(m["id"].split("-")[:2])
+        if tier in ids and tier not in seen and m.get("section") == "main":
+            ids[tier] = m["id"]
+            seen.add(tier)
+    return ids
+
+
 def claude_catalog(timeout=15):
     """The Claude models that can be added, and WHERE the list came from — the Admin
     "discover" flow's source, and what builds the default pool on a fresh install.
 
-    `source` is the honest half. The Anthropic models API is the live list, but it needs
-    ANTHROPIC_API_KEY, and an install that drives Claude through `claude -p` on the CLI's own
-    login has no key and no way to enumerate models (the CLI has no list command). Rather than
-    render an empty picker there, it falls back to `_KNOWN_CLAUDE` and says so, with `detail`
-    naming the reason — a stale built-in list read as a live one is the worse failure.
+    Sources in order: the Anthropic models API (needs ANTHROPIC_API_KEY), then the catalog
+    Claude Code caches for its own login (`source: cli` — the `claude -p` install's live list),
+    then `_KNOWN_CLAUDE` with `detail` naming why. A stale built-in list read as a live one is
+    the worse failure, so `source` always says which it is.
 
-    An API entry is named by its own id; a fallback entry keeps its TIER label (claude-sonnet),
+    An API/CLI entry is named by its own id; a fallback entry keeps its TIER label (claude-sonnet),
     because `_normalize` re-pins those ids on upgrade and a literal id would freeze the bump."""
     detail = ""
     key = config.secret("ANTHROPIC_API_KEY")
@@ -129,9 +166,13 @@ def claude_catalog(timeout=15):
             detail = "the Anthropic API returned no models"
         except Exception as e:  # noqa: BLE001 - an unreachable API is operator-facing text
             detail = str(e)[:180]
-    else:
-        detail = ("no ANTHROPIC_API_KEY set — Otto runs Claude through the CLI's own login, "
-                  "which cannot list models")
+    cli, fetched = _cli_catalog()
+    if cli:
+        age = f"fetched {time.strftime('%Y-%m-%d %H:%M', time.localtime(fetched))}" if fetched else ""
+        return {"ok": True, "source": "cli", "models": cli, "detail": age}
+    if not key:
+        detail = ("no ANTHROPIC_API_KEY set and no Claude Code model catalog cached at "
+                  f"{CLI_CATALOG_DIR} — run claude once to populate it")
     return {"ok": True, "source": "known", "detail": detail,
             "models": [{"id": mid, "name": n, "display": ""} for n, mid in _KNOWN_CLAUDE]}
 
@@ -473,12 +514,12 @@ def _normalize(cfg):
     if cfg is None:
         cfg = _default_cfg()
     pool = cfg.get("pool") or _default_cfg()["pool"]
-    # Migration: refresh Claude-tier model ids from _KNOWN_CLAUDE (the source of truth). A
+    # Migration: refresh Claude-tier model ids from `_tier_ids()` (CLI catalog, else built-in). A
     # saved pool pins the id it was created with (e.g. "claude-sonnet" -> "claude-sonnet-4-6"),
     # so a model bump in the fallback list wouldn't otherwise reach an existing install — the
     # entry keeps invoking the stale id. Assignments reference the entry by name, so repointing
     # the id in place is safe and propagates every future bump automatically.
-    _known = {n: mid for n, mid in _KNOWN_CLAUDE}
+    _known = _tier_ids()
     for m in pool:
         if m.get("name") in _known:
             m["model"] = _known[m["name"]]
@@ -1725,7 +1766,8 @@ def _probe(m, timeout=None):
             try:
                 text, cost = _claude_complete("Reply with exactly: OK", m["model"])
             except Exception as e:  # noqa: BLE001 - the probe reports a verdict, never raises
-                return done(False, str(e)[:180])
+                err = str(e)
+                return done(False, err if len(err) <= 300 else err[:300] + " …[clipped]")
             if cost:
                 # Judge-side spend is booked by the gateway or it reaches no ledger at all: a
                 # probe is a real Claude turn, and a bare `_claude_complete` is invisible spend.

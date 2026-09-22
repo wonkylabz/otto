@@ -166,6 +166,7 @@ def _pin_cloud_model_discovery():
     The stub returns exactly what the no-key branch returns, so nothing observable changes;
     `ResidentRuleGuardTests` pins that the key is discovery-only, and no test covers the query
     itself. A test that wants the querying branch re-points this the way it would any seam."""
+    gateway.CLI_CATALOG_DIR = os.path.join(os.devnull, "model-catalog")
     gateway._discover_claude = lambda: [
         {"name": n, "provider": "claude", "model": mid} for n, mid in gateway._KNOWN_CLAUDE]
 
