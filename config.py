@@ -391,6 +391,12 @@ MAX_PLAN_REVISIONS = int(os.environ.get("OTTO_MAX_PLAN_REVISIONS", "3"))
 # its terminal row and says so at the reply target. 0 restores the unbounded wait.
 GATE_TIMEOUT_H = float(os.environ.get("OTTO_GATE_TIMEOUT_H", "24"))
 
+# Whether the approved plan is posted onto the run's draft PR as a comment (`workspace.post_plan`).
+# It is a courtesy to the human reviewer — the diff says what changed, the comment says what was
+# approved to produce it — but it is also one more long comment in a repo somebody else reviews,
+# so it is a knob rather than a law. Off posts nothing; nothing else about the gate changes.
+PLAN_COMMENT = os.environ.get("OTTO_PLAN_COMMENT", "1") not in ("0", "false", "no", "off")
+
 # How many times an ADVERSE judge verdict (verify FAIL, supervisor RETRY) must reproduce before it
 # is acted on. `claude -p` exposes no temperature/top-p/seed — 65 flags, none for sampling — so a
 # judge on the Claude backend is sampled and cannot be pinned the way the OpenAI-compatible path
@@ -551,6 +557,7 @@ _SETTING_SPECS = {
     "max_review_rounds":  ("OTTO_MAX_REVIEW_ROUNDS", "int", "MAX_REVIEW_ROUNDS"),
     "max_plan_revisions": ("OTTO_MAX_PLAN_REVISIONS", "int", "MAX_PLAN_REVISIONS"),
     "gate_timeout_h":     ("OTTO_GATE_TIMEOUT_H", "float", "GATE_TIMEOUT_H"),
+    "plan_comment":       ("OTTO_PLAN_COMMENT", "bool", "PLAN_COMMENT"),
     "board_retention_h":  ("OTTO_BOARD_RETENTION_H", "float", "BOARD_RETENTION_H"),
     "memory_gc_batch_size": ("OTTO_MEMORY_GC_BATCH_SIZE", "int", "MEMORY_GC_BATCH_SIZE"),
     "memory_gc_max_verify": ("OTTO_MEMORY_GC_MAX_VERIFY", "int", "MEMORY_GC_MAX_VERIFY"),

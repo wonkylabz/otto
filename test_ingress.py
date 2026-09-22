@@ -4674,6 +4674,29 @@ class MascotStateTests(unittest.TestCase):
         self.assertIn("body.mascot-reserve .histlist { margin-bottom:", ui,
                       "the chat list is back to padding, so rows scroll under the mascot")
 
+    def test_every_promised_state_has_a_pose_of_its_own(self):
+        """The other half of `..._a_state_the_component_knows`, which pins the moods against
+        STATES: a name added to STATES with no CSS block behind it renders as the idle robot and
+        raises nothing, so the mood it was grown for reports by hovering exactly as before."""
+        comp = self._component()
+        decl = comp[comp.index("const STATES = ["):comp.index("];")]
+        states = set(re.findall(r"'([a-z]+)'", decl))
+        self.assertIn("idle", states, "the STATES regex has drifted")
+        posed = set(re.findall(r':host\(\[state="([a-z]+)"\]\)', comp)) | {"idle"}
+        self.assertEqual(states - posed, set(),
+                         f"state(s) in STATES with no CSS of their own: {sorted(states - posed)}")
+
+    def test_a_run_needing_review_does_not_wear_the_error_pose(self):
+        """A run that ended needing review is not a failed one - it did the work and is asking a
+        question. Sharing `error` (shake, scowl, folded arms) told the reader something BROKE
+        before they had read the card, and the two states are still one grep apart."""
+        ui = self._ui()
+        i = ui.index("const f=MOOD.fleet||{};")
+        needs = ui[i:ui.index("function applyMood()")]
+        self.assertRegex(needs, r'if\(f\.needs\) return \{state:"shrug"',
+                         "the needs-review mood is back on a failure pose")
+        self.assertIn('mascotReact("error"', ui, "nothing uses the error pose any more")
+
     def test_he_says_nothing_when_there_is_nothing_to_say(self):
         """An idle bubble is a permanent opaque panel over the chat list carrying no
         information - the corner is worth its space only while it is reporting something."""

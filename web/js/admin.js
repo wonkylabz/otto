@@ -134,6 +134,7 @@ const SETTING_HELP={
   max_qa_rounds:["Post-PR QA fix rounds","Times a failed QA verdict is folded back into a fix on the same branch."],
   max_review_rounds:["Post-PR review fix rounds","Times unaddressed review findings are folded back into a fix on the same branch."],
   max_plan_revisions:["Plan revision rounds","Times you can send feedback on the approval-gate plan preview before it re-plans. 0 hides the option."],
+  plan_comment:["Approved plan onto the PR","Post the approved plan as a comment on the draft PR the run opens, so the reviewer sees what was approved next to the diff it produced. A point-in-time record, one per PR, never a committed file. Off posts nothing and changes nothing else about the gate."],
   memory_gc_batch_size:["Memory GC batch size","How many stored facts/approaches/rules the garbage collector classifies per LLM call."],
   memory_gc_max_verify:["Memory GC verify cap","Max real claude -p tool-verification turns one GC run spends on current-state claims; the rest wait for next time."],
   route_confirmations:["Router confirmations","Times the router re-samples a WRITE pick before it stands — a write route arms the approval gate and the Opus plan preview, and claude -p has no temperature, so one sample is a coin flip. The majority wins; a READ pick never re-samples. 1 = old behaviour."],
@@ -155,7 +156,7 @@ const SETTING_HELP={
 const SETTING_GROUPS=[
   ["Routing",              ["route_confirmations"]],
   ["Execution & fallback", ["effort","local_fallback","plan_mode","max_attempts","max_harness_retries"]],
-  ["Approval gate",        ["gate_timeout_h","max_plan_revisions"]],
+  ["Approval gate",        ["gate_timeout_h","max_plan_revisions","plan_comment"]],
   ["Swarm board",          ["board_retention_h"]],
   ["Supervisor",           ["supervise","supervise_mode","max_supervisor_kills",
                             "supervise_steer","max_supervisor_steers"]],

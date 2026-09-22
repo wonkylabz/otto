@@ -9,7 +9,8 @@
  *   <otto-mascot state="idle" size="180"></otto-mascot>
  *
  * Attributes
- *   state  idle | thinking | planning | working | evicting | success | dab | error | sleeping
+ *   state  idle | thinking | planning | working | evicting | success | dab | shrug | error |
+ *          sleeping
  *          (default idle)
  *   size   px width of the mascot (height follows the 4:5 ratio)    (default 200)
  *   color  ink color (any CSS color)                               (default #2b2b2b)
@@ -23,7 +24,8 @@
  * Respects prefers-reduced-motion: motion is reduced to a slow float.
  */
 (function () {
-  const STATES = ['idle', 'thinking', 'planning', 'working', 'evicting', 'success', 'dab', 'error', 'sleeping'];
+  const STATES = ['idle', 'thinking', 'planning', 'working', 'evicting', 'success', 'dab', 'shrug',
+                  'error', 'sleeping'];
 
   const SVG = `
 <svg class="otto" viewBox="0 0 240 300" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -145,6 +147,26 @@
         <path class="xhand" d="M 150 197 C 153 199, 153 202, 150 205"></path>
       </g>
     </g>
+    <g class="shrugarms">
+      <g class="shrugarm shrugarm-l">
+        <circle class="joint" cx="76" cy="156" r="10"></circle>
+        <path d="M 70 164 L 62 190"></path>
+        <path d="M 79 166 L 71 192"></path>
+        <circle class="joint" cx="65" cy="195" r="7"></circle>
+        <path d="M 61 191 L 36 178"></path>
+        <path d="M 64 201 L 39 188"></path>
+        <path class="shrughand" d="M 38 186 C 31 191, 23 189, 21 180 C 20 175, 23 172, 26 174"></path>
+      </g>
+      <g class="shrugarm shrugarm-r">
+        <circle class="joint" cx="166" cy="156" r="10"></circle>
+        <path d="M 172 164 L 180 190"></path>
+        <path d="M 163 166 L 171 192"></path>
+        <circle class="joint" cx="177" cy="195" r="7"></circle>
+        <path d="M 181 191 L 206 178"></path>
+        <path d="M 178 201 L 203 188"></path>
+        <path class="shrughand" d="M 204 186 C 211 191, 219 189, 221 180 C 222 175, 219 172, 216 174"></path>
+      </g>
+    </g>
     <g class="dabarms">
       <g class="dabarm dabarm-l">
         <circle class="joint" cx="76" cy="156" r="10"></circle>
@@ -217,6 +239,10 @@
     <circle cx="200" cy="42" r="5.5"></circle>
     <circle cx="216" cy="24" r="7"></circle>
   </g>
+  <g class="query">
+    <path d="M 186 48 C 186 38, 204 38, 204 48 C 204 56, 195 57, 195 66"></path>
+    <circle class="qdot" cx="195" cy="75" r="2.6"></circle>
+  </g>
   <g class="zzz">
     <path d="M 182 56 L 196 56 L 182 70 L 196 70"></path>
     <path d="M 200 32 L 212 32 L 200 44 L 212 44"></path>
@@ -257,6 +283,8 @@
 .draft path { stroke-width: 1.5; opacity: .55; }
 .shadow ellipse { stroke-width: 1.2; opacity: .45; }
 .think-dots circle, .zzz path, .sweat path, .spark path, .impact path { stroke-width: 1.8; opacity: 0; }
+.query path { stroke-width: 2.4; opacity: 0; }
+.query .qdot { fill: var(--otto-ink); stroke: none; opacity: 0; }
 .think-dots circle { fill: var(--otto-paper); }
 
 /* --- shared motion ------------------------------------------------- */
@@ -379,6 +407,17 @@
    stacked above the other with each hand landing on the opposite arm, so the pose needs no
    animation of its own and the shake on .figure carries all the motion. */
 .xarms { opacity: 0; }
+/* The shrug arms. Same reason .tarms, .dabarms, .xarms and .egrab exist: the everyday arm is a
+   rigid pair of bones pivoting at the shoulder, and a shrug is a BEND - elbows pinned at the
+   waist, forearms swung out, palms turned up. Rotating the straight pair outward reads as a
+   robot presenting its own hips. Drawn already bent, so the lift is one rotation per arm about
+   its own shoulder and the palms stay open at every frame. */
+.shrugarms { opacity: 0; }
+.shrugarm path { stroke-width: 2.2; }
+.shrugarm .shrughand { stroke-width: 2; }
+.shrugarm { transform-box: view-box; }
+.shrugarm-l { transform-origin: 76px 156px; }
+.shrugarm-r { transform-origin: 166px 156px; }
 .xarm path { stroke-width: 2.2; }
 .xarm .xfore { fill: var(--otto-paper); stroke-width: 2.2; }
 .xarm .xhand { stroke-width: 1.6; opacity: .8; }
@@ -653,6 +692,67 @@
 :host([state="dab"]) .eye { animation: otto-dab-swap calc(.85s / var(--otto-speed)) linear 1 both; }
 :host([state="dab"]) .antenna { animation: otto-dab-antenna calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
 :host([state="dab"]) .spark path { animation: otto-flash calc(.85s / var(--otto-speed)) ease-out 1 both; animation-delay: calc(.3s / var(--otto-speed)); }
+
+/* --- shrug ----------------------------------------------------------
+   "Something needs a look" is not a failure - a run that ended needing review did its work and
+   is asking a question, so he must not wear the error pose. He shrugs instead: shoulders up,
+   palms out, head tilted, one question mark. Same ingredients as error (a held pose plus a
+   swapped arm pair) and the opposite reading.
+   It LOOPS rather than playing once, because the mood it serves persists until a human clears
+   the card - a one-shot shrug would leave a robot frozen mid-gesture for however long that is.
+   The lift lives inside the float keyframes for the reason every other pose does: .figure
+   already animates transform, and a second animation on one property replaces it rather than
+   composing. */
+@keyframes otto-shrug-body {
+  0%, 14%   { transform: translateY(0); }
+  30%, 64%  { transform: translateY(-5px); }
+  82%, 100% { transform: translateY(0); } }
+@keyframes otto-shrug-shadow {
+  0%, 14%   { transform: scale(1); opacity: .45; }
+  30%, 64%  { transform: scale(.94); opacity: .32; }
+  82%, 100% { transform: scale(1); opacity: .45; } }
+/* Positive rotation raises the LEFT hand and lowers the right one (SVG rotates clockwise), so
+   the mirrored arm takes the mirrored sign - one shared angle would swing them in parallel and
+   read as a robot leaning, not shrugging. */
+@keyframes otto-shrug-arm-l {
+  0%, 14%   { transform: rotate(0deg); }
+  30%, 64%  { transform: rotate(9deg); }
+  82%, 100% { transform: rotate(0deg); } }
+@keyframes otto-shrug-arm-r {
+  0%, 14%   { transform: rotate(0deg); }
+  30%, 64%  { transform: rotate(-9deg); }
+  82%, 100% { transform: rotate(0deg); } }
+/* The head tilt is what stops the lift reading as a hiccup: shoulders rising alone is a body
+   flinching, shoulders rising with the head canted over is the gesture. */
+@keyframes otto-shrug-head {
+  0%, 14%   { transform: rotate(0deg); }
+  30%, 64%  { transform: rotate(-6deg); }
+  82%, 100% { transform: rotate(0deg); } }
+@keyframes otto-shrug-antenna {
+  0%, 14%   { transform: rotate(-2deg); }
+  30%, 64%  { transform: rotate(-16deg); }
+  82%, 100% { transform: rotate(-2deg); } }
+/* The question mark arrives WITH the shoulders and leaves with them - a mark that outlives the
+   gesture is a sticker on the drawing rather than something he is saying. */
+@keyframes otto-query {
+  0%, 14%   { opacity: 0; transform: translateY(5px); }
+  32%, 64%  { opacity: .9; transform: translateY(0); }
+  86%, 100% { opacity: 0; transform: translateY(0); } }
+:host([state="shrug"]) .figure { animation: otto-shrug-body calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="shrug"]) .shadow { animation: otto-shrug-shadow calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="shrug"]) .arm { opacity: 0; }
+:host([state="shrug"]) .shrugarms { opacity: 1; }
+:host([state="shrug"]) .shrugarm-l { animation: otto-shrug-arm-l calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="shrug"]) .shrugarm-r { animation: otto-shrug-arm-r calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="shrug"]) .noggin { animation: otto-shrug-head calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="shrug"]) .antenna { animation: otto-shrug-antenna calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+/* Eyes open and canted the OPPOSITE way to error's scowl - the same two rects carry "sorry, no
+   idea" and "something went wrong", and the sign of the rotation is the whole difference. */
+:host([state="shrug"]) .eye { animation: none; }
+:host([state="shrug"]) .eye-l { transform: rotate(-9deg) scaleY(.82); }
+:host([state="shrug"]) .eye-r { transform: rotate(9deg) scaleY(.82); }
+:host([state="shrug"]) .query path,
+:host([state="shrug"]) .query .qdot { animation: otto-query calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
 
 /* --- error --------------------------------------------------------- */
 :host([state="error"]) .figure { animation: otto-shake calc(.5s / var(--otto-speed)) ease-in-out 2 both, otto-float calc(3.6s / var(--otto-speed)) ease-in-out infinite calc(1s / var(--otto-speed)); }

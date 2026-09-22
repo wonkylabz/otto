@@ -39,8 +39,9 @@ FETCH_TIMEOUT_S = float(os.environ.get("OTTO_REPO_FETCH_TIMEOUT_S", "120"))
 # the reviewer of the draft PR sees the diff but never what was approved to produce it. It reaches
 # the reviewer as a PR COMMENT, never a committed file: a run-scoped record of one review has no
 # business in the target repo's history, where it outlives the review and accumulates one file per
-# run forever.
-PLAN_COMMENT = os.environ.get("OTTO_PLAN_COMMENT", "1") != "0"
+# run forever. Whether it is posted at all is `config.setting("plan_comment")`, read at POST time
+# rather than at import: a runtime knob captured into a module constant is silently stuck at
+# whatever the worker booted with, which reads as an Admin toggle that does nothing.
 PLAN_COMMENT_CHARS = 60_000     # GitHub rejects a comment body over 65_536
 
 
@@ -641,7 +642,7 @@ def post_plan(path, pr_url, run_id, plan, request=None, cap=None, concerns=None)
 
     Deliberately NOT a committed file. `finalize` runs again for every QA and review fix round,
     so the marker check is what keeps one plan to one PR."""
-    if not (PLAN_COMMENT and pr_url and (plan or "").strip()):
+    if not (config.setting("plan_comment") and pr_url and (plan or "").strip()):
         return False
     cwd = path if path and os.path.isdir(path) else None
     if _plan_already_posted(pr_url, run_id, cwd=cwd):
