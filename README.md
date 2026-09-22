@@ -64,7 +64,11 @@ Without the installer, the equivalent manual one-time setup is:
 
 ```bash
 sudo apt install -y python3-venv                  # venv support (Debian/Ubuntu; macOS ships it)
-curl -sSf https://temporal.download/cli.sh | sh -s -- --version 1.8.0   # Temporal CLI -> ~/.temporalio/bin
+# Temporal CLI -> ~/.temporalio/bin (linux_amd64; other platforms: see the release checksums.txt)
+curl -sSfL -o temporal.tgz \
+  https://github.com/temporalio/cli/releases/download/v1.8.0/temporal_cli_1.8.0_linux_amd64.tar.gz
+sha256sum -c <<<"896c6132d6d969f84c3f2382a31abd9a67a06ed3008c1a37c3573fe81d730e4a  temporal.tgz"
+mkdir -p ~/.temporalio/bin && tar -xzf temporal.tgz -C ~/.temporalio/bin temporal
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ```

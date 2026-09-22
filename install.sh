@@ -64,7 +64,17 @@ fi
 
 # --- 1. hard prerequisites -------------------------------------------------
 
-command -v python3 >/dev/null 2>&1 || die "python3 not found — install Python 3.9+ first."
+command -v python3 >/dev/null 2>&1 || die "python3 not found — install Python 3.12+ first."
+
+# pyproject requires >=3.12. temporalio installs fine on 3.10/3.11, so without this check
+# the run reaches the test suite and dies on a syntax error that looks unrelated.
+PY_MIN="3.12"
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 12) else 1)'; then
+  die "python3 is $(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))') —" \
+      "Otto needs $PY_MIN+ (see pyproject.toml). Install a newer Python and re-run," \
+      $'or point this script at one:\n' \
+      $'    python3.12 -m venv .venv && ./install.sh\n'
+fi
 
 if ! command -v claude >/dev/null 2>&1; then
   die "claude CLI not found on PATH. Otto runs your existing Claude Code" \
@@ -113,13 +123,78 @@ TEMPORAL_BIN="$HOME/.temporalio/bin/temporal"
 # requirements.txt. The two are bumped INDEPENDENTLY; copying one number onto the other
 # is what left the SDK pinned at the CLI's 1.8.0 while every run used 1.30.0 (PR #302).
 TEMPORAL_CLI_VERSION="1.8.0"
-if [ -x "$TEMPORAL_BIN" ]; then
-  log "temporal CLI: already installed ($("$TEMPORAL_BIN" --version 2>/dev/null | head -1))"
-else
+
+# sha256 of the release tarballs, copied from the release's own checksums.txt. Bumping
+# TEMPORAL_CLI_VERSION means re-copying these four lines from the new release.
+temporal_sha256() {
+  case "$1" in
+    darwin_amd64) echo "7ea6edf15329e8169233d3e38a0c1f6464cf84ee25140c16ff059ea4f802762e" ;;
+    darwin_arm64) echo "46b4ac2b603e2b68d684da728bccd938a69acfad9c5e1a469d28d00a64e8bc9c" ;;
+    linux_amd64)  echo "896c6132d6d969f84c3f2382a31abd9a67a06ed3008c1a37c3573fe81d730e4a" ;;
+    linux_arm64)  echo "52d2d3e4f35c4ad2d45d0677eae1e1e3c7ba3c7f40a6a42d9a7f34e541c3dd57" ;;
+  esac
+}
+
+installed_temporal_version() {
+  "$TEMPORAL_BIN" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+  else return 1
+  fi
+}
+
+install_temporal_cli() {
   command -v curl >/dev/null 2>&1 || die "curl is required to install the Temporal CLI (or install it yourself: https://temporal.download)"
-  log "temporal CLI: installing v$TEMPORAL_CLI_VERSION to ~/.temporalio/bin"
-  curl -sSf https://temporal.download/cli.sh | sh -s -- --version "$TEMPORAL_CLI_VERSION"
+  local os arch platform want tmp tarball
+  case "$(uname -s)" in
+    Linux) os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) die "no pinned Temporal CLI build for $(uname -s) — install it yourself: https://temporal.download" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="amd64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *) die "no pinned Temporal CLI build for $(uname -m) — install it yourself: https://temporal.download" ;;
+  esac
+  platform="${os}_${arch}"
+  want="$(temporal_sha256 "$platform")"
+  [ -n "$want" ] || die "no pinned checksum for $platform — install the Temporal CLI yourself: https://temporal.download"
+
+  log "temporal CLI: installing v$TEMPORAL_CLI_VERSION ($platform) to ~/.temporalio/bin"
+  tmp="$(mktemp -d)"
+  tarball="$tmp/temporal.tar.gz"
+  curl -sSfL -o "$tarball" \
+    "https://github.com/temporalio/cli/releases/download/v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_${platform}.tar.gz" \
+    || { rm -rf "$tmp"; die "could not download the Temporal CLI v$TEMPORAL_CLI_VERSION tarball"; }
+
+  local got
+  got="$(sha256_of "$tarball")" || { rm -rf "$tmp"; die "neither sha256sum nor shasum is available — cannot verify the Temporal CLI download"; }
+  if [ "$got" != "$want" ]; then
+    rm -rf "$tmp"
+    die "Temporal CLI checksum mismatch for $platform: expected $want, got $got. Refusing to install."
+  fi
+
+  tar -xzf "$tarball" -C "$tmp" temporal || { rm -rf "$tmp"; die "Temporal CLI tarball has no 'temporal' binary"; }
+  mkdir -p "$(dirname "$TEMPORAL_BIN")"
+  install -m 755 "$tmp/temporal" "$TEMPORAL_BIN"
+  rm -rf "$tmp"
   [ -x "$TEMPORAL_BIN" ] || die "Temporal CLI install did not produce $TEMPORAL_BIN"
+}
+
+if [ -x "$TEMPORAL_BIN" ]; then
+  TEMPORAL_HAVE="$(installed_temporal_version)"
+  if [ "$TEMPORAL_HAVE" = "$TEMPORAL_CLI_VERSION" ]; then
+    log "temporal CLI: already installed (v$TEMPORAL_HAVE)"
+  else
+    log "temporal CLI: installed v${TEMPORAL_HAVE:-unknown} != pinned v$TEMPORAL_CLI_VERSION — replacing"
+    install_temporal_cli
+    log "temporal CLI: now v$(installed_temporal_version)"
+  fi
+else
+  install_temporal_cli
 fi
 
 # --- 4. .env ------------------------------------------------------------------

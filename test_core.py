@@ -1353,10 +1353,24 @@ class TemporalPinTests(unittest.TestCase):
         self.assertIsNotNone(m, "install.sh must pin the Temporal CLI version")
         # Declaring the version is only a pin if the install command actually uses it —
         # a literal left behind below drifts from the declaration in total silence.
-        self.assertIn('--version "$TEMPORAL_CLI_VERSION"', sh,
-                      "install.sh declares TEMPORAL_CLI_VERSION but installs with a literal — "
+        self.assertIn('v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_', sh,
+                      "install.sh declares TEMPORAL_CLI_VERSION but downloads a literal — "
                       "the declaration and the installed version would drift in silence")
         return m.group(1)
+
+    def test_every_pinned_cli_checksum_is_a_sha256(self):
+        """The download is only pinned if each platform's hash is a real sha256 — a truncated or
+        placeholder value would pass the string compare on nothing and get caught at install time
+        on someone else's machine, not here."""
+        with open(os.path.join(self.ROOT, "install.sh"), encoding="utf-8") as f:
+            sh = f.read()
+        rows = re.findall(r'^\s*((?:darwin|linux)_(?:amd64|arm64))\)\s*echo "([0-9a-f]*)"',
+                          sh, re.M)
+        self.assertEqual({p for p, _ in rows},
+                         {"darwin_amd64", "darwin_arm64", "linux_amd64", "linux_arm64"},
+                         "install.sh must carry a pinned checksum for every platform it installs on")
+        for platform, digest in rows:
+            self.assertEqual(len(digest), 64, f"{platform} checksum is not a sha256: {digest!r}")
 
     def test_the_cli_pin_is_not_copied_from_the_sdk_pin(self):
         """install.sh's CLI version and the SDK pin are independent schemes. They are read from
