@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 
 import claude_cli
+import codex_cli
 import config
 import error_classifier
 import storage
@@ -1704,25 +1705,17 @@ def embed(texts, model_name=None):
         return None
 
 
-def test_model(name, cfg=None, timeout=None):
-    """Check a model is reachable so the UI can show OK / not. Returns {ok, ms, detail}.
+def _probe(m, timeout=None):
+    """Reachability verdict `(ok, detail)` for a RESOLVED pool entry. Writes nothing.
+
+    Split from `test_model` so an entry that is NOT in the pool yet can be probed too — the
+    Add-model form checks a typed id before it saves (`probe_candidate`), and a candidate has no
+    name to record health against.
 
     For local models we hit GET /models (lists available models) instead of running
-    inference - that's instant and avoids a cold model load timing out.
-
-    Every outcome is recorded into the model-health store (via="probe"), so this is the single
-    probe seam behind both the per-row "test" button and probe_models()'s refresh — a failed
-    test lights the Admin-tab badge, and a passing one clears it."""
-    cfg = cfg or load()
-    m = next((x for x in cfg.get("pool", []) if x["name"] == name), None)
-    if not m:
-        return {"ok": False, "detail": "unknown model"}
-    t0 = time.time()
-    ms = lambda: int((time.time() - t0) * 1000)  # noqa: E731
-
+    inference - that's instant and avoids a cold model load timing out."""
     def done(ok, detail):
-        record_health(name, ok, detail, via="probe")
-        return {"ok": ok, "ms": ms(), "detail": detail}
+        return (ok, detail)
     try:
         if is_claude(m):
             # Through `_claude_complete`, so the probe inherits the tool-free flags and the
@@ -1738,6 +1731,13 @@ def test_model(name, cfg=None, timeout=None):
                 # probe is a real Claude turn, and a bare `_claude_complete` is invisible spend.
                 _bump_cost("probe", cost)
             return done(True, (text or "")[:40] or "no reply from claude -p")
+        if backend_of(m) == "codex" and not m.get("base_url"):
+            # A Codex entry with no endpoint is the NORMAL shape — `codex exec` reaches OpenAI
+            # through the CLI's own login — so the missing-endpoint verdict below is wrong for
+            # it. What can be checked is that the CLI runs at all; the model id is the CLI's to
+            # reject, and it has no list command to ask first.
+            ok, said = codex_cli.available()
+            return done(ok, (f"codex exec runnable · {said}" if ok else said) or "codex exec")
         if not m.get("base_url"):
             # A model pointing at an endpoint that no longer exists: name the endpoint, or the
             # operator sees a urlopen error against an empty URL and has nothing to go fix.
@@ -1759,3 +1759,38 @@ def test_model(name, cfg=None, timeout=None):
         where = (f"cannot reach {m.get('base_url')}: "
                  if is_local(m) and m.get("base_url") else "")
         return done(False, (where + str(e))[:180])
+
+
+def test_model(name, cfg=None, timeout=None):
+    """Check a POOL model is reachable so the UI can show OK / not. Returns {ok, ms, detail}.
+
+    Every outcome is recorded into the model-health store (via="probe"), so this is the single
+    probe seam behind both the per-row "test" button and probe_models()'s refresh — a failed
+    test lights the Admin-tab badge, and a passing one clears it."""
+    cfg = cfg or load()
+    m = next((x for x in cfg.get("pool", []) if x["name"] == name), None)
+    if not m:
+        return {"ok": False, "detail": "unknown model"}
+    t0 = time.time()
+    ok, detail = _probe(m, timeout)
+    record_health(name, ok, detail, via="probe")
+    return {"ok": ok, "ms": int((time.time() - t0) * 1000), "detail": detail}
+
+
+def probe_candidate(entry, cfg=None, timeout=None):
+    """Probe an entry the operator is about to ADD. Returns {ok, detail}; stores nothing.
+
+    Adding used to validate shape only — a non-empty name and id — so a typo'd model id saved
+    with a green "saved ✓" and sat in the pool with a BLANK health pill: Claude, Codex and
+    hosted entries are only probed on demand (each is a real billed call), so nothing
+    contradicted it until someone pressed `test`. This is that press, moved to the moment the
+    operator can still fix the id.
+
+    Connection fields resolve through the saved endpoints exactly as a stored entry's do, so a
+    candidate naming an existing endpoint needs no URL or key of its own — and one carrying its
+    own (the form's "+ new endpoint" path, not saved yet) is probed on those."""
+    cfg = cfg or load()
+    resolved = _hydrate({"pool": [dict(entry or {})],
+                         "endpoints": cfg.get("endpoints") or []})["pool"][0]
+    ok, detail = _probe(resolved, timeout)
+    return {"ok": ok, "detail": detail}

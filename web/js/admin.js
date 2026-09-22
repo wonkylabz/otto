@@ -765,7 +765,9 @@ function showModelForm(){
   if(!eps.length) epSel.value="";
   syncProv();
   document.getElementById("lm-cancel").onclick=closeFormModal;
-  document.getElementById("lm-save").onclick=async()=>{
+  ADD_REFUSED="";   // a fresh form never inherits the last one's override
+  const save=document.getElementById("lm-save");
+  save.onclick=async()=>{
     const err=document.getElementById("lm-err");
     const name=val("lm-name"), model=val("lm-model");
     if(!name||!model){ err.textContent="name and model id are required"; return; }
@@ -795,8 +797,41 @@ function showModelForm(){
         m.max_turns=n;
       }
     }
+    // Probe the id before it is stored. A typo'd id used to save with a green "saved \u2713" and
+    // sit in the pool with a blank health pill — Claude, Codex and hosted entries are only
+    // probed on demand, so nothing contradicted the tick until someone pressed `test`. A
+    // REFUSAL is not final: the second press adds anyway, because the probe can be wrong about
+    // a server that is merely down, or an id a vendor serves without listing.
+    if(!(await probeBeforeAdd(m, err, save))) return;
     MODEL_STATE.pool.push(m); await saveModels(); closeFormModal(); loadAdmin();
   };
+}
+
+/* The Add form's pre-save check. Returns true to go ahead — a pass, or a second press on the
+   SAME candidate after a refusal the operator has now read. Keyed on the entry rather than a
+   bare flag: editing the id after a refusal must be re-checked, or the fix goes in unverified
+   on the press that was meant to override the thing it fixed.
+
+   The in-flight flag is the BUTTON's own disabled state and the text it carries, both outside
+   any render — this modal is never rebuilt under itself, and a Claude probe is a real
+   `claude -p` turn that takes seconds. */
+let ADD_REFUSED="";
+async function probeBeforeAdd(m, err, save){
+  const key=JSON.stringify(m);
+  if(ADD_REFUSED===key) return true;          // same candidate, second press: add it anyway
+  const was=save.textContent;
+  save.disabled=true; save.textContent="checking\u2026"; err.textContent="";
+  let r;
+  try { r=await postJSON("/api/models/probe",{entry:m}); }
+  catch(e){ r={ok:false, detail:e.message}; }
+  save.disabled=false; save.textContent=was;
+  if(r.ok){ ADD_REFUSED=""; return true; }
+  // The detail is the probe's own sentence ("server up but 'x' not found — pull it or fix the
+  // id"), which names the fix. Saying it twice adds nothing. The refusal is never final: a
+  // server that is merely down, or an id a vendor serves without listing, is still addable.
+  err.textContent=`${r.detail||"could not reach this model"} \u2014 press ${was} again to add it anyway`;
+  ADD_REFUSED=key;
+  return false;
 }
 
 /* MODEL_STATE holds what the GET handed us, whose literal API keys are MASKED (issue #27);
