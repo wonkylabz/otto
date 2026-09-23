@@ -37,7 +37,9 @@ import file_safety
 import memory
 import error_classifier
 import gateway
+import judging
 import knowledge
+import ledger
 import local_runtime
 import mcp_client
 import plans
@@ -48,6 +50,7 @@ import workspace
 import runbooks
 import storage
 import supervisor
+import ui
 
 try:                                       # the Temporal layer — absent under a bare python3
     import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
@@ -5216,6 +5219,125 @@ class GatewayCostLedgerTests(unittest.TestCase):
         gateway.claude_cli.run_json = lambda prompt, **kw: {
             "result": "  CONTINUE  ", "total_cost_usd": 0.5}
         self.assertEqual(gateway._claude_tier("supervise", "watch", "c"), "  CONTINUE  ")
+
+
+class TierCallLedgerTests(unittest.TestCase):
+    """`ledger.py` (#130): every cheap-tier call leaves one row — tier, canonical model, cost,
+    tokens, ok/error, and the caller's PARSED decision — never the prompt or the reply."""
+
+    CFG = {"pool": [{"name": "local", "provider": "openai", "base_url": "http://x/v1", "model": "q"},
+                    {"name": "claude-sonnet", "provider": "claude", "model": "claude-sonnet-5"}],
+           "assign": {"routing": "claude-sonnet", "clarify": "local", "verify": "claude-sonnet",
+                      "execution": "claude-sonnet"}}
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="otto-ledger-")
+        self._db, config.DB_PATH = config.DB_PATH, os.path.join(self._tmp, "otto.db")
+        self._stats, gateway._STATS_PATH = gateway._STATS_PATH, os.path.join(self._tmp, "s.json")
+        self._load, self._oai, self._cli = gateway.load, gateway._openai_complete, gateway.claude_cli
+        self._trace, gateway.trace = gateway.trace, lambda *a, **k: None
+        gateway.load = lambda: self.CFG
+        gateway._local_down_until.clear()
+        self.reply = {"result": "3 SECRET-PROMPT-ECHO", "total_cost_usd": 0.02,
+                      "usage": {"input_tokens": 100, "output_tokens": 5,
+                                "cache_read_input_tokens": 40, "cache_creation_input_tokens": 0}}
+        test = self
+
+        class _Cli:
+            def run_json(_self, prompt, **kw):
+                return test.reply
+        gateway.claude_cli = _Cli()
+        self._tok = ui.set_run("wf-test-0001")
+
+    def tearDown(self):
+        ui._WID.reset(self._tok)
+        config.DB_PATH, gateway._STATS_PATH = self._db, self._stats
+        gateway.load, gateway._openai_complete, gateway.claude_cli = self._load, self._oai, self._cli
+        gateway.trace = self._trace
+        gateway._local_down_until.clear()
+        gateway._PENDING.set(None)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_a_claude_tier_call_writes_one_row_with_its_facts(self):
+        gateway.complete("routing", "route this SECRET-PROMPT")
+        [row] = ledger.calls()
+        self.assertEqual((row["tier"], row["model"], row["wid"], row["ok"], row["fell_back"]),
+                         ("routing", "claude-sonnet-5", "wf-test-0001", 1, 0))
+        self.assertAlmostEqual(row["cost_usd"], 0.02)
+        self.assertEqual(row["tokens"], 145)
+        self.assertIsNone(row["decision"])
+
+    def test_neither_the_prompt_nor_the_reply_is_stored(self):
+        gateway.complete("routing", "route this SECRET-PROMPT")
+        gateway.decided("routing", "assistant")
+        self.assertNotIn("SECRET-PROMPT", json.dumps(ledger.calls()))
+
+    def test_decided_annotates_the_pending_row_once_and_only_for_its_tier(self):
+        gateway.complete("routing", "x")
+        gateway.decided("clarify", "WRITE")          # another tier's decision: not this row
+        self.assertIsNone(ledger.calls()[0]["decision"])
+        gateway.decided("routing", "assistant")
+        gateway.decided("routing", "worker")          # nothing pending any more
+        self.assertEqual(ledger.calls()[0]["decision"], "assistant")
+
+    def test_the_decision_is_redacted_and_clipped(self):
+        gateway.complete("routing", "x")
+        key = "sk-ant-api03-" + "A1b2C3d4E5f6G7h8I9j0" * 4
+        gateway.decided("routing", key + " " + "x" * 200)
+        d = ledger.calls()[0]["decision"]
+        self.assertNotIn(key[:30], d)      # a prefix: the clip alone would hide the full key
+        self.assertLessEqual(len(d), ledger.DECISION_CHARS)
+
+    def test_a_failed_call_is_recorded_and_leaves_nothing_pending(self):
+        self.reply = {"result": "boom", "is_error": True}
+        with self.assertRaises(RuntimeError):
+            gateway.complete("routing", "x")          # Claude-to-Claude retry fails too
+        gateway.decided("routing", "assistant")
+        [row] = ledger.calls()
+        self.assertEqual((row["ok"], row["error"]), (0, "RuntimeError"))
+        self.assertIsNone(row["decision"])
+
+    def test_a_local_answer_books_its_model_and_a_fallback_books_claude(self):
+        gateway._openai_complete = lambda m, prompt, timeout=None: "OK"
+        gateway.complete("clarify", "x")
+        self.assertEqual((ledger.calls()[0]["model"], ledger.calls()[0]["fell_back"]), ("q", 0))
+
+        def _dead(m, prompt, timeout=None):
+            raise OSError("connection refused")
+        gateway._openai_complete = _dead
+        gateway._local_down_until.clear()
+        gateway.complete("clarify", "x")
+        self.assertEqual((ledger.calls()[0]["model"], ledger.calls()[0]["fell_back"]),
+                         ("claude-sonnet-5", 1))
+
+    def test_every_adverse_sample_is_recorded(self):
+        # #125's baseline: whether an adverse verdict reproduced is measured per sample.
+        replies = iter(["FAIL", "PASS"])
+
+        class _Cli:
+            def run_json(_self, prompt, **kw):
+                return {"result": next(replies)}
+        gateway.claude_cli = _Cli()
+        v = judging.confirm_adverse("verify", "judge", lambda t: t, lambda v: v == "FAIL", tries=3)
+        self.assertEqual(v, "PASS")
+        self.assertEqual([r["decision"] for r in reversed(ledger.calls())],
+                         ["ADVERSE sample 1/3", "PASS sample 2/3"])
+
+    def test_gc_drops_rows_past_the_ttl(self):
+        gateway.complete("routing", "x")
+        self.assertEqual(ledger.gc(ttl_h=1), 0)
+        self.assertEqual(ledger.gc(ttl_h=-1), 1)
+        self.assertEqual(ledger.calls(), [])
+
+    def test_the_table_is_created_by_the_engine_schema(self):
+        # engine-core.md: every table is created by `engine._schema`.
+        conn = storage.sqlite_connect(config.DB_PATH)
+        try:
+            engine._schema(conn)
+            names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+        finally:
+            conn.close()
+        self.assertIn("tier_calls", names)
 
 
 class RunDetailTests(unittest.TestCase):

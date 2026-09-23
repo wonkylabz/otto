@@ -7,6 +7,7 @@ bounded) and `behaviors` (advisory user directives, bounded). Schema + connectio
 audit.py (`_conn`), which resolves the db path through the engine facade so tests patching
 engine._DB cover these stores too.
 """
+import collections
 import concurrent.futures
 import datetime
 import json
@@ -628,6 +629,7 @@ def suggest_behavior_rule(message, cap_name=None):
         f"\n\nUser message:\n{_eng()._fenced(message)}",
     )
     out = _parse_rule_suggestion(text)
+    gateway.decided("clarify", "RULE" if out["is_rule"] else "NONE")
     out["scope_hint"] = cap_name or "global"
     trace("MEMORY", f"rule suggestion -> {'RULE' if out['is_rule'] else 'none'}")
     return out
@@ -708,7 +710,10 @@ def _gc_classify_batch(batch):
         "reason.\n" + _eng()._DATA_FENCE_PREAMBLE +
         f"\n\nItems:\n{_eng()._fenced(listing)}",
     )
-    return _parse_gc_classification(text, len(batch))
+    out = _parse_gc_classification(text, len(batch))
+    counts = collections.Counter(o["verdict"] for o in out)
+    gateway.decided("memory_gc", " ".join(f"{k}:{counts[k]}" for k in ("KEEP", "STALE", "VERIFY")))
+    return out
 
 
 def _parse_gc_verify(text):

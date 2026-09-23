@@ -274,6 +274,12 @@ def _contract_wrap(body, dropped):
         f"{body}{more}\n--- END CAPABILITY CONTRACT")
 
 
+def _verdict_label(verdict, adverse):
+    if isinstance(verdict, dict) and isinstance(verdict.get("verdict"), str):
+        return verdict["verdict"].upper()
+    return "ADVERSE" if adverse(verdict) else "PASS"
+
+
 def confirm_adverse(task, prompt, parse, adverse, tries=None):
     """Sample a judge until its ADVERSE verdict is contradicted, or `tries` samples agree on it.
     Returns the parsed verdict. Shared by `verify` (FAIL) and `supervisor` (RETRY).
@@ -304,6 +310,7 @@ def confirm_adverse(task, prompt, parse, adverse, tries=None):
     first = None
     for i in range(tries):
         verdict = parse(gateway.complete(task, prompt))
+        gateway.decided(task, f"{_verdict_label(verdict, adverse)} sample {i + 1}/{tries}")
         if not adverse(verdict):
             if i:
                 trace("VERIFY", f"adverse verdict did not reproduce on sample {i + 1} — not acted on")

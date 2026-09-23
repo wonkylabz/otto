@@ -170,6 +170,8 @@ def plan_steps(request, cap, force_claude=True):
         trace("PLAN", f"planner call failed ({e}); no plan -> single-turn")
         return []
     steps = _parse_steps(text)
+    gateway.decided("plan_strong" if force_claude else "plan",
+                    f"steps:{len(steps)}" if len(steps) >= 2 else "SINGLE")
     if len(steps) < 2:
         trace("PLAN", "single atomic task -> no plan (single-turn execution)")
         return []
