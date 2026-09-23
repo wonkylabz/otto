@@ -18,6 +18,7 @@ import sqlite3
 import config
 import facade
 import gateway
+import ledger
 import policy
 import registry
 import storage
@@ -157,6 +158,7 @@ def _schema(conn):
         data TEXT NOT NULL
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_board_cards_closed ON board_cards(closed_at)")
+    ledger.schema(conn)
 
 
 @contextlib.contextmanager

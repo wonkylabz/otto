@@ -865,6 +865,9 @@ CAP_LOCAL_LATCH_TTL_S = float(os.environ.get("OTTO_CAP_LOCAL_LATCH_TTL_S", str(2
 # the run-detail view and live chat progress. Swept opportunistically after this TTL.
 TRANSCRIPT_TTL_H = float(os.environ.get("OTTO_TRANSCRIPT_TTL_H", "168"))
 
+# The tier-call ledger (`ledger.py`, issue #130) is telemetry, not the trail: swept after this TTL.
+TIER_LEDGER_TTL_H = float(os.environ.get("OTTO_TIER_LEDGER_TTL_H", "168"))
+
 # The durable trace log (issue #128): `ui.trace` is the richest debug stream Otto produces —
 # routing decisions, wall reasons, non-reproduced adverse verdicts, supervisor verdicts, local
 # latches — and it went to stdout, which `run.sh` sent to a file it TRUNCATED on every start.

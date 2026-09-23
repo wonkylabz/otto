@@ -66,6 +66,7 @@ def clarify(request, cap):
         "question ending in '?' and nothing else. Otherwise reply with exactly: OK",
     )
     question = _parse_clarification(text)
+    gateway.decided("clarify", "ASK" if question else "OK")
     if question is None:
         trace("CLARIFY", "request is clear -> proceeding")
         return None
@@ -120,6 +121,7 @@ def followup_write_intent(message, cap, repo=None):
         "or READ if it only asks to look at, analyse, explain, or report. Reply with one word.",
     )
     intent = _parse_write_intent(text)
+    gateway.decided("clarify", "WRITE" if intent else "READ")
     trace("GATE", f"follow-up classified -> {'WRITE (gating)' if intent else 'READ'}")
     return intent
 
@@ -177,6 +179,7 @@ def followup_handoff(message, prev, cap):
         "If unsure, reply ANSWER.",
     )
     task = _parse_handoff(text)
+    gateway.decided("clarify", "TASK" if task else "ANSWER")
     if task:
         trace("GATE", f"follow-up delegates a new task -> handing off to a fresh run: {task[:80]}")
     return task
@@ -210,6 +213,7 @@ def request_write_intent(request, cap):
         "word.",
     )
     intent = _parse_write_intent(text)
+    gateway.decided("clarify", "WRITE" if intent else "READ")
     trace("GATE", f"request classified -> {'WRITE (gating)' if intent else 'READ'}")
     return intent
 
@@ -291,6 +295,7 @@ def repo_edit_intent(request, repo):
         "deploys, queries CI, or just talks about it. Reply with one word.",
     )
     intent = (text or "").strip().upper().startswith("EDIT")
+    gateway.decided("clarify", "EDIT" if intent else "NO")
     trace("REPO", f"edit-intent for '{repo}' -> {'EDIT (isolate)' if intent else 'NO'}")
     return intent
 

@@ -206,7 +206,9 @@ def route(request, caps, project_root=None):
         nums = re.findall(r"\d+", text)
         idx = int(nums[-1]) - 1 if nums else -1           # listing is numbered from 1
         if 0 <= idx < len(shortlist):
+            gateway.decided("routing", shortlist[idx].name)
             return shortlist[idx]
+        gateway.decided("routing", "unparseable")
         trace("ROUTER", f"unparseable reply {text[:60]!r}")
         return None
 
@@ -276,6 +278,7 @@ def decompose(request, caps, project_root=None):
     )
     text = gateway.complete("plan", prompt)
     plan = _parse_plan(text, len(shortlist))
+    gateway.decided("plan", f"fan-out:{len(plan)}" if len(plan) >= 2 else "SINGLE")
     if len(plan) < 2:
         trace("PLANNER", "single cohesive task -> no fan-out")
         return []

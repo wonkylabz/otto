@@ -13,6 +13,7 @@ set; otherwise it falls back to a known current list. Either way the pool is ful
 user-editable, so nothing is hard-locked.
 """
 import concurrent.futures
+import contextvars
 import copy
 import json
 import os
@@ -26,7 +27,9 @@ import claude_cli
 import codex_cli
 import config
 import error_classifier
+import ledger
 import storage
+import ui
 from ui import trace
 
 _PATH = os.path.join(config.DATA_DIR, "models.json")
@@ -1233,21 +1236,77 @@ def _claude_complete(prompt, model):
     # supervise, routing, clarify, the plan critique, memory extraction — reported nothing, so
     # the audit total and the scorecard's average were EXECUTION-only and a run that spent
     # three judged rungs looked exactly as cheap as one that passed first time.
-    return (out.get("result", "") or ""), (out.get("total_cost_usd", 0) or 0)
+    u = out.get("usage") or {}
+    tokens = sum(u.get(k, 0) or 0 for k in ("input_tokens", "output_tokens",
+                                            "cache_read_input_tokens", "cache_creation_input_tokens"))
+    return (out.get("result", "") or ""), (out.get("total_cost_usd", 0) or 0), tokens
 
 
 def _claude_tier(task, prompt, model):
     """`_claude_complete` with its cost booked against `task`. Every Claude-backed tier call
     goes through here — a bare `_claude_complete` is spend that never reaches the ledger."""
-    text, cost = _claude_complete(prompt, model)
+    text, cost, tokens = _claude_complete(prompt, model)
     if cost:
         _bump_cost(task, cost)
+    acc = _CALL.get()
+    if acc is not None:
+        acc["cost"] += cost
+        acc["tokens"] += tokens
+        acc["model"] = model
     return text
+
+
+# The tier call in flight on this context (its cost/tokens/model accumulate here), and the ledger
+# row still waiting for its caller's `decided()`. ContextVars, like `ui._WID`: activities share
+# the worker's threads and loop, so a global would hand one run's row to another's decision.
+_CALL = contextvars.ContextVar("otto_tier_call", default=None)
+_PENDING = contextvars.ContextVar("otto_tier_row", default=None)
+
+
+def _ledgered(task, fn):
+    """Run one tier call and write its `ledger` row — ok or raised. Never the prompt or reply."""
+    acc = {"cost": 0, "tokens": 0, "model": None, "local": None}
+    token = _CALL.set(acc)
+    t0 = time.monotonic()
+    ok, err = True, None
+    try:
+        return fn(acc)
+    except BaseException as e:
+        # The type only: a tier error embeds the reply's tail, which this table must never hold.
+        ok, err = False, type(e).__name__
+        raise
+    finally:
+        _CALL.reset(token)
+        try:
+            model = model_id(acc["model"] or acc["local"])
+        except Exception:  # noqa: BLE001 - a label is better than no row
+            model = acc["model"] or acc["local"]
+        row = ledger.record(wid=ui.current_run(), tier=task, model=model,
+                            duration_ms=(time.monotonic() - t0) * 1000, cost_usd=acc["cost"],
+                            tokens=acc["tokens"], ok=ok, error=err,
+                            fell_back=bool(acc["local"] and acc["model"]))
+        _PENDING.set((task, row) if ok else None)
+
+
+def decided(task, value):
+    """Attach the caller's PARSED outcome (a cap name, PASS/FAIL, WRITE/READ) to the ledger row of
+    its last `complete(task, …)` on this context. A no-op when nothing is pending for `task`, so a
+    test double standing in for `complete` needs no change."""
+    pending = _PENDING.get()
+    if pending and pending[0] == task:
+        _PENDING.set(None)
+        ledger.decide(pending[1], value)
 
 
 def complete(task, prompt):
     """Run a SIMPLE task (routing/clarify) on its assigned model; return text."""
+    return _ledgered(task, lambda acc: _complete(task, prompt, acc))
+
+
+def _complete(task, prompt, acc):
     m = _model_for(task)
+    if is_local(m):
+        acc["local"] = m["name"]
     # Degraded-mode memo: a local model that just failed is skipped for LOCAL_SKIP_S —
     # straight to the Claude fallback — so a dead endpoint costs one timeout, not one per call.
     if is_local(m) and _local_down_until.get(m["name"], 0) > time.time():
@@ -1319,7 +1378,8 @@ def plan_complete(prompt):
     plan-then-execute is that a CAPABLE model writes the atomic-step plan a weak local executor
     then follows. Distinct from complete('plan', …) on purpose. Raises on Claude failure (the
     caller degrades to no-plan / single-turn execution)."""
-    text = _claude_tier("plan_strong", prompt, escalation_model_id())
+    text = _ledgered("plan_strong",
+                     lambda acc: _claude_tier("plan_strong", prompt, escalation_model_id()))
     _LAST["plan_strong"] = {"model": escalation_model_id(), "fell_back": False}
     return text or ""
 
@@ -1767,7 +1827,7 @@ def _probe(m, timeout=None):
             # 900s execution default -- in the request thread serving /api/models, where a
             # stalled tier call would hold the Admin page open for the whole quarter hour.
             try:
-                text, cost = _claude_complete("Reply with exactly: OK", m["model"])
+                text, cost, _ = _claude_complete("Reply with exactly: OK", m["model"])
             except Exception as e:  # noqa: BLE001 - the probe reports a verdict, never raises
                 err = str(e)
                 return done(False, err if len(err) <= 300 else err[:300] + " …[clipped]")
