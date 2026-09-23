@@ -19,7 +19,7 @@ import facade
 import gateway
 import local_runtime
 from audit import _audit
-from contracts import _invocation, _setting_sources
+from contracts import _plan_invocation, _setting_sources
 from memory import _resolve_project
 from ui import trace
 
@@ -517,7 +517,7 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     default effort is approving a weaker plan than the one that would be produced."""
     cwd = cwd or getattr(cap, "cwd", None)
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
-    invocation = ((request if resume_session else _invocation(cap, request))
+    invocation = ((request if resume_session else _plan_invocation(cap, request))
                   + _pr_branch_note(pr) + _PLAN_INSTRUCTION
                   # After the instruction, not before: a revision round REPLACES "write a plan"
                   # with "edit this one", and the last word has to be the narrower job.
@@ -545,6 +545,7 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
                 _eng()._claude(invocation, allowed_tools=config.PLAN_TOOLS,
                                model=gateway.preview_model_id(), cwd=cwd, timeout=config.PLAN_TIMEOUT_S,
                                permission_mode="plan", resume_session=resume_session,
+                               disallowed_tools=config.PLAN_DISALLOWED_TOOLS,
                                setting_sources=_setting_sources(cwd), effort=effort,
                                transcript=transcript))
 

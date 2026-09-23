@@ -344,13 +344,9 @@ _CRITIQUE_FOLD = ("\n\n--- A previous attempt was judged INSUFFICIENT by the ver
                   "reported on:\n")
 
 
-def _local_invocation(cap, request):
-    """Invocation for the LOCAL runtime: there is no Claude Code around the model to resolve
-    `/skill` or spawn a subagent, so a skill/agent cap's own markdown instructions (minus
-    frontmatter) are inlined as the briefing instead. Custom caps are unchanged — their
-    prompt IS the instructions. Falls back to the description if the source file is gone."""
-    if cap.kind == "custom":
-        return _invocation(cap, request)
+def _cap_body(cap):
+    """An agent/skill cap's own markdown instructions, frontmatter stripped; its description if
+    the source file is gone."""
     body = ""
     path = getattr(cap, "path", None)
     if path:
@@ -363,12 +359,33 @@ def _local_invocation(cap, request):
             end = body.find("\n---", 3)
             body = body[end + 4:] if end != -1 else body
         body = body.strip()[:_LOCAL_CAP_CHARS]
-    if not body:
-        body = cap.description
+    return body or cap.description
+
+
+def _local_invocation(cap, request):
+    """Invocation for the LOCAL runtime: there is no Claude Code around the model to resolve
+    `/skill` or spawn a subagent, so a skill/agent cap's own markdown instructions (minus
+    frontmatter) are inlined as the briefing instead. Custom caps are unchanged — their
+    prompt IS the instructions. Falls back to the description if the source file is gone."""
+    if cap.kind == "custom":
+        return _invocation(cap, request)
     return (f"You are executing the '{cap.invoke_name or cap.name}' {cap.kind}. "
             f"Its instructions follow between the markers; apply them to the request "
             f"using the tools available to you, then report the final result.\n"
-            f"--- INSTRUCTIONS ---\n{body}\n--- END INSTRUCTIONS ---\n\n"
+            f"--- INSTRUCTIONS ---\n{_cap_body(cap)}\n--- END INSTRUCTIONS ---\n\n"
+            f"Request: {request}")
+
+
+def _plan_invocation(cap, request):
+    """Invocation for the PLAN PREVIEW. An agent cap is inlined, never delegated: "Use the X
+    subagent" spawns an agent that runs its whole workflow unaware it is only planning, and a
+    timeout discards everything it found (web-b346531f)."""
+    if cap.kind != "agent":
+        return _invocation(cap, request)
+    return (f"You are planning the work the '{cap.invoke_name or cap.name}' agent would do. "
+            f"Its instructions follow between the markers; plan as it would, yourself, in this "
+            f"session.\n"
+            f"--- INSTRUCTIONS ---\n{_cap_body(cap)}\n--- END INSTRUCTIONS ---\n\n"
             f"Request: {request}")
 
 
