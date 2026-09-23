@@ -2456,7 +2456,6 @@ class RuleEnforcementTests(unittest.TestCase):
         "memory-privacy.md:The assistant cap's prompt and the memory-context header must agree",
         "memory-privacy.md:Who reads the result picks the contract",
         "memory-privacy.md:Write each pattern's test from the vendor's REAL key format, never fro",
-        "memory-privacy.md:privacy.redact",
         # --- repo-work.md (17) ---
         "repo-work.md:A TERMINATE/CANCEL/TIMED_OUT delivers no exception into the workflow",
         "repo-work.md:A board card's Chat link needs a chat_key, and not every run gets one.",

@@ -20,6 +20,7 @@ import facade
 import gateway
 import ledger
 import policy
+import privacy
 import registry
 import storage
 from ui import trace
@@ -565,6 +566,25 @@ def pr_url_from_run(wid):
     return found
 
 
+# Correlation keys: a wid or cap name mangled by a false-positive match would orphan the row.
+_UNSCRUBBED = frozenset({"at", "workflow", "attempt", "capability"})
+
+
+def _scrubbed(value, key=None):
+    """`privacy.redact` over every string in an audit entry (issue #6) — the trail is immutable, so
+    a pasted secret written here stays in plaintext for good. Walks values rather than redacting
+    the dumped JSON, whose escaping (a PEM's `\\n`) would hide the shape from the patterns."""
+    if key in _UNSCRUBBED:
+        return value
+    if isinstance(value, str):
+        return privacy.redact(value)
+    if isinstance(value, dict):
+        return {k: _scrubbed(v, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_scrubbed(v) for v in value]
+    return value
+
+
 def _append_audit(entry):
     """Append one audit row — at most ONE per (workflow, attempt, outcome).
 
@@ -579,6 +599,7 @@ def _append_audit(entry):
     repeat (a retried run records `ran` again under a new wid). Read-modify-write, so it takes
     `storage.tx`'s BEGIN IMMEDIATE: with BEGIN DEFERRED two writers both read "absent" and the
     loser fails its lock upgrade, which is how a write gets silently lost."""
+    entry = _scrubbed(entry)
     verified = entry.get("verified")
     row = (entry["at"], entry["workflow"], entry.get("capability"),
            None if verified is None else int(bool(verified)),
@@ -622,6 +643,7 @@ def _append_content(wid, at, request=None, result=None, attempt=None, detail=Non
         entry["critique"] = str(critique)[:4000]
     if len(entry) <= 2:
         return
+    entry = _scrubbed(entry)
     conn = _audit_conn()
     try:
         conn.execute(
