@@ -1353,6 +1353,15 @@ class PlanPreviewPermissionTests(unittest.TestCase):
         self.assertIn("Phase 0: refine the ticket first.", prompts[0])
         self.assertNotIn("name: sre-minion", prompts[0])
 
+    def test_an_over_long_agent_body_is_cut_with_a_marker(self):
+        import contracts
+        tmp = os.path.join(self._tmp, "big.md")
+        with open(tmp, "w") as f:
+            f.write("x" * (contracts._LOCAL_CAP_CHARS + 50))
+        self.cap.path = tmp
+        body = contracts._cap_body(self.cap)
+        self.assertIn(f"[CUT at {contracts._LOCAL_CAP_CHARS} of {contracts._LOCAL_CAP_CHARS + 50}", body)
+
 
 class PlanSummaryGenerationTests(unittest.TestCase):
     """A 4000-5000 character plan is not what a human reads before clicking approve, so the gate

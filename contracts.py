@@ -358,7 +358,10 @@ def _cap_body(cap):
         if body.startswith("---"):                     # strip YAML frontmatter
             end = body.find("\n---", 3)
             body = body[end + 4:] if end != -1 else body
-        body = body.strip()[:_LOCAL_CAP_CHARS]
+        body = body.strip()
+        if len(body) > _LOCAL_CAP_CHARS:
+            body = (body[:_LOCAL_CAP_CHARS] + f"\n[CUT at {_LOCAL_CAP_CHARS} of {len(body)} "
+                    "characters — the rest of these instructions was NOT passed to you.]")
     return body or cap.description
 
 
