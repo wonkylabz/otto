@@ -21,7 +21,7 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 - **The approved plan is carried into execution and the judge** (`self._plan`→`_approved_plan_note`, `verify(approved_plan=)`) — else execution re-derives its approach and verify judges the raw request, so an approved ordering passes (`ApprovedPlanBindingTests`).
 - No plan is bound for an unattended `auto` run or a resume, and a run departing from one must say so (`ApprovedPlanBindingTests`).
 - A plan can prescribe work the executor cannot do (no `kubectl`/`aws-vault` in the worker env) — `_approved_plan_note` requires such a step be reported unverified, never claimed done. Diagnose by counting `tool_use` blocks in the transcript, never by trusting the report.
-- The plan must be the **last** thing the cap says — only the final turn is captured.
+- The plan must be the **last** thing said, by the planner ITSELF — an agent cap is inlined, never spawned (`_plan_invocation`, `PlanPreviewPermissionTests`).
 - Preview timeout is 900s; `plan_capability`'s activity timeout must stay well above it (17min).
 - A failed pass yields no plan text, never its error sentinel rendered as one; an empty plan at the gate shows an explicit note rather than a bare approval card.
 - **A parked gate TELLS THE ASKER** (`delivery.interim`, once per run) — the ntfy push goes to the OWNER, so the asker gets an ack then silence. Conversations only, and wrapped: a note must not kill a paid-for plan (`GateNoticeToTheAskerTests`).

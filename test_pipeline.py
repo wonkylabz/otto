@@ -1334,6 +1334,34 @@ class PlanPreviewPermissionTests(unittest.TestCase):
         self.assertNotIn("Bash", config.PLAN_TOOLS)
         self.assertNotIn("Write", config.PLAN_TOOLS)
 
+    def test_preview_can_not_delegate_to_a_subagent(self):
+        # web-b346531f: the preview spawned sre-minion, which ran its whole workflow unaware it was
+        # planning, hit the 900s wall, and the gate got no plan. The toolset is the guard.
+        engine.plan_preview("work on issue #272", self.cap)
+        self.assertIn("Task", self.kw.get("disallowed_tools") or [])
+        self.assertNotIn("Task", config.DISALLOWED_TOOLS, "execution must still dispatch agents")
+
+    def test_an_agent_cap_is_inlined_not_delegated(self):
+        tmp = os.path.join(self._tmp, "sre-minion.md")
+        with open(tmp, "w") as f:
+            f.write("---\nname: sre-minion\n---\nPhase 0: refine the ticket first.\n")
+        self.cap.path = tmp
+        prompts = []
+        engine._claude = lambda p, **kw: prompts.append(p) or {"result": "1. x", "total_cost_usd": 0}
+        engine.plan_preview("work on issue #272", self.cap)
+        self.assertNotIn("subagent to handle", prompts[0])
+        self.assertIn("Phase 0: refine the ticket first.", prompts[0])
+        self.assertNotIn("name: sre-minion", prompts[0])
+
+    def test_an_over_long_agent_body_is_cut_with_a_marker(self):
+        import contracts
+        tmp = os.path.join(self._tmp, "big.md")
+        with open(tmp, "w") as f:
+            f.write("x" * (contracts._LOCAL_CAP_CHARS + 50))
+        self.cap.path = tmp
+        body = contracts._cap_body(self.cap)
+        self.assertIn(f"[CUT at {contracts._LOCAL_CAP_CHARS} of {contracts._LOCAL_CAP_CHARS + 50}", body)
+
 
 class PlanSummaryGenerationTests(unittest.TestCase):
     """A 4000-5000 character plan is not what a human reads before clicking approve, so the gate

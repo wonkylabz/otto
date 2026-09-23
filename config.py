@@ -189,6 +189,10 @@ _BUILTIN_TOOLS = [
 # Handed to `--disallowedTools` on every execution turn.
 DISALLOWED_TOOLS = [t for t in _BUILTIN_TOOLS if t not in KEEP_TOOLS]
 
+# The plan preview also loses `Task`: a delegated preview runs the agent's whole workflow and a
+# timeout returns nothing. `Task` is the spelling that also removes its `Agent` alias (measured).
+PLAN_DISALLOWED_TOOLS = DISALLOWED_TOOLS + ["Task"]
+
 # Handed to the cheap tiers (routing/clarify/verify/memory — `gateway._claude_complete`),
 # which are pure text completions that never call a tool yet still paid the full tool+skill
 # preamble on every call. Measured: 45.4k -> 9.3k tokens per call.
