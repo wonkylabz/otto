@@ -8,7 +8,7 @@
 
 `privacy.py` — four paths leave the box: ntfy, Slack, GitHub comment, webhook.
 
-- **`privacy.redact`** — deterministic, unconditional, at every egress (JWT/Bearer/API-key/PEM/URL-creds/secret-named k/v). The ONE implementation (`supervisor.redact` is an alias), idempotent (a Slack reply passes two choke points), fails closed.
+- **`privacy.redact`** — deterministic, at every egress AND every audit write (`audit._scrubbed`: the trail is immutable). The ONE implementation (`supervisor.redact` is an alias), idempotent (a Slack reply passes two choke points), fails closed (`AuditRedactionTests`).
 - Block Kit bypasses the scrub by design — build blocks from already-redacted text, never walk the tree.
 - **Write each pattern's test from the vendor's REAL key format, never from the regex.** A fixture shaped to the pattern proves nothing: `sk-ABCDEF…` passed while `sk-ant-api03-…` leaked — the alnum-only body stopped at the hyphen. Assert the exact output, not `assertNotIn`.
 - **Content minimization on push** — `delivery.notify(title, *, lines=, detail=)` is keyword-only: `lines` (Otto's vocabulary) always sends, `detail` (request/ticket content) only with `OTTO_NTFY_DETAIL`; ntfy is a third-party broker whose topic name is its only credential.

@@ -1775,6 +1775,52 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(sum(c["id"] == "shared" for c in chats.list_summaries()), 1)
 
 
+class AuditRedactionTests(unittest.TestCase):
+    """#6: the trail is immutable, so every value is `privacy.redact`ed as it is written —
+    request, result, critique and reason alike. Fixtures use the vendors' REAL key formats."""
+
+    GHP = "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5"
+    ANT = "sk-ant-api03-" + "Xy7_Qm2-Lp9Rt4Vw8Zb3Nc6Hd1Jf5Kg0Ms2Pu7Wx4Yz9Ab3Cd8Ef1Gh6Ij2Kl5Mn0Op3Qr7St4Uv9Wx2Yz6Ab1Cd5Ef8G-AbCdEfAA"
+
+    def setUp(self):
+        import tempfile
+        self._orig = engine._DB
+        engine._DB = os.path.join(tempfile.mkdtemp(prefix="otto-audit-redact-"), "otto.db")
+        self.cap = registry.Capability("skill", "deploy-status", "desc")
+        self.cap.risk = "read"
+
+    def tearDown(self):
+        engine._DB = self._orig
+
+    def test_every_written_value_is_scrubbed(self):
+        engine._audit("wf-red-0001", f"use {self.GHP} then", self.cap, f"key {self.ANT}", 0.0,
+                      attempt=1, critique=f"leaked {self.GHP}", reason=f"failed: {self.ANT}")
+        [row] = engine.audit_entries_for("wf-red-0001")
+        [content] = engine.content_entries_for("wf-red-0001")
+        self.assertEqual(content["request"], "use [redacted] then")
+        self.assertEqual(content["result"], "key [redacted]")
+        self.assertEqual(content["critique"], "leaked [redacted]")
+        self.assertEqual(row["reason"], "failed: [redacted]")
+        self.assertEqual((row["workflow"], row["capability"]), ("wf-red-0001", "skill:deploy-status"))
+
+    def test_nothing_reaches_the_raw_table(self):
+        # The readers could scrub on the way out; the bytes on disk are what #6 is about.
+        import sqlite3
+        engine._audit("wf-red-0002", f"use {self.GHP}", self.cap, "ok", 0.0, attempt=1)
+        conn = sqlite3.connect(engine._DB)
+        try:
+            dump = "\n".join(r[0] for t in ("audit", "audit_content")
+                              for r in conn.execute(f"SELECT data FROM {t}"))
+        finally:
+            conn.close()
+        self.assertNotIn(self.GHP[:20], dump)
+
+    def test_a_retry_recovers_the_scrubbed_request(self):
+        # The accepted cost: a retried run re-runs with the placeholder, never the secret.
+        engine._audit("wf-red-0003", f"deploy with {self.GHP}", self.cap, "ok", 0.0, attempt=1)
+        self.assertEqual(engine.run_origin("wf-red-0003")[0], "deploy with [redacted]")
+
+
 class AuditOrderingTests(unittest.TestCase):
     """The audit trail must stay chronological under volume — iter_audit_entries() orders by
     insertion (SQLite `id ASC`), not by the `at` timestamp string, so same-second writes can't

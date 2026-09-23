@@ -62,8 +62,13 @@ to act with your access.
 - Egress is scrubbed by `privacy.py` (`redact`) on all four outbound paths — ntfy, Slack,
   GitHub comments, webhooks. It is deterministic and fails closed, but it is a backstop
   against a model quoting a credential, not an authorization system.
-- Prompts, results and tool calls are written to `data/transcripts/` and `data/otto.db` in
-  the clear. Those paths are read-denied to runs, but they are plaintext on disk.
+- Transcripts (`data/transcripts/`) and the audit trail (`audit`, `audit_content` in
+  `data/otto.db`) pass every value through the same `redact` as it is written — the trail is
+  immutable, so an unscrubbed secret there is permanent. The cost is deliberate: a transcript
+  cannot prove the exact bytes the model saw, and retrying a run whose request held a pasted
+  secret re-runs it with `[REDACTED]` in its place.
+- Chat history, memory and knowledge in `data/otto.db` are still stored in the clear. All of
+  `data/` is read-denied to runs, but it is plaintext on disk.
 
 ### ntfy push
 
