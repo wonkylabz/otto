@@ -333,6 +333,24 @@ class HttpApiTests(unittest.TestCase):
         for m, n, fn in cls._orig_traces:
             setattr(m, n, fn)
 
+    def test_slack_triggers_round_trip_and_refuse_a_rule_with_no_bots(self):
+        import slack_triggers
+        orig = slack_triggers._RULES
+        slack_triggers._RULES = os.path.join(self._tmp, "slack-triggers.json")
+        self.addCleanup(setattr, slack_triggers, "_RULES", orig)
+        rules = [{"channel": "C1", "bots": ["New Relic"], "template": "Investigate: {text}"},
+                 {"channel": "C2", "bots": [], "template": "anyone can fire me"}]
+        req = urllib.request.Request(self.base + "/api/slack-triggers", method="POST",
+                                     data=json.dumps({"rules": rules}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            saved = json.loads(r.read())["rules"]
+        self.assertEqual([["C1"]], [x["channels"] for x in saved])
+        with urllib.request.urlopen(self.base + "/api/slack-triggers", timeout=10) as r:
+            got = json.loads(r.read())
+        self.assertEqual(saved, got["rules"])
+        self.assertIn("bot", got["tokens"])
+
     def test_a_raising_get_returns_a_500_envelope_not_a_dropped_socket(self):
         """do_POST has always wrapped its dispatch; do_GET did not, so a raising branch produced
         a socketserver traceback and a closed connection — which the UI reads as "Couldn't

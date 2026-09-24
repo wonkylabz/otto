@@ -4094,7 +4094,7 @@ class EstopCoverageTests(unittest.TestCase):
         and a fourth copy would have been written with one item missing. They now go through
         `ingress.start_run`, so a new poller inherits all four by construction."""
         import ingress
-        for mod in ("board", "slack", "pr_review"):
+        for mod in ("board", "slack", "pr_review", "slack_triggers"):
             with self.subTest(module=mod):
                 src = self._src(f"{mod}.py")
                 self.assertIn("ingress.start_run(", src,
@@ -7513,3 +7513,159 @@ class SlackAdminMcpSpawnTests(unittest.TestCase):
         for entry in self.seen:
             self.assertEqual("Bearer xoxp-e2e-canary", entry[-1])
         self.assertNotIn("xoxp", json.dumps([e[1] for e in self.seen]))
+
+
+class SlackTriggerTests(unittest.TestCase):
+    """A listed bot's post in a watched channel starts ONE unattended run per incident key."""
+
+    NOW = 1_800_000_000.0
+
+    def setUp(self):
+        import slack_triggers as st
+        self.st = st
+        for p in (st._RULES, st._STATE):
+            if os.path.exists(p):
+                os.remove(p)
+        self.rule = st.save_rules([{
+            "channels": ["C1"], "bots": ["New Relic"], "template": "Investigate: {condition} ({key})",
+            "match": r"(?i)opened: (?P<condition>[^\n]+)", "key": r"Issue ID: (\w+)",
+            "cap": "incident-responder"}])[0]
+
+    def _post(self, ts, text, bot="New Relic", bot_id="B1", attachments=None):
+        m = {"ts": f"{ts:.6f}", "text": text, "attachments": attachments or []}
+        if bot_id:
+            m.update({"bot_id": bot_id, "bot_profile": {"name": bot}})
+        else:
+            m.update({"user": "U1", "username": bot})    # a person who took the bot's name
+        return m
+
+    def _poll(self, msgs, start=None, paused=False, page=None, fail_page=None):
+        """`msgs` is a list (channel C1) or {channel: list}. Served newest first, like Slack, in
+        pages of `page` with a next_cursor; `fail_page` makes that page return ok:False."""
+        import slack
+        import ingress
+        calls, started = [], []
+        by_ch = msgs if isinstance(msgs, dict) else {"C1": msgs}
+
+        def api(method, identity=None, **kw):
+            calls.append((method, identity, kw))
+            newest = list(reversed(by_ch.get(kw.get("channel"), [])))
+            i = int(kw.get("cursor") or 0)
+            if fail_page is not None and i // (page or 1) == fail_page:
+                return {"ok": False, "error": "ratelimited"}
+            size = page or len(newest) or 1
+            chunk, more = newest[i:i + size], i + size < len(newest)
+            return {"ok": True, "messages": chunk, "has_more": more,
+                    "response_metadata": {"next_cursor": str(i + size) if more else ""}}
+
+        def go(wid, params, **kw):
+            started.append((wid, params))
+            return start(wid) if start else ingress.STARTED
+        with unittest.mock.patch.object(slack, "_api", side_effect=api), \
+                unittest.mock.patch.object(ingress, "start_run", side_effect=go), \
+                unittest.mock.patch("estop.blocked", return_value=paused):
+            res = self.st.poll(lambda n: {"name": n, "kind": "agent", "risk": "read"}, now=self.NOW)
+        return res, calls, started
+
+    def test_a_rule_without_bots_or_with_a_bad_regex_is_refused(self):
+        self.assertIsNone(self.st.normalize({"channel": "C1", "template": "x", "bots": []}))
+        self.assertIsNone(self.st.normalize({"channel": "C1", "template": "x", "bots": ["b"],
+                                             "match": "("}))
+        r = self.st.normalize({"channel": "C1", "template": "x", "bots": ["b"]})
+        self.assertEqual("ask", r["approval"])
+        self.assertTrue(r["id"])
+
+    def test_a_human_never_fires_a_trigger_whatever_it_says(self):
+        human = self._post(self.NOW - 10, "opened: High CPU\nIssue ID: abc", bot_id=None)
+        self.assertIsNone(self.st.pick([self.rule], human, self.NOW, "C1"))
+        other_bot = self._post(self.NOW - 10, "opened: High CPU", bot="Grafana", bot_id="B9")
+        self.assertIsNone(self.st.pick([self.rule], other_bot, self.NOW, "C1"))
+
+    def test_alert_text_is_read_from_attachments_when_text_is_empty(self):
+        m = self._post(self.NOW - 10, "", attachments=[
+            {"title": "opened: High CPU on prod-east", "fields": [{"title": "Issue ID", "value": "x"}]}])
+        rule, payload, key = self.st.pick([self.rule], m, self.NOW, "C1")
+        self.assertEqual("High CPU on prod-east", payload["condition"])
+
+    def test_a_stale_post_is_history_not_work(self):
+        old = self._post(self.NOW - 3600, "opened: High CPU\nIssue ID: abc")
+        self.assertIsNone(self.st.pick([self.rule], old, self.NOW, "C1"))
+
+    def test_one_incident_is_one_run_even_across_repeated_posts(self):
+        a = self._post(self.NOW - 30, "opened: High CPU\nIssue ID: abc")
+        b = self._post(self.NOW - 20, "opened: High CPU (again)\nIssue ID: abc")
+        c = self._post(self.NOW - 10, "opened: Disk full\nIssue ID: def")
+        res, _, started = self._poll([a, b, c])
+        self.assertEqual(2, len(started))
+        wid, params = started[0]
+        self.assertEqual("Investigate: High CPU (abc)", params["request"])
+        self.assertEqual({"kind": "slack_thread", "channel": "C1", "thread_ts": a["ts"],
+                          "identity": "bot"}, params["reply_to"])
+        self.assertEqual("read", params["cap"]["risk"])      # risk from the registry, not the rule
+        self.assertEqual("ask", params["approval"])
+        self.assertTrue(wid.startswith("evt-s-"))
+        _, _, again = self._poll([a, b, c])                   # a re-poll starts nothing
+        self.assertEqual([], again)
+
+    def test_a_failed_start_leaves_the_post_for_the_next_poll(self):
+        import ingress
+        a = self._post(self.NOW - 10, "opened: High CPU\nIssue ID: abc")
+        _, _, first = self._poll([a], start=lambda w: ingress.FAILED)
+        self.assertEqual(1, len(first))
+        _, _, second = self._poll([a])
+        self.assertEqual(1, len(second), "the alert was dropped after a failed start")
+
+    def test_the_pause_lands_before_any_channel_is_read(self):
+        a = self._post(self.NOW - 10, "opened: High CPU\nIssue ID: abc")
+        res, calls, started = self._poll([a], paused=True)
+        self.assertTrue(res.get("paused"))
+        self.assertEqual([], calls)
+        self.assertEqual([], started)
+
+    def test_triggers_live_apart_from_webhook_rules(self):
+        """A signed POST to /api/events/slack must not be able to fire an alert trigger."""
+        self.assertEqual([], [r for r in events.load_rules() if r.get("source") == "slack"])
+        self.assertIsNone(events.to_request("slack", {"text": "opened: x"}))
+
+    def test_triggers_keep_the_slack_poll_schedule_alive(self):
+        import slack
+        src = inspect.getsource(slack._reconcile_schedule)
+        self.assertIn("slack_triggers.any_active()", src)
+
+    def test_the_form_opens_in_the_shared_modal(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertEqual(1, ui.count("function showSlackTriggerForm("))
+        self.assertIn('class="addbtn addnew" id="add-slacktrig"', ui)
+
+    def test_a_legacy_single_channel_rule_still_loads(self):
+        r = self.st.normalize({"channel": "C9", "template": "x", "bots": ["b"]})
+        self.assertEqual(["C9"], r["channels"])
+
+    def test_one_rule_watches_several_channels_and_replies_where_each_post_was(self):
+        self.st.save_rules([{**self.rule, "channels": ["C1", "C2"]}])
+        a = self._post(self.NOW - 20, "opened: High CPU\nIssue ID: abc")
+        b = self._post(self.NOW - 10, "opened: Disk full\nIssue ID: def")
+        _, calls, started = self._poll({"C1": [a], "C2": [b]})
+        self.assertEqual({"C1", "C2"}, {kw["channel"] for _, _, kw in calls})
+        self.assertEqual({"C1": a["ts"], "C2": b["ts"]},
+                         {p["reply_to"]["channel"]: p["reply_to"]["thread_ts"] for _, p in started})
+
+    def test_a_storm_bigger_than_one_page_is_read_whole(self):
+        posts = [self._post(self.NOW - 100 + i, f"opened: X\nIssue ID: i{i}") for i in range(5)]
+        _, calls, started = self._poll(posts, page=2)
+        self.assertEqual(3, len(calls))
+        self.assertEqual(5, len(started), "the oldest posts of a storm were skipped")
+
+    def test_a_failed_page_moves_no_cursor(self):
+        posts = [self._post(self.NOW - 100 + i, f"opened: X\nIssue ID: i{i}") for i in range(5)]
+        res, _, started = self._poll(posts, page=2, fail_page=1)
+        self.assertEqual([], started)
+        self.assertTrue(res["errors"])
+        _, _, retried = self._poll(posts, page=2)
+        self.assertEqual(5, len(retried))
+
+    def test_a_rule_stored_without_an_id_keeps_one_id_across_loads(self):
+        """Rules re-normalize on every poll; a random id re-fired every incident each poll."""
+        storage.write_json(self.st._RULES, [{"channels": ["C1"], "bots": ["b"], "template": "x"}])
+        self.assertEqual(self.st.load_rules()[0]["id"], self.st.load_rules()[0]["id"])

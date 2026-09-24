@@ -1003,9 +1003,16 @@ def poll_slack(payload: dict) -> dict:
     # elapses and the backlog is marked seen instead of answered hours late.
     if estop.blocked("slack"):
         return {"picked": [], "paused": True}
+    import slack_triggers
+
+    def _trigger_cap(name):
+        c = _cap(name)
+        return {"name": c.name, "kind": c.kind, "risk": c.risk} if c else None
+    # Before the listener's enabled check: triggers keep this schedule alive on their own.
+    trig = slack_triggers.poll(_trigger_cap) if slack_triggers.any_active() else {}
     cfg = slack.load()
     if not slack.any_enabled(cfg):
-        return {"picked": [], "disabled": True}
+        return {"picked": [], "disabled": True, "triggers": trig}
 
     def _ack_text(identity):
         return ((cfg.get("bot_ack_template") or slack._BOT_ACK_DEFAULT) if identity == slack.BOT
@@ -1204,7 +1211,7 @@ def poll_slack(payload: dict) -> dict:
             f"slack: picked up {len(picked)} message(s) ({len(resumed)} continuing a conversation, "
             f"{len(handed_off)} handed off as a new task), greeted {len(greeted)}")
     return {"picked": picked, "skipped": skipped, "greeted": greeted, "resumed": resumed,
-            "handed_off": handed_off, "decided": decided}
+            "handed_off": handed_off, "decided": decided, "triggers": trig}
 
 
 def _reap_state(wid):

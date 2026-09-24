@@ -41,6 +41,7 @@ import runbooks  # noqa: F401
 import scheduler  # noqa: F401
 import server  # noqa: F401
 import slack  # noqa: F401
+import slack_triggers  # noqa: F401
 import ui  # noqa: F401
 import workspace  # noqa: F401
 
@@ -84,6 +85,8 @@ _DATA_STORES = (
     ("server", "_RETRIES_PATH", "retries.json"),
     ("slack", "_CFG", "slack.json"),
     ("slack", "_STATE", "slack-state.json"),
+    ("slack_triggers", "_RULES", "slack-triggers.json"),
+    ("slack_triggers", "_STATE", "slack-triggers-state.json"),
     ("ui", "LOG_DIR", "logs"),
     ("workspace", "WORKSPACES", "workspaces"),
 )
