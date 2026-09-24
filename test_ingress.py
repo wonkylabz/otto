@@ -7664,3 +7664,8 @@ class SlackTriggerTests(unittest.TestCase):
         self.assertTrue(res["errors"])
         _, _, retried = self._poll(posts, page=2)
         self.assertEqual(5, len(retried))
+
+    def test_a_rule_stored_without_an_id_keeps_one_id_across_loads(self):
+        """Rules re-normalize on every poll; a random id re-fired every incident each poll."""
+        storage.write_json(self.st._RULES, [{"channels": ["C1"], "bots": ["b"], "template": "x"}])
+        self.assertEqual(self.st.load_rules()[0]["id"], self.st.load_rules()[0]["id"])

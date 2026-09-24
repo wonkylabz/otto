@@ -29,7 +29,6 @@ import hashlib
 import os
 import re
 import time
-import uuid
 
 import config
 import events
@@ -75,7 +74,11 @@ def normalize(rule):
                 re.compile(pat)
             except re.error:
                 return None
-    out = {"id": str(rule.get("id") or uuid.uuid4().hex[:8]), "channels": channels, "bots": bots,
+    # A missing id is DERIVED, never random: rules re-normalize on every load, and the id keys
+    # the dedupe, so a random one made each poll re-fire the same incident.
+    rid = str(rule.get("id") or "").strip() or hashlib.sha256(
+        f"{channels}|{bots}|{template}".encode()).hexdigest()[:8]
+    out = {"id": rid, "channels": channels, "bots": bots,
            "template": template,
            "approval": rule.get("approval") if rule.get("approval") in _APPROVALS else "ask",
            "identity": "user" if rule.get("identity") == "user" else "bot",
@@ -209,6 +212,11 @@ def to_params(rule, payload, wid):
 
 def _st():
     return storage.read_json(_STATE, {"cursors": {}, "fired": {}})
+
+
+def status():
+    st = _st()
+    return {"last_poll": st.get("last_poll"), "last_errors": st.get("last_errors") or []}
 
 
 def _cursor_key(identity, channel):

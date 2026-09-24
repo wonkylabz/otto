@@ -1248,12 +1248,11 @@ class Handler(BaseHTTPRequestHandler):
                 "caps": [c.name for c in CAPS if c.enabled],  # for the rule form's capability picker
             }))
         elif self.path == "/api/slack-triggers":
-            st = slack_triggers._st()
             self._send(200, json.dumps({
                 "rules": slack_triggers.load_rules(),
                 "caps": [c.name for c in CAPS if c.enabled],
                 "tokens": {"bot": slack.token_set(slack.BOT), "user": slack.token_set(slack.USER)},
-                "last_poll": st.get("last_poll"), "last_errors": st.get("last_errors") or [],
+                **slack_triggers.status(),
             }))
         elif self.path == "/api/board-config":
             # GitHub Projects board used as the async work queue (distinct from /api/board, the
