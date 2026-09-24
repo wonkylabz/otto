@@ -552,6 +552,7 @@ class MultiRepoDecomposeTests(unittest.TestCase):
     def test_linked_issue_content_reaches_the_planner(self):
         engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
         self.assertIn("provider entry", self.prompts[0])
+        self.assertRegex(self.prompts[0], r"\|\|\|[^|]*provider entry[^|]*\|\|\|")
         self.assertIn("infra, teamcity, vllm", self.prompts[0])
         self.assertNotIn("dhop", self.prompts[0])
 

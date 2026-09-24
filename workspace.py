@@ -261,6 +261,13 @@ def pr_branch(repo, pr_url):
 # it is definitively. Guessing from the wording instead would be the unreliable half of this.
 _PR_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/pull/(\d+)")
 _PR_SLUG_RE = re.compile(r"\b([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)#(\d+)\b")
+# `repo#N` — the owner omitted, which is how a request written by a human who knows the repo
+# actually reads. Measured: `web-3b6f2613` said "(ci#106)" and NEITHER of the other two
+# patterns matched it — the slug form wants an owner, and `#` there follows `y`, not a space —
+# so the run got a default-branch clone for code that lives only on that PR.
+_PR_REPO_RE = re.compile(r"\b([A-Za-z0-9._-]+)#(\d+)\b")
+_PR_NUM_RE = re.compile(r"(?:^|[\s(\[])#(\d{1,7})\b")
+
 _ISSUE_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/issues/(\d+)")
 
 
@@ -301,12 +308,6 @@ def repo_for_slug(slug, repos=None):
         if m and m.group(1).lower() == want:
             return r["name"]
     return None
-# `repo#N` — the owner omitted, which is how a request written by a human who knows the repo
-# actually reads. Measured: `web-3b6f2613` said "(ci#106)" and NEITHER of the other two
-# patterns matched it — the slug form wants an owner, and `#` there follows `y`, not a space —
-# so the run got a default-branch clone for code that lives only on that PR.
-_PR_REPO_RE = re.compile(r"\b([A-Za-z0-9._-]+)#(\d+)\b")
-_PR_NUM_RE = re.compile(r"(?:^|[\s(\[])#(\d{1,7})\b")
 
 
 def request_pr_refs(request, slug=None):
