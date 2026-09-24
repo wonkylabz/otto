@@ -10,6 +10,7 @@ repo is cloned from its LOCAL path (fast, offline), but its `origin` is repointe
 path's real `origin` remote so the push + PR land on the actual host (e.g. GitHub). Each run
 gets its own workspace keyed on the workflow id, so concurrent swarm sub-tasks never collide.
 """
+import json
 import os
 import re
 import shutil
@@ -266,6 +267,47 @@ _PR_SLUG_RE = re.compile(r"\b([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)#(\d+)\b")
 # so the run got a default-branch clone for code that lives only on that PR.
 _PR_REPO_RE = re.compile(r"\b([A-Za-z0-9._-]+)#(\d+)\b")
 _PR_NUM_RE = re.compile(r"(?:^|[\s(\[])#(\d{1,7})\b")
+
+_ISSUE_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/issues/(\d+)")
+
+
+def issue_ref(text):
+    """The first GitHub issue URL in `text`, as (owner/repo, number), or None. Pure."""
+    m = _ISSUE_URL_RE.search(str(text or ""))
+    return (f"{m.group(1)}/{m.group(2)}", int(m.group(3))) if m else None
+
+
+def linked_issue(text):
+    """The issue a request POINTS at, as {slug, number, url, title, body}, or None.
+
+    "Work on this <url>" carries none of the work in its own words, so anything deciding from
+    the text alone (the swarm planner) decides blind: web-8a2764b8 read one line and called a
+    three-repo issue a single task."""
+    ref = issue_ref(text)
+    if not ref:
+        return None
+    slug, num = ref
+    rc, out, err = _run(["gh", "issue", "view", str(num), "--repo", slug,
+                         "--json", "title,body"], timeout=30)
+    if rc != 0:
+        trace("WORKSPACE", f"issue view {slug}#{num} failed: {err[:120]}")
+        return None
+    try:
+        data = json.loads(out) or {}
+    except ValueError:
+        return None
+    return {"slug": slug, "number": num, "url": f"https://github.com/{slug}/issues/{num}",
+            "title": data.get("title") or "", "body": data.get("body") or ""}
+
+
+def repo_for_slug(slug, repos=None):
+    """The registered repo NAME whose origin is `owner/repo`, or None — both URL and SSH remotes."""
+    want = (slug or "").lower()
+    for r in (git_repos() if repos is None else repos):
+        m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", r.get("origin") or "")
+        if m and m.group(1).lower() == want:
+            return r["name"]
+    return None
 
 
 def request_pr_refs(request, slug=None):

@@ -31,7 +31,8 @@ class SwarmMixin:
         self._swarm = True
         parent_id = workflow.info().workflow_id
         self._children = [{"id": f"{parent_id}-s{i + 1}", "cap": s["cap"]["name"],
-                           "request": s["request"], "risk": s["cap"]["risk"]}
+                           "request": s["request"], "risk": s["cap"]["risk"],
+                           "repo": s.get("repo")}
                           for i, s in enumerate(subtasks)]
 
         async def _spawn(child, sub):
@@ -50,7 +51,9 @@ class SwarmMixin:
                  # override should still bind, same model for the whole chat's work).
                  "memory_enabled": params.get("memory_enabled", True),
                  "model_override": params.get("model_override"),
-                 "effort": self._effort},
+                 "effort": self._effort,
+                 # A per-repo part of a multi-repo change: its own clone and PR.
+                 **({"repo": sub["repo"]} if sub.get("repo") else {})},
                 id=child["id"])
 
         results = await asyncio.gather(
@@ -78,6 +81,9 @@ class SwarmMixin:
             merge_results, {"request": request, "parts": parts, "audience": self._audience},
             start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
         result = merged["result"]
+        order = [c["repo"] for c in self._children if c.get("repo")]
+        if len(order) >= 2:
+            result += "\n\n**Merge order:** " + " → ".join(order)
 
         cap = {"name": "swarm", "kind": "swarm", "risk": "read"}
         self._cap = cap

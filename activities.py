@@ -156,7 +156,7 @@ def plan_swarm(payload) -> dict:
     registry, like route_request — never taken from a client."""
     request = payload if isinstance(payload, str) else payload.get("request", "")
     tasks = engine.decompose(request, _capabilities(), project_root=_project_root(payload))
-    subtasks = [{"request": t["request"],
+    subtasks = [{"request": t["request"], "repo": t.get("repo"),
                  "cap": {"name": t["cap"].name, "kind": t["cap"].kind, "risk": t["cap"].risk}}
                 for t in tasks]
     if subtasks:

@@ -23,6 +23,7 @@ import conventions
 import engine
 import gateway
 import registry
+import workspace
 import storage
 
 try:                                       # the Temporal layer — absent under a bare python3
@@ -515,6 +516,107 @@ class DecomposeTests(unittest.TestCase):
     def test_no_fanout_when_catalogue_too_small(self):
         engine.gateway.complete = lambda task, prompt: "0: a\n0: b"
         self.assertEqual(engine.decompose("x", self._caps()[:1]), [])
+
+
+class MultiRepoDecomposeTests(unittest.TestCase):
+    """A change spanning several registered repos splits one part per repo (web-8a2764b8: a
+    three-repo issue linked by URL alone ran as ONE vllm run, which rightly refused to ship
+    half of it). The planner must read the LINKED content, not the one-line pointer."""
+
+    ISSUE = {"slug": "acme/vllm", "number": 42, "url": "https://github.com/acme/vllm/issues/42",
+             "title": "Add authz service",
+             "body": "**vllm repo**: new service.\n**infra repo**: provider entry.\n"
+                     "**teamcity repo**: image build."}
+    REPOS = [{"name": n, "path": f"/r/{n}", "origin": f"git@github.com:acme/{n}.git"}
+             for n in ("infra", "teamcity", "vllm", "dhop")]
+    REPLY = ("0: [repo=infra] add the provider\n0: [repo=teamcity] add the image build\n"
+             "0: [repo=vllm] add the service and policy")
+
+    def setUp(self):
+        import routing
+        self.routing = routing
+        self.prompts = []
+        patches = [mock.patch.object(engine.gateway, "complete",
+                                     side_effect=lambda t, p: self.prompts.append(p) or self.REPLY),
+                   mock.patch.object(workspace, "git_repos", return_value=self.REPOS),
+                   mock.patch.object(workspace, "linked_issue", return_value=self.ISSUE),
+                   mock.patch.object(routing, "trace", lambda *a, **k: None)]
+        for pt in patches:
+            pt.start()
+            self.addCleanup(pt.stop)
+
+    def _caps(self):
+        return [registry.Capability("agent", "sre-minion", "implement a GitHub issue end to end"),
+                registry.Capability("skill", "github-issue", "create a GitHub issue")]
+
+    def test_linked_issue_content_reaches_the_planner(self):
+        engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertIn("provider entry", self.prompts[0])
+        self.assertRegex(self.prompts[0], r"\|\|\|[^|]*provider entry[^|]*\|\|\|")
+        self.assertIn("infra, teamcity, vllm", self.prompts[0])
+        self.assertNotIn("dhop", self.prompts[0])
+
+    def test_without_the_fetch_the_planner_sees_only_the_pointer(self):
+        with mock.patch.object(workspace, "linked_issue", return_value=None):
+            engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertNotIn("provider entry", self.prompts[0])
+        self.assertNotIn("[repo=", self.prompts[0])
+
+    def test_one_part_per_repo_in_merge_order_each_briefed(self):
+        tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertEqual([t["repo"] for t in tasks], ["infra", "teamcity", "vllm"])
+        self.assertTrue(tasks[0]["request"].startswith("add the provider"))
+        for t in tasks:
+            self.assertIn("Merge order: infra → teamcity → vllm", t["request"])
+            self.assertIn(f"Change ONLY `{t['repo']}`", t["request"])
+            self.assertIn(self.ISSUE["url"], t["request"])
+
+    def test_a_repeated_repo_is_folded_into_one_part(self):
+        self.REPLY = ("0: [repo=infra] add the provider\n0: [repo=infra] add the ECR repo\n"
+                      "0: [repo=vllm] add the service")
+        tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertEqual([t["repo"] for t in tasks], ["infra", "vllm"])
+        self.assertIn("add the ECR repo", tasks[0]["request"])
+
+    def test_a_list_marker_before_the_line_is_not_the_cap(self):
+        self.REPLY = "1. 0: [repo=infra] add the provider\n2. 0: [repo=vllm] add the service"
+        tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertEqual([(t["cap"].name, t["repo"]) for t in tasks],
+                         [("sre-minion", "infra"), ("sre-minion", "vllm")])
+
+    def test_a_repo_the_content_never_named_is_not_a_target(self):
+        self.REPLY = "0: [repo=dhop] do a thing\n1: open a ticket"
+        tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertEqual([t["repo"] for t in tasks], [None, None])
+
+    def test_a_single_repo_task_gets_no_repo_rule(self):
+        with mock.patch.object(workspace, "linked_issue",
+                               return_value={**self.ISSUE, "body": "fix the vllm chart"}):
+            engine.decompose("Work on this https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertNotIn("[repo=", self.prompts[0])
+
+    def test_swarm_child_carries_its_repo_and_the_merge_order_is_stated(self):
+        src = workflow_src()
+        self.assertIn('**({"repo": sub["repo"]} if sub.get("repo") else {})', src)
+        self.assertIn('**Merge order:** " + " → ".join(order)', src)
+
+
+class LinkedIssueHelperTests(unittest.TestCase):
+    def test_issue_ref_parses_issue_urls_only(self):
+        self.assertEqual(workspace.issue_ref("see https://github.com/a/b/issues/7 now"), ("a/b", 7))
+        self.assertIsNone(workspace.issue_ref("https://github.com/a/b/pull/7"))
+
+    def test_repo_for_slug_matches_https_and_ssh_origins(self):
+        repos = [{"name": "x", "origin": "https://github.com/acme/costs.git"},
+                 {"name": "y", "origin": "git@github.com:acme/vllm.git"}]
+        self.assertEqual(workspace.repo_for_slug("acme/costs", repos), "x")
+        self.assertEqual(workspace.repo_for_slug("ACME/vllm", repos), "y")
+        self.assertIsNone(workspace.repo_for_slug("acme/other", repos))
+
+    def test_named_repos_is_whole_token(self):
+        import intents
+        self.assertEqual(intents.named_repos("infra and teamcity, not infrastructure",
+                                             ["infra", "teamcity", "vllm"]), ["infra", "teamcity"])
 
 
 class MergeTests(unittest.TestCase):

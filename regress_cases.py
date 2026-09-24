@@ -921,7 +921,45 @@ def _rules_nav_check(out):
     return True, f"picked {', '.join(picks)}, including {want}"
 
 
+
+def _plan_linked(fixture):
+    """decompose() on a bare issue link, with the issue and the registered repos stubbed."""
+    from unittest import mock
+    import workspace
+    issue = {"slug": "acme/modelsrv", "number": 7, "url": "https://github.com/acme/modelsrv/issues/7",
+             "title": "Authz sidecar", "body": _fixture(fixture)}
+    repos = [{"name": n, "path": f"/r/{n}", "origin": f"https://github.com/acme/{n}.git"}
+             for n in ("modelsrv", "platform", "pipelines", "billing")]
+    caps = [_cap(), _cap("worker", desc="general worker for task-shaped requests"),
+            _cap("github-issue", desc="create a GitHub issue")]
+    with mock.patch.object(workspace, "linked_issue", return_value=issue), \
+            mock.patch.object(workspace, "git_repos", return_value=repos):
+        return engine.decompose("Work on this https://github.com/acme/modelsrv/issues/7", caps)
+
+
+def _c_planner_splits_multi_repo():
+    return _plan_linked("issue-multi-repo-authz.md")
+
+
+def _k_planner_splits_multi_repo(tasks):
+    got = sorted(t.get("repo") or "-" for t in tasks)
+    return got == ["modelsrv", "pipelines", "platform"], f"parts: {got}"
+
+
+def _c_planner_keeps_single_repo_whole():
+    return _plan_linked("issue-single-repo-chart.md")
+
+
+def _k_planner_keeps_single_repo_whole(tasks):
+    return not any(t.get("repo") for t in tasks), f"parts: {[t.get('repo') for t in tasks]}"
+
 CASES = [
+    {"id": "planner-splits-multi-repo", "tier": "cheap", "incident": "web-8a2764b8, 2026-09-24",
+     "what": "a bare link to a three-repo issue splits one part per repo, not one run",
+     "run": _c_planner_splits_multi_repo, "check": _k_planner_splits_multi_repo},
+    {"id": "planner-keeps-single-repo-whole", "tier": "cheap", "incident": "control for the above",
+     "what": "an issue that only MENTIONS other repos is not split per repo",
+     "run": _c_planner_keeps_single_repo_whole, "check": _k_planner_keeps_single_repo_whole},
     {"id": "no-reply-pass", "tier": "cheap", "incident": "2026-07-31 Slack DM (Dylan)",
      "what": "a conversational run may choose silence, and verify accepts it without a model call",
      "run": _c_no_reply_is_a_pass, "check": _k_no_reply_is_a_pass},

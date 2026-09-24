@@ -243,6 +243,15 @@ def assistant_write_redirect(cap, caps):
 _BOUND_L, _BOUND_R = r"(?<![a-z0-9_])", r"(?![a-z0-9_])"
 
 
+def named_repos(text, repo_names):
+    """Every registered repo `text` names as a whole token, in `repo_names` order. Pure."""
+    text = (text or "").lower()
+    hits = [name for name in repo_names or []
+            if (name or "").strip()
+            and re.search(_BOUND_L + re.escape(name.lower().strip()) + _BOUND_R, text)]
+    return list(dict.fromkeys(hits))
+
+
 def candidate_repo(request, repo_names):
     """The single registered repo a request UNAMBIGUOUSLY names, or None. Pure (unit-testable).
     Matches a repo name only as a whole token (so 'infra' doesn't match 'infrastructure', and
@@ -251,12 +260,7 @@ def candidate_repo(request, repo_names):
     auto-engaging repo-mode on the interactive path, where there's no structured repo signal like
     the board's; a positive match is then confirmed by repo_edit_intent before we actually clone."""
     text = (request or "").lower()
-    hits = []
-    for name in repo_names or []:
-        n = (name or "").lower().strip()
-        if n and re.search(_BOUND_L + re.escape(n) + _BOUND_R, text):
-            hits.append(name)
-    uniq = list(dict.fromkeys(hits))
+    uniq = named_repos(text, repo_names)
     if uniq:
         return uniq[0] if len(uniq) == 1 else None
     # Second pass: a repo's LEADING name segment as a whole token — a registered "otto-dev"

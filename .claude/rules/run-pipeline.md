@@ -32,7 +32,8 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 
 ## Swarm / fan-out
 
-`engine.decompose`+`plan_swarm` — cheap planner decides if a request is really independent sub-tasks (`[]` = single; ≥2 `{cap,request}`, `MAX_SWARM=5`). Each child is a separate pinned-cap workflow gating its own writes.
+`engine.decompose`+`plan_swarm`: ≥2 `{cap,request}` fan out (`MAX_SWARM=5`), each gating its writes. **Many repos: one part each, merge-ordered, from the LINKED issue** — a run gets one clone (`MultiRepoDecomposeTests`).
+
 
 ## Plan-then-execute
 
