@@ -1793,8 +1793,9 @@ async def _reconcile_schedule(cfg):
     c = await tc.client()
     h = c.get_schedule_handle(SCHED_ID)
     # ANY identity keeps the schedule alive — one poll pass serves both, so tearing it down when
-    # the user identity goes off would silently stop the bot too.
-    if not any_enabled(cfg):
+    # the user identity goes off would silently stop the bot too. Slack triggers ride it as well.
+    import slack_triggers
+    if not (any_enabled(cfg) or slack_triggers.any_active()):
         try:
             await h.delete()
         except Exception:  # noqa: BLE001 - not there to begin with

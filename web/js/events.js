@@ -73,7 +73,7 @@ async function loadEvents(){
       <p class="sub">Slack, GitHub, and inbound webhooks &mdash; each connects, configures, and toggles independently below.</p></div>
     <div class="asection coll${closed['ev-slack']?' collapsed':''}" data-sect="ev-slack">
       <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Slack<span class="badge off" id="slack-badge">off</span></span></h3>
-      <div class="asection-body"><div id="slack-section"></div></div>
+      <div class="asection-body"><div id="slack-section"></div><div id="slacktrig-section"></div></div>
     </div>
     <div class="asection coll${closed['ev-github']?' collapsed':''}" data-sect="ev-github">
       <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>GitHub<span class="badge off" id="github-badge">off</span></span></h3>
@@ -103,6 +103,7 @@ async function loadEvents(){
   loadSlackConfig();
   loadBoardQueue();
   loadPrReviews();
+  loadSlackTriggers();
 }
 
 /* ---- Slack auto-answer listener (a pull ingress; polls Slack as you) ---- */
@@ -143,8 +144,8 @@ async function loadSlackConfig(){
      its own card said "no token" and its Enabled box was unchecked (reported with a screenshot).
      A summary badge may READ its parts; it must never write to them. */
   const botOn = !!(c.bot_enabled && d.bot_token_set);
-  const intCls = (badgeCls==='on' || botOn) ? 'on' : badgeCls;
-  const intLabel = (badgeCls==='on' || botOn) ? 'on' : badgeLabel;
+  const intCls = (badgeCls==='on' || botOn || SLACKTRIG_ACTIVE) ? 'on' : badgeCls;
+  const intLabel = (badgeCls==='on' || botOn || SLACKTRIG_ACTIVE) ? 'on' : badgeLabel;
   setIntegBadge("slack-badge",intCls,intLabel);
   host.innerHTML=`<div class="asection coll subsection${closed?' collapsed':''}" data-sect="ev-slack-answer">
     <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Auto-answer<span class="badge ${badgeCls}">${esc(badgeLabel)}</span></span>
@@ -872,5 +873,114 @@ function showRuleForm(idx){
     const replyUrl=val("rf-reply"); if(replyUrl) rule.reply_to={kind:"webhook", url:replyUrl};
     if(editing) EVENT_RULES[idx]=rule; else EVENT_RULES.push(rule);
     await saveRules(); closeFormModal(); loadEvents();
+  };
+}
+
+/* ---- Slack triggers: a listed bot's post in a channel starts an unattended run ---- */
+let SLACK_TRIGGERS=[], SLACKTRIG_CAPS=[], SLACKTRIG_ACTIVE=0;
+async function loadSlackTriggers(){
+  const host=document.getElementById("slacktrig-section");
+  if(!host) return;
+  let d;
+  try { d=await (await fetch("/api/slack-triggers")).json(); }
+  catch(e){ host.innerHTML=`<p class="err">Couldn't load Slack triggers (${esc(e.message)}).</p>`; return; }
+  SLACK_TRIGGERS=d.rules||[]; SLACKTRIG_CAPS=d.caps||[];
+  const active=SLACKTRIG_ACTIVE=SLACK_TRIGGERS.filter(r=>r.enabled!==false).length;
+  // Triggers alone make the Slack integration live; the parent badge reads this part, never the reverse.
+  if(active) setIntegBadge("slack-badge","on","on");
+  const tok=d.tokens||{};
+  const errs=(d.last_errors||[]).map(e=>`<li>${esc(e)}</li>`).join("");
+  const cards=SLACK_TRIGGERS.map((r,i)=>`<div class="job ${r.enabled===false?'off':''}">
+    <div class="jtop"><span class="switch ${r.enabled===false?'':'on'}" data-toggletrig="${i}" title="enable / disable"></span>
+      <span class="jcron">${esc((r.channels||[]).map(c=>"#"+c).join(" "))} &middot; ${esc((r.bots||[]).join(", "))}</span>
+      <div class="jactions"><button class="addbtn" data-edittrig="${i}">edit</button>
+        <button class="remove" data-deltrig="${i}" title="remove">&times;</button></div></div>
+    <div class="jreq">${esc(r.template||'')}</div>
+    <div class="jstatus">${r.cap?`&rarr; <b>${esc(r.cap)}</b>`:'auto-route'} ·
+      ${({auto:'<span class="warn">auto-approves writes</span>',ask:'writes need Board approval',skip:'writes skipped'})[r.approval||'ask']}
+      ${r.match?` · match <code>${esc(r.match)}</code>`:''}${r.key?` · dedupe <code>${esc(r.key)}</code>`:''}
+      · reads as ${esc(r.identity||'bot')}${tok[r.identity||'bot']?'':' <span class="warn">(no token)</span>'}</div>
+  </div>`).join("");
+  const closed=evCollapsed()['ev-slacktrig'];
+  host.innerHTML=`<div class="asection coll subsection${closed?' collapsed':''}" data-sect="ev-slacktrig">
+    <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Triggers<span class="badge ${active?'on':'off'}">${active?'on':'off'}</span><span class="sectcount">${SLACK_TRIGGERS.length} trigger${SLACK_TRIGGERS.length===1?'':'s'}</span></span>
+      <button class="addbtn addnew" id="add-slacktrig" title="Run when a bot (New Relic, PagerDuty, DevOps Agent…) posts in a channel. Otto polls outward, so nothing is exposed.">+ Add trigger</button></h3>
+    <div class="asection-body">
+      <p class="sub" style="margin:10px 0 10px">A post by a listed bot in a watched channel starts an unattended run, one per incident key. Rides the Slack poll; posts older than the max age are skipped, so downtime never replays old alerts.</p>
+      ${errs?`<p class="err">Last poll:</p><ul class="err">${errs}</ul>`:''}
+      ${cards||'<p class="memempty">No triggers yet.</p>'}
+    </div>
+  </div>`;
+  document.getElementById("add-slacktrig").addEventListener("click",()=>showSlackTriggerForm(-1));
+  enhanceToggles(host,".secttoggle",".asection","collapsed");
+  host.querySelectorAll("[data-toggletrig]").forEach(s=>s.addEventListener("click",async()=>{
+    const r=SLACK_TRIGGERS[+s.dataset.toggletrig]; r.enabled = r.enabled===false;
+    await saveSlackTriggers(); loadSlackTriggers();
+  }));
+  host.querySelectorAll("[data-edittrig]").forEach(b=>b.addEventListener("click",()=>showSlackTriggerForm(+b.dataset.edittrig)));
+  host.querySelectorAll("[data-deltrig]").forEach(b=>b.addEventListener("click",async()=>{
+    if(!confirm("Remove this trigger?")) return;
+    SLACK_TRIGGERS.splice(+b.dataset.deltrig,1); await saveSlackTriggers(); loadSlackTriggers();
+  }));
+}
+async function saveSlackTriggers(){
+  return postOr("/api/slack-triggers",{rules:SLACK_TRIGGERS},"saving the Slack triggers");
+}
+function showSlackTriggerForm(idx){
+  const editing=idx>=0, r=editing?SLACK_TRIGGERS[idx]:{};
+  const c=openFormModal(editing?"<b>Edit Slack trigger</b><br>"+esc((r.channels||[]).join(", ")):"<b>New Slack trigger</b><br>turn a bot's post into a run");
+  const capOpts=['<option value="">(auto-route)</option>'].concat((SLACKTRIG_CAPS||[]).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`)).concat(
+    (r.cap && !(SLACKTRIG_CAPS||[]).includes(r.cap)) ? [`<option value="${esc(r.cap)}">${esc(r.cap)} (disabled)</option>`] : []);
+  c.innerHTML=`<div class="aform">
+    <label>Channel ids &mdash; comma-separated</label><input id="st-channel" placeholder="C0123ABCD, C0456EFGH">
+    <label>Bots allowed to fire it &mdash; bot id, app id or app name, comma-separated</label><input id="st-bots" placeholder="New Relic">
+    <label>Match (optional) &mdash; regex over the post; named groups become template tokens</label><input id="st-match" placeholder="(?i)opened: (?P&lt;condition&gt;.+)">
+    <label>Dedupe key (optional) &mdash; regex, group 1 is the incident key; blank = one run per post</label><input id="st-key" placeholder="Issue ID: (&#92;w+)">
+    <label>Request template &mdash; {text}, {bot}, {key}, {ts} and your named groups</label>
+    <textarea id="st-template" placeholder="Investigate this alert and propose a fix: {text}"></textarea>
+    <div class="frow">
+      <div><label>Capability</label><select id="st-cap">${capOpts.join("")}</select></div>
+      <div><label>On a write</label><select id="st-approval">
+        <option value="ask">ask — approve on the Board</option>
+        <option value="skip">skip (don't run writes)</option>
+        <option value="auto">auto-approve</option>
+      </select></div>
+    </div>
+    <div class="frow">
+      <div><label>Read and reply as</label><select id="st-identity"><option value="bot">bot</option><option value="user">my account</option></select></div>
+      <div><label>Max age (seconds)</label><input id="st-age" type="number" min="60" placeholder="900"></div>
+    </div>
+    <label><input type="checkbox" id="st-thread" checked> Reply in the post's thread</label>
+    <div class="ferr" id="st-err"></div>
+    <div class="factions"><button class="btn approve" id="st-save">${editing?'Save changes':'Add trigger'}</button><button class="btn decline" id="st-cancel">Cancel</button></div>
+  </div>`;
+  const set=(id,v)=>{ document.getElementById(id).value=v; };
+  if(editing){
+    set("st-channel",(r.channels||[]).join(", ")); set("st-bots",(r.bots||[]).join(", "));
+    set("st-match",r.match||""); set("st-key",r.key||""); set("st-template",r.template||"");
+    set("st-cap",r.cap||""); set("st-identity",r.identity||"bot"); set("st-age",r.max_age_s||"");
+    document.getElementById("st-thread").checked=r.reply_in_thread!==false;
+  }
+  set("st-approval",r.approval||"ask");
+  document.getElementById("st-cancel").onclick=closeFormModal;
+  document.getElementById("st-save").onclick=async()=>{
+    const rule={id:r.id, channels:val("st-channel").split(",").map(s=>s.trim()).filter(Boolean), template:document.getElementById("st-template").value.trim(),
+      bots:val("st-bots").split(",").map(s=>s.trim()).filter(Boolean),
+      match:val("st-match"), key:val("st-key"), cap:val("st-cap"),
+      approval:val("st-approval"), identity:val("st-identity"),
+      reply_in_thread:document.getElementById("st-thread").checked};
+    const age=val("st-age"); if(age) rule.max_age_s=+age;
+    if(editing && r.enabled===false) rule.enabled=false;
+    if(!rule.channels.length||!rule.template||!rule.bots.length){
+      document.getElementById("st-err").textContent="a channel, at least one bot and a template are required"; return; }
+    const prev=SLACK_TRIGGERS.slice();
+    if(editing) SLACK_TRIGGERS[idx]=rule; else SLACK_TRIGGERS.push(rule);
+    let res;
+    try { res=await postJSON("/api/slack-triggers",{rules:SLACK_TRIGGERS}); }
+    catch(e){ SLACK_TRIGGERS=prev; document.getElementById("st-err").textContent="save failed: "+e.message; return; }
+    if((res.rules||[]).length<SLACK_TRIGGERS.length){
+      SLACK_TRIGGERS=prev; await saveSlackTriggers();
+      document.getElementById("st-err").textContent="refused — check the regexes"; return; }
+    closeFormModal(); loadSlackTriggers();
   };
 }

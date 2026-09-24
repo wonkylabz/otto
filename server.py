@@ -47,6 +47,7 @@ import runbooks
 import scheduler
 import slack
 import slack_socket
+import slack_triggers
 import storage
 import supervisor
 import workspace
@@ -1246,6 +1247,14 @@ class Handler(BaseHTTPRequestHandler):
                 "enabled": events.enabled(),         # OTTO_EVENT_SECRET set?
                 "caps": [c.name for c in CAPS if c.enabled],  # for the rule form's capability picker
             }))
+        elif self.path == "/api/slack-triggers":
+            st = slack_triggers._st()
+            self._send(200, json.dumps({
+                "rules": slack_triggers.load_rules(),
+                "caps": [c.name for c in CAPS if c.enabled],
+                "tokens": {"bot": slack.token_set(slack.BOT), "user": slack.token_set(slack.USER)},
+                "last_poll": st.get("last_poll"), "last_errors": st.get("last_errors") or [],
+            }))
         elif self.path == "/api/board-config":
             # GitHub Projects board used as the async work queue (distinct from /api/board, the
             # on-screen swarm/approval Board tab).
@@ -1973,6 +1982,12 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/event-rules"""
         self._send(200, json.dumps({"ok": True, "rules": events.save_rules(body.get("rules", []))}))
 
+    def _post_slack_triggers(self, body):
+        """POST /api/slack-triggers — the first active trigger has to create the poll schedule."""
+        saved = slack_triggers.save_rules(body.get("rules", []))
+        status = slack.reconcile_schedule() if TEMPORAL_OK else "temporal unavailable"
+        self._send(200, json.dumps({"ok": True, "rules": saved, "schedule": status}))
+
     def _post_board_config(self, body):
         """POST /api/board-config"""
         saved = board.save(body.get("config", body))
@@ -2355,6 +2370,7 @@ _POST_ROUTES = {
     "/api/continue": Handler._post_continue,
     "/api/conventions/refresh": Handler._post_conventions_refresh,
     "/api/event-rules": Handler._post_event_rules,
+    "/api/slack-triggers": Handler._post_slack_triggers,
     "/api/knowledge/add": Handler._post_knowledge_add,
     "/api/knowledge/clear": Handler._post_knowledge_clear,
     "/api/knowledge/delete": Handler._post_knowledge_delete,

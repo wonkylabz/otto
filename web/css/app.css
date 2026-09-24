@@ -632,6 +632,8 @@
   .asection .subsection { margin: 2px 0 14px; padding-left: var(--indent-sub);
     border-left: 1px solid var(--line); }
   .asection .subsection:last-child { margin-bottom: 2px; }
+  /* Each feature renders into its own host div, so the last subsection of a NON-last host keeps the gap. */
+  .asection-body > div:not(:last-child) > .subsection:last-child { margin-bottom: 14px; }
   .asection .subsection h3 { font-size: 11px; letter-spacing: .05em; color: var(--dim);
     border-bottom: 1px solid var(--line); padding: 6px 8px 7px; margin: 0 -8px 6px; }
   .asection .subsection h3:hover .secttoggle { color: var(--text-2); }
@@ -679,9 +681,10 @@
   /* Every "add an entity" control is the same button wherever it lives — an Admin section
      header, the Events webhook header, the Jobs bar, Knowledge, Memory's rules — and every one
      of them opens the shared config-form modal. The tint is what separates a creating control
-     from the `edit` / `discover` / filter buttons sharing `.addbtn`'s geometry. */
-  .addbtn.addnew { background: var(--accent-soft); border-color: var(--accent-soft); font-weight: 600; }
-  .addbtn.addnew:hover { border-color: var(--accent); }
+     from the `edit` / `discover` / filter buttons sharing `.addbtn`'s geometry. A section HEADER's
+     buttons (configure, recheck) wear it too: one header, one button look; the "+ Add" label says create. */
+  .addbtn.addnew, .asection h3 .addbtn { background: var(--accent-soft); border-color: var(--accent-soft); font-weight: 600; }
+  .addbtn.addnew:hover, .asection h3 .addbtn:hover { border-color: var(--accent); }
   .aform { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 15px;
     margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
   .aform label { font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: -4px; }
@@ -1094,8 +1097,10 @@
   .job.off { opacity: .5; }
   /* Both shapes are a grid because the drag grip is a left RAIL, like the switch: a scheduled
      row carries both rails, an on-demand one only the grip. */
-  .job { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 0 10px; align-items: start; }
-  .job.jsw { grid-template-columns: auto auto minmax(0,1fr); gap: 0 9px; }
+  /* The rail grid and column geometry are the JOBS tab's; scoped, or every other `.job` card
+     (Events' webhook rules, Slack, triggers) laid its flat children into these columns. */
+  #schedulesview .job { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 0 10px; align-items: start; }
+  #schedulesview .job.jsw { grid-template-columns: auto auto minmax(0,1fr); gap: 0 9px; }
   .job .jbody { min-width: 0; }
   .job.jsw > .switch { margin-top: 2px; }
   /* Reordering is display-only, so the grip stays quiet until the row is hovered — a control at
@@ -1105,11 +1110,14 @@
   .job:hover > .jgrip { opacity: .85; }
   .job > .jgrip:active { cursor: grabbing; }
   .job.dragging { opacity: .45; border-color: var(--accent); }
-  .job .jtop { display: grid; grid-template-columns: minmax(0,1fr) 118px 150px auto;
+  .job .jtop { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .job .jtop .jcron { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .job .jtop .jactions { margin-left: auto; }
+  #schedulesview .job .jtop { display: grid; grid-template-columns: minmax(0,1fr) 118px 150px auto;
     align-items: center; gap: 12px; }
   /* No cron and no next-fire, so those two columns merge into one saying what Run will ask
      for. Same total width, so the action gutter sits at one x in both sections. */
-  .job.jod .jtop { grid-template-columns: minmax(0,1fr) 280px auto; }
+  #schedulesview .job.jod .jtop { grid-template-columns: minmax(0,1fr) 280px auto; }
   .job .jasks { font-size: 12px; color: var(--dim); overflow: hidden; white-space: nowrap;
     text-overflow: ellipsis; min-width: 0; }
   .job .jasks .jvar { font-size: 11.5px; }
@@ -1142,7 +1150,7 @@
   .job .jreads { font-size: 11px; letter-spacing: .02em; border-radius: 4px; padding: 1px 6px;
     color: var(--dim); border: 1px solid var(--line); }
   @media (max-width: 900px) {
-    .job .jtop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    #schedulesview .job .jtop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
     .job .jname { flex: 1 1 220px; }
     .job .jactions { margin-left: auto; } }
   /* The request rides ON the meta line, so every row is two lines and the same height as its
@@ -1150,11 +1158,13 @@
   .job .jreq { color: var(--text-2); font-size: 12.5px; min-width: 0; flex: 0 1 auto;
     max-width: var(--measure); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* Without it the capability name and the request's first words read as one phrase. */
-  .job .jreq::before { content: "·"; margin-right: 7px; color: var(--dim); }
+  #schedulesview .job .jreq::before { content: "·"; margin-right: 7px; color: var(--dim); }
   .job .jvar { font-family: var(--mono); font-size: .92em; color: var(--accent);
     background: var(--accent-soft); border-radius: 4px; padding: 0 4px; }
-  .job .jstatus { font-size: 12px; color: var(--dim); display: flex; align-items: baseline; gap: 8px;
-    line-height: 1.35; flex-wrap: nowrap; }
+  .job .jstatus { font-size: 12px; color: var(--dim); line-height: 1.35; }
+  /* The Jobs row's meta line is a flex ROW of slots; elsewhere a status line is prose, and flexing
+     it split every text run of a sentence into its own column. */
+  #schedulesview .job .jstatus { display: flex; align-items: baseline; gap: 8px; flex-wrap: nowrap; }
   /* Risk stays FIRST (highest-stakes fact on a cron row) but in a fixed slot, so the
      capability after it starts at one x and the identities read as a column. */
   .job .jriskslot { flex: 0 0 148px; }
@@ -1166,7 +1176,7 @@
      out of the card. Must sit AFTER the rules it overrides — the selectors tie on specificity,
      so source order decides, and this block earlier in the file silently did nothing. */
   @media (max-width: 900px) {
-    .job .jstatus { flex-wrap: wrap; }
+    #schedulesview .job .jstatus { flex-wrap: wrap; }
     .job .jmeta { white-space: normal; }
     .job .jriskslot { flex-basis: auto; }
     .job .jreq { flex-basis: 100%; max-width: 100%; white-space: normal;
