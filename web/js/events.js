@@ -936,7 +936,7 @@ function showSlackTriggerForm(idx){
     <label>Bots allowed to fire it &mdash; bot id, app id or app name, comma-separated</label><input id="st-bots" placeholder="New Relic">
     <label>Match (optional) &mdash; regex over the post; named groups become template tokens</label><input id="st-match" placeholder="(?i)opened: (?P&lt;condition&gt;.+)">
     <label>Dedupe key (optional) &mdash; regex, group 1 is the incident key; blank = one run per post</label><input id="st-key" placeholder="Issue ID: (&#92;w+)">
-    <label>Request template &mdash; {text}, {bot}, {key}, {ts} and your named groups</label>
+    <label>Request template &mdash; {text}, {bot}, {key}, {ts} and your named groups (the post is appended if {text} is omitted)</label>
     <textarea id="st-template" placeholder="Investigate this alert and propose a fix: {text}"></textarea>
     <div class="frow">
       <div><label>Capability</label><select id="st-cap">${capOpts.join("")}</select></div>
