@@ -5775,7 +5775,7 @@ class ChatViewCollapseTests(unittest.TestCase):
         ui = self._ui()
         self.assertIn(".histcollapsed .histhead > span:not(.hacts)", ui,
                       "the collapsed rule hides the actions wrapper too — the toggle goes with it")
-        self.assertRegex(ui, r"\.chatview\.histcollapsed\s*\{[^}]*grid-template-columns:\s*(\d+)px",
+        self.assertRegex(ui, r"\.chatview\.histcollapsed\s*\{[^}]*(?:grid-template-columns|--hist-w):\s*(\d+)px",
                          "collapsed still spends the full sidebar column")
 
     def test_show_more_survives_the_chat_list_poll_guard(self):

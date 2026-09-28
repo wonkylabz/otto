@@ -1620,18 +1620,19 @@ function syncOptSummary(){
   box.title = bits.length ? "Set for this chat: "+bits.join(", ") : "";
 }
 const OPT_COLLAPSED_KEY="ottoOptCollapsed";
-function applyOptCollapsed(on){
+function applyOptCollapsed(on, persist=true){
   const panel=document.getElementById("optpanel"), btn=document.getElementById("opt-toggle");
   if(panel) panel.classList.toggle("collapsed", !!on);
   if(btn){ btn.setAttribute("aria-expanded", on?"false":"true");
            btn.title = on ? "Show the run options" : "Collapse these run options"; }
   syncOptSummary();
-  try { localStorage.setItem(OPT_COLLAPSED_KEY, on?"1":"0"); } catch(e){}
+  if(persist) try { localStorage.setItem(OPT_COLLAPSED_KEY, on?"1":"0"); } catch(e){}
 }
 document.getElementById("opt-toggle").addEventListener("click",()=>{
   applyOptCollapsed(!document.getElementById("optpanel").classList.contains("collapsed"));
 });
-try { applyOptCollapsed(localStorage.getItem(OPT_COLLAPSED_KEY)==="1"); } catch(e){}
+// No stored choice yet: a short screen starts collapsed, or the options crowd out the chat.
+try { const v=localStorage.getItem(OPT_COLLAPSED_KEY); applyOptCollapsed(v===null ? window.innerHeight<820 : v==="1", v!==null); } catch(e){}
 
 document.addEventListener("change",e=>{ if(!e.target) return;
   if(e.target.closest("#optpanel")) syncOptSummary();
