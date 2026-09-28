@@ -172,6 +172,14 @@ def denied_globs(allow_cwd=None):
         # against a control that deleted the file when the rule was absent. Named from
         # estop.SENTINEL_NAME so renaming the sentinel cannot silently unprotect it.
         os.path.join(config.DATA_DIR, _sentinel_name()),
+        # Web-chat attachments (issue #161): the at-rest store is read-denied in
+        # `_secret_store_globs`, and a read deny does not cover a write (established for
+        # `~/.claude.json` above). `run-files` is the per-attempt staging directory — readable
+        # (that is the feature) but write-denied, so no run can plant a file there for a later
+        # run to be handed as someone else's attachment. Neither dir is covered by
+        # `data/*.json`: the matcher is segment-wise and cannot cross into a subdirectory.
+        os.path.join(config.DATA_DIR, "uploads", "**"),
+        os.path.join(config.DATA_DIR, "run-files", "**"),
         # DELIBERATELY absent: data/workspaces/**. Every repo-mode clone lives there, so denying
         # DATA_DIR wholesale silently blocks the entire repo-mode feature — the thing most write
         # runs exist to do. Guarded by test_core.FileSafetyTests.
@@ -264,6 +272,15 @@ def _secret_store_globs():
         # (`mcp_client.resolved_def`), so the family is a credential store, not Otto state.
         # The glob must name the dot: `data/*.json` never matches a dotfile, so no bwrap mount.
         os.path.join(config.DATA_DIR, ".mcp-*.json"),
+        # Web-chat attachments at rest (issue #161). This is the SECRET tier, not Otto state, on
+        # purpose: an attachment is whatever the user uploaded — a screenshot of a dashboard, a
+        # .env, a customer export — and the run that is meant to see it sees a STAGED COPY under
+        # `data/run-files/` (uploads.stage), not this directory. Denying it here is what makes
+        # "run B cannot read run A's attachments after A ends" true at rest; the per-attempt
+        # staging lifetime is what makes it true in flight. `data/run-files/**` is deliberately
+        # NOT here — read-denying it would defeat the whole feature (the accepted tradeoff,
+        # documented in uploads' docstring).
+        os.path.join(config.DATA_DIR, "uploads", "**"),
     ]
 
 

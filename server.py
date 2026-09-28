@@ -22,7 +22,7 @@ import socketserver
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import board
 import chats
@@ -50,6 +50,7 @@ import slack_socket
 import slack_triggers
 import storage
 import supervisor
+import uploads
 import workspace
 
 # Temporal is REQUIRED to serve (main() refuses to start without it — issue #278). The import
@@ -950,7 +951,53 @@ def rebuild():
     registry.apply_policy(CAPS, POLICY)
 
 
+_RASTER_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF8", b"RIFF", b"BM")
+
+
+def _looks_raster(data):
+    """Do the bytes actually look like a safe raster image?
+
+    The stored mime is what the uploader's browser CLAIMED, so it cannot be the thing that
+    decides whether bytes are rendered inline. This is a cheap magic-number gate, not a parser:
+    `RIFF` covers WebP (whose tail is checked too) but also AVI/WAV, which are not in
+    `INLINE_TYPES` and so never reach here on a claimed image type anyway."""
+    if not data or not data.startswith(_RASTER_MAGIC):
+        return False
+    return not data.startswith(b"RIFF") or data[8:12] == b"WEBP"
+
+
+def _multipart_files(raw, content_type):
+    """The (filename, declared mime, bytes) of every file part, or None if unparseable.
+
+    `email.parser` rather than `cgi`: the `cgi` module was removed in Python 3.13 and this
+    runtime is 3.14. The body is re-prepended with the Content-Type line the parser wants.
+
+    A part counts as a FILE only when it carries a filename — a browser sends the composer's
+    text fields (none yet) as filename-less parts, and those must not be stored as attachments.
+    A part with no Content-Disposition at all is skipped, not guessed at."""
+    from email.parser import BytesParser
+
+    msg = BytesParser().frombytes(b"Content-Type: " + content_type.encode("latin-1", "ignore")
+                                  + b"\r\nMIME-Version: 1.0\r\n\r\n" + raw)
+    if msg.get_content_maintype() != "multipart":
+        return None
+    out = []
+    for part in msg.iter_parts():
+        disp = part.get("Content-Disposition") or ""
+        if "form-data" not in disp.lower():
+            continue
+        name = part.get_filename()
+        if not name:
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        out.append((name, part.get_content_type(), payload))
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
+
     def _send(self, code, body, ctype="application/json"):
         data = body.encode() if isinstance(body, str) else body
         try:
@@ -966,6 +1013,25 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionError):
             pass  # client went away before we finished responding — nothing to do
+
+    def _send_raw(self, code, data, ctype, extra=None):
+        """`_send` plus per-response headers and no `no-store`.
+
+        `Cache-Control: no-store` is right for Otto's JSON (state changes under a refresh) and
+        wrong for an attachment: the bytes behind an id are immutable, and the chat re-renders
+        every thumbnail on each history load. `private, immutable` is what makes a long chat with
+        ten screenshots cheap, and is safe precisely because the id is a uuid that no other
+        upload can ever claim."""
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            for k, v in (extra or []):
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionError):
+            pass
 
     def _json_body(self):
         n = int(self.headers.get("Content-Length", 0) or 0)
@@ -1043,6 +1109,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif self.path.startswith("/css/") or self.path.startswith("/js/"):
             self._static(self.path)
+        elif self.path.startswith("/api/uploads/"):
+            self._get_upload(self.path[len("/api/uploads/"):].split("?")[0].strip("/"))
         elif self.path == "/api/health":
             # `mcp.unhealthy` and `models.broken` both read CACHED health (no slow re-poll, no
             # probe) so any tab can feed the Admin-tab warning badge cheaply on its poll.
@@ -1385,6 +1453,109 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "not found", "text/plain")
 
+    def _handle_uploads(self):
+        """POST /api/uploads — one multipart body, one or more files, ids back.
+
+        Deliberately NOT routed through `_json_body`, and so not through `_MAX_BODY`: that 1 MB
+        cap is sized by the DoS reasoning that applies to a JSON envelope, and a screenshot is a
+        legitimate 5 MB body. The upload route has its OWN caps (config.upload_*), checked
+        against Content-Length BEFORE the read so an oversize body is refused without being
+        buffered. CSRF-checked by `_csrf_ok` in do_POST, which runs before this. It starts no
+        run, so it is not estop-gated — a paused Otto must still accept a file, or the operator
+        cannot prepare the request they will send after releasing the pause.
+
+        Multipart is parsed with `email.parser`, not the stdlib `cgi` module: `cgi` was removed
+        in Python 3.13 and this runtime is 3.14.
+        """
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        cap = int(config.setting("upload_max_request_bytes"))
+        if n > cap:
+            self._send(413, json.dumps({"error": f"upload too large ({n} bytes, limit {cap})"}))
+            return
+        ctype = self.headers.get("Content-Type") or ""
+        if "multipart/form-data" not in ctype.lower():
+            self._send(400, json.dumps({"error": "expected a multipart/form-data upload"}))
+            return
+        raw = self.rfile.read(n) if n else b""
+        parts = _multipart_files(raw, ctype)
+        if parts is None:
+            self._send(400, json.dumps({"error": "malformed multipart body"}))
+            return
+        if not parts:
+            self._send(400, json.dumps({"error": "no file in upload"}))
+            return
+        max_count = int(config.setting("upload_max_count"))
+        if len(parts) > max_count:
+            self._send(400, json.dumps({"error": f"too many attachments (max {max_count})"}))
+            return
+        max_file = int(config.setting("upload_max_file_bytes"))
+        out = []
+        for name, mime, data in parts:
+            if len(data) > max_file:
+                self._send(413, json.dumps({"error": f"'{name}' is too large "
+                                                     f"({len(data)} bytes, limit {max_file})"}))
+                return
+            out.append(uploads.store(name, mime, data))
+        uploads.ensure_dirs()
+        self._send(200, json.dumps({"attachments": out}))
+
+    def _get_upload(self, uid):
+        """GET /api/uploads/<id> — the bytes of one unexpired attachment.
+
+        Serves the chat's thumbnails and download links. `uploads.get` already returns None for
+        an unknown, malformed or expired id, so the three are indistinguishable here and the
+        route cannot enumerate ids.
+
+        Only a real raster type is served INLINE. Everything else — SVG included, since an
+        inline SVG in a same-origin document is a script-injection vector — goes out as an
+        attachment, and `nosniff` stops the browser deciding otherwise by sniffing the bytes.
+        The declared type is the one the uploader claimed, so it is not trusted as a policy
+        input; the magic-number check below is what decides.
+        """
+        meta = uploads.get(uid)
+        if meta is None:
+            self._send(404, json.dumps({"error": "no such attachment"}))
+            return
+        try:
+            with open(uploads.path_for(meta), "rb") as fh:
+                data = fh.read()
+        except OSError:
+            self._send(404, json.dumps({"error": "no such attachment"}))
+            return
+        inline = meta.get("mime") in uploads.INLINE_TYPES and _looks_raster(data)
+        headers = [("X-Content-Type-Options", "nosniff"),
+                   ("Cache-Control", "private, max-age=86400, immutable")]
+        if not inline:
+            headers.append(("Content-Disposition",
+                            f"attachment; filename*=UTF-8''{quote(meta['name'])}"))
+        self._send_raw(200, data, meta.get("mime") or "application/octet-stream", headers)
+
+    def _attachments(self, body):
+        """Validate a client-supplied `attachments` list against the store; returns ids or None.
+
+        Ids only ever go into the workflow params — never bytes, never a client filename — and
+        each one must resolve to an unexpired upload right now. A 400 names the bad id rather
+        than silently dropping it: a run that quietly lost the screenshot the user attached
+        produces a confident wrong answer, which is worse than a refused submit."""
+        raw = body.get("attachments")
+        if raw in (None, "", [], {}):
+            return []
+        if not isinstance(raw, list):
+            self._send(400, json.dumps({"error": "'attachments' must be a list of upload ids"}))
+            return None
+        ids = []
+        for item in raw:
+            uid = item.get("id") if isinstance(item, dict) else item
+            if not isinstance(uid, str) or uploads.get(uid) is None:
+                self._send(400, json.dumps({"error": f"unknown or expired attachment: {uid}"}))
+                return None
+            if uid not in ids:
+                ids.append(uid)
+        if len(ids) > int(config.setting("upload_max_count")):
+            self._send(400, json.dumps({"error": "too many attachments"}))
+            return None
+        return ids
+
     def _handle_event(self):
         """Event/webhook ingress: verify signature on the RAW body, normalize via a rule, and
         start an UNATTENDED workflow (skip clarify; writes gated on the rule's auto_approve)."""
@@ -1450,6 +1621,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path.startswith("/api/events/"):
                 return self._handle_event()        # reads the raw body itself (signature check)
+            if self.path == "/api/uploads":
+                # Before the JSON read: this body is multipart and legitimately far larger than
+                # _MAX_BODY, and its own caps must be checked against Content-Length first.
+                return self._handle_uploads()
             body = self._json_body()
             if self.path == "/api/estop":
                 # Engage/release the global pause. Origin-checked like every other mutating POST
@@ -1552,6 +1727,12 @@ class Handler(BaseHTTPRequestHandler):
         # follow-up — the workflow ignores it under repo-mode).
         if body.get("plan_mode"):
             params["plan_mode"] = True
+        # Composer attachments (issue #161): validated ids only, never bytes or filenames.
+        att = self._attachments(body)
+        if att is None:
+            return
+        if att:
+            params["attachments"] = att
         wid = "web-" + uuid.uuid4().hex[:8]
         tc.run(_wf_start(wid, params))
         self._send(200, json.dumps({"id": wid}))
@@ -1570,10 +1751,16 @@ class Handler(BaseHTTPRequestHandler):
         # previous reply (`prev`) for reference resolution — a client that doesn't
         # send it keeps plain resume semantics.
         prev = (body.get("prev") or "").strip()
+        # Validated up front so BOTH exits below can carry them: a follow-up that turns into a
+        # handoff or a cross-backend rebind is re-submitted by the client, and ids dropped at
+        # this fork are the screenshot the user attached and the new run never saw.
+        att = self._attachments(body)
+        if att is None:
+            return
         if prev and not body.get("no_handoff"):
             task = engine.followup_handoff(body["message"], prev, cap)
             if task:
-                self._send(200, json.dumps({"handoff": {"request": task}}))
+                self._send(200, json.dumps({"handoff": {"request": task, "attachments": att}}))
                 return
         trusted_cap = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
         params = {"request": body["message"], "resume": body["session_id"],
@@ -1601,7 +1788,8 @@ class Handler(BaseHTTPRequestHandler):
             if gateway.backend_of(entry) != local_runtime.session_backend(
                     body["session_id"]):
                 self._send(200, json.dumps({"rebind": {"request": body["message"],
-                                                       "model": model_override}}))
+                                                       "model": model_override,
+                                                       "attachments": att}}))
                 return
         # Effort applies to a follow-up too — same validation as /api/submit. A resume is one
         # more turn of the same conversation, so the composer's current pick governs THIS turn
@@ -1633,6 +1821,10 @@ class Handler(BaseHTTPRequestHandler):
             # the workflow, and the client body isn't trusted input.
             branch = (body.get("git_branch") or "").strip()
             params["git_branch"] = branch if workspace.valid_branch(branch) else None
+        # A follow-up can carry NEW attachments (the composer clears its chips on send, so what
+        # arrives here is what the user attached to THIS turn, not the resumed session's).
+        if att:
+            params["attachments"] = att
         wid = "web-" + uuid.uuid4().hex[:8]
         tc.run(_wf_start(wid, params))
         self._send(200, json.dumps({"id": wid}))

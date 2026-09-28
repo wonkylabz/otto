@@ -43,6 +43,7 @@ import server  # noqa: F401
 import slack  # noqa: F401
 import slack_triggers  # noqa: F401
 import ui  # noqa: F401
+import uploads  # noqa: F401
 import workspace  # noqa: F401
 
 try:                                       # the Temporal layer — absent under a bare python3
@@ -87,6 +88,8 @@ _DATA_STORES = (
     ("slack", "_STATE", "slack-state.json"),
     ("slack_triggers", "_RULES", "slack-triggers.json"),
     ("slack_triggers", "_STATE", "slack-triggers-state.json"),
+    ("uploads", "UPLOADS_DIR", "uploads"),
+    ("uploads", "RUN_FILES_DIR", "run-files"),
     ("ui", "LOG_DIR", "logs"),
     ("workspace", "WORKSPACES", "workspaces"),
 )

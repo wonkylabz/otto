@@ -22,6 +22,7 @@ import engine
 import mcp_client
 import policy
 import registry
+import uploads
 import workspace
 
 _caps = None
@@ -496,6 +497,34 @@ def _warm_conventions(project):
         conventions.digest(project)
     except Exception as e:  # noqa: BLE001 - warming a cache is never worth failing a run over
         activity.logger.info(f"conventions warm-up skipped for {project}: {e}")
+
+
+@contextlib.contextmanager
+def _staged(payload):
+    """Stage this attempt's composer attachments, hand back their paths, ALWAYS remove them.
+
+    Issue #161's isolation contract in two lines: `data/uploads/**` is read-denied to every run,
+    so the only files a run can see are copies under `data/run-files/<wid>-a<attempt>/` that
+    exist for the lifetime of THIS attempt. The `finally` is the whole guarantee — it must cover
+    an exception, an activity timeout and a supervisor kill alike, which is why it WRAPS the call
+    rather than following it. A worker SIGKILLed mid-attempt skips it entirely; the TTL sweep in
+    `uploads.gc` is the backstop for that, not this.
+
+    Per ATTEMPT and not per run, so a verify-ladder retry never inherits files the attempt before
+    it may have touched. No ids (the overwhelmingly common case) costs nothing: no directory is
+    created and the path list is empty, so `engine` adds no note at all."""
+    ids = list(payload.get("attachments") or [])
+    wid = payload.get("wid")
+    attempt = payload.get("attempt", 1)
+    if not ids or not wid:
+        yield [], 0
+        return
+    uploads.ensure_dirs()
+    paths = uploads.stage(ids, wid, attempt)
+    try:
+        yield paths, max(0, len(ids) - len(paths))
+    finally:
+        uploads.unstage(wid, attempt)
 
 
 @activity.defn

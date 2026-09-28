@@ -180,6 +180,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # client that left and reattached (chat switch, page reload) can restore each stage's timer
         # from real elapsed time instead of resetting it to the moment of reattach (issue #117).
         self._times = {}
+        # Composer attachment upload ids for this run (issue #161). Bound for real in
+        # _bind_composer; initialized here so a payload built before that cannot reach it.
+        self._attachments = []
 
     def _setting(self, name):
         """Read ONE runtime setting from this run's snapshot. ALWAYS go through here — never
@@ -203,6 +206,12 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         self._memory_enabled = params.get("memory_enabled", True)
         self._model_override = params.get("model_override")
         self._effort = config.resolve_effort(params.get("effort"), self._setting("effort"))
+        # Composer attachment UPLOAD IDS (issue #161) — never bytes. The server validated each
+        # one against the store at submit time; the activity re-resolves them at stage time, so
+        # what a run sees is whatever is still unexpired when the attempt spawns, not a snapshot
+        # of a store that has since swept it. A plain list of uuid strings, so the payload stays
+        # tiny and replay-stable (it is a run input, not a settings read).
+        self._attachments = params.get("attachments") or []
 
     async def _gate_wait(self, cond):
         """Wait at the approval gate for `cond`, bounded by the `gate_timeout_h` setting.
@@ -445,6 +454,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                             {"request": request, "name": cap["name"], "repo": repo, "resume": resume,
                              "cwd": resume_ws["path"] if resume_ws else None,
                              "wid": workflow.info().workflow_id,
+                             # The planner plans against the files the user attached: without the
+                             # staged copies it plans from the request text alone and the approved
+                             # plan describes work on a screenshot nobody showed it (issue #161).
+                             "attachments": self._attachments,
                              # The preview's cwd is the DEFAULT branch; this tells it where the
                              # code actually is and to read it with `gh pr diff`.
                              "pr": self._pr_target, "effort": self._effort,
@@ -968,6 +981,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                 run_capability, {"request": request, "name": cap["name"], "resume": resume,
                                  "wid": workflow.info().workflow_id,
                                  "cwd": ws["path"] if ws else None, "repo": repo,
+                                 "attachments": self._attachments,
                                  "audience": self._audience, "approved_plan": self._plan,
                                  # Where the restored tree still contradicts this follow-up
                                  # (_resume_workspace's repair tier could not fix it). A resume
@@ -1315,6 +1329,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                 {"request": request, "name": cap["name"], "attempt": attempt,
                  "critique": None, "escalate": False, "downshift": False,
                  "wid": wid, "cwd": cwd, "repo": repo,
+                 "attachments": self._attachments,
                  "recall": True, "audience": self._audience,
                  "approved_plan": None, "grounding": self._grounding,
                  "memory_enabled": self._memory_enabled,
@@ -1455,6 +1470,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                     {"request": request, "name": cap["name"], "attempt": attempt,
                      "critique": state.critique, "escalate": final, "downshift": downshift,
                      "wid": wid, "cwd": cwd, "repo": repo,
+                     "attachments": self._attachments,
                      "local_disabled": state.local_disabled,
                      "local_disabled_reason": state.local_disabled_reason,
                      # Recall past solved-task approaches on a fresh top-level run; a swarm sub-task
