@@ -62,7 +62,13 @@ function mascotHomeXY(r){
   const led=rail && rail.querySelector(".ledger");
   if(!rail || !led) return null;
   const rr=rail.getBoundingClientRect(), lr=led.getBoundingClientRect();
-  if(rr.width < r.width + 8) return null;    // narrower than he is — nothing to centre him in
+  if(rr.width < r.width + 8){
+    // Rail hidden on a narrow window: stand above the composer's right edge, never on the send button.
+    const comp=document.querySelector(".chatview:not([hidden]) .composer");
+    const cr=comp && comp.getBoundingClientRect();
+    if(!cr || cr.width < r.width + 8) return null;
+    return {x: cr.right - r.width - 16, y: Math.max(MASCOT_EDGE, cr.top - r.height - 12)};
+  }
   return {x: rr.left + (rr.width - r.width)/2,
           y: Math.max(MASCOT_EDGE, lr.top - r.height - 16)};
 }
@@ -116,6 +122,8 @@ function mascotLayout(){
   const r=d&&!d.hidden ? d.getBoundingClientRect() : null;
   const inCorner = !!r && r.left < 260 && r.bottom > window.innerHeight - 260;
   document.body.classList.toggle("mascot-reserve", inCorner);
+  const rail=document.querySelector(".chatview:not([hidden]) .rail"), rr=rail&&rail.getBoundingClientRect();
+  document.body.classList.toggle("mascot-rail", !!r && !!rr && rr.width>0 && r.left>=rr.left-8 && r.right<=rr.right+8);
   // His FIGURE, not the dock: the bubble comes and goes, and an inset that resized every time
   // he spoke would shunt the chat list up and down under the cursor.
   const fig=document.getElementById("mascot-fig");
