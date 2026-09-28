@@ -180,9 +180,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # client that left and reattached (chat switch, page reload) can restore each stage's timer
         # from real elapsed time instead of resetting it to the moment of reattach (issue #117).
         self._times = {}
-        # Composer attachment upload ids for this run (issue #161). Bound for real in
-        # _bind_composer; initialized here so a payload built before that cannot reach it.
-        self._attachments = []
+        self._attachments = []     # composer upload ids (#161), bound in _bind_composer
 
     def _setting(self, name):
         """Read ONE runtime setting from this run's snapshot. ALWAYS go through here — never
@@ -206,11 +204,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         self._memory_enabled = params.get("memory_enabled", True)
         self._model_override = params.get("model_override")
         self._effort = config.resolve_effort(params.get("effort"), self._setting("effort"))
-        # Composer attachment UPLOAD IDS (issue #161) — never bytes. The server validated each
-        # one against the store at submit time; the activity re-resolves them at stage time, so
-        # what a run sees is whatever is still unexpired when the attempt spawns, not a snapshot
-        # of a store that has since swept it. A plain list of uuid strings, so the payload stays
-        # tiny and replay-stable (it is a run input, not a settings read).
+        # Upload IDS, never bytes: validated by the server, re-resolved by the activity at stage time.
         self._attachments = params.get("attachments") or []
 
     async def _gate_wait(self, cond):
@@ -454,9 +448,6 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                             {"request": request, "name": cap["name"], "repo": repo, "resume": resume,
                              "cwd": resume_ws["path"] if resume_ws else None,
                              "wid": workflow.info().workflow_id,
-                             # The planner plans against the files the user attached: without the
-                             # staged copies it plans from the request text alone and the approved
-                             # plan describes work on a screenshot nobody showed it (issue #161).
                              "attachments": self._attachments,
                              # The preview's cwd is the DEFAULT branch; this tells it where the
                              # code actually is and to read it with `gh pr diff`.
@@ -700,9 +691,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
             # child workflows. A single cohesive task returns no fan-out and falls through to
             # the normal single-capability path below (no regression). Repo-mode (or a repo
             # candidate that may auto-engage it) is a focused single-cap task on one repo, so it
-            # skips fan-out — parallel children would collide in the same clone anyway.
+            # skips fan-out — parallel children would collide in the same clone anyway. So does a
+            # request carrying attachments: swarm children are never handed them.
             self._enter("DECOMPOSE")
-            if not pinned and not subtask and not repo and not repo_hint:
+            if not pinned and not subtask and not repo and not repo_hint and not self._attachments:
                 plan = await workflow.execute_activity(
                     plan_swarm, request, start_to_close_timeout=timedelta(seconds=180),
                     retry_policy=_RETRY)
@@ -1107,7 +1099,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # regardless of plan_mode/repo, because those gate whether Otto should *invent* a plan,
         # which has no bearing on whether it should run one a human already wrote.
         plan_list, authored = authored_steps, bool(authored_steps)
-        if _may_plan_steps(authored, self._setting("plan_mode"), repo, subtask, cap):
+        # Attachments stay on the ladder: plan steps are never handed them.
+        if not self._attachments and _may_plan_steps(authored, self._setting("plan_mode"),
+                                                     repo, subtask, cap):
             sres = await workflow.execute_activity(
                 plan_task_steps,
                 {"request": request, "name": cap["name"], "requested": params.get("plan_mode", False)},

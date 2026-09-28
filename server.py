@@ -955,49 +955,37 @@ _RASTER_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF8", b"RIFF", b"BM")
 
 
 def _looks_raster(data):
-    """Do the bytes actually look like a safe raster image?
-
-    The stored mime is what the uploader's browser CLAIMED, so it cannot be the thing that
-    decides whether bytes are rendered inline. This is a cheap magic-number gate, not a parser:
-    `RIFF` covers WebP (whose tail is checked too) but also AVI/WAV, which are not in
-    `INLINE_TYPES` and so never reach here on a claimed image type anyway."""
+    """Do the bytes (not the uploader's claimed type) look like a raster image?"""
     if not data or not data.startswith(_RASTER_MAGIC):
         return False
     return not data.startswith(b"RIFF") or data[8:12] == b"WEBP"
 
 
 def _multipart_files(raw, content_type):
-    """The (filename, declared mime, bytes) of every file part, or None if unparseable.
+    """(filename, declared mime, bytes) of every FILE part, or None if not multipart.
 
-    `email.parser` rather than `cgi`: the `cgi` module was removed in Python 3.13 and this
-    runtime is 3.14. The body is re-prepended with the Content-Type line the parser wants.
-
-    A part counts as a FILE only when it carries a filename — a browser sends the composer's
-    text fields (none yet) as filename-less parts, and those must not be stored as attachments.
-    A part with no Content-Disposition at all is skipped, not guessed at."""
+    `email` with `policy.HTTP`, since `cgi` is gone in 3.13+: the default compat32 policy has no
+    `iter_parts`, and this one round-trips binary bytes exactly (`UploadHttpTests`)."""
+    from email import policy
     from email.parser import BytesParser
 
-    msg = BytesParser().frombytes(b"Content-Type: " + content_type.encode("latin-1", "ignore")
-                                  + b"\r\nMIME-Version: 1.0\r\n\r\n" + raw)
+    msg = BytesParser(policy=policy.HTTP).parsebytes(
+        b"Content-Type: " + content_type.encode("latin-1", "ignore")
+        + b"\r\nMIME-Version: 1.0\r\n\r\n" + raw)
     if msg.get_content_maintype() != "multipart":
         return None
     out = []
     for part in msg.iter_parts():
-        disp = part.get("Content-Disposition") or ""
-        if "form-data" not in disp.lower():
+        if "form-data" not in str(part.get("Content-Disposition") or "").lower():
             continue
         name = part.get_filename()
-        if not name:
-            continue
         payload = part.get_payload(decode=True)
-        if payload is None:
-            continue
-        out.append((name, part.get_content_type(), payload))
+        if name and payload is not None:
+            out.append((name, part.get_content_type(), payload))
     return out
 
 
 class Handler(BaseHTTPRequestHandler):
-
     def _send(self, code, body, ctype="application/json"):
         data = body.encode() if isinstance(body, str) else body
         try:
@@ -1015,13 +1003,7 @@ class Handler(BaseHTTPRequestHandler):
             pass  # client went away before we finished responding — nothing to do
 
     def _send_raw(self, code, data, ctype, extra=None):
-        """`_send` plus per-response headers and no `no-store`.
-
-        `Cache-Control: no-store` is right for Otto's JSON (state changes under a refresh) and
-        wrong for an attachment: the bytes behind an id are immutable, and the chat re-renders
-        every thumbnail on each history load. `private, immutable` is what makes a long chat with
-        ten screenshots cheap, and is safe precisely because the id is a uuid that no other
-        upload can ever claim."""
+        """`_send` with caller-supplied headers instead of the blanket `no-store`."""
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
@@ -1454,20 +1436,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
     def _handle_uploads(self):
-        """POST /api/uploads — one multipart body, one or more files, ids back.
+        """POST /api/uploads — a multipart body of files; returns their {id, name, size, mime}.
 
-        Deliberately NOT routed through `_json_body`, and so not through `_MAX_BODY`: that 1 MB
-        cap is sized by the DoS reasoning that applies to a JSON envelope, and a screenshot is a
-        legitimate 5 MB body. The upload route has its OWN caps (config.upload_*), checked
-        against Content-Length BEFORE the read so an oversize body is refused without being
-        buffered. CSRF-checked by `_csrf_ok` in do_POST, which runs before this. It starts no
-        run, so it is not estop-gated — a paused Otto must still accept a file, or the operator
-        cannot prepare the request they will send after releasing the pause.
-
-        Multipart is parsed with `email.parser`, not the stdlib `cgi` module: `cgi` was removed
-        in Python 3.13 and this runtime is 3.14.
-        """
-        n = int(self.headers.get("Content-Length", 0) or 0)
+        Its own caps (`upload_*` settings), never `_MAX_BODY`; the request cap is checked against
+        Content-Length BEFORE any read. CSRF-checked in do_POST. Not estop-gated: it starts no run.
+        Every part is checked before any is stored, so a refusal leaves no orphan upload."""
+        try:
+            n = int(self.headers.get("Content-Length"))
+        except (TypeError, ValueError):
+            n = -1
+        if n < 0:
+            self._send(411, json.dumps({"error": "an upload needs a valid Content-Length"}))
+            return
         cap = int(config.setting("upload_max_request_bytes"))
         if n > cap:
             self._send(413, json.dumps({"error": f"upload too large ({n} bytes, limit {cap})"}))
@@ -1476,11 +1456,7 @@ class Handler(BaseHTTPRequestHandler):
         if "multipart/form-data" not in ctype.lower():
             self._send(400, json.dumps({"error": "expected a multipart/form-data upload"}))
             return
-        raw = self.rfile.read(n) if n else b""
-        parts = _multipart_files(raw, ctype)
-        if parts is None:
-            self._send(400, json.dumps({"error": "malformed multipart body"}))
-            return
+        parts = _multipart_files(self.rfile.read(n) if n else b"", ctype)
         if not parts:
             self._send(400, json.dumps({"error": "no file in upload"}))
             return
@@ -1489,29 +1465,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, json.dumps({"error": f"too many attachments (max {max_count})"}))
             return
         max_file = int(config.setting("upload_max_file_bytes"))
-        out = []
-        for name, mime, data in parts:
+        for name, _mime, data in parts:
             if len(data) > max_file:
-                self._send(413, json.dumps({"error": f"'{name}' is too large "
+                self._send(413, json.dumps({"error": f"'{uploads.safe_name(name)}' is too large "
                                                      f"({len(data)} bytes, limit {max_file})"}))
                 return
-            out.append(uploads.store(name, mime, data))
         uploads.ensure_dirs()
+        out = [uploads.store(name, mime, data) for name, mime, data in parts]
         self._send(200, json.dumps({"attachments": out}))
 
     def _get_upload(self, uid):
-        """GET /api/uploads/<id> — the bytes of one unexpired attachment.
+        """GET /api/uploads/<id> — one unexpired attachment; unknown and expired look alike.
 
-        Serves the chat's thumbnails and download links. `uploads.get` already returns None for
-        an unknown, malformed or expired id, so the three are indistinguishable here and the
-        route cannot enumerate ids.
-
-        Only a real raster type is served INLINE. Everything else — SVG included, since an
-        inline SVG in a same-origin document is a script-injection vector — goes out as an
-        attachment, and `nosniff` stops the browser deciding otherwise by sniffing the bytes.
-        The declared type is the one the uploader claimed, so it is not trusted as a policy
-        input; the magic-number check below is what decides.
-        """
+        Inline only for a raster type whose BYTES agree; everything else, SVG included (script in
+        a same-origin document), is a download, and `nosniff` stops the browser second-guessing.
+        Browser caching is capped at the remaining TTL so an expired upload stops rendering too."""
         meta = uploads.get(uid)
         if meta is None:
             self._send(404, json.dumps({"error": "no such attachment"}))
@@ -1522,21 +1490,21 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._send(404, json.dumps({"error": "no such attachment"}))
             return
-        inline = meta.get("mime") in uploads.INLINE_TYPES and _looks_raster(data)
+        mime = uploads.safe_mime(meta.get("mime"))
+        inline = mime in uploads.INLINE_TYPES and _looks_raster(data)
+        age = int(min(86400, uploads.remaining_s(meta)))
         headers = [("X-Content-Type-Options", "nosniff"),
-                   ("Cache-Control", "private, max-age=86400, immutable")]
+                   ("Cache-Control", f"private, max-age={age}")]
         if not inline:
             headers.append(("Content-Disposition",
                             f"attachment; filename*=UTF-8''{quote(meta['name'])}"))
-        self._send_raw(200, data, meta.get("mime") or "application/octet-stream", headers)
+        self._send_raw(200, data, mime if inline else "application/octet-stream", headers)
 
     def _attachments(self, body):
-        """Validate a client-supplied `attachments` list against the store; returns ids or None.
+        """The client's `attachments` as validated upload ids, or None after sending a 400.
 
-        Ids only ever go into the workflow params — never bytes, never a client filename — and
-        each one must resolve to an unexpired upload right now. A 400 names the bad id rather
-        than silently dropping it: a run that quietly lost the screenshot the user attached
-        produces a confident wrong answer, which is worse than a refused submit."""
+        Ids only — never bytes or a filename — and an unknown/expired one is refused by name,
+        never dropped: a run silently missing its screenshot answers confidently and wrong."""
         raw = body.get("attachments")
         if raw in (None, "", [], {}):
             return []
@@ -1547,12 +1515,14 @@ class Handler(BaseHTTPRequestHandler):
         for item in raw:
             uid = item.get("id") if isinstance(item, dict) else item
             if not isinstance(uid, str) or uploads.get(uid) is None:
-                self._send(400, json.dumps({"error": f"unknown or expired attachment: {uid}"}))
+                self._send(400, json.dumps(
+                    {"error": f"unknown or expired attachment: {str(uid)[:40]}"}))
                 return None
             if uid not in ids:
                 ids.append(uid)
-        if len(ids) > int(config.setting("upload_max_count")):
-            self._send(400, json.dumps({"error": "too many attachments"}))
+        max_count = int(config.setting("upload_max_count"))
+        if len(ids) > max_count:
+            self._send(400, json.dumps({"error": f"too many attachments (max {max_count})"}))
             return None
         return ids
 
@@ -1622,9 +1592,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/api/events/"):
                 return self._handle_event()        # reads the raw body itself (signature check)
             if self.path == "/api/uploads":
-                # Before the JSON read: this body is multipart and legitimately far larger than
-                # _MAX_BODY, and its own caps must be checked against Content-Length first.
-                return self._handle_uploads()
+                return self._handle_uploads()      # multipart, its own caps — never _MAX_BODY
             body = self._json_body()
             if self.path == "/api/estop":
                 # Engage/release the global pause. Origin-checked like every other mutating POST
@@ -1727,8 +1695,7 @@ class Handler(BaseHTTPRequestHandler):
         # follow-up — the workflow ignores it under repo-mode).
         if body.get("plan_mode"):
             params["plan_mode"] = True
-        # Composer attachments (issue #161): validated ids only, never bytes or filenames.
-        att = self._attachments(body)
+        att = self._attachments(body)          # composer attachments (#161): ids only
         if att is None:
             return
         if att:
@@ -1751,9 +1718,7 @@ class Handler(BaseHTTPRequestHandler):
         # previous reply (`prev`) for reference resolution — a client that doesn't
         # send it keeps plain resume semantics.
         prev = (body.get("prev") or "").strip()
-        # Validated up front so BOTH exits below can carry them: a follow-up that turns into a
-        # handoff or a cross-backend rebind is re-submitted by the client, and ids dropped at
-        # this fork are the screenshot the user attached and the new run never saw.
+        # Validated up front: the handoff and rebind exits below hand them back for the re-submit.
         att = self._attachments(body)
         if att is None:
             return
@@ -1821,9 +1786,7 @@ class Handler(BaseHTTPRequestHandler):
             # the workflow, and the client body isn't trusted input.
             branch = (body.get("git_branch") or "").strip()
             params["git_branch"] = branch if workspace.valid_branch(branch) else None
-        # A follow-up can carry NEW attachments (the composer clears its chips on send, so what
-        # arrives here is what the user attached to THIS turn, not the resumed session's).
-        if att:
+        if att:                                # THIS turn's attachments, not the session's
             params["attachments"] = att
         wid = "web-" + uuid.uuid4().hex[:8]
         tc.run(_wf_start(wid, params))
@@ -2632,6 +2595,7 @@ def main():
     # test suite and every tool does before `setUpModule` re-points PROJECTS_FILE at a temp dir.
     # At import scope it migrated the live store as a side effect of `import server`.
     registry.backfill_project_urls()
+    uploads.ensure_dirs()    # bwrap masks the upload store only once the directory exists
     # Temporal is REQUIRED to serve (the direct run path was removed — issue #278). Module
     # import stays soft so the stdlib-only test run can still import handlers.
     if not TEMPORAL_OK:

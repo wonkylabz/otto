@@ -101,6 +101,7 @@ function render(){
 const stream=document.getElementById("stream"), input=document.getElementById("input"), sendBtn=document.getElementById("send");
 let busy=false, TEMPORAL=false, currentSession=null;
 let suppressCarry=false;   // set by "New task" so its next submit starts a clean slate (no context carry)
+let pendingAtts=[];        // the composer's uploaded-but-unsent attachments, {id,name,size,mime}
 function scroll(){ stream.scrollTop=stream.scrollHeight; }
 
 /* ---- live-run tracking ----
@@ -142,10 +143,12 @@ async function stopRun(){
 /* ---- chat history (persisted server-side; reopen + continue past chats) ---- */
 let activeChat=null, recording=true, chatSaveTimer=null;
 function newChatId(){ return (self.crypto&&crypto.randomUUID)?crypto.randomUUID():("c"+Date.now()+Math.random().toString(16).slice(2)); }
-function recordMsg(role, text, ts){
+function recordMsg(role, text, ts, atts){
   if(!recording || text==null) return;
   if(!activeChat) activeChat={id:newChatId(), title:"New chat", messages:[], session_id:null, cap:null};
-  activeChat.messages.push({role, text:String(text), ts:ts||new Date().toISOString()});
+  const msg={role, text:String(text), ts:ts||new Date().toISOString()};
+  if(atts && atts.length) msg.attachments=atts.map(a=>({id:a.id, name:a.name, size:a.size, mime:a.mime}));
+  activeChat.messages.push(msg);
   if(role==="user" && activeChat.messages.filter(m=>m.role==="user").length===1)
     activeChat.title=String(text).slice(0,80);
   clearTimeout(chatSaveTimer); chatSaveTimer=setTimeout(persistChat, 600);
@@ -543,7 +546,7 @@ async function openChat(id){
   activateTab("chat");
   recording=false;
   stream.innerHTML=""; buildPipe();
-  (chat.messages||[]).forEach(m=>{ m.role==="user" ? userMsg(m.text, m.ts) : showResult(enoMsg(), m.text, null, m.ts); });
+  (chat.messages||[]).forEach(m=>{ m.role==="user" ? userMsg(m.text, m.ts, m.attachments) : showResult(enoMsg(), m.text, null, m.ts); });
   collapseHistory(chat.messages||[]);
   recording=true;
   activeChat={id:chat.id, title:chat.title, messages:(chat.messages||[]).slice(), session_id:chat.session_id||null, cap:chat.cap||null, run_id:chat.run_id||null, repo:chat.repo||null, git_run_id:chat.git_run_id||null, git_branch:chat.git_branch||null, stats:chat.stats||null};
@@ -619,9 +622,27 @@ function stampHTML(ts){
 /* Stamp an Otto bubble's outer .msg (the "I'll use X" router note has no recorded ts of its own,
    so it's the one bubble that otherwise renders stampless — live time is right here). */
 function stampMsg(content, ts){ const m=content&&content.closest(".msg"); if(m&&!m.querySelector(":scope > .stamp")) m.insertAdjacentHTML("beforeend", stampHTML(ts||new Date().toISOString())); }
-function userMsg(text, ts){ ts=ts||(recording?new Date().toISOString():null);
+function userMsg(text, ts, atts){ ts=ts||(recording?new Date().toISOString():null);
   const m=document.createElement("div"); m.className="msg user"; m.innerHTML=`<div class="body"></div>`; m.querySelector(".body").textContent=text;
-  m.insertAdjacentHTML("beforeend", stampHTML(ts)); stream.appendChild(m); scroll(); recordMsg("user", text, ts); }
+  if(atts && atts.length){ m.querySelector(".body").insertAdjacentHTML("beforeend", attHTML(atts)); watchThumbs(m); }
+  m.insertAdjacentHTML("beforeend", stampHTML(ts)); stream.appendChild(m); scroll(); recordMsg("user", text, ts, atts); }
+/* A sent message keeps metadata only: an image renders from the upload store while it lives, any
+   other file is a download link. Once the store sweeps it, the thumbnail says so. */
+function attHTML(atts){
+  return `<div class="msgatts">${atts.map(a=>{
+    const u="/api/uploads/"+encodeURIComponent(a.id), label=esc(a.name)+" · "+fmtBytes(+a.size||0);
+    return /^image\/(png|jpeg|gif|webp)$/.test(a.mime||"")
+      ? `<a href="${u}" target="_blank" rel="noopener" title="${label}"><img class="attthumb" src="${u}" alt="${esc(a.name)}" loading="lazy"></a>`
+      : `<a class="attfile" href="${u}" download="${esc(a.name)}" title="${label}">&#128196; ${label}</a>`;
+  }).join("")}</div>`;
+}
+function watchThumbs(root){
+  root.querySelectorAll("img.attthumb").forEach(img=>img.addEventListener("error",()=>{
+    const gone=document.createElement("span"); gone.className="attgone"; gone.textContent=img.alt+" (no longer available)";
+    img.closest("a").replaceWith(gone);
+  }));
+}
+function fmtBytes(n){ return n<1024 ? n+" B" : n<1048576 ? Math.round(n/1024)+" KB" : (n/1048576).toFixed(1)+" MB"; }
 function enoMsg(){ const m=document.createElement("div"); m.className="msg eno";
   m.innerHTML=`<div class="row"><div class="avatar"><svg aria-hidden="true"><use href="#mk"/></svg></div><div class="body"><div class="who">Otto</div><div class="content"></div></div></div>`;
   stream.appendChild(m); scroll(); return m.querySelector(".content"); }
@@ -998,6 +1019,7 @@ async function submit(text){
     input.value=""; autosize(); hideSlash();
     return proposeRule(arg, currentSession?currentSession.cap:null, true);
   }
+  if(!busy && !(text||"").trim() && pendingAtts.length){ toast("Add a message saying what to do with the attachment."); return; }
   // The submit paths set `busy` synchronously at their top, but refreshHealth() awaits a
   // fetch BEFORE dispatch — without this guard a second Enter in that window double-submits.
   if(busy || dispatching) return;
@@ -1024,7 +1046,8 @@ async function continueTemporal(text){
   if(busy) return; text=(text||"").trim(); if(!text) return;
   const sess=currentSession;
   busy=true; sendBtn.disabled=true; input.value=""; autosize();
-  userMsg(text); buildPipe();
+  const atts=takeAtts();
+  userMsg(text, null, atts); buildPipe();
   setNode("INGRESS","done","continuation");
   setNode("DECOMPOSE","done","—");                     // resume reuses the bound cap — no planning
   setNode("ROUTER","done","continuing: "+sess.cap.name); addPick(sess.cap);
@@ -1037,8 +1060,8 @@ async function continueTemporal(text){
   const prevMsg=[...msgs].reverse().find(m=>m.role!=="user");
 
   let out;
-  try { out=await api("/api/continue",{session_id:sess.id, cap:sess.cap, message:text, prev: prevMsg?String(prevMsg.text).slice(-4000):undefined, repo:sess.repo||undefined, git_run_id:sess.git_run_id||undefined, git_branch:sess.git_branch||undefined, model_override: selectedModelOverride()||undefined, effort: selectedEffort()||undefined, auto_approve: selectedAutoApprove()||undefined}); }
-  catch(e){ clearThinking(content); content.innerHTML=`<p class="err">Couldn't continue the session (${esc(e.message)}).</p>`; return finishTurn(); }
+  try { out=await api("/api/continue",{session_id:sess.id, cap:sess.cap, message:text, prev: prevMsg?String(prevMsg.text).slice(-4000):undefined, repo:sess.repo||undefined, git_run_id:sess.git_run_id||undefined, git_branch:sess.git_branch||undefined, model_override: selectedModelOverride()||undefined, effort: selectedEffort()||undefined, auto_approve: selectedAutoApprove()||undefined, attachments: attIds(atts)}); }
+  catch(e){ restoreAtts(atts); clearThinking(content); content.innerHTML=`<p class="err">Couldn't continue the session (${esc(e.message)}).</p>`; return finishTurn(); }
 
   if(out && out.rebind){
     // The model pick is on the other backend from the one that minted this session, and a
@@ -1056,8 +1079,9 @@ async function continueTemporal(text){
                                         memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: out.rebind.model,
-                                        effort: selectedEffort()||undefined})).id; }
-    catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the run on ${esc(out.rebind.model)} (${esc(e.message)}).</p>`; return finishTurn(); }
+                                        effort: selectedEffort()||undefined,
+                                        attachments: attIds(out.rebind.attachments)})).id; }
+    catch(e){ restoreAtts(atts); setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the run on ${esc(out.rebind.model)} (${esc(e.message)}).</p>`; return finishTurn(); }
     recordMsg("otto", "↪ Switched to "+out.rebind.model+" — that model runs on a different backend, so this starts a fresh run (the earlier conversation is carried as context).");
     setRun(rid);
     watchLoop(rid, activeChat.id, content, null, {});
@@ -1084,8 +1108,9 @@ async function continueTemporal(text){
                                         memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: selectedModelOverride()||undefined,
-                                        effort: selectedEffort()||undefined})).id; }
-    catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the handed-off task (${esc(e.message)}).</p>`; return finishTurn(); }
+                                        effort: selectedEffort()||undefined,
+                                        attachments: attIds(out.handoff.attachments)})).id; }
+    catch(e){ restoreAtts(atts); setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the handed-off task (${esc(e.message)}).</p>`; return finishTurn(); }
     recordMsg("otto", "↪ Handed off as a fresh task (the earlier conversation is carried as context): "+task);
     setRun(hid);
     watchLoop(hid, activeChat.id, content, null, {});
@@ -1101,7 +1126,8 @@ async function continueTemporal(text){
 async function submitTemporal(text, pinCap, pinReq, repo, qa, memory, modelOverride, carry, effort){
   if(busy) return; text=(text||"").trim(); if(!text) return;
   busy=true; sendBtn.disabled=true; input.value=""; autosize(); hideSlash();
-  userMsg(text);
+  const atts=takeAtts();
+  userMsg(text, null, atts);
   if(carry) sysNote("No live session — starting a fresh run with the earlier context carried in.");
   buildPipe();
   setNode("INGRESS","active","received your request");
@@ -1114,8 +1140,8 @@ async function submitTemporal(text, pinCap, pinReq, repo, qa, memory, modelOverr
 
   let id;
   const req = (pinCap ? (pinReq||"") : text) + (carry||"");   // pinned: request is the args after /cap; carry appends prior context
-  try { id=(await api("/api/submit",{request:req, cap: pinCap?pinCap.name:undefined, repo: repo||undefined, qa: qa||undefined, memory_enabled: memory, model_override: modelOverride||undefined, effort: effort||undefined, auto_approve: selectedAutoApprove()||undefined})).id; }
-  catch(e){ setNode(pinCap?"ROUTER":"DECOMPOSE","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start workflow (${esc(e.message)}).</p>`; return finishTurn(); }
+  try { id=(await api("/api/submit",{request:req, cap: pinCap?pinCap.name:undefined, repo: repo||undefined, qa: qa||undefined, memory_enabled: memory, model_override: modelOverride||undefined, effort: effort||undefined, auto_approve: selectedAutoApprove()||undefined, attachments: attIds(atts)})).id; }
+  catch(e){ restoreAtts(atts); setNode(pinCap?"ROUTER":"DECOMPOSE","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start workflow (${esc(e.message)}).</p>`; return finishTurn(); }
 
   setRun(id);
   watchLoop(id, activeChat.id, content, pinCap?{cap:pinCap}:null, pinCap?{decomposeDone:true}:{});
@@ -1694,3 +1720,50 @@ input.addEventListener("keydown",e=>{
   if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); submit(input.value); }
 });
 sendBtn.addEventListener("click",()=>{ if(sendBtn.classList.contains("stop")) stopRun(); else submit(input.value); });
+
+/* ---- composer attachments (#161): each file uploads the moment it is attached, one request
+   apiece so a single refusal never sinks the rest, and a message sends only the ids ---- */
+const attChips=document.getElementById("attchips"), attFile=document.getElementById("attfile");
+function renderAttChips(){
+  attChips.hidden=!pendingAtts.length;
+  attChips.innerHTML=pendingAtts.map((a,i)=>`<span class="attchip" title="${esc(a.name)}"><span>${esc(a.name)}</span><small>${fmtBytes(+a.size||0)}</small><button class="attx" data-i="${i}" title="Remove">&times;</button></span>`).join("");
+}
+function takeAtts(){ const a=pendingAtts; pendingAtts=[]; renderAttChips(); return a; }
+function restoreAtts(a){ pendingAtts=(a||[]).concat(pendingAtts); renderAttChips(); }
+function attIds(a){ return a && a.length ? a.map(x=>typeof x==="string" ? x : x.id) : undefined; }
+/* Checked here first so an oversize file is refused before it is sent at all; the server is
+   still the guard (a limit it cannot read here is 0 = unchecked). */
+async function uploadLimits(){
+  try { const s=(await getJSON("/api/settings")).settings||{};
+        return {file:+((s.upload_max_file_bytes||{}).value)||0, count:+((s.upload_max_count||{}).value)||0}; }
+  catch(e){ return {file:0, count:0}; }
+}
+async function attachFiles(files){
+  if(!files.length) return;
+  const lim=await uploadLimits();
+  for(const f of files){
+    if(lim.count && pendingAtts.length>=lim.count){ toast(`Up to ${lim.count} attachments per message.`); break; }
+    if(lim.file && f.size>lim.file){ toast(`${f.name} is too large (${fmtBytes(f.size)}, limit ${fmtBytes(lim.file)}).`); continue; }
+    try { pendingAtts.push(...await uploadFiles([f])); renderAttChips(); }
+    catch(e){ toast(`Couldn't attach ${f.name}: ${e.message}`); }
+  }
+}
+attChips.addEventListener("click",e=>{ const b=e.target.closest(".attx"); if(!b) return; pendingAtts.splice(+b.dataset.i,1); renderAttChips(); input.focus(); });
+document.getElementById("attach").addEventListener("click",()=>attFile.click());
+attFile.addEventListener("change",()=>{ const f=[...attFile.files]; attFile.value=""; attachFiles(f); });
+const hasFiles=e=>!!(e.dataTransfer && [...e.dataTransfer.types].includes("Files"));
+const composerEl=document.querySelector(".composer");
+composerEl.addEventListener("dragover",e=>{ if(hasFiles(e)){ e.preventDefault(); composerEl.classList.add("dropping"); } });
+composerEl.addEventListener("dragleave",e=>{ if(!composerEl.contains(e.relatedTarget)) composerEl.classList.remove("dropping"); });
+composerEl.addEventListener("drop",e=>{ composerEl.classList.remove("dropping"); if(hasFiles(e)){ e.preventDefault(); attachFiles([...e.dataTransfer.files]); } });
+// A file dropped anywhere else would navigate the tab away from Otto.
+window.addEventListener("dragover",e=>{ if(hasFiles(e)) e.preventDefault(); });
+window.addEventListener("drop",e=>{ if(hasFiles(e)) e.preventDefault(); });
+// Pasted images arrive as `image.png` every time, so each gets a name of its own.
+input.addEventListener("paste",e=>{
+  const cd=e.clipboardData, imgs=cd ? [...cd.files].filter(f=>/^image\//.test(f.type)) : [];
+  if(!imgs.length) return;
+  if(!cd.getData("text/plain")) e.preventDefault();
+  const stamp=Date.now();
+  attachFiles(imgs.map((f,i)=>new File([f], `pasted-${stamp}-${i+1}.${(f.type.split("/")[1]||"png").replace(/[^a-z0-9]/g,"")}`, {type:f.type})));
+});

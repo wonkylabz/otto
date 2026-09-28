@@ -4584,3 +4584,310 @@ class TraceRunAttributionTests(unittest.TestCase):
         body = src[i:i + 700]
         self.assertIn("contextvars.copy_context().run", body)
         self.assertIn("for s in wave", body)
+
+
+def _read_bytes(path):
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "the staging seam lives in activities")
+class UploadStagingTests(unittest.TestCase):
+    """#161: an attempt's attachments exist on disk only while THAT attempt runs — staged per
+    attempt outside any clone, and removed on a return, a raise and a timeout alike. The staged
+    TTL is only the backstop for a worker killed mid-attempt, so it must outlive any attempt."""
+
+    def setUp(self):
+        import uploads
+        self.act, self.up = activities, uploads
+        self.cap = registry.Capability("custom", "worker", "does tasks")
+        self.cap.risk = "write"
+        self._orig = (activities._caps, engine.run_attempt, engine.plan_preview,
+                      engine.critique_plan, engine.summarize_plan)
+        activities._caps = [self.cap]
+        uploads.ensure_dirs()
+        self.png = uploads.store("shot.png", "image/png", test_support._png())
+        self.log = uploads.store("app.log", "text/plain", b"ERROR boom\n")
+        self.seen = []
+
+    def tearDown(self):
+        (activities._caps, engine.run_attempt, engine.plan_preview,
+         engine.critique_plan, engine.summarize_plan) = self._orig
+
+    def _attempt(self, behave=None):
+        def fake(request, cap, **k):
+            paths = k.get("attachments") or []
+            self.seen.append({"paths": paths, "missing": k.get("attachments_missing"),
+                              "bytes": [_read_bytes(p) for p in paths]})
+            if behave:
+                return behave()
+            return {"workflow": k.get("wid"), "result": "ok", "cost": 0.0, "attempt": 1}
+        engine.run_attempt = fake
+
+    def _run(self, **extra):
+        return activities.run_capability({"request": "look", "name": "worker", "wid": "web-stg1",
+                                          "attempt": 1, **{"attachments": [self.png["id"],
+                                                                           self.log["id"]]},
+                                          **extra})
+
+    def _left(self):
+        return os.listdir(self.up.RUN_FILES_DIR)
+
+    def test_the_attempt_reads_its_files_and_nothing_is_left_after(self):
+        self._attempt()
+        self._run()
+        s = self.seen[0]
+        self.assertEqual([test_support._png(), b"ERROR boom\n"], s["bytes"])
+        self.assertEqual(0, s["missing"])
+        self.assertFalse(any(os.path.exists(p) for p in s["paths"]))
+        self.assertEqual([], self._left())
+
+    def test_a_raising_attempt_leaves_nothing_behind(self):
+        def boom():
+            raise RuntimeError("worker blew up")
+        self._attempt(boom)
+        with self.assertRaises(RuntimeError):
+            self._run()
+        self.assertEqual(2, len(self.seen[0]["bytes"]), "the files were not there DURING the run")
+        self.assertEqual([], self._left())
+
+    def test_a_timed_out_attempt_leaves_nothing_behind(self):
+        # Both shapes: `claude -p` reporting its own timeout, and the call itself raising one.
+        self._attempt(lambda: {"workflow": "web-stg1", "result": "(timed out)",
+                               "is_error": True, "cost": 0.0, "attempt": 1})
+        self._run()
+        self.assertEqual([], self._left())
+
+        def late():
+            raise TimeoutError("activity deadline")
+        self._attempt(late)
+        with self.assertRaises(TimeoutError):
+            self._run()
+        self.assertEqual([], self._left())
+
+    def test_run_b_cannot_read_run_a_staged_files_after_a_ends(self):
+        self._attempt()
+        self._run(wid="web-runA")
+        self._run(wid="web-runB")
+        self._run(wid="web-runB")      # a harness re-run of the same attempt: still its own dir
+        a, b1, b2 = (s["paths"] for s in self.seen)
+        self.assertFalse(any(os.path.exists(p) for p in a + b1 + b2))
+        dirs = {os.path.dirname(p[0]) for p in (a, b1, b2)}
+        self.assertEqual(3, len(dirs), "two attempts shared one staging directory")
+
+    def test_the_staged_copies_never_land_in_the_clone(self):
+        clone = os.path.join(config.DATA_DIR, "workspaces", "web-stg1")
+        os.makedirs(clone)
+        subprocess.run(["git", "init", "-q", clone], check=True)
+        self._attempt()
+        self._run(cwd=clone)
+        for p in self.seen[0]["paths"]:
+            self.assertFalse(os.path.abspath(p).startswith(os.path.abspath(clone) + os.sep))
+        st = subprocess.run(["git", "-C", clone, "status", "--porcelain"],
+                            capture_output=True, text=True)
+        self.assertEqual("", st.stdout, "an attachment would ride into the PR diff")
+
+    def test_an_expired_attachment_is_counted_missing_never_dropped_silently(self):
+        meta = os.path.join(self.up.UPLOADS_DIR, self.log["id"], "meta.json")
+        with open(meta) as fh:
+            m = json.load(fh)
+        m["stored"] = time.time() - 10 ** 7
+        with open(meta, "w") as fh:
+            json.dump(m, fh)
+        self._attempt()
+        self._run()
+        self.assertEqual((1, 1), (len(self.seen[0]["paths"]), self.seen[0]["missing"]))
+
+    def test_no_attachments_stage_nothing(self):
+        self._attempt()
+        activities.run_capability({"request": "look", "name": "worker", "wid": "web-stg2",
+                                   "attempt": 1})
+        self.assertEqual(([], 0), (self.seen[0]["paths"], self.seen[0]["missing"]))
+        self.assertEqual([], self._left())
+
+    def test_the_plan_preview_is_staged_and_cleaned_up_the_same_way(self):
+        seen = []
+
+        def preview(request, cap, **k):
+            paths = k.get("attachments") or []
+            seen.append((paths, [os.path.isfile(p) for p in paths]))
+            return {"plan": "1. look at it", "cost": 0, "tokens": None}
+        engine.plan_preview = preview
+        engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, cap, *a, **k: plan
+        activities.plan_capability({"request": "look", "name": "worker", "wid": "web-stg3",
+                                    "attachments": [self.png["id"]]})
+        paths, present = seen[0]
+        self.assertEqual([True], present, "the planner was not shown the attachment")
+        self.assertFalse(os.path.exists(paths[0]))
+        self.assertEqual([], self._left())
+
+    def test_the_staged_ttl_outlives_every_attempt(self):
+        import wf_runtime
+        ttl = config.RUN_FILES_TTL_H * 3600
+        for ceiling in (wf_runtime._EXEC_CEILING, wf_runtime._PLAN_CEILING):
+            self.assertGreater(ttl, 2 * ceiling.total_seconds(),
+                               "the sweep could delete a live attempt's attachments")
+
+
+class UploadStoreTests(unittest.TestCase):
+    """The store's own rules: the TTL sweeps, the reserved sidecar name, untrusted names and
+    types, and that a credential in a text attachment is scrubbed wherever it is quoted."""
+
+    ANT = ("sk-ant-api03-" + "Xy7_Qm2-Lp9Rt4Vw8Zb3Nc6Hd1Jf5Kg0Ms2Pu7Wx4Yz9Ab3Cd8Ef1Gh6Ij2Kl5Mn0Op3Qr7"
+           "St4Uv9Wx2Yz6Ab1Cd5Ef8G-AbCdEfAA")
+
+    def setUp(self):
+        import uploads
+        self.up = uploads
+        uploads.ensure_dirs()
+
+    def _age(self, path, hours):
+        t = time.time() - hours * 3600
+        os.utime(path, (t, t))
+
+    def test_the_sweep_uses_the_short_ttl_for_staged_copies(self):
+        old_up = self.up.store("old.txt", "text/plain", b"x")["id"]
+        new_up = self.up.store("new.txt", "text/plain", b"y")["id"]
+        self._age(os.path.join(self.up.UPLOADS_DIR, old_up), config.UPLOAD_TTL_H + 1)
+        self._age(os.path.join(self.up.UPLOADS_DIR, new_up), config.RUN_FILES_TTL_H + 1)
+        stale, _, _ = self.up.stage([new_up], "web-gc", "a1")
+        live, _, _ = self.up.stage([new_up], "web-gc", "a2")
+        self._age(stale, config.RUN_FILES_TTL_H + 1)
+        self.up.gc()
+        self.assertFalse(os.path.exists(os.path.join(self.up.UPLOADS_DIR, old_up)))
+        self.assertTrue(os.path.exists(os.path.join(self.up.UPLOADS_DIR, new_up)),
+                        "an upload inside its TTL was swept on the staged TTL")
+        self.assertFalse(os.path.exists(stale), "an orphaned staged copy outlived its TTL")
+        self.assertTrue(os.path.exists(live))
+        self.up.unstage(live)
+
+    def test_an_expired_upload_is_gone_even_before_the_sweep(self):
+        uid = self.up.store("old.png", "image/png", test_support._png())["id"]
+        meta = os.path.join(self.up.UPLOADS_DIR, uid, "meta.json")
+        with open(meta) as fh:
+            m = json.load(fh)
+        m["stored"] = time.time() - (config.UPLOAD_TTL_H + 1) * 3600
+        with open(meta, "w") as fh:
+            json.dump(m, fh)
+        self.assertIsNone(self.up.get(uid))
+
+    def test_the_sidecar_name_is_reserved(self):
+        self.assertEqual("meta_.json", self.up.safe_name("meta.json"))
+        self.assertEqual("META_.JSON.lock", self.up.safe_name("META.JSON.lock"))
+        meta = self.up.store("meta.json", "application/json", b'{"mine": true}')
+        got = self.up.get(meta["id"])
+        self.assertIsNotNone(got, "the user's file overwrote the sidecar")
+        with open(self.up.path_for(got), "rb") as fh:
+            self.assertEqual(b'{"mine": true}', fh.read())
+
+    def test_an_untrusted_name_and_type_are_neutralised(self):
+        self.assertEqual("passwd", self.up.safe_name("../../etc/passwd"))
+        self.assertEqual("env", self.up.safe_name(".env"))
+        self.assertEqual("a_b.txt", self.up.safe_name("a\x00\n b.txt"))
+        self.assertEqual("application/octet-stream",
+                         self.up.safe_mime("text/html\r\nSet-Cookie: x=1"))
+        self.assertEqual("image/png", self.up.safe_mime("Image/PNG"))
+
+    def test_two_pastes_with_one_name_stage_as_two_files(self):
+        ids = [self.up.store("image.png", "image/png", test_support._png(rgb=c))["id"]
+               for c in ((1, 2, 3), (4, 5, 6))]
+        d, paths, missing = self.up.stage(ids, "web-dup", "a1")
+        self.addCleanup(self.up.unstage, d)
+        self.assertEqual((2, 0), (len(set(paths)), missing))
+
+    def test_unstage_only_ever_removes_a_staging_directory(self):
+        elsewhere = tempfile.mkdtemp(prefix="otto-not-staging-")
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        self.up.unstage(elsewhere)
+        self.assertTrue(os.path.isdir(elsewhere))
+
+    def test_a_key_in_a_text_attachment_is_scrubbed_where_it_is_quoted(self):
+        import privacy
+        text = f"deploy notes\nthe key is {self.ANT} ok\n"
+        d, paths, _ = self.up.stage([self.up.store("notes.txt", "text/plain",
+                                                   text.encode())["id"]], "web-red", "a1")
+        self.addCleanup(self.up.unstage, d)
+        with open(paths[0]) as fh:
+            body = fh.read()
+        self.assertEqual("deploy notes\nthe key is [redacted] ok\n", privacy.redact(body))
+        # What a Read of the staged copy puts in the transcript: the tool_result, line-numbered.
+        event = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1",
+             "content": "     1\tdeploy notes\n     2\tthe key is " + self.ANT + " ok\n"}]}}
+        self.assertEqual(
+            '{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", '
+            '"tool_use_id": "toolu_1", "content": "     1\\tdeploy notes\\n     2\\tthe key is '
+            '[redacted] ok\\n"}]}}\n', claude_cli.transcript_line(event))
+
+
+class AttachmentWiringTests(unittest.TestCase):
+    """The ids ride every execution payload, the planner's included, and a request carrying them
+    skips the two paths that would drop them: swarm children and plan-then-execute steps are
+    never handed attachments (#161)."""
+
+    def test_every_run_payload_and_the_plan_payload_carry_the_ids(self):
+        src = workflow_src()
+        self.assertGreaterEqual(src.count('"attachments": self._attachments'), 4)
+        for fn in ("_brainstorm_turn", "_verify_ladder"):
+            node = next(n for n in ast.walk(ast.parse(src))
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn)
+            self.assertIn('"attachments": self._attachments', ast.get_source_segment(src, node))
+
+    def test_attachments_skip_the_swarm_and_the_step_planner(self):
+        src = workflow_src()
+        i = src.index("plan_swarm, request")
+        self.assertIn("and not self._attachments:", src[i - 300:i])
+        self.assertIn("if not self._attachments and _may_plan_steps(", src)
+
+    def test_both_activities_stage_around_the_call(self):
+        for fn in ("run_capability", "plan_capability"):
+            body = inspect.getsource(getattr(activities, fn)) if _HAS_TEMPORAL else ""
+            if not body:
+                self.skipTest("temporalio not importable")
+            self.assertIn("with _staged(payload, ", body)
+            self.assertIn("attachments=att_paths, attachments_missing=att_missing", body)
+
+
+class PlanPreviewAttachmentTests(unittest.TestCase):
+    """The planner is told about attachments the way execution is: paths on Claude, a declared
+    "unavailable" on a local preview."""
+
+    def setUp(self):
+        import uploads
+        self._saved = (engine._claude, local_runtime.run_json, gateway.preview_model_entry,
+                       plans.trace)
+        plans.trace = engine.trace = engine.say = lambda *a, **k: None
+        self.ctx = []
+
+        def rec(prompt, **kw):
+            self.ctx.append(kw.get("system_context") or "")
+            return {"result": "1. look at the screenshot", "total_cost_usd": 0,
+                    "session_id": None, "usage": {}}
+        engine._claude = local_runtime.run_json = rec
+        self.cap = registry.Capability("custom", "worker", "does tasks")
+        self.cap.risk = "write"
+        uploads.ensure_dirs()
+        d, self.paths, _ = uploads.stage(
+            [uploads.store("shot.png", "image/png", test_support._png())["id"]], "web-pp", "plan")
+        self.addCleanup(uploads.unstage, d)
+
+    def tearDown(self):
+        (engine._claude, local_runtime.run_json, gateway.preview_model_entry,
+         plans.trace) = self._saved
+
+    def test_a_claude_preview_is_given_the_paths(self):
+        gateway.preview_model_entry = lambda cfg=None: {"name": "claude-sonnet",
+                                                        "provider": "claude",
+                                                        "model": "claude-sonnet-5"}
+        plans.plan_preview("fix what the screenshot shows", self.cap, attachments=self.paths)
+        self.assertIn(self.paths[0], self.ctx[0])
+
+    def test_a_local_preview_is_told_they_are_unavailable(self):
+        gateway.preview_model_entry = lambda cfg=None: {"name": "gemma-local",
+                                                        "provider": "openai",
+                                                        "base_url": "http://x/v1",
+                                                        "model": "gemma"}
+        plans.plan_preview("fix what the screenshot shows", self.cap, attachments=self.paths)
+        self.assertIn("ATTACHMENTS UNAVAILABLE", self.ctx[0])
+        self.assertNotIn(self.paths[0], self.ctx[0])

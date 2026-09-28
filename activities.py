@@ -287,25 +287,29 @@ def plan_capability(payload: dict) -> dict:
     if not cwd and payload.get("repo"):
         r = workspace.resolve(payload["repo"])
         cwd = r["path"] if r else None
-    preview = engine.plan_preview(payload["request"], cap, cwd=cwd,
-                                  resume_session=payload.get("resume"),
-                                  wid=payload.get("wid"),
-                                  # The open PR this request works on, resolved before the gate:
-                                  # the preview's cwd is the DEFAULT branch, so without this the
-                                  # planner reasons about a tree missing the code (web-a6122d6c).
-                                  pr=payload.get("pr"),
-                                  # Same level the execution will run at, so the human approves
-                                  # the plan the run actually follows.
-                                  effort=payload.get("effort"),
-                                  # A "request changes" round EDITS the plan it is given rather
-                                  # than re-planning from the ticket; without the base, every
-                                  # round re-rolled the decisions the last one got right.
-                                  # The base is the PLANNER's own text: `strip_summary` takes
-                                  # Otto's prepended outline back off, or the reviser reads
-                                  # Otto's bullets as its own work and the next summary stacks
-                                  # a second heading on the first.
-                                  prior_plan=engine.strip_summary(payload.get("prior_plan")),
-                                  feedback=payload.get("feedback"))
+    # The planner sees the attachments too, or the approved plan describes files nobody showed it.
+    with _staged(payload, "plan") as (att_paths, att_missing):
+        preview = engine.plan_preview(
+            payload["request"], cap, cwd=cwd,
+            resume_session=payload.get("resume"),
+            wid=payload.get("wid"),
+            # The open PR this request works on, resolved before the gate:
+            # the preview's cwd is the DEFAULT branch, so without this the
+            # planner reasons about a tree missing the code (web-a6122d6c).
+            pr=payload.get("pr"),
+            # Same level the execution will run at, so the human approves
+            # the plan the run actually follows.
+            effort=payload.get("effort"),
+            # A "request changes" round EDITS the plan it is given rather
+            # than re-planning from the ticket; without the base, every
+            # round re-rolled the decisions the last one got right.
+            # The base is the PLANNER's own text: `strip_summary` takes
+            # Otto's prepended outline back off, or the reviser reads
+            # Otto's bullets as its own work and the next summary stacks
+            # a second heading on the first.
+            prior_plan=engine.strip_summary(payload.get("prior_plan")),
+            feedback=payload.get("feedback"),
+            attachments=att_paths, attachments_missing=att_missing)
     plan = preview["plan"]
     # Critique the PLAN, summarise it second: the critic must read the planner's own steps, not
     # a digest of them, and a summary is not a thing to find concerns in.
@@ -500,31 +504,19 @@ def _warm_conventions(project):
 
 
 @contextlib.contextmanager
-def _staged(payload):
-    """Stage this attempt's composer attachments, hand back their paths, ALWAYS remove them.
-
-    Issue #161's isolation contract in two lines: `data/uploads/**` is read-denied to every run,
-    so the only files a run can see are copies under `data/run-files/<wid>-a<attempt>/` that
-    exist for the lifetime of THIS attempt. The `finally` is the whole guarantee — it must cover
-    an exception, an activity timeout and a supervisor kill alike, which is why it WRAPS the call
-    rather than following it. A worker SIGKILLed mid-attempt skips it entirely; the TTL sweep in
-    `uploads.gc` is the backstop for that, not this.
-
-    Per ATTEMPT and not per run, so a verify-ladder retry never inherits files the attempt before
-    it may have touched. No ids (the overwhelmingly common case) costs nothing: no directory is
-    created and the path list is empty, so `engine` adds no note at all."""
+def _staged(payload, part):
+    """This attempt's attachments as staged `(paths, missing)`, removed on EVERY exit — return,
+    raise or timeout alike (#161). A SIGKILLed worker skips it; `uploads.gc` is that backstop."""
     ids = list(payload.get("attachments") or [])
-    wid = payload.get("wid")
-    attempt = payload.get("attempt", 1)
-    if not ids or not wid:
+    if not ids:
         yield [], 0
         return
     uploads.ensure_dirs()
-    paths = uploads.stage(ids, wid, attempt)
+    directory, paths, missing = uploads.stage(ids, payload.get("wid") or "run", part)
     try:
-        yield paths, max(0, len(ids) - len(paths))
+        yield paths, missing
     finally:
-        uploads.unstage(wid, attempt)
+        uploads.unstage(directory)
 
 
 @activity.defn
@@ -546,29 +538,32 @@ def run_capability(payload: dict) -> dict:
     mcp_tools, mcp_path = _mcp()
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
     _warm_conventions(project)
-    att = engine.run_attempt(
-        payload["request"], cap,
-        attempt=payload.get("attempt", 1), critique=payload.get("critique"),
-        escalate=payload.get("escalate", False), downshift=payload.get("downshift", False),
-        extra_tools=mcp_tools,
-        mcp_config_path=mcp_path, resume_session=payload.get("resume"), wid=payload.get("wid"),
-        cwd=payload.get("cwd"), recall=payload.get("recall", False), project=project,
-        local_disabled=payload.get("local_disabled", False),
-        local_disabled_reason=payload.get("local_disabled_reason"), repo=payload.get("repo"),
-        audience=payload.get("audience"),
-        # The plan a human approved at the gate (workflows._plan). Absent for unattended
-        # auto-approve, reads and resumes — engine treats None as "no plan was agreed".
-        approved_plan=payload.get("approved_plan"),
-        # Where the checked-out tree contradicts the request (workspace.grounding). Advisory —
-        # it steers what the attempt REPORTS, it never blocks the run.
-        grounding=payload.get("grounding"),
-        # Per-chat overrides (Otto chat composer): default on/none, so an older caller that
-        # never sends these keys behaves exactly as before.
-        memory_enabled=payload.get("memory_enabled", True),
-        model_override=payload.get("model_override"),
-        effort=payload.get("effort"),
-        discussion=discussion,
-        supervise_enforce=payload.get("supervise_enforce", True))
+    with _staged(payload, f"a{payload.get('attempt', 1)}") as (att_paths, att_missing):
+        att = engine.run_attempt(
+            payload["request"], cap,
+            attempt=payload.get("attempt", 1), critique=payload.get("critique"),
+            escalate=payload.get("escalate", False), downshift=payload.get("downshift", False),
+            extra_tools=mcp_tools,
+            mcp_config_path=mcp_path, resume_session=payload.get("resume"),
+            wid=payload.get("wid"),
+            cwd=payload.get("cwd"), recall=payload.get("recall", False), project=project,
+            local_disabled=payload.get("local_disabled", False),
+            local_disabled_reason=payload.get("local_disabled_reason"), repo=payload.get("repo"),
+            audience=payload.get("audience"),
+            # The plan a human approved at the gate (workflows._plan). Absent for unattended
+            # auto-approve, reads and resumes — engine treats None as "no plan was agreed".
+            approved_plan=payload.get("approved_plan"),
+            # Where the checked-out tree contradicts the request (workspace.grounding). Advisory —
+            # it steers what the attempt REPORTS, it never blocks the run.
+            grounding=payload.get("grounding"),
+            # Per-chat overrides (Otto chat composer): default on/none, so an older caller that
+            # never sends these keys behaves exactly as before.
+            memory_enabled=payload.get("memory_enabled", True),
+            model_override=payload.get("model_override"),
+            effort=payload.get("effort"),
+            discussion=discussion,
+            supervise_enforce=payload.get("supervise_enforce", True),
+            attachments=att_paths, attachments_missing=att_missing)
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "session_id": att.get("session_id"), "attempt": att["attempt"],

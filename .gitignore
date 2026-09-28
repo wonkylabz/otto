@@ -37,6 +37,9 @@ data/workspaces
 # Managed clones of repos registered by URL (repos.py) — same reason as above: each carries its
 # own .git, and this one is long-lived rather than per-run.
 data/repos
+# Web-chat attachments (uploads.py): whatever the user uploaded, and each attempt's staged copies.
+data/uploads
+data/run-files
 
 # Editor / agent per-machine config that is not part of the project.
 .claude/settings.local.json

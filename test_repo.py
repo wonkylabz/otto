@@ -1775,6 +1775,47 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(sum(c["id"] == "shared" for c in chats.list_summaries()), 1)
 
 
+class ChatAttachmentMetadataTests(unittest.TestCase):
+    """A chat message keeps attachment METADATA only (#161). The browser posts the whole chat
+    back on every save, so the store is the one place that can hold "no bytes, no paths", and an
+    install whose `messages` table predates the column must gain it rather than fail."""
+
+    UID = "a" * 32
+
+    def setUp(self):
+        self._orig = chats._DB
+        self._tmp = tempfile.mkdtemp(prefix="otto-chat-att-")
+        chats._DB = os.path.join(self._tmp, "otto.db")
+
+    def tearDown(self):
+        chats._DB = self._orig
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_only_id_name_size_and_mime_are_stored(self):
+        chats.save({"id": "c", "title": "t", "messages": [
+            {"role": "user", "text": "what is this?", "attachments": [
+                {"id": self.UID, "name": "../shot.png", "size": "12", "mime": "image/png",
+                 "path": "/etc/passwd", "data": "QUJD"},
+                {"id": "../../otto.db", "name": "x"}]},
+            {"role": "otto", "text": "a chart"}]})
+        user, otto = chats.get("c")["messages"]
+        self.assertEqual([{"id": self.UID, "name": "shot.png", "size": 12, "mime": "image/png"}],
+                         user["attachments"])
+        self.assertNotIn("attachments", otto, "a message without attachments changed shape")
+
+    def test_a_table_from_before_the_column_is_migrated(self):
+        import sqlite3
+        conn = sqlite3.connect(chats._DB)
+        conn.execute("CREATE TABLE messages (chat_id TEXT NOT NULL, seq INTEGER NOT NULL, "
+                     "role TEXT, text TEXT, ts TEXT, pending INTEGER NOT NULL DEFAULT 0, "
+                     "PRIMARY KEY (chat_id, seq))")
+        conn.commit()
+        conn.close()
+        chats.save({"id": "old", "title": "t", "messages": [
+            {"role": "user", "text": "hi", "attachments": [{"id": self.UID, "name": "a.txt"}]}]})
+        self.assertEqual("a.txt", chats.get("old")["messages"][0]["attachments"][0]["name"])
+
+
 class AuditRedactionTests(unittest.TestCase):
     """#6: the trail is immutable, so every value is `privacy.redact`ed as it is written —
     request, result, critique and reason alike. Fixtures use the vendors' REAL key formats."""

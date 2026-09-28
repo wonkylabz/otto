@@ -256,6 +256,19 @@ def _patched_registry_dirs(*, agents, skills, plugins, custom, projects):
          registry.CUSTOM_FILE, registry.PROJECTS_FILE) = saved
 
 
+def _png(w=4, h=4, rgb=(220, 20, 20)):
+    """A REAL PNG (valid chunk CRCs) — the upload route decides inline-vs-download on the bytes."""
+    import struct
+    import zlib
+    raw = b"".join(b"\x00" + bytes(rgb) * w for _ in range(h))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
 def _storage_hammer(path, worker_id, iterations):
     """Module-level so multiprocessing can pickle it: each worker appends `iterations`
     entries through the locked read-modify-write path."""

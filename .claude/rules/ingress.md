@@ -88,6 +88,11 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 - **A signature is CLAIMED, not burned** (`events.claim_signature`/`release_signature`, released on any path committing no run) — recorded before the request could still fail (bad JSON, unknown cap, a raising `_wf_start`), a sender's retry was a 409 (`HttpApiTests`).
 - **The seen-signature ring is on disk** (`events._SEEN_FILE`) — in memory, a restart forgot every signature and handed back a free replay of whatever was captured before it (`EventIngressTests`).
 
+## Web-chat attachments
+
+- **The upload route has its own caps and never reads `_MAX_BODY`** (`server._handle_uploads`) — the request cap is checked on Content-Length before any read, and every part before any is stored, so a refusal leaves no orphan (`UploadHttpTests`).
+- **A run carries upload IDS, never bytes; an unknown one is a 400, never dropped** — handoff/rebind hand them back for the re-submit, and a swarm or plan-steps run is skipped: neither hands its children the files (`UploadHttpTests`, `AttachmentWiringTests`).
+
 ## Cross-ingress
 
 - **Every mutating POST is origin-checked** (`server.Handler._csrf_ok`) — the API is unauthenticated by design, so without it any page the user visits can start a pinned WRITE run or approve its own gate cross-site (`test_integration.CsrfOriginGuardTests`).

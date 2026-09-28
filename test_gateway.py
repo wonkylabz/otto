@@ -10119,3 +10119,181 @@ class CodexAdminFormTests(unittest.TestCase):
         """The row already hides the field; a form that still offers it is the same control
         saying two different things."""
         self.assertIn("p.provider!=='claude'&&p.provider!=='codex'", self.src)
+
+
+class UploadIsolationTests(unittest.TestCase):
+    """#161's isolation contract, at rest: `data/uploads/**` is read- AND write-denied to every
+    run, Otto-cwd included, on both enforcement paths — `claude -p`'s deny settings and the bwrap
+    masks the local/Codex runtimes mount. A run reads only its own staged copy under
+    `data/run-files/`, which is readable but never writable."""
+
+    def setUp(self):
+        import uploads
+        self.uploads = uploads
+        uploads.ensure_dirs()
+        self.root = os.path.dirname(config.DATA_DIR.rstrip("/"))
+        self.clone = os.path.join(config.DATA_DIR, "workspaces", "clone")
+        os.makedirs(self.clone, exist_ok=True)
+        self.meta = uploads.store("secret.txt", "text/plain", b"UPLOAD-CANARY-4417\n")
+        self.at_rest = uploads.path_for(uploads.get(self.meta["id"]))
+        self.dir, self.staged, _ = uploads.stage([self.meta["id"]], "web-iso", "a1")
+        self.addCleanup(uploads.unstage, self.dir)
+
+    def test_the_store_is_read_and_write_denied_from_every_cwd(self):
+        for cwd in (None, self.clone, self.root):
+            self.assertTrue(file_safety.is_read_denied(self.at_rest, allow_cwd=cwd),
+                            f"an upload at rest is readable from cwd={cwd}")
+            self.assertTrue(file_safety.is_denied(self.at_rest, allow_cwd=cwd),
+                            f"an upload at rest is writable from cwd={cwd}")
+
+    def test_a_staged_copy_is_readable_but_never_writable(self):
+        for cwd in (None, self.clone, self.root):
+            self.assertFalse(file_safety.is_read_denied(self.staged[0], allow_cwd=cwd),
+                             f"the run cannot read its own attachment from cwd={cwd}")
+            self.assertTrue(file_safety.is_denied(self.staged[0], allow_cwd=cwd),
+                            "a run could plant a file for a later run's attachments")
+
+    def test_the_claude_deny_settings_carry_the_store(self):
+        rules = json.loads(file_safety.settings_arg(allow_cwd=self.root))["permissions"]["deny"]
+        store = os.path.join(config.DATA_DIR, "uploads", "**")
+        self.assertIn(file_safety._rule(store, "Read"), rules)
+        self.assertIn(file_safety._rule(store), rules)
+
+    @unittest.skipUnless(file_safety.sandbox_available(), "no usable bwrap here")
+    def test_bwrap_masks_the_store_but_not_the_staged_copy(self):
+        # Under /var/tmp, not the suite's /tmp home: the sandbox mounts a scratch tmpfs over /tmp,
+        # which would hide BOTH files and pass this vacuously.
+        home = tempfile.mkdtemp(prefix="otto-bwrap-", dir="/var/tmp")
+        self.addCleanup(shutil.rmtree, home, True)
+        saved = (config.DATA_DIR, self.uploads.UPLOADS_DIR, self.uploads.RUN_FILES_DIR)
+        self.addCleanup(self._restore, saved)
+        config.DATA_DIR = os.path.join(home, "data")
+        self.uploads.UPLOADS_DIR = os.path.join(config.DATA_DIR, "uploads")
+        self.uploads.RUN_FILES_DIR = os.path.join(config.DATA_DIR, "run-files")
+        self.uploads.ensure_dirs()
+        meta = self.uploads.store("secret.txt", "text/plain", b"UPLOAD-CANARY-4417\n")
+        at_rest = self.uploads.path_for(meta)
+        _, staged, _ = self.uploads.stage([meta["id"]], "web-bwrap", "a1")
+        # Control: outside the sandbox the canary IS on disk, so a miss below is the mount.
+        plain = subprocess.run(["cat", at_rest], capture_output=True, text=True)
+        self.assertIn("UPLOAD-CANARY-4417", plain.stdout)
+        for cwd in (None, home):
+            out = local_runtime._run_tool("Bash", {"command": f"cat {at_rest}"}, cwd,
+                                          {"Bash"}, None, bash_mode="sandbox")
+            self.assertNotIn("UPLOAD-CANARY-4417", out, f"bwrap read the store from cwd={cwd}")
+            got = local_runtime._run_tool("Bash", {"command": f"cat {staged[0]}"}, cwd,
+                                          {"Bash"}, None, bash_mode="sandbox")
+            self.assertIn("UPLOAD-CANARY-4417", got, f"the staged copy is masked from cwd={cwd}")
+
+    def _restore(self, saved):
+        config.DATA_DIR, self.uploads.UPLOADS_DIR, self.uploads.RUN_FILES_DIR = saved
+
+
+class AttachmentNoteTests(unittest.TestCase):
+    """Only `claude -p` can open a staged attachment, so each backend gets its OWN note: the paths
+    and a Read instruction on Claude, a declared "unavailable" on local, Codex and the tool-free
+    local completion — never silence (#161). A local wall re-dispatched to Claude must carry the
+    Claude note, since that pass CAN read them."""
+
+    CLAUDE = {"name": "claude-sonnet", "provider": "claude", "model": "claude-sonnet-5"}
+    LOCAL = {"name": "gemma-local", "provider": "openai", "base_url": "http://x/v1",
+             "model": "gemma"}
+    CODEX = {"name": "codex-5", "provider": "codex", "model": "gpt-5-codex"}
+
+    def setUp(self):
+        import uploads
+        self._saved = {n: getattr(gateway, n) for n in
+                       ("exec_model_entry", "exec_model_id", "local_execute")}
+        self._eng = (engine._claude, local_runtime.run_json, codex_cli.run_json)
+        self._unservable, self._sup = mcp_client.unservable, config.SUPERVISE
+        config.SUPERVISE = False
+        engine.trace = engine.say = lambda *a, **k: None
+        mcp_client.unservable = lambda cap: []
+        gateway.exec_model_id = lambda cap_name=None: "claude-sonnet-5"
+        self.entry = dict(self.CLAUDE)
+        gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.entry)
+        self.ctx = {}
+
+        def rec(backend, out):
+            def fake(prompt, **kw):
+                self.ctx.setdefault(backend, []).append(kw.get("system_context") or "")
+                return dict(out)
+            return fake
+        ok = {"result": "done", "is_error": False, "total_cost_usd": 0, "session_id": "s",
+              "usage": {}}
+        engine._claude = rec("claude", ok)
+        local_runtime.run_json = rec("local", ok)
+        codex_cli.run_json = rec("codex", ok)
+        self.cap = registry.Capability("custom", "worker", "does tasks")
+        self.cap.risk = "write"
+        uploads.ensure_dirs()
+        meta = uploads.store("shot.png", "image/png", test_support._png())
+        self.dir, self.paths, _ = uploads.stage([meta["id"]], "web-note", "a1")
+        self.addCleanup(uploads.unstage, self.dir)
+
+    def tearDown(self):
+        for n, fn in self._saved.items():
+            setattr(gateway, n, fn)
+        engine._claude, local_runtime.run_json, codex_cli.run_json = self._eng
+        mcp_client.unservable, config.SUPERVISE = self._unservable, self._sup
+
+    def _readable(self, ctx):
+        self.assertIn(self.paths[0], ctx)
+        self.assertIn("Read tool", ctx)
+        self.assertNotIn("UNAVAILABLE", ctx)
+
+    def _declared_unavailable(self, ctx):
+        self.assertIn("ATTACHMENTS UNAVAILABLE", ctx)
+        self.assertIn("shot.png", ctx)
+        self.assertNotIn(self.paths[0], ctx, "a backend that cannot read it was handed the path")
+
+    def test_the_claude_backend_is_given_the_staged_paths(self):
+        engine.run_attempt("what is in this screenshot?", self.cap, wid="w1",
+                           attachments=self.paths)
+        self._readable(self.ctx["claude"][0])
+
+    def test_a_resumed_claude_turn_is_given_them_too(self):
+        engine.run_attempt("and this one?", self.cap, wid="w1", resume_session="sess-1",
+                           attachments=self.paths)
+        self._readable(self.ctx["claude"][0])
+
+    def test_the_local_backend_is_told_they_are_unavailable(self):
+        self.entry = dict(self.LOCAL)
+        engine.run_attempt("what is in this screenshot?", self.cap, wid="w1",
+                           attachments=self.paths)
+        self._declared_unavailable(self.ctx["local"][0])
+
+    def test_the_codex_backend_is_told_they_are_unavailable(self):
+        self.entry = dict(self.CODEX)
+        engine.run_attempt("what is in this screenshot?", self.cap, wid="w1",
+                           attachments=self.paths)
+        self._declared_unavailable(self.ctx["codex"][0])
+
+    def test_the_tool_free_local_completion_is_told_too(self):
+        seen = []
+        gateway.local_execute = lambda cap_name, prompt, system_context=None: (
+            seen.append(system_context) or {"result": "a summary", "tokens": None,
+                                            "model": "gemma-local"})
+        cap = registry.Capability("custom", "summarizer", "summarizes text")
+        cap.risk, cap.tool_free = "read", True
+        engine.run_attempt("summarize the attached log", cap, wid="w1", attachments=self.paths)
+        self._declared_unavailable(seen[0])
+
+    def test_a_local_wall_redispatched_to_claude_gets_the_readable_note(self):
+        self.entry = dict(self.LOCAL)
+        local_runtime.run_json = lambda prompt, **kw: {
+            "result": "(local runtime error)", "is_error": True, "tools_unsupported": True,
+            "total_cost_usd": 0, "session_id": None, "usage": {}}
+        att = engine.run_attempt("what is in this screenshot?", self.cap, wid="w1",
+                                 attachments=self.paths)
+        self.assertEqual(att["backend"], "claude")
+        self._readable(self.ctx["claude"][0])
+
+    def test_an_attachment_that_could_not_be_staged_is_named_as_missing(self):
+        engine.run_attempt("compare these", self.cap, wid="w1", attachments=self.paths,
+                           attachments_missing=1)
+        self.assertIn("1 attached file(s) could not be staged", self.ctx["claude"][0])
+
+    def test_no_attachments_add_no_note(self):
+        engine.run_attempt("plain question", self.cap, wid="w1")
+        self.assertNotIn("ATTACHMENTS", self.ctx["claude"][0])

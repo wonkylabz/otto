@@ -155,6 +155,24 @@ async function getJSON(path){
   return data;
 }
 
+/* `postJSON`'s multipart sibling for `/api/uploads` (#161), with the same contract: it THROWS on a
+   refusal — a 413 or 400 carries the server's reason as the message — else returns the stored
+   `{id, name, size, mime}` list. A dropped connection is most often an over-limit body. */
+async function uploadFiles(files){
+  const form=new FormData();
+  for(const f of files) form.append("files", f, f.name);
+  let res, data;
+  try { res = await fetch("/api/uploads", {method:"POST", body: form}); }
+  catch(e){ throw new Error("the upload did not reach Otto — is the server up, and the file under the size limit?"); }
+  try { data = await res.json(); } catch(e){ data = {}; }
+  if(!res.ok || data.error){
+    const err=new Error(data.error || ("HTTP "+res.status));
+    err.status=res.status; err.data=data;
+    throw err;
+  }
+  return data.attachments || [];
+}
+
 /* THE poller. Six module-level `setInterval`s ran at a fixed period for the life of the tab,
    each swallowing its own failures: with the server down, a BACKGROUNDED Board tab still hit
    `/api/*` at ~0.6 req/s forever, and said nothing. Two things a bare `setInterval` cannot do:

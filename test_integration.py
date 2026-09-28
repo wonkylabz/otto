@@ -22,6 +22,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from socketserver import ThreadingTCPServer
@@ -7285,3 +7286,207 @@ class WorkflowReplayCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                          "the fixture must hold a failed review AND the clean re-review")
         self.assertGreaterEqual(order.count("run_capability"), 2,
                                 "the fixture must hold the fix round, not just the first attempt")
+
+
+class UploadHttpTests(unittest.TestCase):
+    """`POST /api/uploads` and `GET /api/uploads/<id>` over real HTTP (#161): the route has its
+    own caps and never reads `_MAX_BODY`, parses multipart byte-exactly, stores nothing it then
+    refuses, and serves inline only a raster whose BYTES agree. Submit/continue take ids only and
+    refuse an unknown one; a handoff or rebind hands the ids back for the re-submit."""
+
+    @classmethod
+    def setUpClass(cls):
+        import server
+        import uploads
+        cls.server, cls.uploads = server, uploads
+        readcap = registry.Capability("skill", "demo-read", "a read-only status report")
+        readcap.risk = "read"
+        cls._orig_caps, server.CAPS = server.CAPS, [readcap]
+        cls._orig_traces = [(m, n, getattr(m, n)) for m, n in
+                            ((engine, "trace"), (engine, "say"), (gateway, "trace"))]
+        for m, n, _ in cls._orig_traces:
+            setattr(m, n, lambda *a, **k: None)
+        cls.reply = ["ANSWER"]
+        cls._orig_complete, gateway.complete = gateway.complete, lambda task, prompt, **k: cls.reply[0]
+        cls.started = []
+
+        async def fake_wf_start(wid, params):
+            cls.started.append(params)
+        cls._orig_wf_start, server._wf_start = server._wf_start, fake_wf_start
+        cls.httpd = ThreadingTCPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd.daemon_threads = True
+        cls.port = cls.httpd.server_address[1]
+        cls.base = "http://127.0.0.1:%d" % cls.port
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=5)
+        cls.httpd.server_close()
+        cls.server._wf_start, cls.server.CAPS = cls._orig_wf_start, cls._orig_caps
+        gateway.complete = cls._orig_complete
+        for m, n, fn in cls._orig_traces:
+            setattr(m, n, fn)
+
+    def setUp(self):
+        self.started.clear()
+        self.reply[0] = "ANSWER"
+
+    def _env(self, **kv):
+        patcher = mock.patch.dict(os.environ, {k: str(v) for k, v in kv.items()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _multipart(files):
+        bnd = "----ottoTestBoundary7MA4YWxkTrZu0gW"
+        out = b""
+        for name, mime, data in files:
+            out += (f"--{bnd}\r\nContent-Disposition: form-data; name=\"files\"; "
+                    f"filename=\"{name}\"\r\nContent-Type: {mime}\r\n\r\n").encode() + data + b"\r\n"
+        return out + f"--{bnd}--\r\n".encode(), f"multipart/form-data; boundary={bnd}"
+
+    def _upload(self, files, headers=None):
+        body, ctype = self._multipart(files)
+        req = urllib.request.Request(self.base + "/api/uploads", method="POST", data=body,
+                                     headers={"Content-Type": ctype, **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read() or b"{}")
+
+    def _fetch(self, uid):
+        try:
+            with urllib.request.urlopen(self.base + "/api/uploads/" + uid, timeout=10) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, dict(e.headers), e.read()
+
+    def _stored(self):
+        return sorted(os.listdir(self.uploads.UPLOADS_DIR)) if os.path.isdir(
+            self.uploads.UPLOADS_DIR) else []
+
+    def test_a_body_over_max_body_uploads_and_round_trips_byte_for_byte(self):
+        if "OTTO_MAX_BODY_BYTES" not in os.environ:
+            self.assertEqual(1_000_000, self.server._MAX_BODY, "_MAX_BODY moved")
+        blob = bytes(range(256)) * 6000 + b"\r\n--x\r\n\n\r"         # ~1.5 MB, > _MAX_BODY
+        st, body = self._upload([("shot.png", "image/png", test_support._png()),
+                                 ("dump.bin", "application/octet-stream", blob)])
+        self.assertEqual(200, st, body)
+        png, raw = body["attachments"]
+        self.assertEqual({"id", "name", "size", "mime"}, set(png))
+        self.assertEqual((len(blob), "dump.bin"), (raw["size"], raw["name"]))
+        self.assertEqual(blob, self._fetch(raw["id"])[2])
+        self.assertEqual(test_support._png(), self._fetch(png["id"])[2])
+
+    def test_an_oversize_file_is_413_and_nothing_is_stored(self):
+        self._env(OTTO_UPLOAD_MAX_FILE_BYTES=100)
+        before = self._stored()
+        st, body = self._upload([("ok.txt", "text/plain", b"x"),
+                                 ("big.txt", "text/plain", b"y" * 1000)])
+        self.assertEqual(413, st)
+        self.assertIn("big.txt", body["error"])
+        self.assertEqual(before, self._stored(), "a refused upload left a file behind")
+
+    def test_an_oversize_request_is_413_before_it_is_read(self):
+        self._env(OTTO_UPLOAD_MAX_REQUEST_BYTES=1000)
+        st, _ = self._upload([("big.txt", "text/plain", b"y" * 5000)])
+        self.assertEqual(413, st)
+
+    def test_too_many_files_is_400(self):
+        self._env(OTTO_UPLOAD_MAX_COUNT=2)
+        st, body = self._upload([(f"f{i}.txt", "text/plain", b"x") for i in range(3)])
+        self.assertEqual(400, st)
+        self.assertIn("too many", body["error"])
+
+    def test_a_missing_or_bogus_content_length_is_refused(self):
+        import http.client
+        for length in (None, "-5", "lots"):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+            conn.putrequest("POST", "/api/uploads")
+            conn.putheader("Content-Type", "multipart/form-data; boundary=b")
+            if length is not None:
+                conn.putheader("Content-Length", length)
+            conn.endheaders()
+            self.assertEqual(411, conn.getresponse().status, f"Content-Length={length!r}")
+            conn.close()
+
+    def test_a_cross_site_upload_is_403(self):
+        st, _ = self._upload([("x.txt", "text/plain", b"x")],
+                             headers={"Origin": "https://evil.example"})
+        self.assertEqual(403, st)
+
+    def test_get_serves_only_a_real_raster_inline(self):
+        (png,) = self._upload([("shot.png", "image/png", test_support._png())])[1]["attachments"]
+        st, h, _ = self._fetch(png["id"])
+        self.assertEqual((200, "image/png", "nosniff"),
+                         (st, h.get("Content-Type"), h.get("X-Content-Type-Options")))
+        self.assertNotIn("Content-Disposition", h)
+        for name, mime, data in (("logo.svg", "image/svg+xml", b"<svg onload=alert(1)/>"),
+                                 ("notes.txt", "text/plain", b"hello"),
+                                 ("fake.png", "image/png", b"<html><script>x</script>")):
+            (meta,) = self._upload([(name, mime, data)])[1]["attachments"]
+            st, h, _ = self._fetch(meta["id"])
+            self.assertEqual(200, st)
+            self.assertTrue(h.get("Content-Disposition", "").startswith("attachment"), name)
+            self.assertEqual(("application/octet-stream", "nosniff"),
+                             (h.get("Content-Type"), h.get("X-Content-Type-Options")), name)
+
+    def test_get_refuses_an_expired_or_unknown_upload(self):
+        (meta,) = self._upload([("old.png", "image/png", test_support._png())])[1]["attachments"]
+        path = os.path.join(self.uploads.UPLOADS_DIR, meta["id"], "meta.json")
+        with open(path) as fh:
+            m = json.load(fh)
+        m["stored"] = time.time() - (config.UPLOAD_TTL_H + 1) * 3600
+        with open(path, "w") as fh:
+            json.dump(m, fh)
+        self.assertEqual(404, self._fetch(meta["id"])[0])
+        self.assertEqual(404, self._fetch("0" * 32)[0])
+        self.assertEqual(404, self._fetch("..%2f..%2fotto.db")[0])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "/api/submit needs TEMPORAL_OK")
+    def test_submit_carries_ids_only_and_refuses_an_unknown_one(self):
+        (meta,) = self._upload([("shot.png", "image/png", test_support._png())])[1]["attachments"]
+        st, _ = _post(self.base, "/api/submit", {"request": "what is this?",
+                                                 "attachments": [meta]})
+        self.assertEqual(200, st)
+        self.assertEqual([meta["id"]], self.started[-1]["attachments"])
+        st, body = _post(self.base, "/api/submit", {"request": "x", "attachments": ["f" * 32]})
+        self.assertEqual(400, st)
+        self.assertIn("unknown or expired", body["error"])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "the handoff check lives on the Temporal branch")
+    def test_continue_refuses_an_unknown_id_and_resumes_with_a_known_one(self):
+        (meta,) = self._upload([("shot.png", "image/png", test_support._png())])[1]["attachments"]
+        base = {"session_id": "sess-9", "cap": {"name": "demo-read"}, "message": "and this?"}
+        self.assertEqual(400, _post(self.base, "/api/continue",
+                                    {**base, "attachments": ["deadbeef"]})[0])
+        st, _ = _post(self.base, "/api/continue", {**base, "attachments": [meta["id"]]})
+        self.assertEqual(200, st)
+        self.assertEqual(([meta["id"]], "sess-9"),
+                         (self.started[-1]["attachments"], self.started[-1]["resume"]))
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "the handoff check lives on the Temporal branch")
+    def test_a_handoff_and_a_rebind_hand_the_ids_back_for_the_resubmit(self):
+        (meta,) = self._upload([("shot.png", "image/png", test_support._png())])[1]["attachments"]
+        self.reply[0] = "TASK: fix what the screenshot shows"
+        st, body = _post(self.base, "/api/continue",
+                         {"session_id": "sess-9", "cap": {"name": "demo-read"},
+                          "message": "yes, fix that", "prev": "Want me to fix it?",
+                          "attachments": [meta["id"]]})
+        self.assertEqual((200, [meta["id"]]), (st, body["handoff"]["attachments"]))
+        local = {"name": "gemma-local", "provider": "openai", "base_url": "http://x/v1",
+                 "model": "gemma"}
+        with mock.patch.object(gateway, "resolve_model",
+                               lambda n, cfg=None: dict(local) if n == "gemma-local" else None):
+            st, body = _post(self.base, "/api/continue",
+                             {"session_id": "sess-9", "cap": {"name": "demo-read"},
+                              "message": "and this?", "model_override": "gemma-local",
+                              "attachments": [meta["id"]]})
+        self.assertEqual((200, [meta["id"]]), (st, body["rebind"]["attachments"]))
+        self.assertEqual([], self.started, "a handoff/rebind must not start a run itself")

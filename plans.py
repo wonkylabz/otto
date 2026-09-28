@@ -18,6 +18,7 @@ import conventions
 import facade
 import gateway
 import local_runtime
+import uploads
 from audit import _audit
 from contracts import _plan_invocation, _setting_sources
 from memory import _resolve_project
@@ -284,7 +285,8 @@ _PLAN_INSTRUCTION = (
     "The reply is the plan. Nothing before the first step and nothing after the risks.")
 
 
-def _codex_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None):
+def _codex_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None,
+                   note=None):
     """The plan preview on the CODEX backend. Returns (out, model, backend) in `_claude`'s shape.
 
     Far less to earn here than on the local path: `-c sandbox_mode="read-only"` is a real,
@@ -302,12 +304,13 @@ def _codex_preview(invocation, resume_session, cwd, effort=None, entry=None, tra
                              model=(ent or {}).get("model"), cwd=cwd,
                              timeout=config.PLAN_TIMEOUT_S, permission_mode="plan",
                              resume_session=resume_session, effort=effort,
-                             transcript=transcript,
+                             transcript=transcript, system_context=note,
                              config_overrides=gateway.codex_config(ent or {}))
     return out, (ent or {}).get("name") or "codex", "codex"
 
 
-def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None):
+def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None,
+                   note=None):
     """The plan preview on the LOCAL backend. Returns (out, model, backend) in `_claude`'s shape,
     so the caller's accounting, audit row and empty-plan fallback are unchanged.
 
@@ -345,7 +348,8 @@ def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, tra
     try:
         out = local_runtime.run_json(invocation, allowed_tools=config.PLAN_TOOLS,
                                      model_entry=entry, timeout=config.PLAN_TIMEOUT_S, resume_session=fork,
-                                     cwd=cwd, effort=effort, transcript=transcript)
+                                     cwd=cwd, effort=effort, transcript=transcript,
+                                     system_context=note)
     finally:
         if fork:
             local_runtime.drop_session(fork)
@@ -487,7 +491,7 @@ def _revision_note(prior_plan, feedback):
 
 
 def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None, effort=None,
-                 prior_plan=None, feedback=None):
+                 prior_plan=None, feedback=None, attachments=None, attachments_missing=0):
     """Pre-approval dry run: a STRICTLY read-only agentic pass that returns a concrete,
     numbered plan of the operations the capability WOULD perform — so the human approves the
     actual operations, not just the capability name (the gate otherwise fires before any
@@ -514,8 +518,12 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
 
     `effort` runs the preview at the same level the execution it previews will run at — the plan a
     human approves must be the plan the run then follows, and a max-effort run planned at the
-    default effort is approving a weaker plan than the one that would be produced."""
+    default effort is approving a weaker plan than the one that would be produced.
+
+    `attachments` are staged copies, noted exactly as `engine.run_attempt` notes them."""
     cwd = cwd or getattr(cap, "cwd", None)
+    note_claude = uploads.note(attachments, "claude", attachments_missing)
+    note_other = uploads.note(attachments, "local", attachments_missing)
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
     invocation = ((request if resume_session else _plan_invocation(cap, request))
                   + _pr_branch_note(pr) + _PLAN_INSTRUCTION
@@ -547,13 +555,13 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
                                permission_mode="plan", resume_session=resume_session,
                                disallowed_tools=config.PLAN_DISALLOWED_TOOLS,
                                setting_sources=_setting_sources(cwd), effort=effort,
-                               transcript=transcript))
+                               transcript=transcript, system_context=note_claude))
 
     if codex_cli.is_codex_session(resume_session) or (
             resume_session is None and entry is not None
             and gateway.backend_of(entry) == "codex"):
         out, model, backend = _codex_preview(invocation, resume_session, cwd, effort=effort,
-                                             entry=entry, transcript=transcript)
+                                             entry=entry, transcript=transcript, note=note_other)
         # Same wall contract as the local branch below: a preview that could not run at all is
         # re-previewed on Claude rather than handing the human an approval card with NO plan.
         # Never for a resume — `claude -p --resume codex-…` is rejected outright, so "falling
@@ -567,7 +575,7 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     if local_runtime.is_local_session(resume_session) or (
             entry is not None and gateway.is_local(entry)):
         out, model, backend = _local_preview(invocation, resume_session, cwd, effort=effort,
-                                             entry=entry, transcript=transcript)
+                                             entry=entry, transcript=transcript, note=note_other)
         # A local WALL re-dispatches to Claude, exactly as `engine.run_attempt` does for an
         # execution attempt (engine.py, `local_wall`). The preview had no such path: a model that
         # cannot drive the tool loop — say a hosted one whose endpoint refuses function tools —

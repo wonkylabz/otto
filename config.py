@@ -874,17 +874,15 @@ CAP_LOCAL_LATCH_TTL_S = float(os.environ.get("OTTO_CAP_LOCAL_LATCH_TTL_S", str(2
 # the run-detail view and live chat progress. Swept opportunistically after this TTL.
 TRANSCRIPT_TTL_H = float(os.environ.get("OTTO_TRANSCRIPT_TTL_H", "168"))
 
-# Web-chat attachments (issue #161). The upload route has its OWN caps and deliberately does
-# not read _MAX_BODY (server.py, 1 MB JSON): a screenshot is a legitimate 5 MB body and the
-# JSON envelope cap must stay where the DoS reasoning that sized it still applies. Per-file
-# and per-request (the whole multipart body, so N files can't each fit and together swamp it),
-# a count cap, and a TTL for the at-rest store — defaulting to the transcript TTL, since an
-# attachment is exactly as forensic as the run that consumed it.
+# Web-chat attachments (#161): the upload route's own caps, never _MAX_BODY (a JSON envelope cap).
 UPLOAD_MAX_FILE_BYTES = int(os.environ.get("OTTO_UPLOAD_MAX_FILE_BYTES", str(10 * 1024 * 1024)))
 UPLOAD_MAX_REQUEST_BYTES = int(os.environ.get("OTTO_UPLOAD_MAX_REQUEST_BYTES",
                                               str(25 * 1024 * 1024)))
 UPLOAD_MAX_COUNT = int(os.environ.get("OTTO_UPLOAD_MAX_COUNT", "5"))
 UPLOAD_TTL_H = float(os.environ.get("OTTO_UPLOAD_TTL_H", str(TRANSCRIPT_TTL_H)))
+# A staged copy older than this outlived every attempt (a killed worker's); keep it above the
+# execution and plan ceilings (`UploadStagingTests`).
+RUN_FILES_TTL_H = float(os.environ.get("OTTO_RUN_FILES_TTL_H", "3"))
 
 # The tier-call ledger (`ledger.py`, issue #130) is telemetry, not the trail: swept after this TTL.
 TIER_LEDGER_TTL_H = float(os.environ.get("OTTO_TIER_LEDGER_TTL_H", "168"))

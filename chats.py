@@ -12,7 +12,8 @@ message COUNT) loaded every message body of every thread, and one appended turn 
 entire file. Now the count is a SQL aggregate and a turn touches one row.
 
 The record shape callers see is unchanged: `{id, title, created, updated, session_id, run_id,
-cap, repo, git_run_id, labels, pinned, stats, messages:[{role, text, ts, pending?}]}`.
+cap, repo, git_run_id, labels, pinned, stats, messages:[{role, text, ts, pending?,
+attachments?}]}` — `attachments` is metadata only, `[{id, name, size, mime}]` (#161).
 """
 import contextlib
 import datetime
@@ -20,6 +21,7 @@ import json
 
 import config
 import storage
+import uploads
 
 _DB = config.DB_PATH
 MAX_CHATS = 100        # keep the most-recent N UNPINNED chats; older ones are dropped
@@ -60,6 +62,7 @@ def _schema(conn):
         pending INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (chat_id, seq)
     )""")
+    storage.ensure_columns(conn, "messages", {"attachments": "TEXT"})
 
 
 @contextlib.contextmanager
@@ -93,13 +96,32 @@ def _message(row):
         m["ts"] = row["ts"]
     if row["pending"]:
         m["pending"] = True
+    atts = _decode(row["attachments"])
+    if atts:
+        m["attachments"] = atts
     return m
 
 
 def _messages(conn, cid):
-    rows = conn.execute(
-        "SELECT role, text, ts, pending FROM messages WHERE chat_id = ? ORDER BY seq", (cid,))
+    rows = conn.execute("SELECT role, text, ts, pending, attachments FROM messages "
+                        "WHERE chat_id = ? ORDER BY seq", (cid,))
     return [_message(r) for r in rows]
+
+
+def _clean_attachments(atts):
+    """The client posts the whole chat back, so keep only {id, name, size, mime} per attachment —
+    never bytes or a path — as JSON, or None when there are none."""
+    out = []
+    for a in atts if isinstance(atts, list) else []:
+        if not isinstance(a, dict) or not uploads.is_valid_id(a.get("id")):
+            continue
+        try:
+            size = max(0, int(a.get("size") or 0))
+        except (TypeError, ValueError):
+            size = 0
+        out.append({"id": a["id"], "name": uploads.safe_name(a.get("name")), "size": size,
+                    "mime": uploads.safe_mime(a.get("mime"))})
+    return json.dumps(out) if out else None
 
 
 def _chat(row, messages):
@@ -217,7 +239,8 @@ def _title(chat, prior, keep_title):
 
 
 def _row_values(messages):
-    return [(m.get("role"), m.get("text"), m.get("ts"), int(bool(m.get("pending"))))
+    return [(m.get("role"), m.get("text"), m.get("ts"), int(bool(m.get("pending"))),
+             _clean_attachments(m.get("attachments")))
             for m in messages]
 
 
@@ -261,7 +284,8 @@ def save(chat):
         _upsert_row(conn, cid, chat)
         conn.execute("DELETE FROM messages WHERE chat_id = ?", (cid,))
         conn.executemany(
-            "INSERT INTO messages (chat_id, seq, role, text, ts, pending) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (chat_id, seq, role, text, ts, pending, attachments) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(cid, i) + v for i, v in enumerate(_row_values(messages))])
         _trim_chats(conn)
     return cid
@@ -292,14 +316,15 @@ def append_messages(cid, messages, *, fill_pending=False, keep=(), **fields):
             held = conn.execute("SELECT seq FROM messages WHERE chat_id = ? AND role = 'otto' "
                                 "AND pending = 1 ORDER BY seq DESC LIMIT 1", (cid,)).fetchone()
             if held:
-                conn.execute("UPDATE messages SET role = ?, text = ?, ts = ?, pending = ? "
-                             "WHERE chat_id = ? AND seq = ?",
+                conn.execute("UPDATE messages SET role = ?, text = ?, ts = ?, pending = ?, "
+                             "attachments = ? WHERE chat_id = ? AND seq = ?",
                              _row_values(messages[:1])[0] + (cid, held["seq"]))
                 pending = messages[1:]
         nxt = conn.execute("SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE chat_id = ?",
                            (cid,)).fetchone()[0]
         conn.executemany(
-            "INSERT INTO messages (chat_id, seq, role, text, ts, pending) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (chat_id, seq, role, text, ts, pending, attachments) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(cid, nxt + i) + v for i, v in enumerate(_row_values(pending))])
         _trim_messages(conn, cid)
         _trim_chats(conn)

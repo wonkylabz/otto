@@ -21,6 +21,7 @@ import mcp_client
 import registry  # noqa: F401 - facade seam: the suite patches engine.registry, not registry
 import storage
 import supervisor
+import uploads
 import workspace
 from ui import say, trace  # noqa: F401 - `say` is a facade seam the suite silences
 # The audit and memory layers live in audit.py / memory.py; this module re-exports them so
@@ -171,7 +172,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 recall=False, project=None, local_disabled=False, local_disabled_reason=None,
                 repo=None, audience=None, approved_plan=None, grounding=None,
                 memory_enabled=True,
-                model_override=None, discussion=False, supervise_enforce=True, effort=None):
+                model_override=None, discussion=False, supervise_enforce=True, effort=None,
+                attachments=None, attachments_missing=0):
     """One execution attempt via `claude -p`. Builds the invocation (folding in the
     previous critique on a retry) and picks the model (escalated on the final attempt).
     Returns the raw result + metadata; verification and auditing are separate steps so the
@@ -185,7 +187,10 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     `effort` is how hard the model thinks (config.EFFORT_LEVELS) — the per-chat pick if there is
     one, else the Admin default. Resolved from the settings store ONLY for callers outside
     Temporal: a workflow always passes the value from its own snapshot, because a store read
-    inside a run could serve a different level to attempt 2 than to attempt 1."""
+    inside a run could serve a different level to attempt 2 than to attempt 1.
+
+    `attachments` are this attempt's STAGED copies (activities._staged); `attachments_missing`
+    counts the ones that could not be staged. Both only shape the system-context note."""
     if not wid:
         wid = _next_wid()
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
@@ -407,6 +412,11 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                           _memory_context(request if (recall and memory_enabled) else None,
                                           cap, project)]))
         verb = f"attempt {attempt}"
+    # Only `claude -p` can open the staged attachments; every other runtime is told it cannot.
+    sysctx_claude = "\n\n".join(filter(None, [
+        sysctx, uploads.note(attachments, "claude", attachments_missing)]))
+    sysctx_other = "\n\n".join(filter(None, [
+        sysctx, uploads.note(attachments, "local", attachments_missing)]))
 
     # Local execution rung (issue #42): a TOOL-FREE read capability with a local model assigned
     # runs its FIRST attempt as a plain OpenAI-compatible completion — nothing to drive, so no
@@ -419,7 +429,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             and cap.risk == "read" and getattr(cap, "tool_free", False)):
         started = time.monotonic()
         try:
-            loc = gateway.local_execute(cap.name, invocation, system_context=sysctx)
+            loc = gateway.local_execute(cap.name, invocation, system_context=sysctx_other)
         except gateway.LocalFallbackDisabled as e:
             return _strict_stop_attempt(wid, attempt, e, started)
         if loc is not None:
@@ -531,7 +541,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         # less than a minute — a wall is usually fast, so in practice this is the full clock.
         fb_timeout = max(60.0, config.EXEC_TIMEOUT_S - (time.monotonic() - started))
         return (_claude(again, allowed_tools=allowed, mcp_config_path=mcp_config_path,
-                        model=model, system_context=sysctx, cwd=cwd,
+                        model=model, system_context=sysctx_claude, cwd=cwd,
                         transcript=transcript_path, timeout=fb_timeout,
                         on_event=sup.note if sup else None, abort=abort, meta=fb_meta,
                         setting_sources=_setting_sources(cwd), effort=effort),
@@ -546,7 +556,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                                      # fell to run_json's bare 900s default and cut every long
                                      # local run 200s short of the activity ceiling.
                                      timeout=config.LOCAL_RUN_TIMEOUT_S,
-                                     resume_session=resume_session, system_context=sysctx,
+                                     resume_session=resume_session, system_context=sysctx_other,
                                      cwd=cwd, transcript=transcript_path,
                                      on_event=sup.note if sup else None, abort=abort,
                                      steer=steer,
@@ -602,7 +612,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         out = codex_cli.run_json(invocation, allowed_tools=allowed,
                                  model=exec_entry.get("model"),
                                  timeout=config.LOCAL_RUN_TIMEOUT_S,
-                                 resume_session=resume_session, system_context=sysctx,
+                                 resume_session=resume_session, system_context=sysctx_other,
                                  cwd=cwd, transcript=transcript_path,
                                  on_event=sup.note if sup else None, abort=abort, steer=steer,
                                  effort=effort,
@@ -621,7 +631,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             out, model, backend, fb_meta = _redispatch(out, codex_wall, out["wall_reason"])
     else:
         out = _claude(invocation, allowed_tools=allowed, mcp_config_path=mcp_config_path,
-                      model=model, resume_session=resume_session, system_context=sysctx, cwd=cwd,
+                      model=model, resume_session=resume_session, system_context=sysctx_claude,
+                      cwd=cwd,
                       transcript=transcript_path, timeout=config.EXEC_TIMEOUT_S,
                       on_event=sup.note if sup else None, abort=abort, steer=steer,
                       meta=fb_meta, setting_sources=_setting_sources(cwd), effort=effort)

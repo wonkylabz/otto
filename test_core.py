@@ -1913,6 +1913,28 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
                       self._line(src, 'api("/api/continue",{session_id'),
                       "the resume call drops the effort pick")
 
+    def test_every_submit_path_carries_the_attachment_ids(self):
+        # #161: the ids ride the first submit, the resume, and BOTH re-submits — which carry the
+        # ids the SERVER handed back, since the composer's chips were cleared on send.
+        src = ui_src()
+        first = self._call(src, 'api("/api/submit",{request:req')
+        self.assertIn("attachments: attIds(atts)", first, "the first submit drops the ids")
+        self.assertIn("attachments: attIds(atts)", self._line(src, 'api("/api/continue",{session_id'),
+                      "the resume call drops the ids")
+        self.assertIn("attachments: attIds(out.rebind.attachments)",
+                      self._call(src, 'api("/api/submit",{request:task'),
+                      "the model-rebind re-submit drops the ids")
+        self.assertIn("attachments: attIds(out.handoff.attachments)", self._handoff_call(src),
+                      "the handoff re-submit drops the ids")
+
+    def test_api_continue_hands_the_ids_back_on_both_resubmit_exits(self):
+        src = self._src("server.py")
+        body = src[src.index("def _post_continue("):src.index("def _post_wf_signal(")]
+        self.assertIn('{"handoff": {"request": task, "attachments": att}}', body)
+        self.assertIn('"attachments": att}}))', body[body.index('{"rebind":'):])
+        self.assertLess(body.index("att = self._attachments(body)"), body.index('{"handoff":'),
+                        "the ids are validated only AFTER the handoff exit, which then drops them")
+
     def test_api_continue_validates_and_forwards_the_effort_pick(self):
         # Same grep-shaped guard as the model override, for the same reason: the Temporal branch
         # of /api/continue can't be driven from a unit test.
@@ -3176,7 +3198,10 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 86931 -> 87191: Slack's write half (`slack_mcp.py`). One rule, and the one an edit
     # actually gets wrong — the server looks like every other Otto module and is the one
     # that must import none of them, because it runs with `OTTO_*` stripped.
-    MAX_RULES_BYTES = 87191   # fetched tier — bounded, but looser; it is not always loaded
+    # 87191 -> 88244 (#161): web-chat attachments. Four rules, each a hole a later edit reopens —
+    # the upload route's own caps, ids never bytes, the store denied at rest with a per-attempt
+    # copy, and every non-Claude runtime told the files are unavailable.
+    MAX_RULES_BYTES = 88244   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

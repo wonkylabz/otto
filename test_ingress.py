@@ -6844,7 +6844,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # resets the page's scroll), every row query is scoped to `.mpool` (the endpoints table shares
     # `.mrow`, and unscoped this moved the whole pool into it), and a mid-drag `refreshMcpHealth`
     # rebuild is held to dragend rather than fired under the drag (`ModelOrderTests`).
-    ASSET_MAX = 125275
+    # -> 125670 for the four chat-attachment settings (#161): every `_SETTING_SPECS` key needs a
+    # label and a group in admin.js (`RuntimeSettingsUiCoverageTests`), or it renders as a raw key.
+    ASSET_MAX = 125670
 
     def _assets(self):
         out = {}
@@ -7683,3 +7685,64 @@ class SlackTriggerTests(unittest.TestCase):
         """Rules re-normalize on every poll; a random id re-fired every incident each poll."""
         storage.write_json(self.st._RULES, [{"channels": ["C1"], "bots": ["b"], "template": "x"}])
         self.assertEqual(self.st.load_rules()[0]["id"], self.st.load_rules()[0]["id"])
+
+
+class AttachmentUiTests(unittest.TestCase):
+    """The composer half of #161, read through `ui_src()`: a file attaches by button, drop or
+    image paste, uploads the moment it is attached (one request apiece, through the multipart
+    sibling of `postJSON`), shows as a removable chip, and a sent message keeps a thumbnail or a
+    link rendered from metadata alone."""
+
+    def setUp(self):
+        self.src = ui_src()
+
+    def _fn(self, name):
+        i = self.src.index(f"function {name}(")
+        return self.src[i:self.src.index("\n}", i) + 2]
+
+    def test_the_upload_helper_follows_the_post_contract(self):
+        body = self._fn("uploadFiles")
+        self.assertIn("new FormData()", body)
+        self.assertIn('fetch("/api/uploads", {method:"POST", body: form})', body)
+        self.assertIn("!res.ok || data.error", body, "a 413/400 would read as a success")
+        self.assertIn("throw err", body)
+
+    def test_every_way_in_reaches_the_one_attach_path(self):
+        self.assertIn('id="attach"', self.src)
+        self.assertIn('<input type="file" id="attfile" multiple hidden>', self.src)
+        self.assertIn('getElementById("attach").addEventListener("click",()=>attFile.click())',
+                      self.src)
+        self.assertIn('attFile.addEventListener("change"', self.src)
+        self.assertIn('composerEl.addEventListener("drop"', self.src)
+        paste = self.src[self.src.index('input.addEventListener("paste"'):]
+        self.assertIn("/^image\\//.test(f.type)", paste[:600], "paste must take images only")
+        self.assertIn("attachFiles(", paste[:600])
+
+    def test_a_refusal_is_toasted_and_one_bad_file_does_not_sink_the_rest(self):
+        body = self._fn("attachFiles")
+        self.assertIn("await uploadFiles([f])", body, "files must upload one request apiece")
+        self.assertIn("catch(e){ toast(", body)
+        self.assertIn("f.size>lim.file", body)
+
+    def test_chips_show_name_and_size_with_a_remove_control(self):
+        body = self._fn("renderAttChips")
+        for bit in ("esc(a.name)", "fmtBytes(", 'class="attx"'):
+            self.assertIn(bit, body)
+        self.assertIn('attChips.addEventListener("click"', self.src)
+
+    def test_the_chips_clear_on_send_and_come_back_on_a_refused_send(self):
+        for fn in ("submitTemporal", "continueTemporal"):
+            i = self.src.index(f"async function {fn}(")
+            body = self.src[i:self.src.index("\n}", i)]
+            self.assertIn("const atts=takeAtts();", body, f"{fn} leaves the chips on screen")
+            self.assertIn("restoreAtts(atts)", body, f"{fn} loses the files on a refused send")
+
+    def test_history_renders_a_thumbnail_or_a_link_from_metadata_only(self):
+        body = self._fn("attHTML")
+        self.assertIn('"/api/uploads/"+encodeURIComponent(a.id)', body)
+        self.assertIn('<img class="attthumb" src="${u}"', body)
+        self.assertIn('class="attfile" href="${u}" download=', body)
+        self.assertIn("userMsg(m.text, m.ts, m.attachments)", self.src,
+                      "a reopened chat drops the attachments it showed")
+        self.assertIn("msg.attachments=atts.map(a=>({id:a.id, name:a.name, size:a.size, "
+                      "mime:a.mime}))", self.src, "the saved chat must carry metadata only")

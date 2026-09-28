@@ -149,6 +149,10 @@ const SETTING_HELP={
   cap_local_latch_fails:["Local-model latch — consecutive fails","Judged failures on the same capability+model before that capability stops being tried on that local model in later runs."],
   cap_local_latch_ttl_s:["Local-model latch — expiry (seconds)","How long the latch holds before that capability gets one probationary run on the model again."],
   effort:["Effort level","How hard the model thinks before answering. Applies to execution attempts and the approval-gate plan preview — not to the cheap judge/routing calls, where there are ~10 per run and a text verdict gains nothing. Higher reasons longer and costs more; default lets each backend decide. A chat can override it in the composer. Advisory on local models: an endpoint that doesn't implement reasoning effort accepts the value and ignores it."],
+  upload_max_file_bytes:["Attachment size limit — bytes","Largest single file the chat accepts; a bigger one is refused."],
+  upload_max_request_bytes:["Upload request limit — bytes","Largest upload request, all of its files together."],
+  upload_max_count:["Attachments per message","Most files one message may carry."],
+  upload_ttl_h:["Attachment retention — hours","Uploads older than this are deleted; the chat keeps only their names."],
 };
 
 /* Runtime settings in deliberate groups: twenty rows in store order is a wall you scan linearly
@@ -166,6 +170,8 @@ const SETTING_GROUPS=[
                             "max_qa_rounds","max_review_rounds"]],
   ["Local-model latch",    ["cap_local_latch_fails","cap_local_latch_ttl_s"]],
   ["Memory GC",            ["memory_gc_batch_size","memory_gc_max_verify"]],
+  ["Chat attachments",     ["upload_max_file_bytes","upload_max_request_bytes","upload_max_count",
+                            "upload_ttl_h"]],
 ];
 
 /* ---------------------------------------------------------------------------------------------
