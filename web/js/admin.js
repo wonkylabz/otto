@@ -149,6 +149,8 @@ const SETTING_HELP={
   cap_local_latch_fails:["Local-model latch — consecutive fails","Judged failures on the same capability+model before that capability stops being tried on that local model in later runs."],
   cap_local_latch_ttl_s:["Local-model latch — expiry (seconds)","How long the latch holds before that capability gets one probationary run on the model again."],
   effort:["Effort level","How hard the model thinks before answering. Applies to execution attempts and the approval-gate plan preview — not to the cheap judge/routing calls, where there are ~10 per run and a text verdict gains nothing. Higher reasons longer and costs more; default lets each backend decide. A chat can override it in the composer. Advisory on local models: an endpoint that doesn't implement reasoning effort accepts the value and ignores it."],
+  attachment_max_mb:["Attachment max MB","Largest file a chat accepts."],
+  attachment_max_count:["Attachments per message","Files per chat message."],
 };
 
 /* Runtime settings in deliberate groups: twenty rows in store order is a wall you scan linearly
@@ -156,7 +158,7 @@ const SETTING_HELP={
    hardcoded list must never be able to silently drop a setting the server grew. */
 const SETTING_GROUPS=[
   ["Routing",              ["route_confirmations"]],
-  ["Execution & fallback", ["effort","local_fallback","plan_mode","max_attempts","max_harness_retries"]],
+  ["Execution & fallback", ["effort","local_fallback","plan_mode","max_attempts","max_harness_retries","attachment_max_mb","attachment_max_count"]],
   ["Approval gate",        ["gate_timeout_h","max_plan_revisions","plan_comment"]],
   ["Swarm board",          ["board_retention_h"]],
   ["Supervisor",           ["supervise","supervise_mode","max_supervisor_kills",

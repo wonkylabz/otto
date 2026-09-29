@@ -34,6 +34,8 @@ data/logs
 # Isolated repo clones (workspace.py). Each is a full checkout WITH its own .git, so an
 # in-flight repo-mode run otherwise surfaces as an untracked embedded repo in `git status`.
 data/workspaces
+# Chat attachments (attachments.py, #161) — user files, swept on a TTL.
+data/uploads
 # Managed clones of repos registered by URL (repos.py) — same reason as above: each carries its
 # own .git, and this one is long-lived rather than per-run.
 data/repos

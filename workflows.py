@@ -174,6 +174,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # Effort level for this run (composer pick > Admin default). Bound for real from the
         # snapshot in _run_impl; initialized here so nothing can reach it before that.
         self._effort = config.SETTINGS_FALLBACK["effort"]
+        # Chat attachments (#161), resolved to trusted metas by the server; [] for every ingress
+        # but the web chat. Bound in _bind_composer.
+        self._attachments = []
+        self._prior_attachments = []
         # Per-stage wall-clock timing {label: {"start": epoch_ms, "dur": epoch_ms|None}}, keyed on
         # the pipe labels the UI renders (DECOMPOSE/ROUTER/CLARIFY/PLAN/GATE/RUN). Surfaced via
         # status() so a
@@ -203,6 +207,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         self._memory_enabled = params.get("memory_enabled", True)
         self._model_override = params.get("model_override")
         self._effort = config.resolve_effort(params.get("effort"), self._setting("effort"))
+        self._attachments = params.get("attachments") or []
+        self._prior_attachments = params.get("prior_attachments") or []
 
     async def _gate_wait(self, cond):
         """Wait at the approval gate for `cond`, bounded by the `gate_timeout_h` setting.
@@ -448,6 +454,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                              # The preview's cwd is the DEFAULT branch; this tells it where the
                              # code actually is and to read it with `gh pr diff`.
                              "pr": self._pr_target, "effort": self._effort,
+                             "attachments": self._attachments,
+                             "prior_attachments": self._prior_attachments,
                              "prior_plan": revise_base, "feedback": revise_feedback},
                             # Must stay above the preview's OWN timeout, and above a local
                             # wall's Claude re-preview after it, or the activity kills the pass
@@ -731,7 +739,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
             if not subtask and not _is_brainstorm(cap) and (not unattended or params.get("clarify")):
                 self._enter("CLARIFY")
                 clar = await workflow.execute_activity(
-                    clarify_request, {"request": request, "name": cap["name"]},
+                    clarify_request, {"request": request, "name": cap["name"],
+                                      "attachments": self._attachments},
                     start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
                 if clar.get("question"):
                     self._question = clar["question"]
@@ -984,7 +993,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                                  # never happen.
                                  # Effort rides a resume too: it is a per-TURN flag, not a
                                  # session binding the way the model is.
-                                 "risk": cap["risk"], "effort": self._effort},
+                                 "risk": cap["risk"], "effort": self._effort,
+                                 "attachments": self._attachments,
+                                 "prior_attachments": self._prior_attachments},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
             result = out["result"]
@@ -1319,6 +1330,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                  "approved_plan": None, "grounding": self._grounding,
                  "memory_enabled": self._memory_enabled,
                  "model_override": self._model_override, "effort": self._effort,
+                 "attachments": self._attachments,
                  "supervise_enforce": False},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
@@ -1469,7 +1481,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                      "grounding": self._grounding,
                      # Per-chat composer overrides (memory checkbox + model picker).
                      "memory_enabled": self._memory_enabled, "model_override": self._model_override,
-                     "effort": self._effort,
+                     "effort": self._effort, "attachments": self._attachments,
                      # Arm the supervisor's kill switch only while a rung remains for its
                      # critique to steer and the run has kills left to spend (ladder.plan_attempt).
                      "supervise_enforce": nxt.supervise_enforce},
@@ -1547,7 +1559,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                      "tools_failed": out.get("tools_failed"),
                      # Mid-run supervisor corrections this attempt was given: the request the
                      # judge scores against is the AMENDED one. Mirrors engine._ladder_core.
-                     "steers": out.get("steers")},
+                     "steers": out.get("steers"), "attachments": self._attachments},
                     start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],

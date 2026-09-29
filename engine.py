@@ -10,6 +10,7 @@ import re
 import time
 import uuid
 
+import attachments as attachments_mod
 import claude_cli
 import codex_cli
 import config
@@ -171,7 +172,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 recall=False, project=None, local_disabled=False, local_disabled_reason=None,
                 repo=None, audience=None, approved_plan=None, grounding=None,
                 memory_enabled=True,
-                model_override=None, discussion=False, supervise_enforce=True, effort=None):
+                model_override=None, discussion=False, supervise_enforce=True, effort=None,
+                attachments=None):
     """One execution attempt via `claude -p`. Builds the invocation (folding in the
     previous critique on a retry) and picks the model (escalated on the final attempt).
     Returns the raw result + metadata; verification and auditing are separate steps so the
@@ -372,7 +374,9 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             # The session's ORIGINAL system prompt carried these, but only if turn 1 was an
             # Otto run — and a follow-up can reach for a server the first turn never touched.
             _mcp_notes_note(cap),
-            _discussion_note(discussion)]))
+            _discussion_note(discussion),
+            # A follow-up's own attachments: the session never saw them (#161).
+            attachments_mod.note(attachments)]))
     else:
         # NEITHER subprocess backend has Claude Code around it to resolve `/skill` or a
         # subagent, so a skill/agent cap's own markdown is inlined into the invocation instead.
@@ -403,7 +407,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                           _grounding_note(grounding), _write_gate_note(cap),
                           _mcp_notes_note(cap),
                           _repo_scope_note(repo, cwd), _repo_source_note(repo, cwd),
-                          _pr_body_note(repo, cwd),
+                          _pr_body_note(repo, cwd), attachments_mod.note(attachments),
                           _memory_context(request if (recall and memory_enabled) else None,
                                           cap, project)]))
         verb = f"attempt {attempt}"
@@ -415,7 +419,9 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # strongest Claude), and a write-risk or non-tool-free cap never reaches this branch. A local
     # failure/unavailability returns None and this same attempt runs on Claude instead.
     fb_meta = fb_forced   # set when the CHOSEN local model couldn't run and Claude substitutes
+    # Never with attachments: a tool-free completion has no Read to open them with.
     if (not resume_session and attempt == 1 and not escalate and not downshift
+            and not attachments
             and cap.risk == "read" and getattr(cap, "tool_free", False)):
         started = time.monotonic()
         try:

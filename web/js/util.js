@@ -88,10 +88,20 @@ function growArea(el, maxPx){
    sites already ignored. `data.error` is a failure even under 200: two routes answer that way
    (`/api/board/full`, `/api/wf/terminate`) and the client must not have to know which. */
 async function postJSON(path, body){
+  return _post(path, {"Content-Type":"application/json"}, JSON.stringify(body===undefined ? {} : body));
+}
+
+/* One file as the RAW body (`/api/attachments`), its name URI-encoded in a header. Same refusal
+   contract as postJSON — it is the same helper underneath. */
+async function postFile(path, file, name){
+  return _post(path, {"Content-Type": file.type || "application/octet-stream",
+                      "X-Filename": encodeURIComponent(name || file.name || "file")}, file);
+}
+
+async function _post(path, headers, body){
   let res, data;
   try {
-    res = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"},
-                             body: JSON.stringify(body===undefined ? {} : body)});
+    res = await fetch(path, {method:"POST", headers, body});
   } catch(e){ throw new Error("could not reach Otto — is the server still running?"); }
   try { data = await res.json(); } catch(e){ data = {}; }
   if(!res.ok || data.error){
