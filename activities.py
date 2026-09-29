@@ -16,9 +16,11 @@ import time
 
 from temporalio import activity
 
+import attachments
 import config
 import storage
 import engine
+import file_safety
 import mcp_client
 import policy
 import registry
@@ -249,7 +251,8 @@ def resolve_pinned_cap(payload: dict) -> dict:
 @activity.defn
 def clarify_request(payload: dict) -> dict:
     cap = _cap(payload["name"])
-    return {"question": engine.clarify(payload["request"], cap) if cap else None}
+    return {"question": engine.clarify(payload["request"], cap,
+                                       attachments=payload.get("attachments")) if cap else None}
 
 
 @activity.defn
@@ -286,25 +289,28 @@ def plan_capability(payload: dict) -> dict:
     if not cwd and payload.get("repo"):
         r = workspace.resolve(payload["repo"])
         cwd = r["path"] if r else None
-    preview = engine.plan_preview(payload["request"], cap, cwd=cwd,
-                                  resume_session=payload.get("resume"),
-                                  wid=payload.get("wid"),
-                                  # The open PR this request works on, resolved before the gate:
-                                  # the preview's cwd is the DEFAULT branch, so without this the
-                                  # planner reasons about a tree missing the code (web-a6122d6c).
-                                  pr=payload.get("pr"),
-                                  # Same level the execution will run at, so the human approves
-                                  # the plan the run actually follows.
-                                  effort=payload.get("effort"),
-                                  # A "request changes" round EDITS the plan it is given rather
-                                  # than re-planning from the ticket; without the base, every
-                                  # round re-rolled the decisions the last one got right.
-                                  # The base is the PLANNER's own text: `strip_summary` takes
-                                  # Otto's prepended outline back off, or the reviser reads
-                                  # Otto's bullets as its own work and the next summary stacks
-                                  # a second heading on the first.
-                                  prior_plan=engine.strip_summary(payload.get("prior_plan")),
-                                  feedback=payload.get("feedback"))
+    atts = payload.get("attachments") or []
+    with file_safety.upload_grant(attachments.granted_dirs(atts)):
+        preview = engine.plan_preview(payload["request"], cap, cwd=cwd,
+                                      resume_session=payload.get("resume"),
+                                      wid=payload.get("wid"),
+                                      # The open PR this request works on, resolved before the gate:
+                                      # the preview's cwd is the DEFAULT branch, so without this the
+                                      # planner reasons about a tree missing the code (web-a6122d6c).
+                                      pr=payload.get("pr"),
+                                      # Same level the execution will run at, so the human approves
+                                      # the plan the run actually follows.
+                                      effort=payload.get("effort"),
+                                      # A "request changes" round EDITS the plan it is given rather
+                                      # than re-planning from the ticket; without the base, every
+                                      # round re-rolled the decisions the last one got right.
+                                      # The base is the PLANNER's own text: `strip_summary` takes
+                                      # Otto's prepended outline back off, or the reviser reads
+                                      # Otto's bullets as its own work and the next summary stacks
+                                      # a second heading on the first.
+                                      prior_plan=engine.strip_summary(payload.get("prior_plan")),
+                                      feedback=payload.get("feedback"),
+                                      attachments=atts)
     plan = preview["plan"]
     # Critique the PLAN, summarise it second: the critic must read the planner's own steps, not
     # a digest of them, and a summary is not a thing to find concerns in.
@@ -517,29 +523,32 @@ def run_capability(payload: dict) -> dict:
     mcp_tools, mcp_path = _mcp()
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
     _warm_conventions(project)
-    att = engine.run_attempt(
-        payload["request"], cap,
-        attempt=payload.get("attempt", 1), critique=payload.get("critique"),
-        escalate=payload.get("escalate", False), downshift=payload.get("downshift", False),
-        extra_tools=mcp_tools,
-        mcp_config_path=mcp_path, resume_session=payload.get("resume"), wid=payload.get("wid"),
-        cwd=payload.get("cwd"), recall=payload.get("recall", False), project=project,
-        local_disabled=payload.get("local_disabled", False),
-        local_disabled_reason=payload.get("local_disabled_reason"), repo=payload.get("repo"),
-        audience=payload.get("audience"),
-        # The plan a human approved at the gate (workflows._plan). Absent for unattended
-        # auto-approve, reads and resumes — engine treats None as "no plan was agreed".
-        approved_plan=payload.get("approved_plan"),
-        # Where the checked-out tree contradicts the request (workspace.grounding). Advisory —
-        # it steers what the attempt REPORTS, it never blocks the run.
-        grounding=payload.get("grounding"),
-        # Per-chat overrides (Otto chat composer): default on/none, so an older caller that
-        # never sends these keys behaves exactly as before.
-        memory_enabled=payload.get("memory_enabled", True),
-        model_override=payload.get("model_override"),
-        effort=payload.get("effort"),
-        discussion=discussion,
-        supervise_enforce=payload.get("supervise_enforce", True))
+    atts = payload.get("attachments") or []
+    with file_safety.upload_grant(attachments.granted_dirs(atts)):
+        att = engine.run_attempt(
+            payload["request"], cap,
+            attempt=payload.get("attempt", 1), critique=payload.get("critique"),
+            escalate=payload.get("escalate", False), downshift=payload.get("downshift", False),
+            extra_tools=mcp_tools,
+            mcp_config_path=mcp_path, resume_session=payload.get("resume"), wid=payload.get("wid"),
+            cwd=payload.get("cwd"), recall=payload.get("recall", False), project=project,
+            local_disabled=payload.get("local_disabled", False),
+            local_disabled_reason=payload.get("local_disabled_reason"), repo=payload.get("repo"),
+            audience=payload.get("audience"),
+            # The plan a human approved at the gate (workflows._plan). Absent for unattended
+            # auto-approve, reads and resumes — engine treats None as "no plan was agreed".
+            approved_plan=payload.get("approved_plan"),
+            # Where the checked-out tree contradicts the request (workspace.grounding). Advisory —
+            # it steers what the attempt REPORTS, it never blocks the run.
+            grounding=payload.get("grounding"),
+            # Per-chat overrides (Otto chat composer): default on/none, so an older caller that
+            # never sends these keys behaves exactly as before.
+            memory_enabled=payload.get("memory_enabled", True),
+            model_override=payload.get("model_override"),
+            effort=payload.get("effort"),
+            discussion=discussion,
+            supervise_enforce=payload.get("supervise_enforce", True),
+            attachments=atts)
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "session_id": att.get("session_id"), "attempt": att["attempt"],
@@ -613,7 +622,8 @@ def verify_capability(payload: dict) -> dict:
                          grounding=payload.get("grounding"),
                          tools_used=payload.get("tools_used"),
                          tools_failed=payload.get("tools_failed"),
-                         steers=payload.get("steers"))
+                         steers=payload.get("steers"),
+                         attachments=payload.get("attachments"))
 
 
 # The two post-PR loops are one parameterised body in `wf_postpr._LOOPS`; this is the same seam,

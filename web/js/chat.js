@@ -142,10 +142,10 @@ async function stopRun(){
 /* ---- chat history (persisted server-side; reopen + continue past chats) ---- */
 let activeChat=null, recording=true, chatSaveTimer=null;
 function newChatId(){ return (self.crypto&&crypto.randomUUID)?crypto.randomUUID():("c"+Date.now()+Math.random().toString(16).slice(2)); }
-function recordMsg(role, text, ts){
+function recordMsg(role, text, ts, atts){
   if(!recording || text==null) return;
   if(!activeChat) activeChat={id:newChatId(), title:"New chat", messages:[], session_id:null, cap:null};
-  activeChat.messages.push({role, text:String(text), ts:ts||new Date().toISOString()});
+  activeChat.messages.push({role, text:String(text), ts:ts||new Date().toISOString(), ...(atts&&atts.length?{attachments:atts}:{})});
   if(role==="user" && activeChat.messages.filter(m=>m.role==="user").length===1)
     activeChat.title=String(text).slice(0,80);
   clearTimeout(chatSaveTimer); chatSaveTimer=setTimeout(persistChat, 600);
@@ -543,7 +543,7 @@ async function openChat(id){
   activateTab("chat");
   recording=false;
   stream.innerHTML=""; buildPipe();
-  (chat.messages||[]).forEach(m=>{ m.role==="user" ? userMsg(m.text, m.ts) : showResult(enoMsg(), m.text, null, m.ts); });
+  (chat.messages||[]).forEach(m=>{ m.role==="user" ? userMsg(m.text, m.ts, m.attachments) : showResult(enoMsg(), m.text, null, m.ts); });
   collapseHistory(chat.messages||[]);
   recording=true;
   activeChat={id:chat.id, title:chat.title, messages:(chat.messages||[]).slice(), session_id:chat.session_id||null, cap:chat.cap||null, run_id:chat.run_id||null, repo:chat.repo||null, git_run_id:chat.git_run_id||null, git_branch:chat.git_branch||null, stats:chat.stats||null};
@@ -619,9 +619,10 @@ function stampHTML(ts){
 /* Stamp an Otto bubble's outer .msg (the "I'll use X" router note has no recorded ts of its own,
    so it's the one bubble that otherwise renders stampless — live time is right here). */
 function stampMsg(content, ts){ const m=content&&content.closest(".msg"); if(m&&!m.querySelector(":scope > .stamp")) m.insertAdjacentHTML("beforeend", stampHTML(ts||new Date().toISOString())); }
-function userMsg(text, ts){ ts=ts||(recording?new Date().toISOString():null);
+function userMsg(text, ts, atts){ ts=ts||(recording?new Date().toISOString():null);
   const m=document.createElement("div"); m.className="msg user"; m.innerHTML=`<div class="body"></div>`; m.querySelector(".body").textContent=text;
-  m.insertAdjacentHTML("beforeend", stampHTML(ts)); stream.appendChild(m); scroll(); recordMsg("user", text, ts); }
+  m.querySelector(".body").insertAdjacentHTML("beforeend", attsHTML(atts));
+  m.insertAdjacentHTML("beforeend", stampHTML(ts)); stream.appendChild(m); scroll(); recordMsg("user", text, ts, atts); }
 function enoMsg(){ const m=document.createElement("div"); m.className="msg eno";
   m.innerHTML=`<div class="row"><div class="avatar"><svg aria-hidden="true"><use href="#mk"/></svg></div><div class="body"><div class="who">Otto</div><div class="content"></div></div></div>`;
   stream.appendChild(m); scroll(); return m.querySelector(".content"); }
@@ -1001,9 +1002,11 @@ async function submit(text){
   // The submit paths set `busy` synchronously at their top, but refreshHealth() awaits a
   // fetch BEFORE dispatch — without this guard a second Enter in that window double-submits.
   if(busy || dispatching) return;
+  const atts=takeAttachments(); if(atts===null) return;
+  if(!(text||"").trim() && atts.length) text="See the attached file"+(atts.length>1?"s":"")+".";
   dispatching=true;
   try { await refreshHealth(); } finally { dispatching=false; }
-  if(currentSession) return continueTemporal(text);
+  if(currentSession) return continueTemporal(text, atts);
   // A follow-up on a reopened, non-resumable thread (no bound session) runs fresh but carries a
   // compact transcript so context isn't silently lost. The submit path surfaces a visible note.
   const carry=carryContextForSubmit();
@@ -1017,14 +1020,14 @@ async function submit(text){
     if(bs){ pin=bs; pinReq=text; }
   }
   // Temporal is required (issue #278) — without it /api/submit 503s and the error renders here.
-  return submitTemporal(text, pin, pinReq, selectedRepo(), selectedQA(), selectedMemory(), selectedModelOverride(), carry, selectedEffort());
+  return submitTemporal(text, pin, pinReq, selectedRepo(), selectedQA(), selectedMemory(), selectedModelOverride(), carry, selectedEffort(), atts);
 }
 
-async function continueTemporal(text){
+async function continueTemporal(text, atts){
   if(busy) return; text=(text||"").trim(); if(!text) return;
-  const sess=currentSession;
+  const sess=currentSession, attIds=(atts||[]).map(a=>a.id);
   busy=true; sendBtn.disabled=true; input.value=""; autosize();
-  userMsg(text); buildPipe();
+  userMsg(text, null, atts); buildPipe();
   setNode("INGRESS","done","continuation");
   setNode("DECOMPOSE","done","—");                     // resume reuses the bound cap — no planning
   setNode("ROUTER","done","continuing: "+sess.cap.name); addPick(sess.cap);
@@ -1037,7 +1040,7 @@ async function continueTemporal(text){
   const prevMsg=[...msgs].reverse().find(m=>m.role!=="user");
 
   let out;
-  try { out=await api("/api/continue",{session_id:sess.id, cap:sess.cap, message:text, prev: prevMsg?String(prevMsg.text).slice(-4000):undefined, repo:sess.repo||undefined, git_run_id:sess.git_run_id||undefined, git_branch:sess.git_branch||undefined, model_override: selectedModelOverride()||undefined, effort: selectedEffort()||undefined, auto_approve: selectedAutoApprove()||undefined}); }
+  try { out=await api("/api/continue",{session_id:sess.id, cap:sess.cap, message:text, prev: prevMsg?String(prevMsg.text).slice(-4000):undefined, repo:sess.repo||undefined, git_run_id:sess.git_run_id||undefined, git_branch:sess.git_branch||undefined, model_override: selectedModelOverride()||undefined, effort: selectedEffort()||undefined, auto_approve: selectedAutoApprove()||undefined, attachments: attIds}); }
   catch(e){ clearThinking(content); content.innerHTML=`<p class="err">Couldn't continue the session (${esc(e.message)}).</p>`; return finishTurn(); }
 
   if(out && out.rebind){
@@ -1056,7 +1059,7 @@ async function continueTemporal(text){
                                         memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: out.rebind.model,
-                                        effort: selectedEffort()||undefined})).id; }
+                                        effort: selectedEffort()||undefined, attachments: attIds})).id; }
     catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the run on ${esc(out.rebind.model)} (${esc(e.message)}).</p>`; return finishTurn(); }
     recordMsg("otto", "↪ Switched to "+out.rebind.model+" — that model runs on a different backend, so this starts a fresh run (the earlier conversation is carried as context).");
     setRun(rid);
@@ -1084,7 +1087,7 @@ async function continueTemporal(text){
                                         memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,
                                         model_override: selectedModelOverride()||undefined,
-                                        effort: selectedEffort()||undefined})).id; }
+                                        effort: selectedEffort()||undefined, attachments: attIds})).id; }
     catch(e){ setNode("ROUTER","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start the handed-off task (${esc(e.message)}).</p>`; return finishTurn(); }
     recordMsg("otto", "↪ Handed off as a fresh task (the earlier conversation is carried as context): "+task);
     setRun(hid);
@@ -1098,10 +1101,10 @@ async function continueTemporal(text){
   maybeSuggestRule(text, sess.cap);   // implicit: a follow-up that reads as a correction → offer to save it
 }
 
-async function submitTemporal(text, pinCap, pinReq, repo, qa, memory, modelOverride, carry, effort){
+async function submitTemporal(text, pinCap, pinReq, repo, qa, memory, modelOverride, carry, effort, atts){
   if(busy) return; text=(text||"").trim(); if(!text) return;
   busy=true; sendBtn.disabled=true; input.value=""; autosize(); hideSlash();
-  userMsg(text);
+  userMsg(text, null, atts);
   if(carry) sysNote("No live session — starting a fresh run with the earlier context carried in.");
   buildPipe();
   setNode("INGRESS","active","received your request");
@@ -1114,7 +1117,7 @@ async function submitTemporal(text, pinCap, pinReq, repo, qa, memory, modelOverr
 
   let id;
   const req = (pinCap ? (pinReq||"") : text) + (carry||"");   // pinned: request is the args after /cap; carry appends prior context
-  try { id=(await api("/api/submit",{request:req, cap: pinCap?pinCap.name:undefined, repo: repo||undefined, qa: qa||undefined, memory_enabled: memory, model_override: modelOverride||undefined, effort: effort||undefined, auto_approve: selectedAutoApprove()||undefined})).id; }
+  try { id=(await api("/api/submit",{request:req, cap: pinCap?pinCap.name:undefined, repo: repo||undefined, qa: qa||undefined, memory_enabled: memory, model_override: modelOverride||undefined, effort: effort||undefined, auto_approve: selectedAutoApprove()||undefined, attachments: (atts||[]).map(a=>a.id)})).id; }
   catch(e){ setNode(pinCap?"ROUTER":"DECOMPOSE","failed","failed"); clearThinking(content); content.innerHTML=`<p class="err">Couldn't start workflow (${esc(e.message)}).</p>`; return finishTurn(); }
 
   setRun(id);

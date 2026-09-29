@@ -2323,7 +2323,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
                     "session_id": "s", "model": "m", "attempt": attempt}
 
         orig_clarify, orig_run = engine.clarify, engine.run_attempt
-        engine.clarify = lambda req, c: "Which environment?"
+        engine.clarify = lambda req, c, **k: "Which environment?"
         engine.run_attempt = fake_run_attempt
         try:
             async with await _time_skipping_env() as env:
@@ -2679,7 +2679,7 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         # exercises), so the clarify seam has to be stubbed or it reaches a real model call and
         # the workflow parks forever waiting for an answer.
         orig_clarify = engine.clarify
-        engine.clarify = lambda request, cap: None
+        engine.clarify = lambda request, cap, **k: None
         delivery.notify = lambda title, *, lines=None, detail=None, click=None, tags=None, \
             priority="high", kind=None, wid=None, actions=None: (
             pushes.append({"title": title, "kind": kind}) or True)
@@ -3165,7 +3165,7 @@ class WorkflowSignalTests(unittest.IsolatedAsyncioTestCase):
         self.skips = []
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: []   # single cohesive task -> no fan-out
-        engine.clarify = lambda request, c: "Which environment?"
+        engine.clarify = lambda request, c, **k: "Which environment?"
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit a file", "cost": 0, "tokens": None}   # pre-approval preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
         engine.summarize_plan = lambda plan, *a, **k: plan
@@ -3633,7 +3633,7 @@ class PreAuthorizedGateTests(unittest.IsolatedAsyncioTestCase):
         self.previews = []
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: []
-        engine.clarify = lambda request, c: None
+        engine.clarify = lambda request, c, **k: None
         engine.request_write_intent = lambda request, c: True
         engine.candidate_repo = lambda request, names: None
         engine.critique_plan = lambda *a, **k: {"concerns": []}
@@ -3735,7 +3735,7 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
         self.intent = {"write": True}                    # the request classifier verdict
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: []      # single cohesive task -> no fan-out
-        engine.clarify = lambda request, c: None         # no clarification needed
+        engine.clarify = lambda request, c, **k: None         # no clarification needed
         engine.request_write_intent = lambda request, c: self.intent["write"]
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. create the ticket", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
@@ -3910,7 +3910,7 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
 
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: []
-        engine.clarify = lambda request, c: None
+        engine.clarify = lambda request, c, **k: None
         engine.plan_preview = fake_preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
         engine.summarize_plan = lambda plan, *a, **k: plan
@@ -4552,7 +4552,7 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [cap]
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: []
-        engine.clarify = lambda request, c: None          # no clarification -> straight to the gate
+        engine.clarify = lambda request, c, **k: None          # no clarification -> straight to the gate
         engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}   # pre-approval preview
@@ -5102,7 +5102,7 @@ class WorkflowInteractiveRepoDetectTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [cap]
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: []
-        engine.clarify = lambda request, c: None
+        engine.clarify = lambda request, c, **k: None
         engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}
@@ -5199,7 +5199,7 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [worker_cap, qa_cap]
         engine.plan = lambda request, caps, project_root=None: worker_cap
         engine.decompose = lambda request, caps, project_root=None: []
-        engine.clarify = lambda request, c: None
+        engine.clarify = lambda request, c, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}   # pre-approval preview
         engine.critique_plan = lambda *a, **k: {"concerns": []}
         engine.summarize_plan = lambda plan, *a, **k: plan
@@ -5329,7 +5329,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [worker_cap, review_cap]
         engine.plan = lambda request, caps, project_root=None: worker_cap
         engine.decompose = lambda request, caps, project_root=None: []
-        engine.clarify = lambda request, c: None
+        engine.clarify = lambda request, c, **k: None
         engine.plan_preview = lambda request, c, cwd=None, resume_session=None, wid=None, **kw: {"plan": "1. edit the code", "cost": 0, "tokens": None}
         engine.critique_plan = lambda *a, **k: {"concerns": []}
         engine.summarize_plan = lambda plan, *a, **k: plan
@@ -5626,7 +5626,7 @@ class WorkflowInPlaceGuardTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [cap]
         engine.plan = lambda request, caps, project_root=None: cap
         engine.decompose = lambda request, caps, project_root=None: []
-        engine.clarify = lambda request, c: None
+        engine.clarify = lambda request, c, **k: None
         engine.request_write_intent = lambda request, c: False    # a genuine read -> no gate
         engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {"passed": True, "critique": ""}
         engine.record_attempt = lambda *a, **k: None

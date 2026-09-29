@@ -6,6 +6,7 @@ its parsers, the QA / code-review request builders and judges, the approved-plan
 judge receives, and the resume/error result guards.
 """
 
+import attachments as attachments_mod
 import config
 import conventions
 import facade
@@ -373,7 +374,7 @@ def _grant_list(cap, tools_used=None):
 
 def verify(request, cap, result, project=None, local=False, unattended=False, audience=None,
            approved_plan=None, tools_used=None, tools_failed=None, grounding=None,
-           steers=None):
+           steers=None, attachments=None):
     """Claude (or the configured 'verify' tier) judges whether the run satisfied the
     request. Returns {passed, critique}. The critique is fed back into the next attempt.
     `project` (a registered repo path) injects that repo's own CLAUDE.md conventions with
@@ -539,7 +540,7 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
         + grant + "\n"
         + dead_end
         + _JUDGE_REASONING_RULE + "\n"
-        f"Request: {request}\n\n"
+        f"Request: {request}{attachments_mod.judge_note(attachments)}\n\n"
         f"Output:\n{rbody}{rnote}\n\n"
         # The plan comparison sits LAST, immediately before the verdict is asked for. Placed up
         # with the preamble it was obeyed about half the time (measured 1/2 on

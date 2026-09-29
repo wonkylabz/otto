@@ -11,6 +11,7 @@ import contextvars
 import json
 import re
 
+import attachments as attachments_mod
 import claude_cli
 import codex_cli
 import config
@@ -487,7 +488,7 @@ def _revision_note(prior_plan, feedback):
 
 
 def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None, effort=None,
-                 prior_plan=None, feedback=None):
+                 prior_plan=None, feedback=None, attachments=None):
     """Pre-approval dry run: a STRICTLY read-only agentic pass that returns a concrete,
     numbered plan of the operations the capability WOULD perform — so the human approves the
     actual operations, not just the capability name (the gate otherwise fires before any
@@ -517,8 +518,10 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     default effort is approving a weaker plan than the one that would be produced."""
     cwd = cwd or getattr(cap, "cwd", None)
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
+    att_note = attachments_mod.note(attachments)
     invocation = ((request if resume_session else _plan_invocation(cap, request))
-                  + _pr_branch_note(pr) + _PLAN_INSTRUCTION
+                  + _pr_branch_note(pr) + (f"\n\n{att_note}" if att_note else "")
+                  + _PLAN_INSTRUCTION
                   # After the instruction, not before: a revision round REPLACES "write a plan"
                   # with "edit this one", and the last word has to be the narrower job.
                   + _revision_note(prior_plan, feedback))

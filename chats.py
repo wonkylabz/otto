@@ -18,6 +18,7 @@ import contextlib
 import datetime
 import json
 
+import attachments
 import config
 import storage
 
@@ -58,8 +59,10 @@ def _schema(conn):
         text TEXT,
         ts TEXT,
         pending INTEGER NOT NULL DEFAULT 0,
+        attachments TEXT,
         PRIMARY KEY (chat_id, seq)
     )""")
+    storage.ensure_columns(conn, "messages", {"attachments": "TEXT"})
 
 
 @contextlib.contextmanager
@@ -93,12 +96,14 @@ def _message(row):
         m["ts"] = row["ts"]
     if row["pending"]:
         m["pending"] = True
+    if row["attachments"]:
+        m["attachments"] = _decode(row["attachments"]) or []
     return m
 
 
 def _messages(conn, cid):
     rows = conn.execute(
-        "SELECT role, text, ts, pending FROM messages WHERE chat_id = ? ORDER BY seq", (cid,))
+        "SELECT role, text, ts, pending, attachments FROM messages WHERE chat_id = ? ORDER BY seq", (cid,))
     return [_message(r) for r in rows]
 
 
@@ -217,8 +222,18 @@ def _title(chat, prior, keep_title):
 
 
 def _row_values(messages):
-    return [(m.get("role"), m.get("text"), m.get("ts"), int(bool(m.get("pending"))))
+    return [(m.get("role"), m.get("text"), m.get("ts"), int(bool(m.get("pending"))),
+             _attachment_refs(m.get("attachments")))
             for m in messages]
+
+
+def _attachment_refs(atts):
+    """The browser posts these back, so keep only the display fields of a well-formed id —
+    never a path, which the chat has no use for and a client could make up."""
+    refs = [{"id": a["id"], "name": str(a.get("name") or "")[:120], "type": str(a.get("type") or ""),
+             "size": a.get("size") if isinstance(a.get("size"), int) else None}
+            for a in atts or [] if isinstance(a, dict) and attachments.valid_id(a.get("id"))]
+    return json.dumps(refs) if refs else None
 
 
 def _trim_chats(conn):
@@ -261,7 +276,8 @@ def save(chat):
         _upsert_row(conn, cid, chat)
         conn.execute("DELETE FROM messages WHERE chat_id = ?", (cid,))
         conn.executemany(
-            "INSERT INTO messages (chat_id, seq, role, text, ts, pending) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (chat_id, seq, role, text, ts, pending, attachments) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(cid, i) + v for i, v in enumerate(_row_values(messages))])
         _trim_chats(conn)
     return cid
@@ -292,14 +308,16 @@ def append_messages(cid, messages, *, fill_pending=False, keep=(), **fields):
             held = conn.execute("SELECT seq FROM messages WHERE chat_id = ? AND role = 'otto' "
                                 "AND pending = 1 ORDER BY seq DESC LIMIT 1", (cid,)).fetchone()
             if held:
-                conn.execute("UPDATE messages SET role = ?, text = ?, ts = ?, pending = ? "
+                conn.execute("UPDATE messages SET role = ?, text = ?, ts = ?, pending = ?, "
+                             "attachments = ? "
                              "WHERE chat_id = ? AND seq = ?",
                              _row_values(messages[:1])[0] + (cid, held["seq"]))
                 pending = messages[1:]
         nxt = conn.execute("SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE chat_id = ?",
                            (cid,)).fetchone()[0]
         conn.executemany(
-            "INSERT INTO messages (chat_id, seq, role, text, ts, pending) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (chat_id, seq, role, text, ts, pending, attachments) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(cid, nxt + i) + v for i, v in enumerate(_row_values(pending))])
         _trim_messages(conn, cid)
         _trim_chats(conn)

@@ -22,8 +22,9 @@ import socketserver
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+import attachments
 import board
 import chats
 import claude_cli
@@ -1023,6 +1024,65 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._send(404, b"not found", "text/plain")
 
+    def _get_attachment(self, aid):
+        """Serve one upload back to the chat. Only a raster image renders inline; anything else,
+        SVG and HTML included, downloads as opaque bytes — this origin is the unauthenticated
+        API's, so an uploaded page rendered here could drive it."""
+        meta = attachments.get(aid)
+        if not meta:
+            return self._send(404, b"not found", "text/plain")
+        with open(meta["path"], "rb") as f:
+            data = f.read()
+        inline = meta["type"] in attachments.INLINE_IMAGES
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", meta["type"] if inline else "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            name = meta["name"].replace('"', "")
+            self.send_header("Content-Disposition",
+                             f'{"inline" if inline else "attachment"}; filename="{name}"')
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionError):
+            pass
+
+    def _post_attachment(self):
+        """POST /api/attachments — one file as the RAW body, its name in `X-Filename`
+        (URI-encoded). Raw, not JSON: base64 would put a screenshot past `_MAX_BODY`, and the
+        limit here is the attachment setting instead. Returns the id a submit then names."""
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        limit = int(config.setting("attachment_max_mb")) * 1024 * 1024
+        if n > limit:
+            # Drain before answering: a reply to an unread body resets the connection, and the
+            # browser then reports "could not reach Otto" instead of the limit. Bounded, not unbounded.
+            left = min(n, 4 * limit)
+            while left > 0 and (chunk := self.rfile.read(min(left, 1 << 20))):
+                left -= len(chunk)
+            self._send(413, json.dumps(
+                {"error": f"file exceeds {config.setting('attachment_max_mb')} MB"})); return
+        data = self.rfile.read(n) if n else b""
+        try:
+            meta = attachments.store(unquote(self.headers.get("X-Filename") or ""), data)
+        except ValueError as e:
+            self._send(400, json.dumps({"error": str(e)})); return
+        self._send(200, json.dumps(attachments.public(meta)))
+
+    def _attachments_param(self, body):
+        """Resolve a body's attachment ids to trusted metas. Returns (metas, error)."""
+        ids = body.get("attachments") or []
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return None, "'attachments' must be a list of ids"
+        cap = int(config.setting("attachment_max_count"))
+        if len(ids) > cap:
+            return None, f"at most {cap} attachments per message"
+        metas, missing = attachments.resolve(ids)
+        if missing:
+            return None, "attachment expired or unknown: " + ", ".join(missing)
+        return metas, None
+
     def do_GET(self):
         """Same error envelope do_POST has had all along.
 
@@ -1043,6 +1103,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif self.path.startswith("/css/") or self.path.startswith("/js/"):
             self._static(self.path)
+        elif self.path.startswith("/api/attachments/"):
+            self._get_attachment(self.path[len("/api/attachments/"):].split("?", 1)[0])
         elif self.path == "/api/health":
             # `mcp.unhealthy` and `models.broken` both read CACHED health (no slow re-poll, no
             # probe) so any tab can feed the Admin-tab warning badge cheaply on its poll.
@@ -1450,6 +1512,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path.startswith("/api/events/"):
                 return self._handle_event()        # reads the raw body itself (signature check)
+            if self.path == "/api/attachments":
+                return self._post_attachment()     # raw bytes, its own size limit
             body = self._json_body()
             if self.path == "/api/estop":
                 # Engage/release the global pause. Origin-checked like every other mutating POST
@@ -1505,6 +1569,11 @@ class Handler(BaseHTTPRequestHandler):
         params = {"request": req}
         if cap:
             params["cap"] = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
+        atts, err = self._attachments_param(body)
+        if err:
+            self._send(400, json.dumps({"error": err})); return
+        if atts:
+            params["attachments"] = atts
         # Per-chat memory opt-out (default on) and model override (default: admin config).
         # Explicit-key check, not truthiness — `body.get("memory_enabled")` would silently
         # collapse an intentional `False` back to the True default.
@@ -1578,6 +1647,11 @@ class Handler(BaseHTTPRequestHandler):
         trusted_cap = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
         params = {"request": body["message"], "resume": body["session_id"],
                   "cap": trusted_cap}
+        atts, err = self._attachments_param(body)
+        if err:
+            self._send(400, json.dumps({"error": err})); return
+        if atts:
+            params["attachments"] = atts
         # Same composer toggle as /api/submit: a follow-up can be re-classified from
         # read to write (classify_followup) and hit the gate, so pre-authorization has
         # to travel with the follow-up too or the toggle reads as broken on turn 2.
@@ -1681,6 +1755,11 @@ class Handler(BaseHTTPRequestHandler):
         reply_to = origin.get("reply_to") or _slack_reply_target(wid)
         if reply_to:
             params["reply_to"] = reply_to
+        # Re-resolved from ids, never the recorded paths: an expired upload is dropped, and the
+        # retry says nothing of it rather than pointing the run at a file that is gone.
+        atts, _ = attachments.resolve([a.get("id") for a in origin.get("attachments") or []])
+        if atts:
+            params["attachments"] = atts
         # An unattended run stays unattended on retry — nobody is watching to approve, so
         # it must keep its original approval mode instead of blocking on a screen. Recovered
         # INDEPENDENTLY of reply_to: a SCHEDULE-origin run delivers to the chat sidebar and

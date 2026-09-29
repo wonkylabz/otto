@@ -96,6 +96,13 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 - **An identity lookup caches only a RESOLVED answer and rate-limits the failure** (`slack.whoami`, `pr_review.viewer`) — caching the miss goes deaf until a restart, retrying it costs 15-30s a panel load, and the window stays under the poll interval (`PrReviewViewerCacheTests`).
 - **A SKIP schedule bounds its execution** (`config.POLL_TIMEOUT_FACTOR`) — a workflow task failing forever never closes the run, so `ScheduleOverlapPolicy.SKIP` skips every later fire and the ingress goes deaf until a hand terminate (`PollScheduleExecutionTimeoutTests`).
 
+## Web chat attachments
+
+`attachments.py` — raw-body upload to `data/uploads/<id>/`, TTL-swept; a submit names ids.
+
+- **A submit names attachment IDS, never paths** (`server._attachments_param`) — the API is unauthenticated, so a client path would hand a run any file; a retry re-resolves ids too (`AttachmentHttpTests`).
+- **Only a raster image is served inline** (`server._get_attachment`) — SVG/HTML run script on the API's own origin, so anything else downloads as `octet-stream` (`AttachmentHttpTests`).
+
 ## Adding an ingress
 
 Adding a reply-target kind needs a `privacy.source_line` branch AND a `delivery.AUDIENCE` entry, or it silently falls back to `report`.

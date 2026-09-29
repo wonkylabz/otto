@@ -8614,12 +8614,14 @@ class LocalPlanModeTests(unittest.TestCase):
         enforces, or repo-mode on this repo dies inside the sandbox.
 
         The exemption covers OTTO'S STATE only. The credential stores stay masked for that run
-        too: reading Otto's own trail is a real task, reading the bytes of a token never is."""
+        too: reading Otto's own trail is a real task, reading the bytes of a token never is.
+        So do chat uploads (#161): another run's attachment is not Otto's state, it is a user's file."""
         root = os.path.dirname(config.DATA_DIR.rstrip("/"))
         exempt = file_safety.read_denied_globs(allow_cwd=root)
         state = os.path.join(config.DATA_DIR, "otto.db*")
         self.assertNotIn(state, exempt, "Otto working on itself cannot read its own state")
-        self.assertEqual(sorted(exempt), sorted(file_safety._secret_store_globs_resolved()),
+        uploads = [s for g in file_safety._upload_globs() for s in file_safety._both_spellings(g)]
+        self.assertEqual(sorted(exempt), sorted(file_safety._secret_store_globs_resolved() + uploads),
                          "the exemption let a credential store through, or denied more than one")
         self.assertTrue(local_runtime._read_deny_mounts(cwd=None),
                         "an unanchored run got no masks at all")

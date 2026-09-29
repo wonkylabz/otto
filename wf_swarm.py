@@ -51,7 +51,7 @@ class SwarmMixin:
                  # override should still bind, same model for the whole chat's work).
                  "memory_enabled": params.get("memory_enabled", True),
                  "model_override": params.get("model_override"),
-                 "effort": self._effort,
+                 "effort": self._effort, "attachments": self._attachments,
                  # A per-repo part of a multi-repo change: its own clone and PR.
                  **({"repo": sub["repo"]} if sub.get("repo") else {})},
                 id=child["id"])

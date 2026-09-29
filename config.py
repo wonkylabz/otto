@@ -576,6 +576,8 @@ _SETTING_SPECS = {
     "effort":             ("OTTO_EFFORT", "choice:default,low,medium,high,xhigh,max", "EFFORT"),
     "conventions_digest_chars": ("OTTO_CONVENTIONS_DIGEST_CHARS", "int",
                                  "CONVENTIONS_DIGEST_CHARS"),
+    "attachment_max_mb":  ("OTTO_ATTACHMENT_MAX_MB", "int", "ATTACHMENT_MAX_MB"),
+    "attachment_max_count": ("OTTO_ATTACHMENT_MAX_COUNT", "int", "ATTACHMENT_MAX_COUNT"),
 }
 
 _TRUTHY_OFF = ("0", "false", "no", "off")
@@ -868,6 +870,12 @@ CAP_LOCAL_LATCH_TTL_S = float(os.environ.get("OTTO_CAP_LOCAL_LATCH_TTL_S", str(2
 # exchange (tool calls included) to data/transcripts/<wid>-a<attempt>.jsonl — the source for
 # the run-detail view and live chat progress. Swept opportunistically after this TTL.
 TRANSCRIPT_TTL_H = float(os.environ.get("OTTO_TRANSCRIPT_TTL_H", "168"))
+
+# Chat attachments (`attachments.py`, #161): per-file size, per-message count, and how long an
+# upload outlives the message that carried it.
+ATTACHMENT_MAX_MB = int(os.environ.get("OTTO_ATTACHMENT_MAX_MB", "20"))
+ATTACHMENT_MAX_COUNT = int(os.environ.get("OTTO_ATTACHMENT_MAX_COUNT", "10"))
+ATTACHMENT_TTL_H = float(os.environ.get("OTTO_ATTACHMENT_TTL_H", "168"))
 
 # The tier-call ledger (`ledger.py`, issue #130) is telemetry, not the trail: swept after this TTL.
 TIER_LEDGER_TTL_H = float(os.environ.get("OTTO_TIER_LEDGER_TTL_H", "168"))

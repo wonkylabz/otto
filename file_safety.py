@@ -49,6 +49,8 @@ Ported in spirit from hermes-agent's `agent/file_safety.py` (MIT), which enforce
 in-process because Hermes owns its own tool loop. Otto delegates execution to `claude -p`, so
 the list has to be handed to the executor instead.
 """
+import contextlib
+import contextvars
 import glob as globmod
 import os
 import shutil
@@ -172,6 +174,9 @@ def denied_globs(allow_cwd=None):
         # against a control that deleted the file when the rule was absent. Named from
         # estop.SENTINEL_NAME so renaming the sentinel cannot silently unprotect it.
         os.path.join(config.DATA_DIR, _sentinel_name()),
+        # ... and chat attachments (#161): only the server writes them, and a run rewriting one
+        # changes what a LATER turn of that chat reads as the user's own file.
+        os.path.join(config.DATA_DIR, "uploads", "**"),
         # DELIBERATELY absent: data/workspaces/**. Every repo-mode clone lives there, so denying
         # DATA_DIR wholesale silently blocks the entire repo-mode feature — the thing most write
         # runs exist to do. Guarded by test_core.FileSafetyTests.
@@ -272,6 +277,36 @@ def _secret_store_globs_resolved():
     return [*dict.fromkeys(s for g in _secret_store_globs() for s in _both_spellings(g))]
 
 
+# The upload directories the CURRENT run may read (#161). A ContextVar, not a kwarg threaded
+# through every backend's `run_json`: `engine.run_attempt`/`plan_preview` set it around the call,
+# and anything that misses it fails CLOSED — the run can't read its attachment, nobody else's leaks.
+_UPLOAD_GRANT = contextvars.ContextVar("otto_upload_grant", default=())
+
+
+@contextlib.contextmanager
+def upload_grant(dirs):
+    token = _UPLOAD_GRANT.set(tuple(os.path.basename(os.path.normpath(d)) for d in dirs or ()))
+    try:
+        yield
+    finally:
+        _UPLOAD_GRANT.reset(token)
+
+
+def _upload_globs():
+    """Every chat upload but the ones this run was handed. A Slack colleague's run must not be
+    able to `ls` its way into the owner's screenshots, so this binds an Otto-cwd run too.
+    Siblings are enumerated when the run starts; one uploaded mid-run stays readable to it."""
+    root = os.path.join(config.DATA_DIR, "uploads")
+    granted = set(_UPLOAD_GRANT.get())
+    if not granted:
+        return [os.path.join(root, "**")]
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [os.path.join(root, n, "**") for n in names if n not in granted]
+
+
 def read_denied_globs(allow_cwd=None):
     """Paths no run may READ, as absolute globs. See the module docstring for why the set is
     this small.
@@ -279,7 +314,7 @@ def read_denied_globs(allow_cwd=None):
     Two tiers, and only the first is exempted by `_reads_allowed_from`: Otto's own state is
     denied to everyone EXCEPT a run pointed at Otto itself (the audit-runs skill), while the
     credential stores are denied to that run too — nothing legitimately reads a token."""
-    out = [*_secret_store_globs()]
+    out = [*_secret_store_globs(), *_upload_globs()]
     if not _reads_allowed_from(allow_cwd):
         out += [*_otto_state_globs(), os.path.join(_otto_root(), ".env")]
     return [*dict.fromkeys(s for g in out for s in _both_spellings(g))]

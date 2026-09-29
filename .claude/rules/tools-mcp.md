@@ -52,6 +52,7 @@
 - **Neither layer bounds the NETWORK** — reading the ticket is why the planner has Bash, and plan mode permits read-only network too. `gh api -X POST` is refused by the allowlist, NOT by the sandbox; the approval gate still stands there (`LocalPlanModeTests`).
 - **Every REGISTERED repo's live checkout is write-denied by default** (`file_safety.denied_globs`) — a cap with no cwd of its own could otherwise reach sideways into any of them and edit in place, which the in-place-edit guard only ever detected after the fact.
 - `allow_cwd` is the one exemption, threaded from `claude_cli.run_json`'s/`local_runtime`'s own `cwd`: a project capability's OWN repo, never a sibling's.
+- **A run reads only the chat uploads it was HANDED** (`file_safety.upload_grant`, set by the activity) — a ContextVar, so a path missing it fails CLOSED; every other upload stays read-denied, Otto-cwd included, and no tool-free rung runs (`UploadGrantTests`, `RunContextTests`).
 
 ## Execution transcripts
 

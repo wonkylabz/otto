@@ -46,7 +46,7 @@ def _parse_clarification(text):
     return text
 
 
-def clarify(request, cap):
+def clarify(request, cap, attachments=None):
     """Ask the model whether essential info is missing before running `cap`.
     Returns one clarifying question, or None if the request is clear enough."""
     trace("CLARIFY", f"checking '{cap.name}' request for missing info")
@@ -55,6 +55,11 @@ def clarify(request, cap):
         "You are about to run the capability "
         f"'{cap.name}' ({cap.description[:160]}).\n"
         f"The user's request is:\n\"{request}\"\n\n"
+        # The files are the target of a "what's going on here?", and this prompt never sees them.
+        + (f"The user also attached: {', '.join(a['name'] for a in attachments)}. The capability "
+           "will read them; whatever the request refers to as this/here/it is in those files, "
+           "so nothing is missing on that account.\n\n" if attachments else "")
+        +
         "Your ONLY job is to check whether the request is MISSING an essential detail needed to "
         "act (e.g. no environment named, no issue/PR number, no resource). If the request "
         "already names a specific, concrete target — a full URL, an issue/PR number, a named "
