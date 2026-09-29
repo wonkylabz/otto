@@ -177,6 +177,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # Chat attachments (#161), resolved to trusted metas by the server; [] for every ingress
         # but the web chat. Bound in _bind_composer.
         self._attachments = []
+        self._prior_attachments = []
         # Per-stage wall-clock timing {label: {"start": epoch_ms, "dur": epoch_ms|None}}, keyed on
         # the pipe labels the UI renders (DECOMPOSE/ROUTER/CLARIFY/PLAN/GATE/RUN). Surfaced via
         # status() so a
@@ -207,6 +208,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         self._model_override = params.get("model_override")
         self._effort = config.resolve_effort(params.get("effort"), self._setting("effort"))
         self._attachments = params.get("attachments") or []
+        self._prior_attachments = params.get("prior_attachments") or []
 
     async def _gate_wait(self, cond):
         """Wait at the approval gate for `cond`, bounded by the `gate_timeout_h` setting.
@@ -453,6 +455,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                              # code actually is and to read it with `gh pr diff`.
                              "pr": self._pr_target, "effort": self._effort,
                              "attachments": self._attachments,
+                             "prior_attachments": self._prior_attachments,
                              "prior_plan": revise_base, "feedback": revise_feedback},
                             # Must stay above the preview's OWN timeout, and above a local
                             # wall's Claude re-preview after it, or the activity kills the pass
@@ -991,7 +994,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                                  # Effort rides a resume too: it is a per-TURN flag, not a
                                  # session binding the way the model is.
                                  "risk": cap["risk"], "effort": self._effort,
-                                 "attachments": self._attachments},
+                                 "attachments": self._attachments,
+                                 "prior_attachments": self._prior_attachments},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
             result = out["result"]

@@ -412,6 +412,21 @@ def git_identity(session_id):
     return {"repo": rows[0]["repo"], "git_run_id": rows[0]["git_run_id"]}
 
 
+def session_attachment_ids(session_id):
+    """Every attachment id sent earlier in the chat bound to `session_id`. A resumed session
+    remembers those paths, so its read grant has to cover them too. Ambiguity reads as none,
+    as in `git_identity`: two chats claiming one session could hand a run the other's files."""
+    if not session_id:
+        return []
+    with _conn() as conn:
+        rows = conn.execute("SELECT id FROM chats WHERE session_id = ?", (session_id,)).fetchall()
+        if len(rows) != 1:
+            return []
+        refs = conn.execute("SELECT attachments FROM messages WHERE chat_id = ? AND "
+                            "attachments IS NOT NULL ORDER BY seq", (rows[0]["id"],)).fetchall()
+    return [a["id"] for r in refs for a in (_decode(r["attachments"]) or [])]
+
+
 def find_by_run_origin(wid):
     """The chat id whose `origin_run_id` matches this Temporal workflow id, or None. The board's
     Chat link is normally driven by the workflow's own recorded `chat_key`, but an interactive

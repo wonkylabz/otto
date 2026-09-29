@@ -290,7 +290,8 @@ def plan_capability(payload: dict) -> dict:
         r = workspace.resolve(payload["repo"])
         cwd = r["path"] if r else None
     atts = payload.get("attachments") or []
-    with file_safety.upload_grant(attachments.granted_dirs(atts)):
+    with file_safety.upload_grant(attachments.granted_dirs(
+            atts + (payload.get("prior_attachments") or []))):
         preview = engine.plan_preview(payload["request"], cap, cwd=cwd,
                                       resume_session=payload.get("resume"),
                                       wid=payload.get("wid"),
@@ -524,7 +525,8 @@ def run_capability(payload: dict) -> dict:
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
     _warm_conventions(project)
     atts = payload.get("attachments") or []
-    with file_safety.upload_grant(attachments.granted_dirs(atts)):
+    with file_safety.upload_grant(attachments.granted_dirs(
+            atts + (payload.get("prior_attachments") or []))):
         att = engine.run_attempt(
             payload["request"], cap,
             attempt=payload.get("attempt", 1), critique=payload.get("critique"),

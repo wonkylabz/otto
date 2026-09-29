@@ -226,6 +226,26 @@ class AttachmentHttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             urllib.request.urlopen(self.base + "/api/attachments/../otto.db")
 
+    def test_a_non_ascii_name_downloads_instead_of_crashing_the_headers(self):
+        _, meta = self._upload("错误截图.png", PNG)
+        with urllib.request.urlopen(self.base + "/api/attachments/" + meta["id"]) as r:
+            self.assertEqual(r.status, 200)
+            self.assertIn("filename*=UTF-8''%E9%94%99", r.headers["Content-Disposition"])
+
+    def test_a_follow_up_may_read_what_earlier_turns_attached_but_is_told_only_its_own(self):
+        _, old = self._upload("log.txt", b"line 900: boom")
+        _, new = self._upload("shot.png", PNG)
+        chats.save({"id": "c-resume", "session_id": "sess-att", "messages": [
+            {"role": "user", "text": "look", "attachments": [old]},
+            {"role": "otto", "text": "a boom"}]})
+        st, _, _ = _req(self.base, "/api/continue", json.dumps(
+            {"cap": {"name": "demo-read"}, "session_id": "sess-att", "message": "and this?",
+             "attachments": [new["id"]]}).encode(), {"Content-Type": "application/json"})
+        self.assertEqual(st, 200)
+        params = self.started[-1]
+        self.assertEqual([a["id"] for a in params["attachments"]], [new["id"]])
+        self.assertEqual([a["id"] for a in params["prior_attachments"]], [old["id"]])
+
     def test_a_cross_site_upload_is_refused(self):
         st, _, _ = _req(self.base, "/api/attachments", b"x",
                         {"Origin": "https://evil.example", "X-Filename": "a.txt"})

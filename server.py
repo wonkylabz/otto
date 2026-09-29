@@ -22,7 +22,7 @@ import socketserver
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import attachments
 import board
@@ -1040,9 +1040,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
-            name = meta["name"].replace('"', "")
+            # A header is latin-1: a non-ASCII name rides RFC 5987's `filename*`, never raw.
+            plain = meta["name"].encode("ascii", "replace").decode().replace("?", "_")
             self.send_header("Content-Disposition",
-                             f'{"inline" if inline else "attachment"}; filename="{name}"')
+                             f'{"inline" if inline else "attachment"}; filename="{plain}"; '
+                             f"filename*=UTF-8''{quote(meta['name'])}")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
@@ -1647,11 +1649,6 @@ class Handler(BaseHTTPRequestHandler):
         trusted_cap = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
         params = {"request": body["message"], "resume": body["session_id"],
                   "cap": trusted_cap}
-        atts, err = self._attachments_param(body)
-        if err:
-            self._send(400, json.dumps({"error": err})); return
-        if atts:
-            params["attachments"] = atts
         # Same composer toggle as /api/submit: a follow-up can be re-classified from
         # read to write (classify_followup) and hit the gate, so pre-authorization has
         # to travel with the follow-up too or the toggle reads as broken on turn 2.
@@ -1685,6 +1682,17 @@ class Handler(BaseHTTPRequestHandler):
             params["effort"] = effort
         elif (body.get("effort") or "").strip().lower() not in ("", "default"):
             self._send(400, json.dumps({"error": f"unknown effort '{body.get('effort')}'"})); return
+        atts, err = self._attachments_param(body)
+        if err:
+            self._send(400, json.dumps({"error": err})); return
+        if atts:
+            params["attachments"] = atts
+        # Readable, not re-announced: the session already knows these paths from earlier turns.
+        new = {a["id"] for a in atts}
+        prior, _ = attachments.resolve([i for i in chats.session_attachment_ids(body["session_id"])
+                                        if i not in new])
+        if prior:
+            params["prior_attachments"] = prior
         # A repo-mode session's isolated clone was torn down after the original run —
         # re-provisioning it needs the repo + the ORIGINAL run's id (its git identity)
         # so the workflow can rebuild the exact same workspace/branch. Re-validate the
