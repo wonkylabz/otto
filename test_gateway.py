@@ -8041,6 +8041,28 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertEqual(len(sent), 2, "clamped in one round trip, not halved toward it")
         self.assertEqual(sent[1]["max_tokens"], 10000)
 
+    def test_vllms_max_model_len_rejection_clamps_below_the_window(self):
+        """#179: vLLM names the whole window, not an output ceiling, so it failed as `unknown`.
+        Clamping to the window itself overflows again — the prompt shares it."""
+        cap = (b'{"error":{"message":"max_tokens=32768 cannot be greater than max_model_len='
+               b'max_total_tokens=24576. Please request fewer output tokens. (parameter='
+               b'max_tokens, value=32768)"}}')
+        self.assertIs(self.ec.classify(400, cap.decode()).action, self.ec.Action.prune)
+        self.assertEqual(self.ec.output_cap(cap.decode()), 12288)
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(cap)
+            return {"choices": [{"message": {"role": "assistant", "content": "fits"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.m)
+        self.assertEqual(out["result"], "fits")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[1]["max_tokens"], 12288)
+
     def test_the_overflow_halving_uses_the_endpoints_own_key(self):
         """The 4th site the ticket did not list. `_chat_step` halves the output budget BY NAME;
         reading `max_tokens` off a body carrying `max_completion_tokens` both loses the halving
