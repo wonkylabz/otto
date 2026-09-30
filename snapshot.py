@@ -149,12 +149,13 @@ def _sans(d, *keys):
 # --- sections ----------------------------------------------------------------------------
 # A section is a keyed dict of items. `prepare` turns snapshot items into what this install
 # WOULD store (secrets kept, ingresses disabled), so the diff is against the real write.
+# Sections are shared singletons in a threaded server: per-call notes go in `ctx`, never `self`.
 
 class _Section:
     whole = False          # one config object diffed per field, never removed from
     path = None
 
-    def export(self):
+    def export(self, ctx):
         return self.local()
 
     def local(self):
@@ -163,13 +164,13 @@ class _Section:
     def exists(self):
         return bool(self.path and os.path.exists(self.path()))
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         return inc
 
     def secrets(self, items, snap):
         return []
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         raise NotImplementedError
 
     def after(self, applied):
@@ -184,10 +185,10 @@ class _Settings(_Section):
         raw = storage.read_json(self.path(), {}) or {}
         return {k: v for k, v in raw.items() if k in config._SETTING_SPECS}
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         return {k: v for k, v in inc.items() if k in config._SETTING_SPECS}
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         defaults = config.settings_all()
         config.save_settings({c["key"]: (defaults[c["key"]]["default"] if c["action"] == "remove"
                                          else c["after"]) for c in applied})
@@ -202,7 +203,7 @@ class _Capabilities(_Section):
         import policy
         return {c["name"]: c for c in policy.custom_caps() if c.get("name")}
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         out = {}
         for n, c in inc.items():
             if not isinstance(c, dict) or not str(n).strip():
@@ -212,7 +213,7 @@ class _Capabilities(_Section):
                       "prompt": str(c.get("prompt", ""))}
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         import policy
         policy.save_custom_caps(list(new.values()))
 
@@ -222,7 +223,7 @@ class _McpServers(_Section):
         import policy
         return policy._MCPDEF
 
-    def export(self):
+    def export(self, ctx):
         import policy
         out = {}
         for n, d in policy.mcp_defs().items():
@@ -237,7 +238,7 @@ class _McpServers(_Section):
         import policy
         return copy.deepcopy(policy.mcp_defs())
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         out = {}
         for n, d in inc.items():
             import policy
@@ -266,7 +267,7 @@ class _McpServers(_Section):
         return [{"name": k, "for": f"MCP server {n}", "what": "env value (Admin → MCP servers)"}
                 for n, d in items.items() for k, v in (d.get("env") or {}).items() if not v]
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         import policy
         now = time.time()
         policy.save_mcp_defs({n: ({**d, "added_at": d.get("added_at") or now}) for n, d in new.items()})
@@ -287,7 +288,7 @@ class _Policy(_Section):
 
     _KEYS = {"cap": ("risk", "enabled", "tool_free", "mcp"), "mcp": ("enabled", "notes")}
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         import policy
         out = {}
         for k, v in inc.items():
@@ -300,7 +301,7 @@ class _Policy(_Section):
             out[k] = {**_sans(loc.get(k), *self._KEYS[kind]), **v}
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         import policy
         caps = {k[4:]: v for k, v in new.items() if k.startswith("cap:")}
         mcps = {k[4:]: v for k, v in new.items() if k.startswith("mcp:")}
@@ -327,17 +328,16 @@ class _Models(_Section):
         out["pool_order"] = [m["name"] for m in cfg.get("pool") or [] if m.get("name")]
         return out
 
-    def export(self):
+    def export(self, ctx):
         out = self.local()
-        self.lost = []
         for k, v in list(out.items()):
             if k.startswith(("endpoint:", "model:")):
                 out[k], lost = _safe_conn(v)
                 if lost:
-                    self.lost.append(k)
+                    ctx["lost"].append(k)
         return out
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         import gateway
         known = gateway._tier_ids()
         out = {}
@@ -370,7 +370,7 @@ class _Models(_Section):
                     out.append({"name": "", "for": label, "what": f"header {h} (not exported)"})
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         import gateway
         order = new.get("pool_order") or []
         pool = {k[6:]: v for k, v in new.items() if k.startswith("model:")}
@@ -397,7 +397,7 @@ class _Behaviors(_Section):
     def _key(b):
         return f"{b.get('scope') or 'global'}|{' '.join((b.get('rule') or '').split())}"
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         import engine
         ids = {self._key(b): b["id"] for b in engine.behaviors()}
         for c in applied:
@@ -420,7 +420,7 @@ class _Knowledge(_Section):
             out.setdefault(f"doc:{d['title']}", d)
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         import knowledge
         ids = {}
         for d in knowledge.documents():
@@ -464,11 +464,12 @@ class _Projects(_Section):
     def local(self):
         return {u: item for u, (item, _) in self._entries()[0].items()}
 
-    def export(self):
-        items, self.unportable = self._entries()
+    def export(self, ctx):
+        items, unportable = self._entries()
+        ctx["warnings"] += [f"project {n}: no remote URL, not exported" for n in unportable]
         return {u: item for u, (item, _) in items.items()}
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         import repos
         out = {}
         for v in inc.values():
@@ -477,7 +478,7 @@ class _Projects(_Section):
                 out[url] = {"url": url, "instructions": (v.get("instructions") or "").strip()}
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         import registry
         import repos
         paths = {u: p for u, (_, p) in self._entries()[0].items()}
@@ -487,7 +488,7 @@ class _Projects(_Section):
             elif c["action"] == "add":
                 _, err = repos.ensure(c["key"])
                 if err:
-                    self.status.append(f"{c['key']}: clone failed ({err})")
+                    ctx["status"].append(f"{c['key']}: clone failed ({err})")
                 root = registry.add_project(url=c["key"])
                 if c["after"].get("instructions"):
                     registry.set_project_instructions(root, c["after"]["instructions"])
@@ -508,23 +509,23 @@ class _Runbooks(_Section):
             out["order"] = order
         return out
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         import runbooks
-        out, self.invalid = {}, []
+        out = {}
         for k, v in inc.items():
             if k == "order":
                 out[k] = [str(i) for i in v or []] if isinstance(v, list) else []
                 continue
             if not str(k).startswith(runbooks.ID_PREFIX):
-                self.invalid.append(f"{k}: not a runbook id")
+                ctx["warnings"].append(f"runbooks: {k}: not a runbook id")
                 continue
             try:
                 out[k] = runbooks.normalize(v or {})
             except ValueError as e:
-                self.invalid.append(f"{(v or {}).get('name') or k}: {e}")
+                ctx["warnings"].append(f"runbooks: {(v or {}).get('name') or k}: {e}")
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         """Schedules FIRST: a cron stored without its paused schedule is recreated UNPAUSED by
         the next startup `reconcile`, so one that can't be created paused is not stored."""
         import runbooks
@@ -539,11 +540,11 @@ class _Runbooks(_Section):
                         scheduler.tc.run(scheduler._delete(k))
                 elif (c["after"] or {}).get("cron"):
                     scheduler.sync_paused(k, c["after"])
-                    self.status.append(f"{k}: schedule created paused")
+                    ctx["status"].append(f"{k}: schedule created paused")
                 elif c["action"] == "update" and scheduler.available():
                     scheduler.tc.run(scheduler._sync(k, c["after"]))
             except Exception as e:  # noqa: BLE001 - reported; that runbook stays as it was
-                self.status.append(f"{k}: not imported, schedule sync failed ({str(e)[:80]})")
+                ctx["status"].append(f"{k}: not imported, schedule sync failed ({str(e)[:80]})")
                 if k in loc:
                     new[k] = loc[k]
                 else:
@@ -568,7 +569,7 @@ class _Whole(_Section):
     def local(self):
         return self.mod().load()
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         known = self.mod()._DEFAULTS
         out = {k: v for k, v in inc.items() if k in known}
         # Unchanged apart from the switches: nothing new would run, so the local switches stand.
@@ -577,7 +578,7 @@ class _Whole(_Section):
             out[f] = loc.get(f, False) if same else False
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         self.mod().save(new)
 
     def after(self, applied):
@@ -619,7 +620,7 @@ class _PrReview(_Whole):
 class _Rules(_Section):
     """A rule list whose rules fire on their own; an imported or changed rule lands disabled."""
 
-    def prepare(self, inc, loc):
+    def prepare(self, inc, loc, ctx):
         out = {}
         for r in inc.values():
             r = self.normalize(r)
@@ -635,7 +636,7 @@ class _Rules(_Section):
             out[k] = r
         return out
 
-    def write(self, new, applied, loc):
+    def write(self, new, applied, loc, ctx):
         self.save(list(new.values()))
 
 
@@ -711,15 +712,19 @@ SECTIONS = {
 
 # --- export / preview / apply ------------------------------------------------------------
 
+def _ctx():
+    return {"lost": [], "warnings": [], "status": []}
+
+
 def export():
-    sections = {name: sec.export() for name, sec in SECTIONS.items()}
+    ctx = _ctx()
+    sections = {name: sec.export(ctx) for name, sec in SECTIONS.items()}
     snap = {
         "otto_profile": VERSION,
         "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "sections": sections,
-        "needs": {"models": SECTIONS["models"].lost},
-        "warnings": [f"project {n}: no remote URL, not exported"
-                     for n in SECTIONS["projects"].unportable],
+        "needs": {"models": ctx["lost"]},
+        "warnings": ctx["warnings"],
     }
     return _redact(snap)
 
@@ -742,15 +747,14 @@ def _cron_blocked(sec, change):
 
 def _plan(snap, mode):
     _check(snap, mode)
-    changes, secrets, warnings = [], [], []
+    changes, secrets, ctx = [], [], _ctx()
     temporal = None
     for name, sec in SECTIONS.items():
         inc = snap["sections"].get(name)
         if not isinstance(inc, dict):
             continue                      # absent section: untouched, even under replace
         loc = sec.local()
-        items = sec.prepare(inc, loc)
-        warnings += [f"{name}: {w}" for w in getattr(sec, "invalid", []) or []]
+        items = sec.prepare(inc, loc, ctx)
         fresh = not sec.exists()
         for k, v in items.items():
             if k not in loc:
@@ -775,7 +779,7 @@ def _plan(snap, mode):
     applied = [c for c in changes if c["action"] != "keep"]
     fp = hashlib.sha256(json.dumps(applied, sort_keys=True, default=str).encode()).hexdigest()[:16]
     return {"mode": mode, "fingerprint": fp, "changes": changes, "secrets": secrets,
-            "warnings": warnings + list(snap.get("warnings") or [])}
+            "warnings": ctx["warnings"] + list(snap.get("warnings") or [])}
 
 
 def _view(plan):
@@ -793,7 +797,7 @@ def apply(snap, mode, expect):
     plan = _plan(snap, mode)
     if plan["fingerprint"] != expect:
         raise StaleSnapshotPreview("this install changed since the preview — preview again")
-    status = []
+    status, failed = [], set()
     for name, sec in SECTIONS.items():
         applied = [c for c in plan["changes"] if c["section"] == name and c["action"] != "keep"]
         if not applied:
@@ -805,14 +809,21 @@ def apply(snap, mode, expect):
                 new.pop(c["key"], None)
             else:
                 new[c["key"]] = c["after"]
-        sec.status = []
-        sec.write(new, applied, loc)
-        status += [f"{name}: {e}" for e in sec.status]
+        ctx = _ctx()
+        try:
+            sec.write(new, applied, loc, ctx)
+        except Exception as e:  # noqa: BLE001 - reported; the other sections still apply
+            failed.add(name)
+            status.append(f"{name}: failed, may be partly applied ({str(e)[:120]})")
+            continue
+        finally:
+            status += [f"{name}: {m}" for m in ctx["status"]]
         try:
             status += [f"{name}: {s}" for s in (sec.after(applied) or []) if s]
         except Exception as e:  # noqa: BLE001 - a schedule hiccup must not undo the writes
             status.append(f"{name}: reconcile failed ({str(e)[:80]})")
     view = _view(plan)
-    return {"mode": mode, "applied": [c for c in view["changes"] if c["action"] != "keep"],
+    return {"mode": mode, "failed": sorted(failed),
+            "applied": [c for c in view["changes"] if c["action"] != "keep" and c["section"] not in failed],
             "kept": [c for c in view["changes"] if c["action"] == "keep"],
             "secrets": plan["secrets"], "warnings": plan["warnings"], "status": status}

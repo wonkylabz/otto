@@ -397,10 +397,11 @@ class SnapshotTests(unittest.TestCase):
         snap = self._seed()
         self._machine()
         knowledge.add_document("runbook", "the local version", "paste")
-        with mock.patch.object(knowledge, "add_document", side_effect=RuntimeError("embed down")), \
-                self.assertRaises(RuntimeError):
-            self._import(snap, "replace")
+        with mock.patch.object(knowledge, "add_document", side_effect=RuntimeError("embed down")):
+            _, summary = self._import(snap, "replace")
         self.assertEqual([d["title"] for d in knowledge.documents()], ["runbook"])
+        self.assertEqual(summary["failed"], ["knowledge"])
+        self.assertIn(self.cron_id, runbooks.load())            # later sections still applied
 
     def test_a_path_only_project_travels_by_its_origin(self):
         self._machine()
@@ -424,6 +425,18 @@ class SnapshotWiringTests(unittest.TestCase):
         src = ui_src()
         self.assertIn('"/api/profile/preview"', src)
         self.assertIn("expect:plan.fingerprint", src)
+
+    def test_no_section_keeps_per_call_state_on_itself(self):
+        """SECTIONS are singletons in a threaded server: two concurrent previews would mix notes."""
+        import ast
+        import snapshot
+        tree = ast.parse(inspect.getsource(snapshot))
+        writes = [f"{n.lineno}" for n in ast.walk(tree)
+                  if isinstance(n, (ast.Assign, ast.AugAssign))
+                  for t in (n.targets if isinstance(n, ast.Assign) else [n.target])
+                  if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
+                  and t.value.id == "self"]
+        self.assertEqual([], writes, "per-call notes belong in ctx")
 
     def test_the_routes_exist_and_a_stale_or_missing_fingerprint_is_refused(self):
         import server
