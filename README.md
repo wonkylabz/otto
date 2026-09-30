@@ -250,7 +250,8 @@ it's local runtime state):
   picks up issues parked in the **Ready** column, runs them, and comments the result back (moving
   the card to Review/Done). Moving a card to Ready is the approval; needs Temporal + `gh`.
 
-`python3 profile.py export` packs your capabilities and settings for another machine.
+`python3 profile.py export` (or Admin → Share extensions) snapshots this install's whole config for another
+machine, secret-free; `import` previews every change first, and ingresses and crons arrive switched off.
 
 ### Secrets
 

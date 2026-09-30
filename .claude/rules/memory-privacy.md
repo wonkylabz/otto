@@ -17,6 +17,15 @@
 - **An action button carries a single-use per-run token, never a run id** (`delivery.mint_action_token`, `POST /api/gate/<token>`) — the grant rides on the broker, so it is only as private as the topic name (`NtfyTests`, `…action_token_is_single_use`).
 - **A third-party Slack reader is not the owner** — a colleague's DM gets the owner's memory, but the reply must not recite it, leak credentials (say *where* they are) or quote across conversations. Prompt-level (`_DIRECT_REPLY_FORMAT`, `verify`'s audience); `redact` guards.
 
+## Portable config snapshot
+
+`snapshot.py` — one install's whole config, secret-free; `profile.py` and Admin → Share extensions.
+
+- **A new `data/` store is classified in `snapshot.EXPORTED` or `RUNTIME`** — unclassified, an import silently leaves that config behind (`SnapshotStoreClassificationTests`).
+- **An import applies only the plan its preview showed** (`apply(expect=)`, 409 otherwise) — replace REMOVES, so an unseen change is a silent deletion (`SnapshotWiringTests`).
+- **Nothing imported starts work by itself** — a changed ingress, rule or trigger lands disabled; a cron is stored only once its schedule exists PAUSED, as startup `reconcile` recreates a missing one unpaused (`SnapshotTests`).
+- **An env-var NAME travels only if it resolves here; a blank secret never overwrites a local one** — `AKIA…` matches the name shape, and a blank means "set it", never "wipe it" (`SnapshotTests`).
+
 ## Memory + audit
 
 Five stores, all tables in `data/otto.db` (SQLite/WAL), isolated per project by a `namespace` column (NULL=global); legacy `data/*.json` are frozen forensic copies, read by nothing.

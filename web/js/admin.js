@@ -1,6 +1,6 @@
 "use strict";
 /* Admin: repo conventions, appearance, runtime settings, secrets, the model/endpoint
-   matrix, capabilities, MCP servers, project repos and the portable profile bundle. */
+   matrix, capabilities, MCP servers and project repos. Share extensions lives in share.js. */
 // Repo conventions: what the judge is actually enforcing for each project repo. CONV_BUSY lives
 // OUTSIDE the render (same reason as GC_RUNNING) — renderAdmin rebuilds the whole panel, so an
 // in-flight re-derivation would otherwise look cancelled the moment anything else re-renders,
@@ -1280,6 +1280,12 @@ function renderAdmin(data, models, el, settings){
         <input type="file" id="bundle-file" accept="application/json,.json" hidden>
         <span class="bundlemsg" id="bundle-msg"></span>
       </div>
+      <div class="bundlebtns">
+        <button class="addbtn" id="export-snapshot" title="Everything configured here — settings, models + endpoints, repos, jobs, ingresses. Secret-free.">⤓ Export snapshot</button>
+        <button class="addbtn" id="import-snapshot" title="Previews every change first. Ingresses, rules and crons arrive switched off.">⤒ Import snapshot</button>
+        <input type="file" id="snapshot-file" accept="application/json,.json" hidden>
+        <span class="bundlemsg" id="snapshot-msg"></span>
+      </div>
       </div>
     </div>
     <div class="asection coll collapsed" data-sect="tools"><h3><span class="secttoggle" title="collapse / expand">
@@ -1515,46 +1521,8 @@ function renderAdmin(data, models, el, settings){
   document.getElementById("add-cap").addEventListener("click",()=>showCapForm());
   document.getElementById("add-mcp").addEventListener("click",()=>showMcpForm());
   document.getElementById("add-project").addEventListener("click",showProjectForm);
-  wireBundle(el);
+  wireShare(el);
   wireModels(el);
-}
-
-async function exportBundle(){
-  const data=await (await fetch("/api/bundle/export")).json();
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob); a.download="otto-bundle.json";
-  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href);
-  const n=(data.capabilities||[]).length, m=Object.keys(data.mcp_servers||{}).length;
-  setBundleMsg(`exported ${n} capability(ies) + ${m} MCP server(s) → otto-bundle.json`);
-}
-
-function wireBundle(el){
-  const file=el.querySelector("#bundle-file");
-  el.querySelector("#export-bundle").addEventListener("click",exportBundle);
-  el.querySelector("#import-bundle").addEventListener("click",()=>{ file.value=""; file.click(); });
-  file.addEventListener("change",async()=>{
-    const f=file.files[0]; if(!f) return;
-    let bundle;
-    try { bundle=JSON.parse(await f.text()); }
-    catch(e){ setBundleMsg("not valid JSON", true); return; }
-    let data;
-    try { data=await postJSON("/api/bundle/import", bundle); }
-    catch(e){ setBundleMsg("import failed: "+e.message, true); return; }
-    const caps=(data.capabilities_added||[]).length, mcps=(data.mcps_added||[]).length;
-    const renamed=[...(data.capabilities_renamed||[]),...(data.mcps_renamed||[])];
-    let msg=`imported ${caps} capability(ies) + ${mcps} MCP server(s)`;
-    if(renamed.length) msg+=` · renamed: ${renamed.map(r=>`${r.from}→${r.to}`).join(", ")}`;
-    if((data.needs_env||[]).length) msg+=` · set env for: ${data.needs_env.join(", ")}`;
-    await loadAdmin();        // re-render the lists first (rebuilds the panel)…
-    setBundleMsg(msg);        // …then post the summary into the fresh element
-  });
-}
-
-function setBundleMsg(text, bad){
-  const m=document.getElementById("bundle-msg");
-  if(!m) return;
-  m.textContent=text; m.className="bundlemsg"+(bad?" bad":" ok");
 }
 
 async function removeItem(path, body){

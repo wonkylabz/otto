@@ -27,7 +27,7 @@ import temporal_client as tc
 if tc.OK:
     from temporalio.client import (
         Schedule, ScheduleActionStartWorkflow, ScheduleOverlapPolicy,
-        SchedulePolicy, ScheduleSpec, ScheduleUpdate,
+        SchedulePolicy, ScheduleSpec, ScheduleState, ScheduleUpdate,
     )
     from workflows import OttoWorkflow
 
@@ -121,7 +121,7 @@ def _args(rid, rb, values=None, unattended=True):
     return args
 
 
-def _schedule(rid, rb):
+def _schedule(rid, rb, paused=False):
     return Schedule(
         action=ScheduleActionStartWorkflow(
             OttoWorkflow.run,
@@ -131,6 +131,8 @@ def _schedule(rid, rb):
         ),
         spec=ScheduleSpec(cron_expressions=[rb["cron"]], time_zone_name=local_tz_name()),
         policy=SchedulePolicy(overlap=ScheduleOverlapPolicy.SKIP),
+        state=ScheduleState(paused=paused, note="imported — paused until a human enables it"
+                            if paused else None),
     )
 
 
@@ -189,14 +191,15 @@ async def _run_now(rid, rb, values, unattended):
     return wid
 
 
-async def _sync(rid, rb):
+async def _sync(rid, rb, paused=False):
     """Make Temporal match ONE runbook: create/update its schedule when it has a cron, delete it
-    when the cron was removed (the runbook stays, as an on-demand one)."""
+    when the cron was removed (the runbook stays, as an on-demand one). `paused` creates it paused
+    (and pauses an existing one) IN the same call — a snapshot import must never fire a cron."""
     c = await tc.client()
     if not rb.get("cron"):
         await _delete(rid)
         return
-    fresh = _schedule(rid, rb)
+    fresh = _schedule(rid, rb, paused=paused)
     try:
         await c.get_schedule_handle(rid).describe()
     except Exception:  # noqa: BLE001 - missing in Temporal -> create
@@ -206,6 +209,8 @@ async def _sync(rid, rb):
     def _apply(inp):
         s = inp.description.schedule
         s.spec, s.action, s.policy = fresh.spec, fresh.action, fresh.policy
+        if paused:
+            s.state = fresh.state
         return ScheduleUpdate(schedule=s)
     await c.get_schedule_handle(rid).update(_apply)
 
@@ -306,6 +311,11 @@ def update(rid, rb):
     if clean["cron"] or available():
         tc.run(_sync(rid, clean))
     return clean
+
+
+def sync_paused(rid, rb):
+    """Create/update ONE stored runbook's schedule PAUSED (snapshot import)."""
+    tc.run(_sync(rid, rb, paused=True))
 
 
 def remove(rid):

@@ -473,7 +473,7 @@ class HttpApiTests(unittest.TestCase):
         cap = registry.Capability("skill", "demo-read", "d")
         engine._remember_solution(cap, "renew the vpn certificate", "the vpn approach")
         row = engine.add_behavior("always run the tests first", scope="global")
-        self.assertTrue(row and row["id"])           # truthy return — policy.import_profile counts it
+        self.assertTrue(row and row["id"])           # truthy return — callers count it as added
 
         st, body = _get(self.base, "/api/solutions")
         self.assertEqual(st, 200)
