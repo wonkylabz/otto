@@ -1611,7 +1611,7 @@ def _chat(m, messages, max_tokens, timeout):
     invisible on this path."""
     body = chat_body(m, messages, max_tokens)
     url = m["base_url"].rstrip("/") + "/chat/completions"
-    for _ in range(len(error_classifier.QUIRKS) + 1):
+    for _ in range(len(error_classifier.QUIRKS) + 2):
         req = urllib.request.Request(url, method="POST", headers=request_headers(m),
                                      data=json.dumps(body).encode())
         try:
@@ -1619,11 +1619,21 @@ def _chat(m, messages, max_tokens, timeout):
                 return json.loads(r.read())
         except urllib.error.HTTPError as e:
             detail = _http_detail(e)
-            adapted = adapt_for(m, e.code, detail, body)
+            adapted = adapt_for(m, e.code, detail, body) or clamp_output(m, detail, body)
             if adapted is None:
                 raise RuntimeError(f"HTTP {e.code}: {detail or e.reason}") from None
             body = adapted
     raise RuntimeError("the endpoint rejected every request-parameter dialect we know")
+
+
+def clamp_output(m, detail, body):
+    """The body with its output budget lowered to the ceiling a 400 named, or None. Only ever
+    lowers, so a loop re-applying it terminates."""
+    cap = error_classifier.output_cap(detail)
+    key = token_key(m)
+    if cap and int(body.get(key) or 0) > cap:
+        return {**body, key: cap}
+    return None
 
 
 def _http_detail(err):

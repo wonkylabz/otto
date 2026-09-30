@@ -8041,6 +8041,68 @@ class OpenAiParamDialectTests(unittest.TestCase):
         self.assertEqual(len(sent), 2, "clamped in one round trip, not halved toward it")
         self.assertEqual(sent[1]["max_tokens"], 10000)
 
+    def test_vllms_max_model_len_rejection_clamps_below_the_window(self):
+        """#179: vLLM names the whole window, not an output ceiling, so it failed as `unknown`.
+        Clamping to the window itself overflows again — the prompt shares it."""
+        cap = (b'{"error":{"message":"max_tokens=32768 cannot be greater than max_model_len='
+               b'max_total_tokens=24576. Please request fewer output tokens. (parameter='
+               b'max_tokens, value=32768)"}}')
+        self.assertIs(self.ec.classify(400, cap.decode()).action, self.ec.Action.prune)
+        self.assertEqual(self.ec.output_cap(cap.decode()), 12288)
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(cap)
+            return {"choices": [{"message": {"role": "assistant", "content": "fits"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.m)
+        self.assertEqual(out["result"], "fits")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[1]["max_tokens"], 12288)
+
+    VLLM_WINDOW_400 = (b'{"error":{"message":"max_tokens=32768 cannot be greater than '
+                       b'max_model_len=max_total_tokens=24576. Please request fewer output '
+                       b'tokens. (parameter=max_tokens, value=32768)"}}')
+
+    def test_the_tool_free_seam_clamps_a_named_output_cap_too(self):
+        """`gateway._chat` (local_execute's seam) only adapted dialect quirks, so the same 400
+        the runtime recovers failed every tool-free local attempt."""
+        sent = []
+
+        def fake_urlopen(req, timeout=None):
+            sent.append(json.loads(req.data))
+            if len(sent) == 1:
+                raise self._400(self.VLLM_WINDOW_400)
+            return self._Resp({"choices": [{"message": {"content": "answered"}}]})
+        self._patch_urlopen(fake_urlopen)
+        data = gateway._chat(self.m, [{"role": "user", "content": "hi"}], 32768, 5)
+        self.assertEqual(data["choices"][0]["message"]["content"], "answered")
+        self.assertEqual([b["max_tokens"] for b in sent], [32768, 12288])
+
+    def test_a_clamped_output_cap_is_kept_for_later_turns(self):
+        """The ceiling is a fact about the model, not the turn: rebuilding each turn's body at
+        LOCAL_EXEC_MAX_TOKENS paid the same 400 once per turn (measured live: 400,ok,400,ok)."""
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            if len(sent) == 1:
+                raise self._400(self.VLLM_WINDOW_400)
+            if len(sent) == 2:
+                return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "Bash", "arguments": '{"command": "true"}'}}]}}],
+                    "usage": {}}
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}],
+                    "usage": {}}
+        self._patch_post(fake_post)
+        out = local_runtime.run_json("x", allowed_tools=["Bash"], model_entry=self.m)
+        self.assertEqual(out["result"], "done")
+        self.assertEqual([b["max_tokens"] for b in sent], [32768, 12288, 12288])
+
     def test_the_overflow_halving_uses_the_endpoints_own_key(self):
         """The 4th site the ticket did not list. `_chat_step` halves the output budget BY NAME;
         reading `max_tokens` off a body carrying `max_completion_tokens` both loses the halving

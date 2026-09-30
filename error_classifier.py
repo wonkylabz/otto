@@ -317,6 +317,7 @@ def tools_refused_message(detail=""):
 
 
 _OUTPUT_CAP = re.compile(r"supports at most (\d+) completion tokens", re.IGNORECASE)
+_WINDOW_CAP = re.compile(r"cannot be greater than max_model_len\S*?=(\d+)", re.IGNORECASE)
 
 
 def output_cap(detail):
@@ -329,9 +330,16 @@ def output_cap(detail):
     gpt-4o, gpt-4, gpt-3.5-turbo — rejected every call.
 
     Recovering by halving (what a real overflow does) works but pays extra round trips for a
-    number the server already told us, so the caller clamps to it directly."""
+    number the server already told us, so the caller clamps to it directly.
+
+    vLLM names the WHOLE window instead ("max_tokens=32768 cannot be greater than
+    max_model_len=…=24576"), which the prompt shares, so clamping to it overflows again: half
+    leaves the prompt room, and a prompt that still doesn't fit gets the ordinary overflow 400."""
     m = _OUTPUT_CAP.search(detail or "")
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    m = _WINDOW_CAP.search(detail or "")
+    return max(1, int(m.group(1)) // 2) if m else None
 
 
 def _looks_like_context_overflow(detail):
