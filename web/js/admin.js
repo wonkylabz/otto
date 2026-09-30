@@ -406,6 +406,7 @@ function modelsSection(m){
     <th class="c-health">Health</th>
     <th class="c-phases"><span class="mradios">${PHASE_HELP.map(([l,t])=>`<span class="rc h" title="${esc(t)}">${l}</span>`).join("")}</span></th>
     <th class="c-turns" title="local agent runtime's per-run turn budget (model call + tool round = one turn) — blank uses the global default (60), raise for a stronger model that needs more room">Turns</th>
+    <th class="c-vision" title="send attached images to this model as image parts — tick only for a vision model; an endpoint refusing them walls the run over to Claude and marks the model unhealthy">Vision</th>
     <th class="c-test">Check</th><th class="c-ord"></th><th class="c-rm"></th></tr></thead>`;
   const rows=m.pool.map(p=>`<tr class="mrow" data-model="${esc(p.name)}">
       <td><span class="minfo"><span class="mn">${plabel(p)} · ${esc(pname(p))}</span>
@@ -414,6 +415,7 @@ function modelsSection(m){
       <td class="c-health" data-mhealth="${esc(p.name)}">${modelHealthPill(p.name)}</td>
       <td class="c-phases"><span class="mradios">${radio(p,'routing')}${radio(p,'plan')}${radio(p,'preview')}${radio(p,'clarify')}${radio(p,'memory')}${radio(p,'verify')}${radio(p,'supervise')}${radio(p,'memory_gc')}${radio(p,'execution')}</span></td>
       <td class="c-turns">${(p.provider!=='claude'&&p.provider!=='codex')?`<input type="number" min="1" step="1" data-turns="${esc(p.name)}" value="${p.max_turns||''}" placeholder="60">`:''}</td>
+      <td class="c-vision">${(p.provider!=='claude'&&p.provider!=='codex')?`<input type="checkbox" data-vision="${esc(p.name)}"${p.vision?' checked':''}>`:''}</td>
       <td class="c-test"><span class="mtest"><button class="addbtn testbtn" data-testmodel="${esc(p.name)}">test</button><span class="tres" data-tres="${esc(p.name)}"></span></span></td>
       <td class="c-ord r"><span class="mgrip" draggable="true" title="drag to reorder \u2014 display only, except between models of the SAME tier: escalation, downshift and the Claude fallback each take the FIRST entry whose id matches their tier, so the higher of two opus rows wins">&#10247;</span></td>
       <td class="c-rm r"><button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button></td>
@@ -466,7 +468,7 @@ function modelsSection(m){
     <p class="sub" style="margin:2px 0 8px">One model per phase — hover a column header for what it does. The cheap phases take a local model happily.</p>
     ${badge}
     <table class="ctable modtable mpool">
-      <colgroup><col><col class="c-tag"><col class="c-health"><col class="c-phases"><col class="c-turns"><col class="c-test"><col class="c-ord"><col class="c-rm"></colgroup>
+      <colgroup><col><col class="c-tag"><col class="c-health"><col class="c-phases"><col class="c-turns"><col class="c-vision"><col class="c-test"><col class="c-ord"><col class="c-rm"></colgroup>
       ${head}<tbody>${rows}</tbody></table></div></div>`;
 }
 
@@ -503,6 +505,12 @@ function wireModels(el){
     const n=parseInt(raw,10);
     if(!Number.isInteger(n)||n<1){ inp.value=p.max_turns||""; return; }   // reject silently, restore last-good value
     p.max_turns=n; saveModels();
+  }));
+  el.querySelectorAll("[data-vision]").forEach(inp=>inp.addEventListener("change",()=>{
+    const p=MODEL_STATE.pool.find(x=>x.name===inp.dataset.vision);
+    if(!p) return;
+    if(inp.checked) p.vision=true; else delete p.vision;
+    saveModels();
   }));
   el.querySelectorAll("[data-testmodel]").forEach(b=>b.addEventListener("click",async()=>{
     const name=b.dataset.testmodel, res=el.querySelector(`[data-tres="${name}"]`);

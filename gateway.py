@@ -275,6 +275,11 @@ def is_local(m):
     return backend_of(m) == "local"
 
 
+def supports_vision(m):
+    """Does this entry take `image_url` parts (#162)? Set by hand in Admin; local runtime only."""
+    return is_local(m) and bool((m or {}).get("vision"))
+
+
 def _norm_headers(h):
     """An endpoint's optional headers as a clean {name: value} dict. Names/values carrying a
     newline are DROPPED, not escaped — a header split is a request-smuggling seam, and the

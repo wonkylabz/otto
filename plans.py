@@ -308,7 +308,8 @@ def _codex_preview(invocation, resume_session, cwd, effort=None, entry=None, tra
     return out, (ent or {}).get("name") or "codex", "codex"
 
 
-def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None):
+def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, transcript=None,
+                   attachments=None):
     """The plan preview on the LOCAL backend. Returns (out, model, backend) in `_claude`'s shape,
     so the caller's accounting, audit row and empty-plan fallback are unchanged.
 
@@ -346,7 +347,8 @@ def _local_preview(invocation, resume_session, cwd, effort=None, entry=None, tra
     try:
         out = local_runtime.run_json(invocation, allowed_tools=config.PLAN_TOOLS,
                                      model_entry=entry, timeout=config.PLAN_TIMEOUT_S, resume_session=fork,
-                                     cwd=cwd, effort=effort, transcript=transcript)
+                                     cwd=cwd, effort=effort, transcript=transcript,
+                                     attachments=attachments)
     finally:
         if fork:
             local_runtime.drop_session(fork)
@@ -570,7 +572,8 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     if local_runtime.is_local_session(resume_session) or (
             entry is not None and gateway.is_local(entry)):
         out, model, backend = _local_preview(invocation, resume_session, cwd, effort=effort,
-                                             entry=entry, transcript=transcript)
+                                             entry=entry, transcript=transcript,
+                                             attachments=attachments)
         # A local WALL re-dispatches to Claude, exactly as `engine.run_attempt` does for an
         # execution attempt (engine.py, `local_wall`). The preview had no such path: a model that
         # cannot drive the tool loop — say a hosted one whose endpoint refuses function tools —

@@ -840,6 +840,7 @@
   /* Must stay >= the input's width plus the cell padding (ModelColumnFitTests). */
   .modtable .c-turns { width: 78px; }
   .modtable .c-turns input { width: 56px; }
+  .modtable .c-vision { width: 58px; text-align: center; }
   .modtable .c-test { width: 150px; }
   /* the 15px grip + the cell's 20px of padding (ModelOrderTests). */
   .modtable .c-ord { width: 36px; }
@@ -851,7 +852,7 @@
   /* the warning banner above the table already names every broken model, so the per-row pill
      is the first thing to shed when the window can't hold the columns */
   @media (max-width: 940px) { .modtable .c-health { display: none; } }
-  @media (max-width: 1010px) { .modtable .c-turns { display: none; } }
+  @media (max-width: 1010px) { .modtable .c-turns, .modtable .c-vision { display: none; } }
   .mrow.off { opacity: .5; }
   .mrow .mgrip { cursor: grab; color: var(--dim); opacity: .3; font-size: 15px; }
   .mrow:hover .mgrip { opacity: .85; }

@@ -7,6 +7,7 @@ paths a run is ever told about are ones Otto wrote itself.
 Stored as `data/uploads/<id>/<name>`, swept on a TTL. The directory is resolved at CALL time from
 `config.DATA_DIR`, like `file_safety`'s globs, so the test suite's redirect covers it for free.
 """
+import base64
 import mimetypes
 import os
 import re
@@ -127,6 +128,28 @@ def note(atts):
             + "\nIf your tools cannot display an attached image, say it could not be viewed and "
               "work from the rest of the request; never describe what an image you did not see "
               "shows.")
+
+
+def image_label(meta):
+    """What an inlined image leaves behind in anything persisted: never its bytes (#162)."""
+    return f"[image: {meta['name']}, {meta['type']}, {meta['size']} bytes]"
+
+
+def image_parts(atts):
+    """`(part, label)` per attached INLINE_IMAGES file, as an OpenAI `image_url` data URI part.
+    An unreadable file is skipped; the note still names it."""
+    out = []
+    for a in atts or []:
+        if a.get("type") not in INLINE_IMAGES or not a.get("path"):
+            continue
+        try:
+            with open(a["path"], "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+        except OSError:
+            continue
+        out.append(({"type": "image_url", "image_url": {"url": f"data:{a['type']};base64,{data}"}},
+                    image_label(a)))
+    return out
 
 
 def judge_note(atts):

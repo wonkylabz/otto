@@ -40,6 +40,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+import attachments as attachments_mod
 import claude_cli
 import codex_cli
 import config
@@ -860,6 +861,18 @@ def _wire(messages):
     return out
 
 
+def _without_images(msg, labels):
+    """`msg` as persisted: image parts collapse to their text label, so no base64 reaches disk
+    and a resume never re-sends an earlier turn's images (#162)."""
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return msg
+    text = [p.get("text", "") if p.get("type") == "text"
+            else labels.get((p.get("image_url") or {}).get("url"), "[image]")
+            for p in content if isinstance(p, dict)]
+    return {**msg, "content": "\n\n".join(t for t in text if t)}
+
+
 def _load_session(sid):
     try:
         with open(session_path(sid)) as f:
@@ -951,7 +964,7 @@ def drop_session(sid):
 def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
              resume_session=None, system_context=None, cwd=None, transcript=None,
              on_event=None, abort=None, mcp_servers=None, mcp_request=None,
-             mcp_require_score=False, steer=None, effort=None):
+             mcp_require_score=False, steer=None, effort=None, attachments=None):
     """One execution turn on a LOCAL model — the drop-in counterpart of
     claude_cli.run_json (same return contract, same transcript side-effects, same
     supervisor `abort` kill-switch semantics — checked between turns and tool calls).
@@ -1021,7 +1034,11 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     else:
         sid = new_session_id()
         messages = ([{"role": "system", "content": system_context}] if system_context else [])
-    messages.append({"role": "user", "content": prompt})
+    # Images ride this turn only, and only for a `vision` entry; the note covers everything else.
+    images = attachments_mod.image_parts(attachments) if gateway.supports_vision(m) else []
+    image_labels = {p["image_url"]["url"]: label for p, label in images}
+    messages.append({"role": "user", "content": (
+        [{"type": "text", "text": prompt}] + [p for p, _ in images] if images else prompt)})
 
     # A scoped Bash grant marks this as the READ-ONLY PLAN PASS. Sandbox if the kernel will do
     # it, else the argv allowlist. A bare "Bash" (every execution grant) stays unrestricted.
@@ -1061,6 +1078,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         "kind": gateway.model_kind(m),
         "tools": sorted(offered_names), "bash_mode": bash_mode,
         "effort": effort_level, "effort_sent": effort_sent,
+        "images": [label for _, label in images],
         "mcp": sorted(mcp_servers or []) if mcp else [],
         "mcp_errors": (mcp.errors if mcp else {}),
         "mcp_trimmed": (mcp.trimmed if mcp else 0),
@@ -1258,7 +1276,8 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         # resume's unanswered user message (and duplicated context) in the stored history,
         # compounding on every retry (observed: a session with three stacked user turns).
         if not is_error:
-            _save_session(sid, [mm for mm in messages if isinstance(mm, dict)], m.get("name"))
+            _save_session(sid, [_without_images(mm, image_labels) for mm in messages
+                                if isinstance(mm, dict)], m.get("name"))
             # A completed turn proves the server is serving — clears an earlier unhealthy mark
             # without any separate reset path (gateway._set_health is last-write-wins).
             gateway.record_health(m.get("name"), True, "completed an execution turn")

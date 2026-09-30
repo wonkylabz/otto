@@ -563,7 +563,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                                      # declared one keeps filler up to the budget, since its
                                      # grant is explicit and "catch me up" matches no tool name.
                                      mcp_require_score=not mcp_client.declared_servers(cap),
-                                     effort=effort)
+                                     effort=effort, attachments=attachments)
         # TWO deterministic walls, one escape hatch: the serving stack rejects tool definitions
         # (vLLM missing --enable-auto-tool-choice/--tool-call-parser), or the endpoint is
         # unreachable after the backoffs. Neither is "the model answered badly" — both fail every
