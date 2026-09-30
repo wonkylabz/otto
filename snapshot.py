@@ -107,9 +107,15 @@ def _missing_ref(v, label, what):
     return None
 
 
+def _mask_secret(v):
+    """`gateway.mask_value` trusts the NAME shape, which an AKIA… literal has."""
+    import gateway
+    v = str(v or "")
+    return v if not v or _ENV_REF.match(v) or _portable_ref(v) else gateway.MASK + v[-4:]
+
+
 def _mask(v):
     """Preview output view: `before` holds LOCAL values, literal keys included."""
-    import gateway
     if isinstance(v, list):
         return [_mask(x) for x in v]
     if not isinstance(v, dict):
@@ -117,10 +123,9 @@ def _mask(v):
     out = {}
     for k, x in v.items():
         if k == "api_key_env":
-            out[k] = gateway.mask_value(x)
+            out[k] = _mask_secret(x)
         elif k in ("headers", "env") and isinstance(x, dict):
-            out[k] = {h: (gateway.mask_value(y) if not _ENV_REF.match(str(y or "")) else y)
-                      for h, y in x.items()}
+            out[k] = {h: _mask_secret(y) for h, y in x.items()}
         else:
             out[k] = _mask(x)
     return out
@@ -423,14 +428,15 @@ class _Knowledge(_Section):
         for c in applied:
             if c["key"] == "settings":
                 s = c["after"] or {}
-                knowledge.set_settings(threshold=s.get("threshold"), embed_model=s.get("embed_model"))
+                knowledge.set_settings(threshold=s.get("threshold"),
+                                       embed_model=s.get("embed_model") or "")   # None = "leave it"
                 continue
             title = c["key"][4:]
-            if c["action"] in ("update", "remove") and title in ids:
-                knowledge.delete_document(ids[title])
-            if c["action"] in ("add", "update"):
+            if c["action"] in ("add", "update"):         # add FIRST: a failed add keeps the old doc
                 d = c["after"]
                 knowledge.add_document(d["title"], d["text"], source=d.get("source") or "profile-import")
+            if c["action"] in ("update", "remove") and title in ids:
+                knowledge.delete_document(ids[title])
 
 
 class _Projects(_Section):
@@ -615,10 +621,11 @@ class _Rules(_Section):
 
     def prepare(self, inc, loc):
         out = {}
-        for k, r in inc.items():
+        for r in inc.values():
             r = self.normalize(r)
             if not r:
                 continue
+            k = self.key(r)                      # the key `local` derives, not the file's
             prior = loc.get(k)
             same = prior is not None and _sans(prior, "enabled") == _sans(r, "enabled")
             if same and prior.get("enabled", True) is not False:
@@ -640,6 +647,10 @@ class _SlackTriggers(_Rules):
     def normalize(self, r):
         import slack_triggers
         return slack_triggers.normalize(r)
+
+    @staticmethod
+    def key(r):
+        return r["id"]
 
     def local(self):
         import slack_triggers

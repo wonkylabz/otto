@@ -376,6 +376,32 @@ class SnapshotTests(unittest.TestCase):
              "api_key_env": self.ANT}))
         self.assertNotIn(self.ANT, json.dumps(self.snapshot.preview(snap, "replace")))
 
+    def test_the_preview_masks_a_name_shaped_literal_too(self):
+        snap = self._seed()
+        self._machine()
+        policy.save_mcp_defs({"gh": {"command": "npx", "args": ["x"], "env": {"K": self.AKIA}}})
+        self.assertNotIn(self.AKIA, json.dumps(self.snapshot.preview(snap, "replace")))
+
+    def test_replace_converges_on_a_hand_edited_snapshot(self):
+        snap = self._seed()
+        snap["sections"]["slack_triggers"] = {"renamed": r for r in
+                                               snap["sections"]["slack_triggers"].values()}
+        snap["sections"]["event_rules"] = {"x": r for r in snap["sections"]["event_rules"].values()}
+        snap["sections"]["knowledge"]["settings"]["embed_model"] = None
+        self._machine()
+        knowledge.set_settings(embed_model="local-embed")
+        self._import(snap, "replace")
+        self.assertEqual([], self.snapshot.preview(snap, "replace")["changes"])
+
+    def test_a_knowledge_update_that_fails_keeps_the_old_doc(self):
+        snap = self._seed()
+        self._machine()
+        knowledge.add_document("runbook", "the local version", "paste")
+        with mock.patch.object(knowledge, "add_document", side_effect=RuntimeError("embed down")), \
+                self.assertRaises(RuntimeError):
+            self._import(snap, "replace")
+        self.assertEqual([d["title"] for d in knowledge.documents()], ["runbook"])
+
     def test_a_path_only_project_travels_by_its_origin(self):
         self._machine()
         path = tempfile.mkdtemp()
