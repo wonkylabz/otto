@@ -1,7 +1,11 @@
 """Chat attachments (#161): the store, the per-run read grant, what a run and its judge are told,
 the HTTP routes, chat persistence and the composer wiring."""
+import io
 import json
 import os
+import re
+import shutil
+import tempfile
 import threading
 import time
 import unittest
@@ -14,6 +18,7 @@ import attachments
 import chats
 import config
 import engine
+import error_classifier
 import file_safety
 import gateway
 import judging
@@ -280,3 +285,142 @@ class ComposerWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalVisionTests(unittest.TestCase):
+    """#162: a `vision` local entry gets attached images as `image_url` parts on its own turn;
+    nothing persisted ever holds the bytes, and an endpoint refusing them is a wall."""
+
+    VISION = {"name": "vl", "provider": "openai", "base_url": "http://x/v1", "model": "q",
+              "vision": True}
+    # Measured against vLLM serving a text-only model (2026-10-01).
+    VLLM_REFUSAL = ('{"error":{"message":"QuantTrio/Qwen3-Coder-30B-A3B-Instruct-AWQ is not a '
+                    'multimodal model","type":"BadRequestError","param":null,"code":400}}')
+
+    def setUp(self):
+        import local_runtime
+        self.lr = local_runtime
+        self.tmp = tempfile.mkdtemp(prefix="otto-vision-")
+        self._saved = (local_runtime._post, local_runtime.SESSIONS, gateway._STATS_PATH)
+        local_runtime.SESSIONS = os.path.join(self.tmp, "sessions")
+        gateway._STATS_PATH = os.path.join(self.tmp, "gateway-stats.json")
+        self.bodies = []
+        self.png = attachments.store("shot.png", PNG)
+        self.jpg = attachments.store("photo.jpg", b"\xff\xd8\xff" + b"\x00" * 32)
+        self.txt = attachments.store("log.txt", b"boom")
+
+    def tearDown(self):
+        self.lr._post, self.lr.SESSIONS, gateway._STATS_PATH = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _answer(self, m, body, timeout):
+        self.bodies.append(json.loads(json.dumps(body)))
+        return {"choices": [{"message": {"role": "assistant", "content": "a red square"}}],
+                "usage": {}}
+
+    def _run(self, entry, atts, **kw):
+        self.lr._post = kw.pop("post", self._answer)
+        return self.lr.run_json("what is this?", allowed_tools=config.READ_TOOLS,
+                                model_entry=entry, cwd=self.tmp, attachments=atts, **kw)
+
+    def _user(self, body):
+        return [m for m in body["messages"] if m["role"] == "user"][0]["content"]
+
+    def test_a_vision_entry_gets_one_image_part_per_image_and_none_for_other_files(self):
+        self._run(self.VISION, [self.png, self.jpg, self.txt])
+        parts = self._user(self.bodies[0])
+        self.assertEqual(parts[0], {"type": "text", "text": "what is this?"})
+        urls = [p["image_url"]["url"] for p in parts if p["type"] == "image_url"]
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(urls[0].startswith("data:image/png;base64,"))
+        self.assertTrue(urls[1].startswith("data:image/jpeg;base64,"))
+
+    def test_without_the_flag_the_body_is_text_only(self):
+        for entry in ({**self.VISION, "vision": False}, {k: v for k, v in self.VISION.items()
+                                                          if k != "vision"}):
+            self.bodies = []
+            self._run(entry, [self.png])
+            self.assertEqual(self._user(self.bodies[0]), "what is this?")
+
+    def test_vision_is_a_local_runtime_flag_only(self):
+        self.assertFalse(gateway.supports_vision({"provider": "claude", "vision": True}))
+        self.assertFalse(gateway.supports_vision({"provider": "codex", "vision": True}))
+        self.assertFalse(gateway.supports_vision({"provider": "openai"}))
+        self.assertTrue(gateway.supports_vision(self.VISION))
+
+    def test_no_image_bytes_reach_the_session_or_the_transcript(self):
+        tr = os.path.join(self.tmp, "t.jsonl")
+        out = self._run(self.VISION, [self.png], transcript=tr)
+        b64 = self._user(self.bodies[0])[1]["image_url"]["url"].split(",", 1)[1]
+        with open(self.lr.session_path(out["session_id"])) as f:
+            stored = f.read()
+        with open(tr) as f:
+            transcript = f.read()
+        for text in (stored, transcript):
+            self.assertNotIn(b64, text)
+            self.assertNotIn("base64", text)
+            self.assertIn(f"[image: shot.png, image/png, {len(PNG)} bytes]", text)
+
+    def test_a_resume_never_re_sends_an_earlier_turns_image(self):
+        out = self._run(self.VISION, [self.png])
+        self.bodies = []
+        self._run(self.VISION, None, resume_session=out["session_id"])
+        self.assertNotIn("image_url", json.dumps(self.bodies[0]))
+
+    def test_an_endpoint_refusing_images_is_a_wall_and_lights_the_badge(self):
+        v = error_classifier.classify(400, self.VLLM_REFUSAL)
+        self.assertEqual(v.reason, error_classifier.Reason.images_unsupported)
+        self.assertTrue(v.is_wall)
+
+        def refuse(m, body, timeout):
+            raise urllib.error.HTTPError("u", 400, "Bad Request", {},
+                                         io.BytesIO(self.VLLM_REFUSAL.encode()))
+        out = self._run(self.VISION, [self.png], post=refuse)
+        self.assertEqual(out["wall_reason"], "images_unsupported")
+        self.assertFalse(gateway.model_health()["vl"]["ok"], "a mis-set flag must light the badge")
+        self.assertIn("Vision", error_classifier.wall_message("images_unsupported"))
+
+    def test_the_engine_hands_attachments_to_the_local_runtime_and_redispatches_a_wall(self):
+        saved = (gateway.exec_model_entry, gateway.exec_model_id, engine._claude,
+                 self.lr.run_json, config.SUPERVISE, engine.trace, engine.say)
+        seen, claude = [], []
+        try:
+            config.SUPERVISE = False
+            engine.trace = engine.say = lambda *a, **k: None
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: dict(self.VISION)
+            gateway.exec_model_id = lambda cap_name=None: "claude-haiku"
+            self.lr.run_json = lambda *a, **k: seen.append(k) or {
+                "result": "(local runtime error)", "is_error": True, "total_cost_usd": 0,
+                "session_id": None, "usage": {}, "wall_reason": "images_unsupported"}
+            engine._claude = lambda prompt, **kw: claude.append(kw) or {
+                "result": "claude read it", "total_cost_usd": 0, "session_id": "s", "usage": {}}
+            cap = registry.Capability("custom", "briefing", "morning briefing")
+            cap.risk = "read"
+            att = engine.run_attempt("what is this?", cap, wid="w-vis", attachments=[self.png])
+        finally:
+            (gateway.exec_model_entry, gateway.exec_model_id, engine._claude, self.lr.run_json,
+             config.SUPERVISE, engine.trace, engine.say) = saved
+        self.assertEqual(seen[0]["attachments"], [self.png])
+        self.assertTrue(att["local_incapable"])
+        self.assertEqual(att["backend"], "claude")
+        self.assertIn(self.png["path"], claude[0]["system_context"], "Claude reads it itself")
+
+    def test_the_local_plan_preview_gets_the_attachments_too(self):
+        import plans
+        seen = []
+        saved = self.lr.run_json
+        self.lr.run_json = lambda *a, **k: seen.append(k) or {
+            "result": "", "is_error": False, "session_id": None, "usage": {}}
+        try:
+            plans._local_preview("plan it", None, self.tmp, entry=dict(self.VISION),
+                                 attachments=[self.png])
+        finally:
+            self.lr.run_json = saved
+        self.assertEqual(seen[0]["attachments"], [self.png])
+
+    def test_admin_has_a_vision_switch_for_local_rows_only(self):
+        ui = ui_src()
+        self.assertIn('data-vision="${esc(p.name)}"', ui)
+        row = re.search(r'<td class="c-vision">\$\{\((.*?)\)\?', ui).group(1)
+        self.assertEqual(row, "p.provider!=='claude'&&p.provider!=='codex'")
+        self.assertIn("if(inp.checked) p.vision=true; else delete p.vision;", ui)

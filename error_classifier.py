@@ -45,6 +45,7 @@ class Reason(str, enum.Enum):
     overloaded = "overloaded"                # 502/503/504 — momentarily not serving
     server_error = "server_error"            # 500 — internal error, often transient
     tools_unsupported = "tools_unsupported"  # rejects the tools param outright
+    images_unsupported = "images_unsupported"  # rejects image_url parts: `vision` mis-set
     context_overflow = "context_overflow"    # prompt longer than the window
     unsupported_param = "unsupported_param"  # the body carries a parameter this model refuses
     bad_model = "bad_model"                  # 404 — no such model id, or the wrong base_url path
@@ -63,7 +64,8 @@ class Action(str, enum.Enum):
 # onto this list is what spends the ladder differently, so each entry needs that property to
 # actually hold — `unknown` is deliberately absent, since an unrecognised error might well be a
 # blip and the safe default is to let the ladder retry.
-_WALL = {Reason.auth, Reason.quota, Reason.tools_unsupported, Reason.bad_model}
+_WALL = {Reason.auth, Reason.quota, Reason.tools_unsupported, Reason.images_unsupported,
+         Reason.bad_model}
 
 # Reasons a backoff can legitimately outlive. Past the retry budget they become walls, which is
 # `escalate()` below rather than a second table.
@@ -82,6 +84,8 @@ _MESSAGE = {
     Reason.server_error: ("the model endpoint failed internally on every attempt (HTTP 500)"),
     Reason.tools_unsupported: ("the model endpoint rejects tool calls (on vLLM: missing "
                                "--enable-auto-tool-choice / --tool-call-parser)"),
+    Reason.images_unsupported: ("the model endpoint rejects image input — untick Vision on this "
+                                "model in Admin → Models"),
     Reason.context_overflow: "the prompt exceeds the model's context window",
     Reason.unsupported_param: ("the model refuses a parameter in the request body "
                                "({quirk}) — retried in this endpoint's dialect"),
@@ -142,6 +146,9 @@ def classify(status=None, detail="", transport_error=False, adaptable=True):
         # `reasoning_effort`, so it reads as adaptable, and only once dropping it changes
         # nothing is the real verdict visible — this model cannot run function tools on
         # /v1/chat/completions at all, which is the tool-call wall.
+        # First: unambiguous, and an image refusal must never read as a body to rewrite.
+        if _images_refused(detail):
+            return _v(Reason.images_unsupported, Action.wall)
         if adaptable:
             quirk = param_quirk(detail)
             if quirk:
@@ -260,6 +267,19 @@ def param_quirk(detail):
                 or "does not support" in d):
             return QUIRK_NO_REASONING_EFFORT
     return None
+
+
+# Measured: vLLM serving a text model says "<model> is not a multimodal model"; the rest are the
+# spellings of llama.cpp, Ollama and OpenAI for the same refusal.
+_IMAGE_REFUSALS = ("not a multimodal model", "does not support multimodal",
+                   "image input is not supported", "multimodal is not supported",
+                   "does not support image", "image_url is only supported by certain models",
+                   "at most 0 image")
+
+
+def _images_refused(detail):
+    d = (detail or "").lower()
+    return any(p in d for p in _IMAGE_REFUSALS)
 
 
 def _tools_refused(detail):
