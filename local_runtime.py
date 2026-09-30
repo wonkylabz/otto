@@ -669,7 +669,7 @@ def _prune(messages):
     return out, changed
 
 
-def _chat_step(m, body, timeout, _rounds=10, deadline=None):
+def _chat_step(m, body, timeout, _rounds=10, deadline=None, learned=None):
     """One model call, hardened: HTTP errors carry the SERVER'S error body (a bare 'HTTP
     Error 400' hid the real reason across three debugging rounds), and a context-overflow
     400 is recovered in two escalating moves. The server's own numbers are USELESS for
@@ -685,7 +685,8 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
     Returns (response, compacted) — `compacted` is the pruned history when step 1 fired, and
     None otherwise. The caller MUST adopt it as its own history: pruning only a local copy of
     the wire body meant every later turn rebuilt the full history and re-paid the same 400,
-    and the session saved to disk kept growing, so every future resume re-paid it too."""
+    and the session saved to disk kept growing, so every future resume re-paid it too.
+    A named output ceiling is written to `learned`, so later turns don't re-pay its 400."""
     detail, max_len, prompt_tokens = "", 0, 0
     v = None          # the last verdict, so the give-up message names what actually happened
     transient = 0
@@ -752,13 +753,12 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None):
             # The server named the model's own output ceiling, so clamp to it rather than
             # discovering it by halving: this is not a full context, it is one number
             # (LOCAL_EXEC_MAX_TOKENS) applied to every model regardless of what it can emit.
-            cap = error_classifier.output_cap(detail)
-            if cap:
-                key = gateway.token_key(m)
-                cur = int(body.get(key) or config.LOCAL_EXEC_MAX_TOKENS)
-                if cur > cap:
-                    body = {**body, key: cap}
-                    continue
+            clamped = gateway.clamp_output(m, detail, body)
+            if clamped is not None:
+                body = clamped
+                if learned is not None:
+                    learned["out_cap"] = clamped[gateway.token_key(m)]
+                continue
             fit = _context_fit(detail)          # numbers for the final message, when offered
             if fit:
                 max_len, prompt_tokens = fit
@@ -1088,6 +1088,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     # one (900s) silently outlived a Claude path that had already moved to 1100s.
     deadline = time.time() + (timeout if timeout is not None else config.LOCAL_RUN_TIMEOUT_S)
     usage = {"input_tokens": 0, "output_tokens": 0}
+    learned = {}                   # an output ceiling the endpoint named, kept for later turns
     result, is_error = None, False
     parts, continuations = [], 0   # stitched final answer across max_tokens cutoffs
     nudged = False                 # one shot at converting a reasoning-only turn into an answer
@@ -1128,11 +1129,13 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
             # (issue #10 — OpenAI's newer models reject `max_tokens` and a non-default
             # `temperature`), and a body built here would speak a dialect the other three
             # call sites had already learned was wrong.
-            body = gateway.chat_body(m, _wire(messages), config.LOCAL_EXEC_MAX_TOKENS,
+            body = gateway.chat_body(m, _wire(messages),
+                                     learned.get("out_cap", config.LOCAL_EXEC_MAX_TOKENS),
                                      reasoning_effort=effort_level or None, tools=tools or None)
             data, compacted = _chat_step(m, body,
                                          min(config.LOCAL_EXEC_TIMEOUT_S,
-                                             max(1, deadline - time.time())), deadline=deadline)
+                                             max(1, deadline - time.time())), deadline=deadline,
+                                         learned=learned)
             if compacted is not None:
                 # The history no longer fits and was shrunk to make this call. Keep the shrunk
                 # form: it is what the model actually saw, and it is what the next turn (and
