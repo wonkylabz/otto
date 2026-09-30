@@ -206,6 +206,10 @@ ALL_BUILTIN_TOOLS = list(_BUILTIN_TOOLS)
 # why it is a sentinel rather than a level: there is no neutral level to name.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 EFFORT = os.environ.get("OTTO_EFFORT", "default").strip().lower() or "default"
+# `claude -p --thinking-display summarized` is the only way stream-json carries thinking TEXT
+# (measured 2.1.285; the `showThinkingSummaries` setting still left it empty). The flag is
+# hidden, so `off` is the escape hatch if a CLI release drops it (#164).
+THINKING_DISPLAY = os.environ.get("OTTO_THINKING_DISPLAY", "summarized").strip().lower() or "summarized"
 
 
 def effort_level(value):
@@ -574,6 +578,7 @@ _SETTING_SPECS = {
     "cap_local_latch_fails": ("OTTO_CAP_LOCAL_LATCH_FAILS", "int", "CAP_LOCAL_LATCH_FAILS"),
     "cap_local_latch_ttl_s": ("OTTO_CAP_LOCAL_LATCH_TTL_S", "float", "CAP_LOCAL_LATCH_TTL_S"),
     "effort":             ("OTTO_EFFORT", "choice:default,low,medium,high,xhigh,max", "EFFORT"),
+    "thinking_display":   ("OTTO_THINKING_DISPLAY", "choice:summarized,off", "THINKING_DISPLAY"),
     "conventions_digest_chars": ("OTTO_CONVENTIONS_DIGEST_CHARS", "int",
                                  "CONVENTIONS_DIGEST_CHARS"),
     "attachment_max_mb":  ("OTTO_ATTACHMENT_MAX_MB", "int", "ATTACHMENT_MAX_MB"),

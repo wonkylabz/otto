@@ -338,6 +338,9 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     effort = config.effort_level(effort)
     if effort:
         cmd += ["--effort", effort]
+    # Only a transcript has a reader for thinking (the debug drawer); a cheap tier gains nothing.
+    if transcript and config.setting("thinking_display") == "summarized":
+        cmd += ["--thinking-display", "summarized"]
     # `--permission-mode plan` is how the read-only PLAN preview reads private tickets: without
     # it, a SCOPED Bash allow (e.g. Bash(gh issue view:*)) still trips Claude Code's command
     # classifier, which gates any NETWORK command to interactive approval that a headless

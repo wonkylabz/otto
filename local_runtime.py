@@ -823,6 +823,9 @@ def _assistant_event(msg):
     """The model's OpenAI-shaped turn as a Claude stream-json `assistant` event, so
     transcript consumers (progress endpoint, supervisor) need no second format."""
     blocks = []
+    reasoning = gateway.reasoning_text(msg)
+    if reasoning.strip():
+        blocks.append({"type": "thinking", "thinking": reasoning})
     if msg.get("content"):
         blocks.append({"type": "text", "text": str(msg["content"])})
     for tc in msg.get("tool_calls") or []:

@@ -52,6 +52,8 @@ from ui import trace
 # attempt (the prompt only ever sees the char-bounded tail anyway).
 _LINE_CHARS = 300
 _MAX_LINES = 400
+# A thinking summary is paragraphs, not a one-liner; only the debug drawer asks for it (#164).
+_THINKING_CHARS = 2000
 
 # A steer is delivered VERBATIM into the live agent's context, where it will be obeyed and
 # cannot be taken back — a far tighter contract than a RETRY critique, which only ever feeds a
@@ -113,11 +115,12 @@ def _result_text(block):
     return out or ("(error)" if block.get("is_error") else "(no text)")
 
 
-def compact_event(event):
+def compact_event(event, thinking=False):
     """One stream-json event -> a short transcript line for the supervisor's context, or
     None for events with no activity signal (init, result, hook/rate-limit noise, unknown
     future types). Pure + defensive: real streams grow new event shapes, and a compaction
-    failure must never surface into the run."""
+    failure must never surface into the run. `thinking=True` adds a `thinking:` line per
+    NON-empty thinking block — the drawer's, never the supervisor's (it would reshape its prompt)."""
     if not isinstance(event, dict):
         return None
     etype = event.get("type")
@@ -127,7 +130,10 @@ def compact_event(event):
             for block in (event.get("message") or {}).get("content") or []:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "text" and block.get("text"):
+                if block.get("type") == "thinking":
+                    if thinking and str(block.get("thinking") or "").strip():
+                        parts.append("thinking: " + " ".join(str(block["thinking"]).split())[:_THINKING_CHARS])
+                elif block.get("type") == "text" and block.get("text"):
                     parts.append("assistant: " + " ".join(str(block["text"]).split())[:_LINE_CHARS])
                 elif block.get("type") == "tool_use":
                     args = json.dumps(block.get("input") or {})[:_LINE_CHARS]
