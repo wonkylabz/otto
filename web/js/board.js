@@ -456,18 +456,30 @@ async function openRunDebug(wid, capLabel, ui){
   try { r=await (await fetch("/api/run/detail?id="+encodeURIComponent(wid))).json(); }
   catch(e){ body.innerHTML=`<p class="err">Couldn't load run detail (${esc(e.message)}).</p>`; return; }
   if(gen!==DBG_GEN) return;
-  _dbgRender(body, r);
+  // A dead worker leaves an attempt that looks live on disk forever; only Temporal can say.
+  const wfEnded=async()=>{ const st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json();
+    return st.state==="unreachable"?null:(st.state==="done"||st.state==="failed"); };
+  let ended=false, ticks=0;
+  if(r.found&&r.attempts.some(a=>a.live)){ try { ended=!!(await wfEnded()); } catch(e){} }
+  if(gen!==DBG_GEN) return;
+  _dbgRender(body, r, null, ended);
+  if(ended) return;
   let live=r.found?r.attempts.find(a=>a.live):null;
   const rerender=async()=>{
     const d=await (await fetch("/api/run/detail?id="+encodeURIComponent(wid))).json();
     if(gen!==DBG_GEN) return;
     const open=new Set([...body.querySelectorAll(".dbgatt.open")].map(x=>x.dataset.att)), top=body.scrollTop;
-    _dbgRender(body, d, open);
+    _dbgRender(body, d, open, ended);
     body.scrollTop=top;
     r=d; live=d.found?d.attempts.find(a=>a.live):null;
   };
   DBG_STOP=poll(async()=>{
     if(gen!==DBG_GEN || modal.hidden){ _dbgStop(); return POLL_SKIP; }
+    if(live && ++ticks%5===0){
+      const e=await wfEnded();
+      if(gen!==DBG_GEN) return POLL_SKIP;
+      if(e){ ended=true; await rerender(); _dbgStop(); return true; }
+    }
     if(live){
       const ev=await (await fetch(`/api/run/events?id=${encodeURIComponent(wid)}&attempt=${live.attempt}&since=${live.events_next}`)).json();
       if(gen!==DBG_GEN) return POLL_SKIP;
@@ -486,15 +498,16 @@ async function openRunDebug(wid, capLabel, ui){
       return true;
     }
     // Between attempts, or before the first: only Temporal knows whether the run is still going.
-    const st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json();
+    const e=await wfEnded();
     if(gen!==DBG_GEN) return POLL_SKIP;
-    if(st.state==="done"||st.state==="failed"){ await rerender(); _dbgStop(); return true; }
-    if(st.state==="unreachable") return false;
+    if(e===null) return false;
+    if(e){ ended=true; await rerender(); _dbgStop(); return true; }
     await rerender();
     return true;
   }, 3000);
 }
-function _dbgRender(body, r, openSet){
+function _dbgRender(body, r, openSet, ended){
+  if(r.found&&ended) r.attempts.forEach(a=>{ a.live=false; });
   if(!r.found){ body.innerHTML=`<p class="sub">No audit record found for this run yet.</p>`; return; }
   const meta=[];
   if(r.cap) meta.push(`<span class="k">${esc(r.cap)}</span>${r.risk?' · '+esc(r.risk):''}`);

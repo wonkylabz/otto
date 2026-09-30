@@ -348,16 +348,26 @@ def _transcript_attempts(wid):
     return found
 
 
+def _is_live(attempt, meta_rows):
+    """No audit row of its own is not enough: a terminated run, or a round audited under another
+    attempt number, leaves a finished transcript unaudited (7 of 46 on disk when measured)."""
+    for e in meta_rows:
+        a = e.get("attempt")
+        if e.get("outcome") in _TERMINAL_OUTCOMES or (a is not None and a >= attempt):
+            return False
+    return True
+
+
 def _run_events(wid, attempt, since):
     """The drawer's incremental poll (#164): the compacted lines of ONE attempt past `since`, and
-    whether it is still live (no audit row yet). `newer` flags a later attempt having started."""
+    whether it is still live. `newer` flags a later attempt having started."""
     if not wid or not re.fullmatch(r"[A-Za-z0-9._:@-]+", wid):
         return {"found": False}
-    audited = {e.get("attempt") for e in engine.audit_entries_for(wid)}
+    meta_rows = engine.audit_entries_for(wid)
     events, truncated, total, hidden = _transcript_events(wid, attempt, cap=_LIVE_EVENTS_CAP,
                                                           since=max(0, since))
     return {"found": True, "events": events, "next": total, "truncated": truncated,
-            "thinking_hidden": hidden, "live": attempt not in audited,
+            "thinking_hidden": hidden, "live": _is_live(attempt, meta_rows),
             "newer": any(a > attempt for a in _transcript_attempts(wid))}
 
 
@@ -395,12 +405,16 @@ def _run_detail(wid):
             det = next((c.get("detail") or c.get("result")
                         for c in content_rows if c.get("at") == e.get("at")), None)
             terminal = {"reason": e.get("reason") or e.get("outcome"), "detail": det}
-    attempts, seen = [], set()
+    # One row per attempt, and the execution row wins: the supervisor's row for the same attempt
+    # is written first and carries no verdict or cost, so first-seen read it as "no verify".
+    by_attempt = {}
     for e in meta_rows:
         a = e.get("attempt")
-        if a is None or a in seen:
-            continue
-        seen.add(a)
+        if a is not None and (a not in by_attempt
+                              or str(by_attempt[a].get("outcome", "")).startswith("supervisor_")):
+            by_attempt[a] = e
+    attempts, seen = [], set(by_attempt)
+    for a, e in by_attempt.items():
         c = content_by_attempt.get(a, {})
         events, truncated, _, hidden = _transcript_events(wid, a)
         attempts.append({
@@ -416,7 +430,8 @@ def _run_detail(wid):
     for a in sorted(on_disk - seen):
         events, truncated, total, hidden = _transcript_events(wid, a, cap=_LIVE_EVENTS_CAP)
         attempts.append({"attempt": a, "events": events, "events_truncated": truncated,
-                         "events_next": total, "thinking_hidden": hidden, "live": True})
+                         "events_next": total, "thinking_hidden": hidden,
+                         "live": _is_live(a, meta_rows)})
     attempts.sort(key=lambda x: x["attempt"])
     # Where the run actually spent itself, stage by stage (issue #129). Merged across the run's
     # rows because `_times` only grows and each row is a snapshot of it at that write — see

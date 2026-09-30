@@ -5431,6 +5431,29 @@ class RunDetailTests(unittest.TestCase):
         self._live_transcript("web-x6", 2, {"type": "otto-meta"})
         self.assertTrue(server._run_events("web-x6", 1, 3)["newer"])
 
+    def test_a_finished_but_unaudited_attempt_is_not_live(self):
+        """A terminated run's attempt, or a round audited under another number, never gets its
+        own row — calling it live polled a dead run forever."""
+        import server
+        cap = registry.Capability("agent", "x", "d")
+        self._live_transcript("web-x8", 1, {"type": "otto-meta"})
+        engine.record_terminal("web-x8", "r", cap, "terminated")
+        self.assertFalse(server._run_detail("web-x8")["attempts"][0]["live"])
+        self.assertFalse(server._run_events("web-x8", 1, 0)["live"])
+        self._live_transcript("web-x9", 1, {"type": "otto-meta"})
+        engine._audit("web-x9", "r", cap, "ok", 0, attempt=2)
+        self.assertEqual([(a["attempt"], a["live"]) for a in server._run_detail("web-x9")["attempts"]],
+                         [(1, False), (2, False)])
+
+    def test_a_supervised_attempt_reports_its_execution_row_not_the_supervisors(self):
+        import server
+        cap = registry.Capability("agent", "x", "d")
+        engine._audit("web-x10", "r", cap, "[supervisor shadow] ok", 0, attempt=1,
+                      outcome="supervisor_shadow")
+        engine._audit("web-x10", "r", cap, "done", 0.4, attempt=1, verified=True, model="opus")
+        a = server._run_detail("web-x10")["attempts"]
+        self.assertEqual([(x["attempt"], x["verified"], x["cost_usd"]) for x in a], [(1, True, 0.4)])
+
     def test_empty_claude_thinking_is_counted_so_the_drawer_can_say_why(self):
         import server
         self._live_transcript("web-x7", 1, {"type": "assistant", "message": {"content": [
