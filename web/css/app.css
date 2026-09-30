@@ -1214,6 +1214,19 @@
   .bundlemsg { font-size: 12px; }
   .bundlemsg.ok { color: var(--ok); }
   .bundlemsg.bad { color: var(--danger); }
+  .snapmodes { display: flex; gap: 16px; margin-bottom: 10px; }
+  .snapplan { max-height: 55vh; overflow: auto; margin-bottom: 10px; }
+  .snaptable { table-layout: fixed; width: 100%; }
+  .snaptable td { vertical-align: top; }
+  .snaptable .c-sstore { width: 110px; } .snaptable .c-sitem { width: 30%; } .snaptable .c-sact { width: 90px; }
+  .snapsec { font-size: 12px; }
+  .snapkey, .snapval { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  .snapact { font-size: 11px; padding: 1px 6px; border-radius: var(--r-sm); }
+  .snapact-add { background: var(--ok-soft); color: var(--ok); }
+  .snapact-update { background: var(--warn-soft); color: var(--warn); }
+  .snapact-remove { background: var(--danger-soft); color: var(--danger); }
+  .snapact-keep { color: var(--dim); }
+  .snaplist { margin: 4px 0 10px 18px; font-size: 12px; }
   /* swarm board */
   /* Columns share the row, but an EMPTY column shrinks to a stub instead of holding a quarter of
      the window hostage — the busy column gets that space for its cards. */

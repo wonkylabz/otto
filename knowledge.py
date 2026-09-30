@@ -58,8 +58,9 @@ def _schema(conn):
         source TEXT,
         at TEXT
     )""")
-    # `seq` is the chunk's position in its doc — load-bearing: policy.export_profile rebuilds a
-    # doc's text by joining chunks in this order, so an unordered read would scramble it.
+    # The ORIGINAL text: chunks overlap, so re-joining them grew a doc on every profile round-trip.
+    storage.ensure_columns(conn, "knowledge_docs", {"text": "TEXT"})
+    # `seq` is the chunk's position in its doc — `_rejoin` reads a pre-`text` doc in this order.
     conn.execute("""CREATE TABLE IF NOT EXISTS knowledge_chunks (
         doc_id TEXT NOT NULL,
         seq INTEGER NOT NULL,
@@ -191,8 +192,9 @@ def add_document(title, text, source="paste"):
     }
     with _conn() as conn, storage.tx(conn):
         seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM knowledge_docs").fetchone()[0]
-        conn.execute("INSERT INTO knowledge_docs (id, seq, title, source, at) VALUES (?,?,?,?,?)",
-                     (doc["id"], seq, doc["title"], doc["source"], doc["at"]))
+        conn.execute("INSERT INTO knowledge_docs (id, seq, title, source, at, text) "
+                     "VALUES (?,?,?,?,?,?)",
+                     (doc["id"], seq, doc["title"], doc["source"], doc["at"], text.strip()))
         conn.executemany(
             "INSERT INTO knowledge_chunks (doc_id, seq, text, embedding) VALUES (?,?,?,?)",
             [(doc["id"], i, c["text"], _pack(c["embedding"]))
@@ -260,17 +262,32 @@ def documents():
              "at": r["at"] or "", "chunks": r["chunks"], "embedded": r["embedded"]} for r in rows]
 
 
+def _rejoin(chunks):
+    """A pre-`text` doc's text from its chunks. `_chunk` always seeds a chunk with the previous
+    one's tail, so the longest suffix/prefix match is that overlap, dropped once."""
+    out = ""
+    for c in chunks:
+        c = c or ""
+        if not out:
+            out = c
+            continue
+        n = next((k for k in range(min(len(out), len(c), _CHUNK_OVERLAP), 0, -1)
+                  if out.endswith(c[:k])), 0)
+        out += c[n:] if n else "\n\n" + c
+    return out
+
+
 def export_docs():
-    """Every doc as {title, source, text} with its chunks re-joined in order — the portable-profile
-    shape (policy.export_profile). Embeddings are deliberately excluded: the importing machine
-    re-computes them against its own local model."""
+    """Every doc as {title, source, text} — the portable-snapshot shape (snapshot.py). Embeddings
+    are deliberately excluded: the importing machine re-computes them against its own model."""
     with _conn() as conn:
-        rows = conn.execute("SELECT id, title, source FROM knowledge_docs ORDER BY seq").fetchall()
+        rows = conn.execute("SELECT id, title, source, text FROM knowledge_docs "
+                            "ORDER BY seq").fetchall()
         return [{"title": r["title"], "source": r["source"] or "",
-                 "text": "\n\n".join(
-                     c["text"] or "" for c in conn.execute(
+                 "text": r["text"] if r["text"] is not None else _rejoin(
+                     [c["text"] for c in conn.execute(
                          "SELECT text FROM knowledge_chunks WHERE doc_id = ? ORDER BY seq",
-                         (r["id"],)))}
+                         (r["id"],))])}
                 for r in rows]
 
 

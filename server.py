@@ -49,6 +49,7 @@ import scheduler
 import slack
 import slack_socket
 import slack_triggers
+import snapshot
 import storage
 import supervisor
 import workspace
@@ -1302,9 +1303,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/bundle/export":
             self._send(200, json.dumps(policy.export_bundle(), indent=2))
         elif self.path == "/api/profile/export":
-            # Full portable profile (portability) — the bundle plus policy/models/behaviors/
-            # knowledge/project-instructions, secret-free. See profile.py for the CLI twin.
-            self._send(200, json.dumps(policy.export_profile(), indent=2))
+            # The full config snapshot (#166), secret-free. profile.py is the CLI twin.
+            self._send(200, json.dumps(snapshot.export(), indent=2))
         elif self.path == "/api/event-rules":
             self._send(200, json.dumps({
                 "rules": events.load_rules(),
@@ -2164,15 +2164,24 @@ class Handler(BaseHTTPRequestHandler):
         rebuild()
         self._send(200, json.dumps({"ok": True, **summary}))
 
-    def _post_profile_import(self, body):
-        """POST /api/profile/import"""
+    def _post_profile_preview(self, body):
+        """POST /api/profile/preview"""
         try:
-            summary = policy.import_profile(
-                body,
-                existing_caps=[c.name for c in CAPS],
-                existing_mcps=[m["name"] for m in policy.all_mcps(POLICY)])
+            plan = snapshot.preview(body.get("profile"), body.get("mode") or "merge")
         except ValueError as e:
             self._send(400, json.dumps({"error": str(e)})); return
+        self._send(200, json.dumps({"ok": True, **plan}))
+
+    def _post_profile_import(self, body):
+        """POST /api/profile/import — applies only the plan its `expect` fingerprint names."""
+        try:
+            summary = snapshot.apply(body.get("profile"), body.get("mode") or "merge",
+                                     body.get("expect") or "")
+        except ValueError as e:
+            self._send(400, json.dumps({"error": str(e)})); return
+        except snapshot.StaleSnapshotPreview as e:
+            self._send(409, json.dumps({"error": str(e)})); return
+        _set_policy(policy.load())
         rebuild()
         self._send(200, json.dumps({"ok": True, **summary}))
 
@@ -2486,6 +2495,7 @@ _POST_ROUTES = {
     "/api/needs-you/retry": Handler._post_needs_you_retry,
     "/api/policy": Handler._post_policy,
     "/api/profile/import": Handler._post_profile_import,
+    "/api/profile/preview": Handler._post_profile_preview,
     "/api/project/add": Handler._post_project_add,
     "/api/project/instructions": Handler._post_project_instructions,
     "/api/project/remove": Handler._post_project_remove,

@@ -1,42 +1,53 @@
-"""Portable Otto profile CLI (portability) — carry one install's configuration to another.
+"""Portable Otto config snapshot CLI (#166) — carry one install's configuration to another.
 
-    python3 profile.py export [out.json]     # secret-free profile (stdout if no file)
-    python3 profile.py import <profile.json> # non-clobbering merge; prints what happened
+    python3 profile.py export [out.json]                   # secret-free snapshot (stdout if no file)
+    python3 profile.py import <file> [--replace] [--yes]   # preview, then apply on confirmation
 
-The profile carries custom caps + MCP defs (secret-free), policy overrides, the model config
-(pasted API keys stripped), behaviour rules, knowledge docs (re-embedded on import), and
-project standing-instructions keyed by git origin. What it deliberately does NOT carry:
-schedules (auto-running imported crons is surprising), board config (instance-specific),
-learned facts/solutions (earned per install), and ~/.claude itself (version that separately).
-Logic lives in policy.export_profile / policy.import_profile.
+`merge` (default) never overwrites local config; `--replace` makes this install match the
+snapshot. Imported ingresses, rules and crons land disabled. Logic lives in snapshot.py.
 """
 import json
 import sys
 
-import policy
+import snapshot
+
+
+def _print_plan(plan):
+    for c in plan["changes"]:
+        why = f"  ({c['reason']})" if c.get("reason") else ""
+        print(f"  {c['action']:7} {c['section']}: {c['key']}{why}")
+    if not plan["changes"]:
+        print("  nothing to change")
+    for s in plan["secrets"]:
+        print(f"  secret needed: {s['for']} — {s['what']}" + (f" {s['name']}" if s["name"] else ""))
+    for w in plan["warnings"]:
+        print(f"  warning: {w}")
 
 
 def main(argv):
-    if len(argv) >= 1 and argv[0] == "export":
-        out = json.dumps(policy.export_profile(), indent=2)
+    if argv[:1] == ["export"] and len(argv) <= 2:
+        out = json.dumps(snapshot.export(), indent=2)
         if len(argv) > 1:
             with open(argv[1], "w") as f:
                 f.write(out)
-            print(f"profile written to {argv[1]}")
+            print(f"snapshot written to {argv[1]}")
         else:
             print(out)
         return 0
-    if len(argv) == 2 and argv[0] == "import":
+    if argv[:1] == ["import"] and len(argv) >= 2:
         with open(argv[1]) as f:
-            profile = json.load(f)
-        summary = policy.import_profile(profile)
-        print(json.dumps(summary, indent=2))
-        un = summary.get("projects", {}).get("unmatched") or []
-        if un:
-            print("\nclone + register these repos (Admin → Project repos), then re-import "
-                  "to apply their instructions:")
-            for p in un:
-                print(f"  - {p['name']}: {p['origin']}")
+            snap = json.load(f)
+        mode = "replace" if "--replace" in argv else "merge"
+        plan = snapshot.preview(snap, mode)
+        print(f"{mode} import would:")
+        _print_plan(plan)
+        if "--yes" not in argv and input("apply? [y/N] ").strip().lower() != "y":
+            print("nothing applied")
+            return 1
+        summary = snapshot.apply(snap, mode, plan["fingerprint"])
+        print(f"applied {len(summary['applied'])} change(s)")
+        for s in summary["status"]:
+            print(f"  {s}")
         return 0
     print(__doc__.strip())
     return 1

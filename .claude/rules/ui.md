@@ -42,4 +42,4 @@ Admin tab edits `data/policy.json` (cap risk/enable), `data/models.json` (phase 
 
 Repo conventions UI: Admin → Project repos → Conventions column (`GET /api/conventions`, `POST /api/conventions/refresh`). `conventions.status` is cache-only; `conventions.refresh` is the only path that derives, resolving against `registry.projects()`, never the client.
 
-Portable profile: `python3 profile.py export/import` (Admin → Share extensions).
+Portable snapshot: `share.js` (Admin → Share extensions) over `snapshot.py` — rules in `memory-privacy.md`.

@@ -2,6 +2,7 @@
 
 Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
+import copy
 import inspect
 import json
 import os
@@ -18,13 +19,18 @@ import chats
 import config
 import conventions
 import engine
+import estop
 import file_safety
 import gateway
 import intents
 import judging
 import knowledge
+import policy
 import registry
 import repos
+import runbooks
+import scheduler
+import test_support
 import workspace
 
 try:                                       # the Temporal layer — absent under a bare python3
@@ -147,101 +153,300 @@ class PrCopyTests(unittest.TestCase):
         self.assertEqual(t, "Fix the flaky retry logic")
 
 
-class ProfileTests(unittest.TestCase):
-    """Portable profile export/import (portability): secret-free by construction,
-    non-clobbering on import — a tuned install is never overwritten."""
+class SnapshotTests(unittest.TestCase):
+    """The portable config snapshot (#166): a whole install carried to another. Each machine is a
+    fresh `redirect_live_state()` temp dir; every side effect that would reach Temporal, git or
+    the network is a recorded stub."""
+
+    # Real vendor formats (memory-privacy.md) — a fixture shaped to a regex proves nothing.
+    ANT = "sk-ant-api03-AbCdEf1234567890_abcdefghijklmnopqrstuvwxyzABCDEFGH-xyzQRS"
+    PROJ = "sk-proj-AbCdEf1234567890abcdefghijKLMNOPQRSTUVWXYZ0123456789"
+    AKIA = "AKIAIOSFODNN7EXAMPLE"          # matches the env-var NAME shape: must still not travel
+    GHP = "ghp_1234567890abcdefghijABCDEFGHIJ123456"
+    URL = "https://github.com/o/api.git"
 
     def setUp(self):
-        import gateway
-        import policy as pol_mod
-        import workspace
-        self.gateway, self.knowledge, self.policy, self.workspace = \
-            gateway, knowledge, pol_mod, workspace
-        self._saved = (pol_mod._PATH, pol_mod._CUSTOM, pol_mod._MCPDEF, gateway._PATH,
-                       engine._DB, knowledge._DB, registry.PROJECTS_FILE,
-                       workspace.git_repos)
-        self.repos = []
-        workspace.git_repos = lambda: self.repos
+        import board
+        import pr_review
+        import slack
+        import slack_socket
+        import snapshot
+        self.snapshot = snapshot
+        self.synced, self.cloned = [], []
+        self._saved = [(scheduler, "available"), (scheduler, "sync_paused"), (repos, "ensure"),
+                       (repos, "origin_of"), (slack, "reconcile_schedule"),
+                       (board, "reconcile_schedule"), (pr_review, "reconcile_schedule"),
+                       (slack_socket, "reconcile"), (gateway, "embed")]
+        self._saved = [(m, a, getattr(m, a)) for m, a in self._saved]
+        self.temporal = True
+        scheduler.available = lambda: self.temporal
+        scheduler.sync_paused = lambda rid, rb: self.synced.append(rid)
+        repos.ensure = lambda url, depth=1: (self.cloned.append(url), (None, ""))[1]
+        repos.origin_of = lambda path: None
+        for m in (slack, board, pr_review):
+            m.reconcile_schedule = lambda: "ok"
+        slack_socket.reconcile = lambda cfg=None: "ok"
+        gateway.embed = lambda *a, **k: None
+        os.environ.pop("SNAP_VLLM_KEY", None)
+        self.addCleanup(os.environ.pop, "SNAP_VLLM_KEY", None)
 
     def tearDown(self):
-        (self.policy._PATH, self.policy._CUSTOM, self.policy._MCPDEF, self.gateway._PATH,
-         engine._DB, self.knowledge._DB, registry.PROJECTS_FILE,
-         self.workspace.git_repos) = self._saved
+        for m, a, v in self._saved:
+            setattr(m, a, v)
+        test_support.redirect_live_state()
 
     def _machine(self):
-        """Point every store at a fresh tmpdir — one simulated machine."""
-        tmp = tempfile.mkdtemp(prefix="otto-profile-")
-        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
-        self.policy._PATH = os.path.join(tmp, "policy.json")
-        self.policy._CUSTOM = os.path.join(tmp, "capabilities.json")
-        self.policy._MCPDEF = os.path.join(tmp, "mcp-servers.json")
-        self.gateway._PATH = os.path.join(tmp, "models.json")
-        engine._DB = os.path.join(tmp, "otto.db")
-        self.knowledge._DB = os.path.join(tmp, "otto.db")
-        registry.PROJECTS_FILE = os.path.join(tmp, "projects.json")
-        return tmp
+        return test_support.redirect_live_state()
 
-    def _seed_source(self):
+    def _seed(self):
+        import board
+        import events
+        import policy
+        import pr_review
+        import slack
+        import slack_triggers
         self._machine()
-        self.policy.save({"capabilities": {"sre-minion": {"enabled": False}}})
-        cfg = self.gateway.load()
-        cfg["pool"].append({"name": "qwen", "provider": "openai",
-                            "base_url": "http://gpu:8000/v1",
-                            "api_key_env": "sk-PASTED-LITERAL-KEY"})   # the 401 footgun field
-        cfg["assign"]["routing"] = "qwen"
-        cfg["cap_exec"]["qa-tester"] = cfg["pool"][0]["name"]
-        self.gateway.save(cfg)
+        os.environ["SNAP_VLLM_KEY"] = "resolved-on-this-box"
+        config.save_settings({"max_attempts": 5})
+        policy.save_custom_caps([{"name": "triager", "description": "d", "risk": "read",
+                                  "prompt": "triage it"}])
+        policy.save_mcp_defs({"gh": {"command": "npx", "args": ["gh-mcp"], "confirmed": True,
+                                     "env": {"GITHUB_TOKEN": self.GHP}}})
+        policy.save({"capabilities": {"sre-minion": {"enabled": False, "mcp": ["gh"]}},
+                     "mcps": {"gh": {"enabled": False, "notes": "EU account only"}}})
+        gateway._mutate(lambda cfg: (
+            cfg["endpoints"].extend([
+                {"name": "Acme Dev", "kind": "local", "base_url": "http://gpu:8000/v1",
+                 "api_key_env": self.ANT, "headers": {"X-Api-Key": self.PROJ}},
+                {"name": "Named", "kind": "local", "base_url": "http://n:8000/v1",
+                 "api_key_env": "SNAP_VLLM_KEY"},
+                {"name": "Aws", "kind": "hosted", "base_url": "http://a/v1", "api_key_env": self.AKIA}]),
+            cfg["pool"].append({"name": "qwen", "provider": "openai", "model": "qwen3",
+                                "endpoint": "Acme Dev"}),
+            cfg["assign"].update(routing="qwen"), cfg["cap_exec"].update({"qa-tester": "qwen"}),
+            # A DELETED default row: B's fresh default pool still has it, and must lose it.
+            cfg.update(pool=[m for m in cfg["pool"] if m["name"] != "claude-haiku"])))
         engine.add_behavior("always run the tests before opening a PR", "global")
-        self.knowledge.add_document("runbook", "restart the frobnicator gently", source="paste")
-        self.repos = [{"name": "api", "path": "/src/api", "origin": "git@github.com:o/api.git"}]
-        registry.set_project_instructions("/src/api", "use tabs")
-        return self.policy.export_profile()
+        knowledge.add_document("runbook", f"restart the frobnicator gently. key {self.ANT}", "paste")
+        registry.add_project(url=self.URL)
+        registry.set_project_instructions(registry.projects()[0], "use tabs")
+        self.cron_id, _ = runbooks.add({"name": "nightly", "request": "sweep", "cron": "0 9 * * *"})
+        self.demand_id, _ = runbooks.add({"name": "adhoc", "request": "look"})
+        runbooks.set_order([self.demand_id, self.cron_id])
+        slack.save({"enabled": True, "bot_enabled": True, "allow_users": ["U01"],
+                    "bot_allow_users": ["U02"]})
+        slack_triggers.save_rules([{"channels": ["C1"], "bots": ["B1"], "template": "fix {text}"}])
+        events.save_rules([{"source": "newrelic", "template": "look at {title}"}])
+        pr_review.save({"enabled": True, "repos": ["o/api"]})
+        board.save({"enabled": True, "project": "o/7"})
+        return self.snapshot.export()
 
-    def test_export_strips_pasted_api_keys_and_carries_origins(self):
-        prof = self._seed_source()
-        qwen = next(m for m in prof["models"]["pool"] if m["name"] == "qwen")
-        self.assertEqual(qwen["api_key_env"], "")               # literal key never exported
-        self.assertIn("qwen", prof["models"]["needs_key"])
-        self.assertEqual(prof["projects"][0]["origin"], "git@github.com:o/api.git")
-        self.assertNotIn("path", prof["projects"][0])           # machine-local paths stay home
-        self.assertEqual(prof["knowledge"]["docs"][0]["title"], "runbook")
+    def _import(self, snap, mode="merge"):
+        plan = self.snapshot.preview(snap, mode)
+        return plan, self.snapshot.apply(snap, mode, plan["fingerprint"])
 
-    def test_import_into_fresh_machine_applies_everything(self):
-        prof = self._seed_source()
-        self._machine()                                         # fresh target: empty stores
-        self.repos = [{"name": "api", "path": "/other/api", "origin": "git@github.com:o/api.git"}]
-        s = self.policy.import_profile(prof)
-        self.assertIn("sre-minion", s["policy"]["added"])
-        self.assertEqual(s["models"]["pool_added"], ["qwen"])
-        self.assertTrue(s["models"]["assignments_applied"])     # no models.json existed -> fresh
-        self.assertEqual(self.gateway.load()["assign"]["routing"], "qwen")
-        self.assertEqual(s["behaviors"]["added"], 1)
-        self.assertEqual(s["knowledge"]["added"], ["runbook"])
-        self.assertEqual(s["projects"]["matched"], ["api"])     # matched by ORIGIN, not path
-        self.assertEqual(registry.project_meta("/other/api")["instructions"], "use tabs")
+    def _state(self):
+        return {n: copy.deepcopy(s.local()) for n, s in self.snapshot.SECTIONS.items()}
 
-    def test_import_never_clobbers_a_tuned_install(self):
-        prof = self._seed_source()
+    def test_a_fresh_install_ends_up_matching_the_source(self):
+        import board
+        import events
+        import pr_review
+        import slack
+        import slack_triggers
+        snap = self._seed()
         self._machine()
-        self.repos = []
-        self.policy.save({"capabilities": {"sre-minion": {"enabled": True}}})   # local choice
-        cfg = self.gateway.load()
-        self.gateway.save(cfg)                                  # models.json now EXISTS -> tuned
-        self.knowledge.add_document("runbook", "the local version", source="paste")
-        s = self.policy.import_profile(prof)
-        self.assertIn("sre-minion", s["policy"]["skipped"])
-        pol = self.policy.load()
-        self.assertTrue(pol["capabilities"]["sre-minion"]["enabled"])   # local override kept
-        self.assertFalse(s["models"]["assignments_applied"])            # assignments untouched
-        self.assertNotEqual(self.gateway.load()["assign"].get("routing"), "qwen")
-        self.assertEqual(s["knowledge"]["skipped"], ["runbook"])
-        self.assertEqual(s["projects"]["unmatched"],
-                         [{"name": "api", "origin": "git@github.com:o/api.git"}])
+        self._import(snap)
+        self.assertEqual([], [(c["section"], c["key"], c["action"]) for c in
+                              self.snapshot.preview(snap, "replace")["changes"]],
+                         "a replace preview right after the import must be empty: B matches A")
+        self.assertEqual(config.setting("max_attempts"), 5)
+        self.assertEqual(registry._project_entries(),
+                         [{"url": self.URL, "path": "", "instructions": "use tabs"}])
+        self.assertEqual(self.cloned, [self.URL])
+        qwen = next(m for m in gateway.load()["pool"] if m["name"] == "qwen")
+        self.assertEqual((qwen["endpoint"], qwen["base_url"]), ("Acme Dev", "http://gpu:8000/v1"))
+        self.assertEqual(gateway.load()["assign"]["routing"], "qwen")
+        self.assertEqual([p["rule"] for p in engine.behaviors()],
+                         ["always run the tests before opening a PR"])
+        self.assertEqual(runbooks.order(), [self.demand_id, self.cron_id])
+        # Nothing imported can start work by itself.
+        self.assertEqual(self.synced, [self.cron_id])            # created PAUSED, the only way
+        self.assertFalse(slack.load()["enabled"] or slack.load()["bot_enabled"])
+        self.assertFalse(board.load()["enabled"] or pr_review.load()["enabled"])
+        self.assertFalse(slack_triggers.any_active())
+        self.assertFalse(any(events.rule_enabled(r) for r in events.load_rules()))
+        self.assertFalse(policy.mcp_defs()["gh"]["confirmed"])
 
-    def test_import_rejects_a_non_profile(self):
+    def test_the_export_carries_no_literal_key(self):
+        text = json.dumps(self._seed())
+        for key in (self.ANT, self.PROJ, self.AKIA, self.GHP, "resolved-on-this-box"):
+            self.assertNotIn(key, text)
+        snap = json.loads(text)["sections"]["models"]
+        self.assertEqual(snap["endpoint:Named"]["api_key_env"], "SNAP_VLLM_KEY")  # a NAME travels
+        self.assertEqual(snap["endpoint:Acme Dev"]["api_key_env"], "")
+        self.assertEqual(snap["endpoint:Acme Dev"]["headers"], {"X-Api-Key": ""})
+        self.assertEqual(snap["endpoint:Aws"]["api_key_env"], "")
+
+    def test_the_import_names_every_secret_it_could_not_carry(self):
+        snap = self._seed()
         self._machine()
+        os.environ.pop("SNAP_VLLM_KEY")
+        need = {(s["for"], s["what"], s["name"]) for s in self.snapshot.preview(snap)["secrets"]}
+        self.assertLessEqual({("endpoint Acme Dev", "API key (not exported)", ""),
+                              ("endpoint Acme Dev", "header X-Api-Key (not exported)", ""),
+                              ("endpoint Named", "env var", "SNAP_VLLM_KEY"),
+                              ("MCP server gh", "env value (Admin → MCP servers)", "GITHUB_TOKEN")},
+                             need)
+
+    def test_replace_changes_only_what_the_preview_showed(self):
+        snap = self._seed()
+        self._machine()
+        config.save_settings({"max_attempts": 2, "supervise": False})
+        engine.add_behavior("never touch prod", "global")
+        runbooks.add({"name": "local-only", "request": "x"})
+        before = self._state()
+        plan, _ = self._import(snap, "replace")
+        shown = {(c["section"], c["key"]) for c in plan["changes"] if c["action"] != "keep"}
+        after = self._state()
+        changed = {(n, k) for n in before for k in set(before[n]) | set(after[n])
+                   if before[n].get(k) != after[n].get(k)}
+        self.assertEqual(shown, changed)
+        self.assertIn(("settings", "supervise", "remove"),
+                      {(c["section"], c["key"], c["action"]) for c in plan["changes"]})
+
+    def test_merge_never_overwrites_a_local_choice(self):
+        snap = self._seed()
+        self._machine()
+        config.save_settings({"max_attempts": 2})
+        policy.save_custom_caps([{"name": "triager", "description": "mine", "risk": "write",
+                                  "prompt": "p"}])
+        plan, _ = self._import(snap)
+        kept = {(c["section"], c["key"]) for c in plan["changes"] if c["action"] == "keep"}
+        self.assertLessEqual({("settings", "max_attempts"), ("capabilities", "triager")}, kept)
+        self.assertEqual(config.setting("max_attempts"), 2)
+        self.assertEqual(policy.custom_caps()[0]["description"], "mine")
+
+    def test_a_blank_secret_in_the_snapshot_never_wipes_the_local_one(self):
+        snap = self._seed()
+        self._machine()
+        gateway._mutate(lambda cfg: cfg["endpoints"].append(
+            {"name": "Acme Dev", "kind": "local", "base_url": "http://old/v1", "api_key_env": "lit"}))
+        self._import(snap, "replace")
+        ep = next(e for e in gateway.load()["endpoints"] if e["name"] == "Acme Dev")
+        self.assertEqual((ep["base_url"], ep["api_key_env"]), ("http://gpu:8000/v1", "lit"))
+
+    def test_apply_refuses_a_plan_that_changed_since_its_preview(self):
+        snap = self._seed()
+        self._machine()
+        plan = self.snapshot.preview(snap, "replace")
+        config.save_settings({"max_attempts": 9})
+        with self.assertRaises(self.snapshot.StaleSnapshotPreview):
+            self.snapshot.apply(snap, "replace", plan["fingerprint"])
+        self.assertEqual(runbooks.load(), {})                    # nothing was written
+
+    def test_a_cron_is_not_imported_when_it_cannot_be_created_paused(self):
+        """Stored without its paused schedule, startup `reconcile` would recreate it UNPAUSED."""
+        snap = self._seed()
+        self._machine()
+        self.temporal = False
+        plan, _ = self._import(snap)
+        c = next(c for c in plan["changes"] if c["key"] == self.cron_id)
+        self.assertEqual(c["action"], "keep")
+        self.assertIn("Temporal", c["reason"])
+        self.assertNotIn(self.cron_id, runbooks.load())
+        self.assertIn(self.demand_id, runbooks.load())
+
+    def test_a_cron_whose_paused_schedule_fails_is_not_stored(self):
+        snap = self._seed()
+        self._machine()
+
+        def boom(rid, rb):
+            raise RuntimeError("temporal went away")
+        scheduler.sync_paused = boom
+        _, summary = self._import(snap)
+        self.assertNotIn(self.cron_id, runbooks.load())
+        self.assertTrue(any("not imported" in s for s in summary["status"]))
+
+    def test_the_preview_masks_the_local_credentials_it_compares_against(self):
+        snap = self._seed()
+        self._machine()
+        gateway._mutate(lambda cfg: cfg["endpoints"].append(
+            {"name": "Acme Dev", "kind": "local", "base_url": "http://old/v1",
+             "api_key_env": self.ANT}))
+        self.assertNotIn(self.ANT, json.dumps(self.snapshot.preview(snap, "replace")))
+
+    def test_a_path_only_project_travels_by_its_origin(self):
+        self._machine()
+        path = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        registry.save_projects([{"path": path, "instructions": "x"}])
+        repos.origin_of = lambda p: "git@github.com:o/api.git"
+        self.assertEqual(self.snapshot.export()["sections"]["projects"],
+                         {self.URL: {"url": self.URL, "instructions": "x"}})
+
+    def test_a_pre_snapshot_profile_is_refused_with_a_way_forward(self):
+        self._machine()
+        with self.assertRaisesRegex(ValueError, "re-export"):
+            self.snapshot.preview({"otto_profile": 1, "bundle": {}})
         with self.assertRaises(ValueError):
-            self.policy.import_profile({"something": "else"})
+            self.snapshot.preview({"something": "else"})
+
+
+class SnapshotWiringTests(unittest.TestCase):
+    def test_the_ui_applies_only_the_plan_it_previewed(self):
+        src = ui_src()
+        self.assertIn('"/api/profile/preview"', src)
+        self.assertIn("expect:plan.fingerprint", src)
+
+    def test_the_routes_exist_and_a_stale_or_missing_fingerprint_is_refused(self):
+        import server
+        import snapshot
+        self.assertIn("/api/profile/preview", server._POST_ROUTES)
+        test_support.redirect_live_state()
+        snap = {"otto_profile": snapshot.VERSION, "sections": {"settings": {"max_attempts": 4}}}
+        with self.assertRaises(snapshot.StaleSnapshotPreview):
+            snapshot.apply(snap, "merge", "")
+        self.assertNotEqual(config.setting("max_attempts"), 4)
+
+
+class SnapshotStoreClassificationTests(unittest.TestCase):
+    """One source of truth for what a snapshot carries: every data/ store is EXPORTED or RUNTIME.
+    Rides `_DATA_STORES`, which `LiveStoreIsolationTests` ratchets against the source."""
+
+    def test_every_data_store_is_classified_exactly_once(self):
+        import snapshot
+        names = {os.path.basename(rel) for _, _, rel in test_support._DATA_STORES}
+        names |= {os.path.basename(p) for p in (config._settings_path(), runbooks.store_path(),
+                                                runbooks.order_path(), estop.path())}
+        self.assertEqual([], sorted(names - set(snapshot.EXPORTED) - snapshot.RUNTIME),
+                         "classify each new store in snapshot.EXPORTED or snapshot.RUNTIME")
+        self.assertEqual(set(), set(snapshot.EXPORTED) & snapshot.RUNTIME)
+
+    def test_every_exported_store_names_a_real_section(self):
+        import snapshot
+        self.assertLessEqual(set(snapshot.EXPORTED.values()), set(snapshot.SECTIONS))
+
+
+class KnowledgeRoundTripTests(unittest.TestCase):
+    """Chunks OVERLAP, so rebuilding a doc by joining them grew it on every profile round-trip."""
+
+    def setUp(self):
+        self._embed = gateway.embed
+        gateway.embed = lambda *a, **k: None
+        self.addCleanup(setattr, gateway, "embed", self._embed)
+
+    TEXT = ("Paragraph one.\n\n" + "word " * 400 + "\n\nThird.\n\n") * 4
+
+    def test_a_doc_exports_its_original_text(self):
+        knowledge.add_document("t", self.TEXT, "paste")
+        self.assertEqual(knowledge.export_docs()[-1]["text"], self.TEXT.strip())
+
+    def test_a_pre_text_doc_is_rejoined_without_its_overlaps(self):
+        norm = "\n\n".join(p.strip() for p in re.split(r"\n\s*\n", self.TEXT) if p.strip())
+        self.assertEqual(knowledge._rejoin(knowledge._chunk(self.TEXT)), norm)
+        hard = "x" * 3000 + "\n\ntail"
+        self.assertEqual(knowledge._rejoin(knowledge._chunk(hard)), hard)
 
 
 class RepoScopeNoteTests(unittest.TestCase):

@@ -84,6 +84,40 @@ class CronTests(unittest.TestCase):
         self.assertNotIn("cap", bare)          # no cap -> auto-route
         self.assertNotIn("cap_name", bare)
 
+    def test_an_imported_cron_is_created_and_updated_PAUSED(self):
+        """A snapshot import must never fire a cron (#166): the pause rides the create itself,
+        and an existing schedule's update, never a second call a fire can land between."""
+        if not scheduler.tc.OK:
+            self.skipTest("temporalio not installed")
+        import asyncio
+        import types
+        rb = {"name": "r", "request": "r", "cron": "0 9 * * *"}
+        self.assertTrue(scheduler._schedule("otto-p", rb, paused=True).state.paused)
+        self.assertFalse(scheduler._schedule("otto-p", rb).state.paused)
+        seen = {}
+
+        class Handle:
+            async def describe(self):
+                return None
+
+            async def update(self, fn):
+                cur = scheduler._schedule("otto-p", rb)
+                seen["upd"] = fn(types.SimpleNamespace(description=types.SimpleNamespace(schedule=cur)))
+
+        class Client:
+            def get_schedule_handle(self, rid):
+                return Handle()
+
+        async def client():
+            return Client()
+        orig = scheduler.tc.client
+        scheduler.tc.client = client
+        try:
+            asyncio.run(scheduler._sync("otto-p", rb, paused=True))
+        finally:
+            scheduler.tc.client = orig
+        self.assertTrue(seen["upd"].schedule.state.paused)
+
     def test_tz_env_override(self):
         # Cron times fire in this zone; the env override wins over host detection.
         import os
