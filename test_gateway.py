@@ -5397,6 +5397,46 @@ class RunDetailTests(unittest.TestCase):
         import server
         self.assertFalse(server._run_detail("web-nope")["found"])
 
+    def _live_transcript(self, wid, attempt, *events):
+        with open(os.path.join(self.claude_cli.TRANSCRIPTS, f"{wid}-a{attempt}.jsonl"), "a") as f:
+            for e in events:
+                f.write(json.dumps(e) + "\n")
+
+    def test_an_in_flight_attempt_with_no_audit_row_is_shown_live(self):
+        """#164: audit rows land after an attempt returns, so the one attempt a watcher cares
+        about was invisible until it had finished — even on a run's very first attempt."""
+        import server
+        self._live_transcript("web-x5", 1, {"type": "otto-meta"}, {"type": "assistant", "message": {
+            "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}})
+        d = server._run_detail("web-x5")
+        self.assertTrue(d["found"])
+        self.assertEqual([(a["attempt"], a["live"]) for a in d["attempts"]], [(1, True)])
+        self.assertIn("tool_use Bash", d["attempts"][0]["events"][0])
+        engine._audit("web-x5", "r", registry.Capability("agent", "x", "d"), "ok", 0, attempt=1)
+        self.assertFalse(server._run_detail("web-x5")["attempts"][0]["live"])
+
+    def test_the_live_poll_returns_only_lines_past_its_cursor(self):
+        import server
+        tu = {"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "look first"},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "a"}}]}}
+        self._live_transcript("web-x6", 1, tu)
+        first = server._run_events("web-x6", 1, 0)
+        self.assertEqual(first["events"][0], "thinking: look first")
+        self.assertEqual((first["next"], first["live"], first["newer"]), (2, True, False))
+        self._live_transcript("web-x6", 1, {"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "done"}]}})
+        second = server._run_events("web-x6", 1, first["next"])
+        self.assertEqual(second["events"], ["tool_result: done"])
+        self._live_transcript("web-x6", 2, {"type": "otto-meta"})
+        self.assertTrue(server._run_events("web-x6", 1, 3)["newer"])
+
+    def test_empty_claude_thinking_is_counted_so_the_drawer_can_say_why(self):
+        import server
+        self._live_transcript("web-x7", 1, {"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "", "signature": "s"}]}})
+        self.assertEqual(server._run_detail("web-x7")["attempts"][0]["thinking_hidden"], 1)
+
     def test_the_drawer_gets_the_runs_stage_breakdown_merged(self):
         """Issue #129: the stage map is the only answer to "where did this run's 11 minutes go",
         and the live board chip that used to be its one reader dies with the Temporal execution.
@@ -6494,6 +6534,34 @@ class ContextTrimTests(unittest.TestCase):
         # Otto adds no MCP servers of its own — every server a cap uses is INHERITED, so
         # `--strict-mcp-config` must never appear on a run that can call tools.
         self.assertNotIn("--strict-mcp-config", cmd)
+
+
+class ThinkingDisplayTests(unittest.TestCase):
+    """#164: `claude -p` stream-json carries thinking EMPTY unless `--thinking-display summarized`
+    (measured 2.1.285, 4/4 with text vs 0 without). Only a transcript has a reader for it; the
+    flag is hidden, so `thinking_display=off` must drop it if a CLI release removes it."""
+
+    def _cmd(self, **kw):
+        return EffortLevelTests._cmd(self, **kw)
+
+    def test_a_transcribed_run_asks_for_thinking_and_a_cheap_tier_does_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            cmd = self._cmd(transcript=os.path.join(d, "t.jsonl"))
+        self.assertEqual(cmd[cmd.index("--thinking-display") + 1], "summarized")
+        self.assertNotIn("--thinking-display", self._cmd())
+
+    def test_off_drops_the_flag(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"OTTO_THINKING_DISPLAY": "off"}):
+            self.assertNotIn("--thinking-display", self._cmd(transcript=os.path.join(d, "t.jsonl")))
+
+    def test_local_reasoning_reaches_the_transcript_as_a_thinking_block(self):
+        import local_runtime
+        ev = local_runtime._assistant_event({"content": "ok", "reasoning_content": "check a first"})
+        self.assertEqual(ev["message"]["content"][0], {"type": "thinking", "thinking": "check a first"})
+        self.assertEqual(supervisor.compact_event(ev, thinking=True).splitlines()[0],
+                         "thinking: check a first")
+        self.assertNotIn("thinking", json.dumps(local_runtime._assistant_event({"content": "ok"})))
 
 
 class EffortLevelTests(unittest.TestCase):

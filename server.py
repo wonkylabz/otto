@@ -296,12 +296,17 @@ def _run_progress(wid):
 _TERMINAL_OUTCOMES = ("needs_human", "workflow_error", "delivery_failed")
 
 
-def _transcript_events(wid, attempt, cap=250):
+_LIVE_EVENTS_CAP = 2000
+
+
+def _transcript_events(wid, attempt, cap=250, since=0):
     """One attempt's execution transcript compacted to readable lines (tool calls + results +
-    assistant text), in order — reusing supervisor.compact_event (which also redacts secrets).
-    Returns (lines, truncated). Missing file (e.g. a local run, or swept transcript) -> []."""
+    assistant text + thinking), in order — reusing supervisor.compact_event (which also redacts
+    secrets). Returns (lines[since:], truncated, total, hidden) where `hidden` counts thinking
+    blocks the CLI sent EMPTY (pre-`--thinking-display` runs), so the drawer can say why none show.
+    Missing file (swept transcript) -> []."""
     path = os.path.join(claude_cli.TRANSCRIPTS, f"{wid}-a{attempt}.jsonl")
-    lines = []
+    lines, hidden = [], 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for raw in f:
@@ -309,14 +314,51 @@ def _transcript_events(wid, attempt, cap=250):
                     ev = json.loads(raw)
                 except ValueError:
                     continue
-                compacted = supervisor.compact_event(ev)
+                if isinstance(ev, dict) and ev.get("type") == "assistant":
+                    hidden += sum(1 for b in (ev.get("message") or {}).get("content") or []
+                                  if isinstance(b, dict) and b.get("type") == "thinking"
+                                  and not str(b.get("thinking") or "").strip())
+                compacted = supervisor.compact_event(ev, thinking=True)
                 if compacted:
                     lines.extend(compacted.splitlines())
     except OSError:
-        return [], False
-    if len(lines) > cap:
-        return lines[:cap] + [f"… ({len(lines) - cap} more events truncated)"], True
-    return lines, False
+        return [], False, 0, 0
+    total = min(len(lines), cap)
+    truncated = len(lines) > cap
+    out = lines[since:cap]
+    if truncated:
+        out.append(f"… ({len(lines) - cap} more events truncated)")
+    return out, truncated, total, hidden
+
+
+def _transcript_attempts(wid):
+    """Attempt numbers with an execution transcript on disk — the only trace of an attempt still
+    in flight, whose audit row is written after it returns."""
+    prefix, found = f"{wid}-a", set()
+    try:
+        names = os.listdir(claude_cli.TRANSCRIPTS)
+    except OSError:
+        return found
+    for name in names:
+        if name.startswith(prefix) and name.endswith(".jsonl"):
+            try:
+                found.add(int(name[len(prefix):-len(".jsonl")]))
+            except ValueError:
+                continue
+    return found
+
+
+def _run_events(wid, attempt, since):
+    """The drawer's incremental poll (#164): the compacted lines of ONE attempt past `since`, and
+    whether it is still live (no audit row yet). `newer` flags a later attempt having started."""
+    if not wid or not re.fullmatch(r"[A-Za-z0-9._:@-]+", wid):
+        return {"found": False}
+    audited = {e.get("attempt") for e in engine.audit_entries_for(wid)}
+    events, truncated, total, hidden = _transcript_events(wid, attempt, cap=_LIVE_EVENTS_CAP,
+                                                          since=max(0, since))
+    return {"found": True, "events": events, "next": total, "truncated": truncated,
+            "thinking_hidden": hidden, "live": attempt not in audited,
+            "newer": any(a > attempt for a in _transcript_attempts(wid))}
 
 
 def _run_detail(wid):
@@ -330,7 +372,8 @@ def _run_detail(wid):
         return {"found": False}
     meta_rows = engine.audit_entries_for(wid)
     content_rows = engine.content_entries_for(wid)
-    if not meta_rows and not content_rows:
+    on_disk = _transcript_attempts(wid)
+    if not meta_rows and not content_rows and not on_disk:
         return {"found": False}
     # Content (request/result/critique) keyed by attempt; the run's request is the first seen.
     request, content_by_attempt = None, {}
@@ -359,7 +402,7 @@ def _run_detail(wid):
             continue
         seen.add(a)
         c = content_by_attempt.get(a, {})
-        events, truncated = _transcript_events(wid, a)
+        events, truncated, _, hidden = _transcript_events(wid, a)
         attempts.append({
             "attempt": a, "at": e.get("at"), "model": e.get("model"),
             "backend": e.get("backend"), "fallback_from": e.get("fallback_from"),
@@ -367,7 +410,13 @@ def _run_detail(wid):
             "fallback_detail": e.get("fallback_detail"), "cost_usd": e.get("cost_usd"),
             "tokens": e.get("tokens"), "duration_s": e.get("duration_s"),
             "verified": e.get("verified"), "critique": c.get("critique"),
-            "result": c.get("result"), "events": events, "events_truncated": truncated})
+            "result": c.get("result"), "events": events, "events_truncated": truncated,
+            "events_next": len(events), "thinking_hidden": hidden, "live": False})
+    # An attempt still running has a transcript but no audit row yet (#164).
+    for a in sorted(on_disk - seen):
+        events, truncated, total, hidden = _transcript_events(wid, a, cap=_LIVE_EVENTS_CAP)
+        attempts.append({"attempt": a, "events": events, "events_truncated": truncated,
+                         "events_next": total, "thinking_hidden": hidden, "live": True})
     attempts.sort(key=lambda x: x["attempt"])
     # Where the run actually spent itself, stage by stage (issue #129). Merged across the run's
     # rows because `_times` only grows and each row is a snapshot of it at that write — see
@@ -1144,6 +1193,14 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/progress"):
             wid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             self._send(200, json.dumps(_run_progress(wid)))
+        elif self.path.startswith("/api/run/events"):
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                attempt, since = int((q.get("attempt") or [""])[0]), int((q.get("since") or ["0"])[0])
+            except ValueError:
+                self._send(400, json.dumps({"error": "attempt and since must be integers"}))
+                return
+            self._send(200, json.dumps(_run_events((q.get("id") or [""])[0], attempt, since)))
         elif self.path.startswith("/api/run/detail"):
             wid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             self._send(200, json.dumps(_run_detail(wid)))

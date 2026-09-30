@@ -2600,6 +2600,26 @@ class SupervisorCompactTests(unittest.TestCase):
                     {"type": "assistant", "message": None}):
             self.assertIsNone(supervisor.compact_event(evt))
 
+    def test_thinking_is_emitted_only_when_asked_and_only_if_non_empty(self):
+        """#164: the drawer asks for thinking; the supervisor must not — its prompt would change.
+        `claude -p` without `--thinking-display` sends thinking EMPTY; that is not a line."""
+        evt = {"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "", "signature": "abc"},
+            {"type": "thinking", "thinking": "The 12th   prime is 37."},
+            {"type": "text", "text": "1554"}]}}
+        self.assertEqual(supervisor.compact_event(evt, thinking=True).splitlines(),
+                         ["thinking: The 12th prime is 37.", "assistant: 1554"])
+        self.assertEqual(supervisor.compact_event(evt), "assistant: 1554")
+        self.assertIsNone(supervisor.compact_event({"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "  ", "signature": "abc"}]}}, thinking=True))
+
+    def test_a_secret_in_thinking_is_redacted(self):
+        key = "sk-ant-api03-AbCdEf0123456789GhIjKlMnOpQrStUvWxYz-AA"
+        line = supervisor.compact_event({"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": f"I'll export ANTHROPIC_API_KEY={key} first"}]}},
+            thinking=True)
+        self.assertEqual(line, "thinking: I'll export ANTHROPIC_API_KEY=[redacted] first")
+
 
 class SupervisorCadenceTests(unittest.TestCase):
     """Checkpoints fire on time AND activity (so short runs cost nothing), one in flight at

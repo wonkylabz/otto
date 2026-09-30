@@ -383,9 +383,10 @@ async function needsYouDismiss(id){
    anything but the shortest results) — clicking it fetches the run's FULL, untruncated result
    (not shipped in the polled /api/board list to keep that endpoint light) and shows it laid out
    like a chat message. */
-function closeCardModal(){ document.getElementById("cardModal").hidden=true; }
+function closeCardModal(){ _dbgStop(); document.getElementById("cardModal").hidden=true; }
 async function openCardModal(it,ui){
   if(!it) return;
+  _dbgStop();
   const modal=document.getElementById("cardModal"), title=document.getElementById("cardModalTitle"),
         body=document.getElementById("cardModalBody");
   const link=ui?`${ui}/namespaces/default/workflows/${encodeURIComponent(it.id)}/${encodeURIComponent(it.run_id)}/history`:null;
@@ -405,12 +406,17 @@ async function openCardModal(it,ui){
 // attempt with its critique, the compacted execution transcript (tool calls + results), model/
 // backend/fallback, and the terminal reason. Reuses the cardModal shell; all data from
 // /api/run/detail (audit + content logs + transcripts — works even after the workflow is gone).
-function _dbgTraceHtml(events){
-  if(!events||!events.length) return `<div class="sub">No transcript captured (a local-runtime or already-swept run).</div>`;
-  return `<div class="dbgtrace">`+events.map(l=>{
-    const cls=/^tool_use/.test(l)?"tu":(/^tool_result/.test(l)?"tr":"as");
-    return `<span class="${cls}">${esc(l)}</span>`;
-  }).join("\n")+`</div>`;
+function _dbgLineHtml(l){
+  const cls=/^tool_use/.test(l)?"tu":(/^tool_result/.test(l)?"tr":(/^thinking:/.test(l)?"th":"as"));
+  return `<span class="${cls}">${esc(l)}\n</span>`;   // newline INSIDE the span, so a hidden line leaves no gap
+}
+function _dbgTraceHtml(a){
+  const events=a.events||[];
+  const note=(a.thinking_hidden&&!events.some(l=>/^thinking:/.test(l)))
+    ?`<div class="sub dbgthnote">Thinking isn't exposed for this attempt — the Claude CLI sent it empty.</div>`:'';
+  if(!events.length) return note+`<div class="dbgtrace" data-dbgtrace="${a.attempt}"></div>`
+    +`<div class="sub" data-dbgempty>${a.live?'Waiting for the first event…':'No transcript captured (already swept, or the attempt never started).'}</div>`;
+  return note+`<div class="dbgtrace" data-dbgtrace="${a.attempt}">`+events.map(_dbgLineHtml).join("")+`</div>`;
 }
 // One run's stage breakdown, from the audit trail (issue #129) — the same `_times` map the
 // live board chip reads, but PERSISTED, so it is still here after the Temporal execution has
@@ -431,8 +437,15 @@ function _dbgStagesHtml(times, order){
     return `<span class="k" title="${Math.round(100*t.dur/max)}% of the longest stage">${esc(n)} · ${fmt(t.dur)}</span>`;
   }).join(" &nbsp;·&nbsp; ")+`</div>`;
 }
+// Live refresh (#164): while the run is in flight the drawer polls — the live attempt by cursor
+// (only new lines are appended, so an expanded section and scroll survive), the run otherwise.
+let DBG_STOP=null, DBG_GEN=0;
+function _dbgStop(){ DBG_GEN++; if(DBG_STOP){ DBG_STOP(); DBG_STOP=null; } }
+function _dbgThinkingOn(){ try { return localStorage.getItem("ottoDbgThinking")==="1"; } catch(e){ return false; } }
 async function openRunDebug(wid, capLabel, ui){
   if(!wid) return;
+  _dbgStop();
+  const gen=DBG_GEN;
   const modal=document.getElementById("cardModal"), title=document.getElementById("cardModalTitle"),
         body=document.getElementById("cardModalBody");
   const link=ui?`${ui}/namespaces/default/workflows/${encodeURIComponent(wid)}/history`:null;
@@ -442,30 +455,75 @@ async function openRunDebug(wid, capLabel, ui){
   let r;
   try { r=await (await fetch("/api/run/detail?id="+encodeURIComponent(wid))).json(); }
   catch(e){ body.innerHTML=`<p class="err">Couldn't load run detail (${esc(e.message)}).</p>`; return; }
+  if(gen!==DBG_GEN) return;
+  _dbgRender(body, r);
+  let live=r.found?r.attempts.find(a=>a.live):null;
+  const rerender=async()=>{
+    const d=await (await fetch("/api/run/detail?id="+encodeURIComponent(wid))).json();
+    if(gen!==DBG_GEN) return;
+    const open=new Set([...body.querySelectorAll(".dbgatt.open")].map(x=>x.dataset.att)), top=body.scrollTop;
+    _dbgRender(body, d, open);
+    body.scrollTop=top;
+    r=d; live=d.found?d.attempts.find(a=>a.live):null;
+  };
+  DBG_STOP=poll(async()=>{
+    if(gen!==DBG_GEN || modal.hidden){ _dbgStop(); return POLL_SKIP; }
+    if(live){
+      const ev=await (await fetch(`/api/run/events?id=${encodeURIComponent(wid)}&attempt=${live.attempt}&since=${live.events_next}`)).json();
+      if(gen!==DBG_GEN) return POLL_SKIP;
+      if(!ev.found) return false;
+      if(ev.events.length){
+        const tr=body.querySelector(`[data-dbgtrace="${live.attempt}"]`);
+        if(tr){
+          const pinned=tr.scrollTop+tr.clientHeight>=tr.scrollHeight-24;
+          tr.insertAdjacentHTML("beforeend", ev.events.map(_dbgLineHtml).join(""));
+          if(pinned) tr.scrollTop=tr.scrollHeight;
+          const empty=tr.parentNode.querySelector("[data-dbgempty]"); if(empty) empty.remove();
+        }
+        live.events_next=ev.next;
+      }
+      if(!ev.live || ev.newer) await rerender();   // attempt finished (verdict, cost) or a new one began
+      return true;
+    }
+    // Between attempts, or before the first: only Temporal knows whether the run is still going.
+    const st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json();
+    if(gen!==DBG_GEN) return POLL_SKIP;
+    if(st.state==="done"||st.state==="failed"){ await rerender(); _dbgStop(); return true; }
+    if(st.state==="unreachable") return false;
+    await rerender();
+    return true;
+  }, 3000);
+}
+function _dbgRender(body, r, openSet){
   if(!r.found){ body.innerHTML=`<p class="sub">No audit record found for this run yet.</p>`; return; }
   const meta=[];
   if(r.cap) meta.push(`<span class="k">${esc(r.cap)}</span>${r.risk?' · '+esc(r.risk):''}`);
   if(r.repo) meta.push(`repo: <span class="k">${esc(r.repo)}</span>`);
+  const done=r.attempts.filter(a=>!a.live);
   if(r.needs_human) meta.push(`status: <span class="k" style="color:var(--warn)">needs human — ${esc(r.needs_human)}</span>`);
-  else if(r.attempts.length) { const v=r.attempts[r.attempts.length-1].verified; meta.push(`status: <span class="k">${v===true?'verified':(v===false?'completed (unverified)':'done')}</span>`); }
+  else if(r.attempts.some(a=>a.live)) meta.push(`status: <span class="k">running</span>`);
+  else if(done.length) { const v=done[done.length-1].verified; meta.push(`status: <span class="k">${v===true?'verified':(v===false?'completed (unverified)':'done')}</span>`); }
   const totCost=r.attempts.reduce((s,a)=>s+(a.cost_usd||0),0);
   meta.push(`${r.attempts.length} attempt${r.attempts.length===1?'':'s'}`+(totCost?` · $${totCost.toFixed(2)}`:''));
+  meta.push(`<label class="dbgthtoggle" title="Model reasoning between tool calls — verbose"><input type="checkbox" data-dbgthink${_dbgThinkingOn()?' checked':''}> show thinking</label>`);
   const hint=r.needs_human?(NEEDS_HINT[NEEDS_LABEL[r.needs_human]]||NEEDS_HINT[r.needs_human]):null;
   const atts=r.attempts.map(a=>{
-    const v=a.verified===true?'<span class="dbgverd pass">✓ verify pass</span>'
-      :(a.verified===false?'<span class="dbgverd fail">✗ verify fail</span>':'<span class="dbgverd none">no verify</span>');
+    const v=a.live?'<span class="dbgverd live">● live</span>'
+      :(a.verified===true?'<span class="dbgverd pass">✓ verify pass</span>'
+      :(a.verified===false?'<span class="dbgverd fail">✗ verify fail</span>':'<span class="dbgverd none">no verify</span>'));
     const fb=a.fallback_from?` · <span title="${esc((a.fallback_reason||'')+(a.fallback_detail?` (${a.fallback_detail})`:''))}">${esc((a.fallback_from||'').split('/').pop())} ⇢ ${esc((a.model||'').split('/').pop())}</span>`:(a.model?` · ${esc((a.model||'').split('/').pop())}`:'');
     const dur=a.duration_s!=null?` · ${a.duration_s}s`:'';
     const cost=a.cost_usd?` · $${(a.cost_usd).toFixed(2)}`:'';
-    const openFirst=(a.verified===false)?' open':'';   // failed attempts expanded by default
-    return `<div class="dbgatt${openFirst}"><div class="dbgatt-h" data-dbgtoggle>
+    const isOpen=openSet?openSet.has(String(a.attempt)):(a.verified===false||a.live);   // failed + live expanded by default
+    return `<div class="dbgatt${isOpen?' open':''}" data-att="${a.attempt}"><div class="dbgatt-h" data-dbgtoggle>
         <span class="an">attempt ${a.attempt}</span>${v}<span>${fb}${dur}${cost}${a.backend?' · '+esc(a.backend):''}</span>
       </div><div class="dbgbody">
         ${a.critique?`<div class="dbgsec">verify critique</div><div class="dbgcrit">${esc(a.critique)}</div>`:''}
-        <div class="dbgsec">execution transcript</div>${_dbgTraceHtml(a.events)}${a.events_truncated?'<div class="sub">(transcript truncated)</div>':''}
+        <div class="dbgsec">execution transcript</div>${_dbgTraceHtml(a)}${a.events_truncated?'<div class="sub">(transcript truncated)</div>':''}
         ${a.result?`<div class="dbgsec">attempt result</div><div class="dbgresult">${esc((a.result||'').slice(0,4000))}</div>`:''}
       </div></div>`;
   }).join("");
+  body.classList.toggle("dbgthink", _dbgThinkingOn());
   body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')
     +`<div class="dbgmeta">${meta.join(" &nbsp;·&nbsp; ")}</div>`
     +_dbgStagesHtml(r.times, r.stage_order)
@@ -474,6 +532,11 @@ async function openRunDebug(wid, capLabel, ui){
     +(atts||`<p class="sub">No attempts recorded yet — the run is still in flight, or it ended before executing.</p>`);
   body.querySelectorAll("[data-dbgtoggle]").forEach(h=>h.addEventListener("click",()=>h.closest(".dbgatt").classList.toggle("open")));
   enhanceToggles(body,"[data-dbgtoggle]",".dbgatt","open");
+  const th=body.querySelector("[data-dbgthink]");
+  if(th) th.addEventListener("change",()=>{
+    try { localStorage.setItem("ottoDbgThinking", th.checked?"1":"0"); } catch(e){}
+    body.classList.toggle("dbgthink", th.checked);
+  });
 }
 document.getElementById("cardModalClose").addEventListener("click",closeCardModal);
 document.getElementById("cardModal").addEventListener("click",e=>{ if(e.target.id==="cardModal") closeCardModal(); });

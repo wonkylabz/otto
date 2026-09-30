@@ -220,6 +220,11 @@
     background: var(--ground); border-radius: var(--r-sm); padding: 9px 11px; max-height: 320px; overflow: auto;
     white-space: pre-wrap; overflow-wrap: anywhere; }
   .dbgtrace .tu { color: var(--accent); } .dbgtrace .tr { color: var(--dim); } .dbgtrace .as { color: var(--text-2); }
+  .dbgtrace .th { color: var(--dim); font-style: italic; display: none; }
+  .dbgthink .dbgtrace .th { display: inline; }
+  .dbgthnote { display: none; margin-bottom: 6px; } .dbgthink .dbgthnote { display: block; }
+  .dbgverd.live { background: var(--ok-soft); color: var(--ok); }
+  .dbgthtoggle { cursor: pointer; white-space: nowrap; } .dbgthtoggle input { vertical-align: middle; }
   .dbgresult { font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap;
     overflow-wrap: anywhere; color: var(--text-2); }
   .bdebug { cursor: pointer; }
