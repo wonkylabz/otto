@@ -1282,16 +1282,15 @@ function renderAdmin(data, models, el, settings){
     <div class="asection coll collapsed" data-sect="share"><h3><span class="secttoggle" title="collapse / expand">
         <span class="gcaret">&#9662;</span>Share extensions</span></h3>
       <div class="asection-body">
-      <p class="sub" style="margin:10px 0 10px">Export or import custom capabilities &amp; MCP servers. Built-ins are never overwritten, clashes are renamed, and <b>MCP secret values are blanked</b> — set them after importing.</p>
-      <div class="bundlebtns">
-        <button class="addbtn" id="export-bundle">⤓ Export bundle</button>
-        <button class="addbtn" id="import-bundle">⤒ Import bundle</button>
+      <div class="sharegrid">
+        <div class="sharelbl"><b>Bundle</b><span>Custom capabilities &amp; MCP servers. Built-ins are never overwritten, clashes are renamed, and <b>MCP secret values are blanked</b> — set them after importing.</span></div>
+        <button class="addbtn" id="export-bundle">⤓ Export</button>
+        <button class="addbtn" id="import-bundle">⤒ Import</button>
         <input type="file" id="bundle-file" accept="application/json,.json" hidden>
         <span class="bundlemsg" id="bundle-msg"></span>
-      </div>
-      <div class="bundlebtns">
-        <button class="addbtn" id="export-snapshot" title="Everything configured here — settings, models + endpoints, repos, jobs, ingresses. Secret-free.">⤓ Export snapshot</button>
-        <button class="addbtn" id="import-snapshot" title="Previews every change first. Ingresses, rules and crons arrive switched off.">⤒ Import snapshot</button>
+        <div class="sharelbl"><b>Snapshot</b><span>Everything configured here — settings, models + endpoints, repos, jobs, ingresses. Secret-free; an import previews every change first.</span></div>
+        <button class="addbtn" id="export-snapshot" title="Everything configured here — settings, models + endpoints, repos, jobs, ingresses. Secret-free.">⤓ Export</button>
+        <button class="addbtn" id="import-snapshot" title="Previews every change first. Ingresses, rules and crons arrive switched off.">⤒ Import</button>
         <input type="file" id="snapshot-file" accept="application/json,.json" hidden>
         <span class="bundlemsg" id="snapshot-msg"></span>
       </div>
