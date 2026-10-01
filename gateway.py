@@ -1677,7 +1677,13 @@ def resolve_quirk(body, quirk):
 
     The last step is the important one: obeying the server's "set reasoning_effort to 'none'"
     advice unconditionally is what made the body oscillate none -> absent -> none until the round
-    budget died, reporting a context overflow that never happened (`adapt_body`'s docstring)."""
+    budget died, reporting a context overflow that never happened (`adapt_body`'s docstring).
+
+    "none" is terminal whichever message refused it: gpt-6-astra answers it with "does not
+    support 'none'", which reads as a plain drop and restarted the cycle (#178)."""
+    reasoning = (error_classifier.QUIRK_NO_TOOL_REASONING, error_classifier.QUIRK_NO_REASONING_EFFORT)
+    if quirk in reasoning and body.get("tools") and body.get("reasoning_effort") == "none":
+        return None
     if quirk == error_classifier.QUIRK_NO_TOOL_REASONING and body.get("tools"):
         effort = body.get("reasoning_effort")
         if effort is None:

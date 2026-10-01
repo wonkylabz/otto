@@ -292,8 +292,10 @@ def _tools_refused(detail):
     Only reachable with `adaptable=False`, i.e. after dropping `reasoning_effort` changed
     nothing, so a run that merely had to lose that parameter is never walled by this."""
     d = (detail or "").lower()
+    # Refusing 'none' is refusing tools: it is the only effort OpenAI allows tools with (#178).
     return ("--enable-auto-tool-choice" in d or "--tool-call-parser" in d
-            or ("function tools" in d and "not supported" in d))
+            or ("function tools" in d and "not supported" in d)
+            or ("reasoning_effort" in d and "support 'none'" in d))
 
 
 # What to DO about a tool refusal, which is not one instruction: vLLM is a local process the

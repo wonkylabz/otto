@@ -7732,6 +7732,37 @@ class OpenAiParamDialectTests(unittest.TestCase):
             body = nxt
         self.assertEqual(states, ["<absent>", "none"])
 
+    # gpt-6-astra's answer to 'none', verbatim (2026-10-01): a DIFFERENT message from the one above.
+    NONE_REFUSED_400 = (
+        b'{"error":{"message":"Unsupported value: \'reasoning_effort\' does not support \'none\' '
+        b'with this model. Supported values are: \'low\', \'medium\', \'high\', and \'xhigh\'.",'
+        b'"type":"invalid_request_error","param":"reasoning_effort","code":"unsupported_value"}}')
+
+    def test_a_model_refusing_none_with_tools_WALLS_without_repeating_a_body(self):
+        """#178/#155: astra refuses 'none' with its own message, which read as a plain drop, so
+        the body cycled none -> absent -> none for all 10 rounds and died as an anonymous error.
+        Driven through the real `_chat_step` against astra's two real bodies."""
+        import local_runtime
+        for learned in ([], [self.ec.QUIRK_TOOL_REASONING_NONE]):
+            with self.subTest(learned=learned):
+                gateway._LEARNED_QUIRKS.clear()
+                m = dict(self.m, quirks=learned)
+                sent = []
+
+                def post(_m, body, _t):
+                    sent.append(json.dumps(body, sort_keys=True))
+                    none = body.get("reasoning_effort") == "none"
+                    raise self._400(self.NONE_REFUSED_400 if none else self.REASONING_400)
+                with mock.patch.object(local_runtime, "_post", post), \
+                        mock.patch.object(gateway, "_mutate", lambda f: None):
+                    body = gateway.chat_body(m, [], 8, reasoning_effort="high",
+                                             tools=[{"type": "function"}])
+                    with self.assertRaises(local_runtime.ToolsUnsupported):
+                        local_runtime._chat_step(m, body, 5)
+                self.assertEqual(len(sent), len(set(sent)), "a body was re-sent unchanged")
+                self.assertNotIn(self.ec.QUIRK_NO_REASONING_EFFORT, gateway.quirks(m),
+                                 "the 'none' refusal was learned as an endpoint-wide drop")
+
     def test_a_learned_none_quirk_is_sent_from_the_FIRST_turn(self):
         """Learning it is only half: without `chat_body` acting on it, every later turn re-sends
         a body the endpoint refuses and re-pays the 400 — measured as the bug this quirk pair
