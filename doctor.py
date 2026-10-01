@@ -191,7 +191,9 @@ def _probe_tool_calls(m, gateway):
             # It answered and hit OUR ceiling: the tools were accepted, which is the question.
             if "output limit" in low or ("max_tokens" in low and "higher" in low):
                 return True, ""
-            if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in low):
+            refused = error_classifier.classify(e.code, detail, adaptable=False).reason
+            if e.code == 400 and ("--enable-auto-tool-choice" in detail or "tool" in low
+                                  or refused is error_classifier.Reason.tools_unsupported):
                 return False, detail
             return None, detail
         except Exception as e:  # noqa: BLE001

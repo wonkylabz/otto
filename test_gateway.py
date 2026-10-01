@@ -7763,6 +7763,20 @@ class OpenAiParamDialectTests(unittest.TestCase):
                 self.assertNotIn(self.ec.QUIRK_NO_REASONING_EFFORT, gateway.quirks(m),
                                  "the 'none' refusal was learned as an endpoint-wide drop")
 
+    def test_doctor_reads_the_none_refusal_as_tools_refused_like_the_runtime(self):
+        """doctor's probe shares `adapt_for`, so it stops at the same 'none' refusal — and must
+        report what the runtime walls on, not 'unverified'."""
+        import doctor
+
+        def urlopen(req, timeout=None):
+            none = json.loads(req.data).get("reasoning_effort") == "none"
+            raise self._400(self.NONE_REFUSED_400 if none else self.REASONING_400)
+        m = dict(self.m, quirks=[self.ec.QUIRK_TOOL_REASONING_NONE])
+        with mock.patch("urllib.request.urlopen", urlopen), \
+                mock.patch.object(gateway, "_mutate", lambda f: None):
+            ok, _ = doctor._probe_tool_calls(m, gateway)
+        self.assertIs(ok, False)
+
     def test_a_learned_none_quirk_is_sent_from_the_FIRST_turn(self):
         """Learning it is only half: without `chat_body` acting on it, every later turn re-sends
         a body the endpoint refuses and re-pays the 400 — measured as the bug this quirk pair
