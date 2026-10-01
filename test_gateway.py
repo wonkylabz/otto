@@ -101,6 +101,13 @@ class AutoEngageRepoTests(unittest.TestCase):
         self.assertIsNone(engine.auto_engage_repo("work on something", ["otto"],
                                                   config.WORKER_CAP))
 
+    def test_a_repo_named_only_in_the_carried_conversation_is_not_a_candidate(self):
+        """#154: the carry is an earlier conversation; naming a second repo there made the task's
+        own repo ambiguous and repo mode silently never engaged."""
+        import contracts
+        req = "fix the parser in otto" + contracts.CARRIED_CONTEXT_MARK + "\nearlier: infra#668"
+        self.assertEqual(engine.candidate_repo(req, ["otto", "infra"]), "otto")
+
     def test_segment_match_finds_registered_repo_with_suffixed_name(self):
         # "the Otto issues" must find a repo REGISTERED as "otto-dev" (the naming mismatch
         # that silently disabled auto-engage for days). Leading segment only, >=4 chars, unique.

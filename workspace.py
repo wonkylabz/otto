@@ -366,7 +366,12 @@ def pr_target(repo, request, limit=3):
 
     Bounded to `limit` probes so a request quoting a long issue thread full of `#N` cannot turn
     one provision into dozens of network round-trips. Best-effort throughout: any failure means
-    "no target", i.e. exactly the fresh-branch behaviour that predates this function."""
+    "no target", i.e. exactly the fresh-branch behaviour that predates this function.
+
+    Reads the TASK only: a PR named only in a carried earlier conversation took over a new
+    task (#154). Lazy import — `memory` imports this module."""
+    import contracts
+    request = contracts.task_text(request)
     r = resolve(repo)
     if not r:
         return None
@@ -433,8 +438,9 @@ def grounding(path, request):
     Advisory by construction. It is handed to the executor and the judge as a note, never used
     to block a run: the request may legitimately name a file it is asking to CREATE, or a line
     in a file it is about to grow."""
+    import contracts
     out = []
-    text = str(request or "")
+    text = contracts.task_text(str(request or ""))   # a carried conversation is not a claim (#154)
     if not path or not os.path.isdir(path):
         return out
     # Strip URLs first, then reject any candidate whose FIRST segment looks like a hostname.
