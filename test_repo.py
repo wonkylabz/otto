@@ -2161,6 +2161,32 @@ class PrTargetTests(unittest.TestCase):
         finally:
             workspace._run, workspace.resolve = orig_run, orig_resolve
 
+    def test_a_pr_named_only_in_the_CARRIED_conversation_is_never_a_target(self):
+        """#154 (`web-739eb303`): "work on issue infra#665" carried the earlier thread, which
+        named PR #668, and #668 took over the task. Only the task above the carry may name one."""
+        import contracts
+        probed = []
+
+        def fake_run(args, **kw):
+            if args[:3] == ["gh", "api", "user"]:
+                return (0, "me", "")
+            probed.append(args[3])
+            if args[3] == "665":
+                return (1, "", "not a pull request")      # an issue
+            return (0, '{"state":"OPEN","url":"u","headRefName":"feat",'
+                       '"isCrossRepository":false,"author":{"login":"me"}}', "")
+        carried = contracts.CARRIED_CONTEXT_MARK + "\nearlier: I opened acme/infra#668"
+        orig_run, orig_resolve = workspace._run, workspace.resolve
+        workspace._run = fake_run
+        workspace.resolve = lambda r: {"name": "infra", "path": "/x",
+                                       "origin": "https://github.com/acme/infra.git"}
+        try:
+            self.assertIsNone(workspace.pr_target("infra", "work on issue infra#665" + carried))
+            self.assertNotIn("668", probed)
+            self.assertEqual(workspace.pr_target("infra", "fix acme/infra#7" + carried)["number"], 7)
+        finally:
+            workspace._run, workspace.resolve = orig_run, orig_resolve
+
     def test_only_the_operators_OWN_pr_is_a_target(self):
         """Merely NAMING a PR is weak evidence of intent ("add a test like the one in #480"),
         and acting on it against a colleague's branch pushes commits into their review — worse
@@ -2293,6 +2319,13 @@ class GroundingTests(unittest.TestCase):
         self.assertTrue(notes)
         self.assertIn("148", notes[0])
         self.assertIn("82", notes[0])
+
+    def test_a_path_named_only_in_the_CARRIED_conversation_is_not_a_claim(self):
+        """#154: the carry is an earlier conversation, not a claim about THIS tree."""
+        import contracts
+        req = ("tidy the README" + contracts.CARRIED_CONTEXT_MARK
+               + "\nearlier: see runbooks/vllm/missing.sh at line ~148")
+        self.assertEqual(workspace.grounding(self.d, req), [])
 
     def test_a_line_attached_to_the_path_is_read(self):
         """`path:line` is how this repo's own conventions write it, and the free-floating
