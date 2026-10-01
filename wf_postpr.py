@@ -288,6 +288,8 @@ class PostPrMixin:
         crit = (outcome.get("critique") or "").strip()
         crit = f"\n\n{crit[:800]}" if crit else ""
         line = spec.get(outcome.get("state")) or spec["failed"]
+        if outcome.get("state") == "fail" and (outcome.get("checks") or {}).get("state") == "fail":
+            line = "❌ **Repo checks still failing**{fixes} — PR left draft for human review.{crit}"
         return "\n\n" + line.format(cap=cap, fixes=fixes, crit=crit) + _checks_line(outcome)
 
 

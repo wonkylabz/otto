@@ -28,6 +28,8 @@ from ui import trace
 TIMEOUT_S = float(os.environ.get("OTTO_REPO_CHECKS_TIMEOUT_S", "900"))
 TAIL_CHARS = 4_000          # a failing suite says why at the END of its output
 _NOT_RUNNABLE = (126, 127)  # bash: found but not executable / command not found
+# A suite needs no cloud or forge credential, and the command is settable over the API.
+_CRED_DIRS = (".aws", ".config/gh", ".kube", ".docker", ".azure", ".config/gcloud")
 
 
 def declared(repo):
@@ -49,6 +51,10 @@ def sandbox_argv(path, command):
     """bwrap argv confining `command` to writes under `path` (and a scratch /tmp)."""
     argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
             "--tmpfs", "/tmp"] + file_safety.read_deny_mounts(path)
+    for d in _CRED_DIRS:
+        cred = os.path.join(os.path.expanduser("~"), d)
+        if os.path.isdir(cred):
+            argv += ["--tmpfs", cred]
     # After the masks: a clone under /tmp, or under a masked directory, must stay reachable.
     argv += ["--bind", path, path, "--chdir", path,
              "--setenv", "XDG_CACHE_HOME", "/tmp/.cache",

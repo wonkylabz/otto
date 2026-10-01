@@ -2901,6 +2901,24 @@ class RepoChecksTests(unittest.TestCase):
             _, _, out = self.rc._execute(self.tmp, "env", 30)
         self.assertNotIn("xoxb-canary", out)
 
+    def test_cloud_credentials_are_masked(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        os.makedirs(os.path.join(home, ".aws"))
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            argv = self.rc.sandbox_argv(self.tmp, "true")
+        i = argv.index(os.path.join(home, ".aws"))
+        self.assertEqual(argv[i - 1], "--tmpfs")
+        self.assertLess(i, argv.index("--bind"))
+
+    def test_a_suite_that_never_passed_is_not_blamed_on_the_reviewer(self):
+        import wf_postpr
+        out = wf_postpr.PostPrMixin._loop_summary(None, "review", {
+            "state": "fail", "rounds": 3, "critique": "x",
+            "checks": {"state": "fail", "command": "make test", "exit": 1}})
+        self.assertIn("Repo checks still failing", out)
+        self.assertNotIn("unaddressed findings", out)
+
     @unittest.skipUnless(file_safety.sandbox_available(), "needs a working bwrap")
     def test_exit_codes_map_to_states(self):
         self.assertEqual(self.rc._execute(self.tmp, "exit 3", 30)[:2], ("fail", 3))
