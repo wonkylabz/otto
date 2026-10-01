@@ -2136,6 +2136,12 @@ class Handler(BaseHTTPRequestHandler):
         registry.set_project_instructions(body.get("path", ""), body.get("instructions", ""))
         self._send(200, json.dumps({"ok": True, "meta": registry.project_meta(body.get("path", ""))}))
 
+    def _post_project_verify(self, body):
+        """POST /api/project/verify — the command run against every repo-mode PR's head."""
+        if not registry.set_project_verify(body.get("path", ""), body.get("verify", "")):
+            self._send(404, json.dumps({"error": "not a registered project"})); return
+        self._send(200, json.dumps({"ok": True, "meta": registry.project_meta(body.get("path", ""))}))
+
     def _post_event_rules(self, body):
         """POST /api/event-rules"""
         self._send(200, json.dumps({"ok": True, "rules": events.save_rules(body.get("rules", []))}))
@@ -2571,6 +2577,7 @@ _POST_ROUTES = {
     "/api/project/add": Handler._post_project_add,
     "/api/project/instructions": Handler._post_project_instructions,
     "/api/project/remove": Handler._post_project_remove,
+    "/api/project/verify": Handler._post_project_verify,
     "/api/settings": Handler._post_settings,
     "/api/pr-review-config": Handler._post_pr_review_config,
     "/api/pr-review/dismiss": Handler._post_pr_review_dismiss,

@@ -5260,7 +5260,7 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (cleanup_workspace, clarify_request, classify_request,
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request, classify_request,
                                 finalize_workspace, judge_qa, merge_results, plan_capability,
                                 plan_swarm, pr_head_branch, provision_workspace, resolve_pr_target,
             check_grounding, qa_capability,
@@ -5270,7 +5270,7 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="qaq", workflows=[OttoWorkflow],
-                    activities=[route_request, snapshot_settings, plan_swarm, merge_results, clarify_request,
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm, merge_results, clarify_request,
                                 classify_request, plan_capability, provision_workspace, resolve_pr_target, check_grounding,
                                 finalize_workspace, cleanup_workspace, run_capability,
                                 verify_capability, qa_capability, judge_qa, record_attempt,
@@ -5394,11 +5394,74 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         self.workspace.pr_branch = self._orig_prb
         self.activities._caps = self._orig_caps
 
+    async def test_a_failing_repo_suite_skips_the_reviewer_and_steers_the_fix(self):
+        """#135: the repo's own suite runs before the reviewer. A FAIL is already a specific
+        finding, so round 0 runs no reviewer and the fix is steered by the suite's own tail; once
+        it passes, the judge reads that as a FACT, never as the verdict."""
+        import asyncio
+        import uuid
+        import repo_checks
+        from workflows import OttoWorkflow
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request,
+                                classify_request, finalize_workspace, judge_review, merge_results,
+                                plan_capability, plan_swarm, pr_head_branch, provision_workspace,
+                                resolve_pr_target, check_grounding, record_attempt, record_skip,
+                                review_capability, route_request, snapshot_settings,
+                                run_capability, verify_capability)
+        results = iter([
+            {"state": "fail", "command": "make test", "exit": 1,
+             "tail": "FAILED test_lifecycle - KeyError", "duration_s": 1, "reason": ""},
+            {"state": "pass", "command": "make test", "exit": 0, "tail": "ok",
+             "duration_s": 1, "reason": ""}])
+        orig_run = repo_checks.run
+        repo_checks.run = lambda repo, pr_url, run_id, timeout=None: next(results)
+        self.addCleanup(setattr, repo_checks, "run", orig_run)
+        judged = []
+
+        def fake_judge(request, result, project=None, checks=""):
+            judged.append(checks)
+            return {"verdict": "pass", "critique": ""}
+        engine.judge_review = fake_judge
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                async with Worker(
+                    env.client, task_queue="revchk", workflows=[OttoWorkflow],
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm,
+                                merge_results, clarify_request, classify_request,
+                                plan_capability, provision_workspace, resolve_pr_target,
+                                check_grounding, finalize_workspace, cleanup_workspace,
+                                run_capability, verify_capability, review_capability,
+                                judge_review, record_attempt, record_skip, pr_head_branch],
+                    activity_executor=ex,
+                ):
+                    h = await env.client.start_workflow(
+                        OttoWorkflow.run,
+                        {"request": "add a lifecycle block", "repo": "myrepo"},
+                        id="revchk-" + uuid.uuid4().hex[:8], task_queue="revchk")
+                    for _ in range(100):
+                        st = await h.query(OttoWorkflow.status)
+                        if st["awaiting_approval"]:
+                            break
+                        await asyncio.sleep(0.05)
+                    else:
+                        self.fail("never reached the write-approval gate")
+                    await h.signal(OttoWorkflow.approve, True)
+                    out = await h.result()
+        import config
+        self.assertEqual(len([r for r in self.runs if r["cap"] == config.REVIEW_CAP]), 1,
+                         "the reviewer ran on a round the suite had already failed")
+        fix_runs = [r for r in self.runs if r["cap"] == config.WORKER_CAP and r["critique"]]
+        self.assertTrue(any("FAILED test_lifecycle" in r["critique"] for r in fix_runs))
+        self.assertEqual(len(judged), 1)
+        self.assertIn("PASSED", judged[0])
+        self.assertEqual(out["review"]["state"], "pass")
+        self.assertIn("Repo checks (`make test`): passed", out["result"])
+
     async def test_review_fail_then_fix_then_pass(self):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (cleanup_workspace, clarify_request, classify_request,
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request, classify_request,
                                 finalize_workspace, judge_review, merge_results, plan_capability,
                                 plan_swarm, pr_head_branch, provision_workspace, resolve_pr_target,
             check_grounding, record_attempt,
@@ -5408,7 +5471,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq", workflows=[OttoWorkflow],
-                    activities=[route_request, snapshot_settings, plan_swarm, merge_results, clarify_request,
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm, merge_results, clarify_request,
                                 classify_request, plan_capability, provision_workspace, resolve_pr_target, check_grounding,
                                 finalize_workspace, cleanup_workspace, run_capability,
                                 verify_capability, review_capability, judge_review,
@@ -5461,7 +5524,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (cleanup_workspace, clarify_request, classify_request,
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request, classify_request,
                                 finalize_workspace, judge_review, merge_results, plan_capability,
                                 finalize_terminal, plan_swarm, pr_head_branch,
                                 provision_workspace, resolve_pr_target,
@@ -5473,7 +5536,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq2", workflows=[OttoWorkflow],
-                    activities=[route_request, snapshot_settings, plan_swarm, merge_results,
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm, merge_results,
                                 clarify_request, classify_request, plan_capability,
                                 provision_workspace, resolve_pr_target, check_grounding, finalize_workspace, cleanup_workspace,
                                 run_capability, verify_capability, review_capability,
@@ -5508,7 +5571,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (cleanup_workspace, clarify_request, classify_request,
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request, classify_request,
                                 finalize_workspace, judge_review, merge_results, plan_capability,
                                 finalize_terminal, plan_swarm, pr_head_branch,
                                 provision_workspace, resolve_pr_target,
@@ -5521,7 +5584,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq3", workflows=[OttoWorkflow],
-                    activities=[route_request, snapshot_settings, plan_swarm, merge_results,
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm, merge_results,
                                 clarify_request, classify_request, plan_capability,
                                 provision_workspace, resolve_pr_target, check_grounding, finalize_workspace, cleanup_workspace,
                                 run_capability, verify_capability, review_capability,
@@ -5569,7 +5632,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (cleanup_workspace, clarify_request, classify_request,
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request, classify_request,
                                 finalize_workspace, judge_review, merge_results, plan_capability,
                                 plan_swarm, pr_head_branch, provision_workspace, resolve_pr_target,
             check_grounding, record_attempt,
@@ -5580,7 +5643,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
                     env.client, task_queue="revq4", workflows=[OttoWorkflow],
-                    activities=[route_request, snapshot_settings, plan_swarm, merge_results,
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm, merge_results,
                                 clarify_request, classify_request, plan_capability,
                                 provision_workspace, resolve_pr_target, check_grounding, finalize_workspace, cleanup_workspace,
                                 run_capability, verify_capability, review_capability,

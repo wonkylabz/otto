@@ -23,9 +23,10 @@ from wf_runtime import (_EXEC_CEILING, _FIX_NO_LADDER, _HEARTBEAT, _JUDGE_CEILIN
                         _RETRY_EXEC)
 
 with workflow.unsafe.imports_passed_through():
+    import repo_checks
     from activities import (cleanup_workspace, finalize_workspace, judge_qa, judge_review,
                             pr_head_branch, provision_workspace, qa_capability,
-                            record_attempt, review_capability, run_capability)
+                            record_attempt, review_capability, run_capability, run_repo_checks)
 
 
 # What the fix round is TOLD, minus the sentence naming which judge raised the findings. Shared
@@ -158,43 +159,59 @@ class PostPrMixin:
         cap_field, cap_name = spec["cap_field"], None
         for rnd in range(rounds + 1):    # round 0 = the initial pass; then up to `rounds` fix+redo
             setattr(self, spec["attr"], {"state": spec["source"], "round": rnd})
-            out = await workflow.execute_activity(
-                spec["capability"],
-                {"pr_url": pr_url, "repo": repo, "request": request,
-                 "wid": f"{run_id}-{spec['wid']}{rnd}"},
-                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
-                retry_policy=_RETRY_EXEC)
-            if out.get("missing"):
-                setattr(self, spec["attr"], {"state": "unavailable", "round": rnd})
-                return {"state": "unavailable", "rounds": rnd, cap_field: out.get(cap_field)}
-            self._account(out)
-            cap_name = out.get(cap_field)
-            verdict = await workflow.execute_activity(
-                spec["judge"], {"request": request, "result": out["result"], "repo": repo},
-                start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
-            # Audit the round as its own attempt (passed only on an outright PASS), stamped with
-            # the verdict's own `source` — see `_LOOPS` for why that field is load-bearing.
-            await workflow.execute_activity(
-                record_attempt,
-                {"wid": out["workflow"], "request": f"[{spec['label']}] {request}",
-                 "name": cap_name, "result": out["result"], "cost": out.get("cost", 0),
-                 "attempt": rnd + 1, "tokens": out.get("tokens"), "model": out.get("model"),
-                 "duration_s": out.get("duration_s"),
-                 "verdict": {"passed": verdict["verdict"] == "pass",
-                             "critique": verdict.get("critique", ""), "source": spec["source"]},
-                 "remember": False, "repo": repo},
-                start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+            # Patched: a history recorded before this command must still replay (`regress/fixtures/`).
+            checks = {}
+            if workflow.patched("repo-checks"):
+                checks = await workflow.execute_activity(
+                    run_repo_checks,
+                    {"repo": repo, "pr_url": pr_url, "run_id": f"{run_id}-chk{spec['wid']}{rnd}"},
+                    start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+                    retry_policy=_RETRY)
+            if checks.get("state") == "fail":
+                # The finding is already known and specific: no reviewer round to rediscover it.
+                verdict = {"verdict": "fail", "critique": repo_checks.critique(checks)}
+            else:
+                out = await workflow.execute_activity(
+                    spec["capability"],
+                    {"pr_url": pr_url, "repo": repo, "request": request,
+                     "wid": f"{run_id}-{spec['wid']}{rnd}"},
+                    start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+                    retry_policy=_RETRY_EXEC)
+                if out.get("missing"):
+                    setattr(self, spec["attr"], {"state": "unavailable", "round": rnd})
+                    return {"state": "unavailable", "rounds": rnd, cap_field: out.get(cap_field)}
+                self._account(out)
+                cap_name = out.get(cap_field)
+                judged = {"request": request, "result": out["result"], "repo": repo}
+                note = repo_checks.judge_note(checks)
+                if note:
+                    judged["checks"] = note
+                verdict = await workflow.execute_activity(
+                    spec["judge"], judged,
+                    start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
+                # Audit the round as its own attempt (passed only on an outright PASS), stamped
+                # with the verdict's own `source` — see `_LOOPS` for why it is load-bearing.
+                await workflow.execute_activity(
+                    record_attempt,
+                    {"wid": out["workflow"], "request": f"[{spec['label']}] {request}",
+                     "name": cap_name, "result": out["result"], "cost": out.get("cost", 0),
+                     "attempt": rnd + 1, "tokens": out.get("tokens"), "model": out.get("model"),
+                     "duration_s": out.get("duration_s"),
+                     "verdict": {"passed": verdict["verdict"] == "pass",
+                                 "critique": verdict.get("critique", ""), "source": spec["source"]},
+                     "remember": False, "repo": repo},
+                    start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
             setattr(self, spec["attr"], {"state": verdict["verdict"], "round": rnd})
             if verdict["verdict"] == "pass":
-                return {"state": "pass", "rounds": rnd, cap_field: cap_name}
+                return {"state": "pass", "rounds": rnd, cap_field: cap_name, "checks": checks}
             critique = verdict.get("critique", "")
             if verdict["verdict"] == "inconclusive":
                 return {"state": "inconclusive", "rounds": rnd, cap_field: cap_name,
-                        "critique": critique}
+                        "critique": critique, "checks": checks}
             # FAIL (must/should-fix findings) — fix on the same branch unless the budget is spent.
             if rnd == rounds:
                 return {"state": "fail", "rounds": rnd, cap_field: cap_name,
-                        "critique": critique}
+                        "critique": critique, "checks": checks}
             setattr(self, spec["attr"], {"state": "fixing", "round": rnd})
             ws = await self._fix_workspace(repo, run_id, pr_url)
             if ws is None:
@@ -271,4 +288,18 @@ class PostPrMixin:
         crit = (outcome.get("critique") or "").strip()
         crit = f"\n\n{crit[:800]}" if crit else ""
         line = spec.get(outcome.get("state")) or spec["failed"]
-        return "\n\n" + line.format(cap=cap, fixes=fixes, crit=crit)
+        return "\n\n" + line.format(cap=cap, fixes=fixes, crit=crit) + _checks_line(outcome)
+
+
+def _checks_line(outcome):
+    """The repo's own suite, as the PR reader sees it. Silent when nothing was declared: a
+    skipped check is never presented, so it can never read as a pass."""
+    c = (outcome or {}).get("checks") or {}
+    cmd = f"`{c.get('command')}`"
+    if c.get("state") == "pass":
+        return f"\n🧪 Repo checks ({cmd}): passed."
+    if c.get("state") == "fail":
+        return f"\n🧪 Repo checks ({cmd}): FAILED (exit {c.get('exit')})."
+    if c.get("state") == "error":
+        return f"\n🧪 Repo checks ({cmd}): could not run — {c.get('reason')}."
+    return ""

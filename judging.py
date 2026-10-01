@@ -623,7 +623,7 @@ _TRANSCRIPT_JUDGES = {
 }
 
 
-def _judge_transcript(kind, request, result, project=None):
+def _judge_transcript(kind, request, result, project=None, checks=""):
     """Distil one post-PR transcript to {verdict, critique}, verdict 'pass'|'fail'|'inconclusive'.
 
     Runs on the 'verify' tier — a cheap judge over the capability's own findings, not a fresh
@@ -640,7 +640,8 @@ def _judge_transcript(kind, request, result, project=None):
         spec["intro"] + "\n\n"
         + (conv + "\n\n" if conv else "")
         + f"Original request the PR addresses: {request}\n\n"
-        f"{spec['label']}:\n{result[:6000]}\n\n"
+        + (checks + "\n\n" if checks else "")
+        + f"{spec['label']}:\n{result[:6000]}\n\n"
         "Reply with PASS, FAIL, or INCONCLUSIVE on the first line:\n"
         + spec["verdicts"] + "\n"
         + spec["closing"])
@@ -649,9 +650,10 @@ def _judge_transcript(kind, request, result, project=None):
     return verdict
 
 
-def judge_qa(request, qa_result, project=None):
-    """Judge a QA transcript: pass=empirically validated, fail=a concrete defect."""
-    return _judge_transcript("qa", request, qa_result, project)
+def judge_qa(request, qa_result, project=None, checks=""):
+    """Judge a QA transcript: pass=empirically validated, fail=a concrete defect. `checks` is
+    `repo_checks.judge_note`'s fact about the repo's own suite, when there is one."""
+    return _judge_transcript("qa", request, qa_result, project, checks)
 
 
 def review_request(pr_url, repo, request):
@@ -686,10 +688,10 @@ def review_request(pr_url, repo, request):
         "an empty diff — say why).")
 
 
-def judge_review(request, review_result, project=None):
+def judge_review(request, review_result, project=None, checks=""):
     """Judge a review transcript: pass=clean, fail=must/should-fix findings. Shares
     `_parse_qa_verdict` with `judge_qa` — deliberately the same verdict vocabulary."""
-    return _judge_transcript("review", request, review_result, project)
+    return _judge_transcript("review", request, review_result, project, checks)
 
 
 def error_verdict(result):

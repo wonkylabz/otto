@@ -33,7 +33,7 @@ ACTIVITIES = [
     activities.snapshot_repos, activities.detect_repo_changes,
     activities.run_capability, activities.verify_capability,
     activities.qa_capability, activities.judge_qa,
-    activities.review_capability, activities.judge_review,
+    activities.review_capability, activities.judge_review, activities.run_repo_checks,
     activities.record_attempt, activities.record_skip, activities.distil_memory,
     activities.deliver_result, activities.interim_notice, activities.open_chat,
     activities.record_chat,
