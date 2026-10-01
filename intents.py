@@ -13,7 +13,7 @@ import config
 import facade
 import gateway
 import registry
-from contracts import _DATA_FENCE_PREAMBLE, _fenced
+from contracts import _DATA_FENCE_PREAMBLE, _fenced, task_text
 from ui import trace
 
 
@@ -263,8 +263,10 @@ def candidate_repo(request, repo_names):
     'web' doesn't match inside a URL slug); returns None when zero — or MORE THAN ONE — distinct
     registered repos are named (ambiguous → let the user pick). This is the cheap first gate for
     auto-engaging repo-mode on the interactive path, where there's no structured repo signal like
-    the board's; a positive match is then confirmed by repo_edit_intent before we actually clone."""
-    text = (request or "").lower()
+    the board's; a positive match is then confirmed by repo_edit_intent before we actually clone.
+
+    The TASK only: a repo named in a carried conversation made the match ambiguous or wrong (#154)."""
+    text = task_text(request).lower()
     uniq = named_repos(text, repo_names)
     if uniq:
         return uniq[0] if len(uniq) == 1 else None
