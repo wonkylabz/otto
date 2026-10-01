@@ -817,10 +817,6 @@
     padding: 10px 12px; margin: 4px 0 12px; font-size: 13px; color: var(--text); display: flex;
     align-items: center; gap: 12px; }
   .mcpwarn .msg { flex: 1; max-width: none; margin: 0; }   /* not the chat bubble .msg (680px cap) */
-  .assignrow { display: flex; align-items: center; gap: 14px; padding: 8px 2px; }
-  .assignrow .alabel { font-family: var(--mono); font-size: 13px; color: var(--text); width: 116px; flex: none; }
-  .assignrow select { padding: 7px 10px; }
-  .assignrow .anote { font-size: 12px; color: var(--dim); }
   .testbtn { text-transform: none; letter-spacing: 0; }
   .tres { font-size: 12px; flex: 1; min-width: 0; text-align: right;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1216,7 +1212,10 @@
     border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 9px; cursor: pointer; }
   .cronpreset:hover { border-color: var(--accent); }
   .warn { color: var(--warn); }
-  .bundlebtns { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .sharegrid { display: grid; grid-template-columns: minmax(0, 520px) repeat(2, max-content) 1fr;
+    align-items: center; gap: 12px 10px; margin: 12px 0 6px; }
+  .sharegrid .addbtn { width: 100%; }
+  .sharelbl span { display: block; font-size: 12px; color: var(--dim); }
   .bundlemsg { font-size: 12px; }
   .bundlemsg.ok { color: var(--ok); }
   .bundlemsg.bad { color: var(--danger); }
