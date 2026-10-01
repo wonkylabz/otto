@@ -260,7 +260,8 @@ def _project_entries():
             out.append({"url": "", "path": p, "instructions": ""})
         elif isinstance(p, dict) and (p.get("path") or p.get("url")):
             out.append({"url": p.get("url", "") or "", "path": p.get("path", "") or "",
-                        "instructions": p.get("instructions", "")})
+                        "instructions": p.get("instructions", ""),
+                        "verify": p.get("verify", "") or ""})
     return out
 
 
@@ -332,13 +333,27 @@ def project_namespace(path):
 
 
 def project_meta(path):
-    """`{path, url, checkout, managed, namespace, instructions}` for a registered project
+    """`{path, url, checkout, managed, namespace, instructions, verify}` for a registered project
     (defaults if not found). `path` is the effective root, `checkout` the operator's own
     registered one (empty when Otto's managed clone is all there is)."""
     e = _entry_for(path) or {}
     return {"path": path, "url": e.get("url", "") or "", "checkout": e.get("path", "") or "",
             "managed": repos.is_managed(path), "namespace": project_namespace(path),
-            "instructions": e.get("instructions", "")}
+            "instructions": e.get("instructions", ""), "verify": e.get("verify", "") or ""}
+
+
+def set_project_verify(path, command):
+    """Set the shell command that verifies a PR against this repo (`repo_checks`, issue #135).
+    Refused for an unregistered path: unlike instructions, a command must never create a row."""
+    target = _entry_for(path)
+    if target is None:
+        return False
+    entries = _project_entries()
+    for e in entries:
+        if (e.get("url"), e.get("path")) == (target.get("url"), target.get("path")):
+            e["verify"] = (command or "").strip()
+    save_projects(entries)
+    return True
 
 
 def set_project_instructions(path, instructions):
@@ -363,7 +378,8 @@ def save_projects(lst):
             norm.append({"url": "", "path": e, "instructions": ""})
         elif isinstance(e, dict) and (e.get("path") or e.get("url")):
             norm.append({"url": e.get("url", "") or "", "path": e.get("path", "") or "",
-                         "instructions": e.get("instructions", "")})
+                         "instructions": e.get("instructions", ""),
+                         "verify": e.get("verify", "") or ""})
     storage.write_json(PROJECTS_FILE, norm)
 
 
@@ -386,7 +402,7 @@ def add_project(path=None, url=""):
             e["path"] = path or e.get("path", "")
             save_projects(entries)
             return project_path(e)
-    entry = {"url": url, "path": path, "instructions": ""}
+    entry = {"url": url, "path": path, "instructions": "", "verify": ""}
     entries.append(entry)
     save_projects(entries)
     return project_path(entry)

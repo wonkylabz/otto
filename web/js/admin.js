@@ -1237,6 +1237,9 @@ function renderAdmin(data, models, el, settings){
           title="e.g. 'tag all resources team=sre; never touch prod without asking'"
           placeholder="Standing instructions — injected into every run in this repo"></textarea>
         <button class="clearbtn pi-save" data-path="${esc(p)}" style="margin-left:0">Save</button>
+      </div><div class="projinstr">
+        <input class="pv-text" data-path="${esc(p)}" placeholder="PR check, e.g. make test">
+        <button class="clearbtn pv-save" data-path="${esc(p)}" style="margin-left:0">Save</button>
       </div></td>
       <td class="c-ns"><span class="srctag" title="memory namespace">ns: ${esc(meta.namespace||'')}</span></td>
       <td class="c-act r"><button class="remove" data-delproject="${esc(p)}" title="remove">&times;</button></td>
@@ -1516,16 +1519,17 @@ function renderAdmin(data, models, el, settings){
   }));
   bindConv(el);
   el.querySelectorAll("[data-delproject]").forEach(b=>b.addEventListener("click",()=>removeItem("/api/project/remove",{path:b.dataset.delproject})));
-  // per-project instructions (issue #69): set values (may contain quotes/newlines) + wire save
-  el.querySelectorAll(".pi-text").forEach(t=>{ const m=(data.project_meta||{})[t.dataset.path]||{}; t.value=m.instructions||""; });
-  el.querySelectorAll(".pi-save").forEach(b=>b.addEventListener("click",async()=>{
-    const ta=byData(el,"data-path",b.dataset.path,".pi-text");
-    b.disabled=true; b.textContent="Saving…";
-    try { await postJSON("/api/project/instructions",{path:b.dataset.path, instructions:ta?ta.value:""});
-          b.textContent="Saved ✓"; }
-    catch(e){ b.textContent="Save failed"; toast("saving those instructions failed: "+e.message); }
-    finally { setTimeout(()=>{ b.disabled=false; b.textContent="Save instructions"; }, 1200); }
-  }));
+  // project instructions (#69) + PR check (#135)
+  [["pi","instructions","/api/project/instructions"],["pv","verify","/api/project/verify"]].forEach(([c,k,u])=>{
+    el.querySelectorAll("."+c+"-text").forEach(t=>{t.value=((data.project_meta||{})[t.dataset.path]||{})[k]||"";});
+    el.querySelectorAll("."+c+"-save").forEach(b=>b.addEventListener("click",async()=>{
+      const f=byData(el,"data-path",b.dataset.path,"."+c+"-text");
+      b.disabled=true; b.textContent="Saving…";
+      try { await postJSON(u,{path:b.dataset.path,[k]:f?f.value:""}); b.textContent="Saved ✓"; }
+      catch(e){ b.textContent="Save failed"; toast("save failed: "+e.message); }
+      finally { setTimeout(()=>{b.disabled=false;b.textContent="Save";},1200); }
+    }));
+  });
   document.getElementById("add-cap").addEventListener("click",()=>showCapForm());
   document.getElementById("add-mcp").addEventListener("click",()=>showMcpForm());
   document.getElementById("add-project").addEventListener("click",showProjectForm);

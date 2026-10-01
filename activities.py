@@ -466,6 +466,19 @@ def check_grounding(payload: dict) -> dict:
 
 
 @activity.defn
+@_heartbeats("checks")
+def run_repo_checks(payload: dict) -> dict:
+    """Run the repo's declared verification command against the PR's head, sandboxed, in a
+    clone of its own (issue #135). Never raises: anything that stops it running is `error`."""
+    import repo_checks
+    try:
+        return repo_checks.run(payload.get("repo"), payload.get("pr_url"), payload["run_id"])
+    except Exception as e:  # noqa: BLE001 - an unrunnable check is evidence of nothing, not a crash
+        return {"state": "error", "command": "", "exit": None, "tail": "",
+                "duration_s": 0, "reason": f"{type(e).__name__}: {e}"[:300]}
+
+
+@activity.defn
 def cleanup_workspace(payload: dict) -> None:
     import workspace
     workspace.cleanup(payload["run_id"])
@@ -665,9 +678,11 @@ def _post_pr_capability(kind, payload):
 
 def _judge_post_pr(judge, payload):
     """Classify one post-PR transcript into {verdict: pass|fail|inconclusive, critique}, judged
-    against the target repo's own CLAUDE.md conventions (both loops are repo-mode only)."""
+    against the target repo's own CLAUDE.md conventions (both loops are repo-mode only).
+    `checks` (the repo's own suite, as a fact) is passed only when present."""
+    extra = {"checks": payload["checks"]} if payload.get("checks") else {}
     return judge(payload["request"], payload["result"],
-                 project=engine._resolve_project(None, payload.get("repo")))
+                 project=engine._resolve_project(None, payload.get("repo")), **extra)
 
 
 @activity.defn
