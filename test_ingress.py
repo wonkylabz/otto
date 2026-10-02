@@ -2733,8 +2733,8 @@ class SlackGateApprovalTests(unittest.TestCase):
         cleared = []
         orig = slack.run_alive, slack.mark_awaiting_gate
         try:
-            slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user": (
-                cleared.append((ch, root, wid, identity)))
+            slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
+                cleared.append((ch, root, wid, identity, expect)))
             slack.run_alive = lambda wid: None
             self.assertEqual(slack.live_gate(armed, now), "slack-b-D9-5-0")
             slack.run_alive = lambda wid: True
@@ -2742,11 +2742,22 @@ class SlackGateApprovalTests(unittest.TestCase):
             self.assertEqual(cleared, [])
             slack.run_alive = lambda wid: False
             self.assertIsNone(slack.live_gate(armed, now))
-            self.assertEqual(cleared, [("D9", None, None, "bot")])
+            # compare-and-clear: only THAT run's gate is dropped, never a newer arming
+            self.assertEqual(cleared, [("D9", None, None, "bot", "slack-b-D9-5-0")])
         finally:
             slack.run_alive, slack.mark_awaiting_gate = orig
         src = inspect.getsource(slack)
         self.assertNotIn("gate_wid = awaiting_gate(", src, "pollers must ask live_gate")
+
+    def test_a_gate_release_never_erases_a_newer_arming(self):
+        """`live_gate` decides on a read taken before a describe that can take seconds; a retry
+        of the terminated run can arm its OWN gate meanwhile. The release is compare-and-clear."""
+        slack.mark_awaiting_gate("D7", None, wid="new-run", identity="bot")
+        slack.mark_awaiting_gate("D7", None, wid=None, identity="bot", expect="old-run")
+        rec = slack.conversation_record("D7", identity="bot")
+        self.assertEqual(slack.awaiting_gate(rec), "new-run")
+        slack.mark_awaiting_gate("D7", None, wid=None, identity="bot", expect="new-run")
+        self.assertIsNone(slack.awaiting_gate(slack.conversation_record("D7", identity="bot")))
 
     def test_the_poller_actually_delivers_the_decision_past_the_pending_guard(self):
         """The previous test states the rule on the pure helpers; this one runs `_poll_threads`,

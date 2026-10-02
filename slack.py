@@ -921,16 +921,25 @@ def is_pending(rec, now=None):
 GATE_STALE_S = int(os.environ.get("OTTO_SLACK_GATE_STALE_H") or 25) * 3600
 
 
-def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER):
-    """Record (or clear, wid=None) that this conversation is waiting on an approval gate."""
+def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=None):
+    """Record (or clear, wid=None) that this conversation is waiting on an approval gate.
+
+    `expect` makes the write CONDITIONAL on the stored gate still being that run's — a release
+    decided on a stale read (a Temporal describe can take seconds) must never erase a NEWER run's
+    arming, e.g. a retry of the very run that was terminated, reaching its own gate meanwhile."""
     if not channel:
         return
     now = time.time()
-    storage.mutate_json(
-        _STATE,
-        lambda st: slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
-                                           wid=wid, identity=identity),
-        slack_state.empty())
+    key = slack_state.conversation_key(channel, thread_ts, identity)
+
+    def _mutate(st):
+        if expect is not None and (
+                ((st.get("threads") or {}).get(key) or {}).get("gate_wid") != expect):
+            return storage.UNCHANGED
+        return slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
+                                       wid=wid, identity=identity)
+
+    storage.mutate_json(_STATE, _mutate, slack_state.empty())
 
 
 def awaiting_gate(rec, now=None):
@@ -947,7 +956,7 @@ def live_gate(rec, now=None):
     if wid and run_alive(wid) is False:
         trace("SLACK", f"gate released — the run parked at it ({wid}) is gone")
         mark_awaiting_gate(rec.get("channel"), rec.get("thread_ts"), wid=None,
-                           identity=slack_state.identity_of(rec))
+                           identity=slack_state.identity_of(rec), expect=wid)
         return None
     return wid
 
@@ -1484,7 +1493,7 @@ def _poll_dms(cfg, out, identity=USER):
         # cursor doesn't advance, so these messages are picked up on a later poll, in order.
         rec = conversation_record(cid, identity=identity)
         gate_wid = live_gate(rec)
-        if is_busy(rec) and not gate_wid:
+        if not gate_wid and is_busy(rec):     # a standing gate exempts: skip a second describe
             continue
         hist = _api("conversations.history", identity=identity, channel=cid, oldest=cur,
                     limit=50).get("messages") or []
@@ -1622,7 +1631,7 @@ def _poll_threads(cfg, out):
         # exempt from it. Without this the "yes" sat unread for PENDING_STALE_S (30min) and the
         # feature would have looked broken in exactly the way the gate already did.
         gate_wid = live_gate(rec, now)
-        if is_busy(rec, now) and not gate_wid:
+        if not gate_wid and is_busy(rec, now):  # a standing gate exempts: skip a second describe
             continue
         self_ok = _self_test(cfg, cid) if identity == USER else False
         msgs = _api("conversations.replies", identity=identity, channel=cid, ts=root, oldest=cur,
