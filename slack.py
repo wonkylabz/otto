@@ -1654,6 +1654,9 @@ def poll(cfg=None):
         return []
     now = time.time()
     resuming = slack_state.is_resuming(last_poll(), now, DOWNTIME_S)
+    if resuming:
+        storage.mutate_json(_STATE, lambda st: slack_state.floor_cursors(st, now - RESUME_GRACE_S),
+                            slack_state.empty())
     out = []
     try:
         if enabled(cfg):

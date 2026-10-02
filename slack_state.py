@@ -127,6 +127,23 @@ def is_resuming(last_poll, now, downtime_s):
     return last_poll is None or (now - last_poll) > downtime_s
 
 
+def floor_cursors(st, floor):
+    """Move every cursor (channels AND conversation records, both identities) forward to `floor`.
+    A resume must burn the backlog by CURSOR, not per fetched message: each read is bounded
+    (`limit=50`, busy/pending skips), so whatever one poll didn't fetch was answered as live."""
+    floor = float(floor)
+    moved = False
+    for k, cur in (st.get("cursors") or {}).items():
+        if float(cur) < floor:
+            st["cursors"][k] = normalize_ts(floor)
+            moved = True
+    for rec in (st.get("threads") or {}).values():
+        if rec.get("cursor") and float(rec["cursor"]) < floor:
+            rec["cursor"] = normalize_ts(floor)
+            moved = True
+    return st if moved else UNCHANGED
+
+
 def partition_backlog(msgs, now, grace_s):
     """Split a resuming poll's pickings into (live, backlog). Backlog — anything older than
     `grace_s` — arrived while Otto was NOT listening and is burned (marked seen, never answered)

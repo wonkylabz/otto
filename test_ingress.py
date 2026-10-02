@@ -1437,6 +1437,37 @@ class SlackTests(unittest.TestCase):
             slack._api, slack._ME, slack._STATE, slack.USER_TOKEN = \
                 orig_api, orig_me, orig_state, orig_tok
 
+    def test_resume_burns_backlog_beyond_one_bounded_read(self):
+        """The 2026-10-02 failure: re-enabling burned the 50 messages one history call returned,
+        then answered the rest of a 10-day DM backlog 5 per poll. A resume must floor the cursor,
+        not just mark what one bounded read happened to fetch."""
+        orig_api, orig_me, orig_state, orig_tok = slack._api, slack._ME, slack._STATE, slack.USER_TOKEN
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "slack-state.json")
+                slack._ME, slack.USER_TOKEN = {"user": "U1"}, "xoxp-test"
+                cfg = self._cfg(watch_mentions=False)
+                now = time.time()
+                backlog = [{"type": "message", "user": "U2", "ts": f"{now - 3600 * (120 - i):.6f}",
+                            "text": f"old {i}"} for i in range(120)]
+
+                def fake(method, **params):
+                    if method == "conversations.list":
+                        return {"ok": True, "channels": [{"id": "D2", "user": "U2"}]}
+                    if method == "conversations.history" and params.get("channel") == "D2":
+                        # Real Slack: bounded by `oldest` and `limit`, oldest first.
+                        new = [m for m in backlog if float(m["ts"]) > float(params["oldest"])]
+                        return {"ok": True, "messages": new[:params.get("limit", 100)]}
+                    return {"ok": True}
+                slack._api = fake
+                slack.record_seen("D2", now - 200 * 3600)
+                slack._record_poll(now - 200 * 3600)
+                self.assertEqual(slack.poll(cfg), [])
+                self.assertEqual(slack.poll(cfg), [])     # steady state: nothing old left to answer
+        finally:
+            slack._api, slack._ME, slack._STATE, slack.USER_TOKEN = \
+                orig_api, orig_me, orig_state, orig_tok
+
     def test_disabled_listener_does_not_stamp_last_poll(self):
         """What makes the toggle case work: while disabled, `last_poll` goes stale, so the first
         poll after re-enabling reads as a resume. If a disabled poll stamped it, re-enabling would
