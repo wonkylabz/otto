@@ -33,6 +33,7 @@ from audit import (_schema, _conn, _audit_conn, _append_audit, _append_content, 
                    content_entries_for, needs_human_wids, scorecard, pr_url_from_run,  # noqa: F401
                    accept_run, record_terminal, record_skip, run_origin, audit_repo_changes,  # noqa: F401
                    audit_mcp_change, archive_board_cards, archived_board_cards, prune_board_cards)  # noqa: F401
+import contracts
 from contracts import (_TLDR_SHAPE, _SINGLE_TURN_CONTRACT, _RESUME_CONTRACT, _REPORT_FORMAT,  # noqa: F401
                        _DIRECT_REPLY_FORMAT, CONVERSATION_AUDIENCE, _output_contract,  # noqa: F401
                        _invocation, _local_invocation, _LOCAL_CAP_CHARS, _CRITIQUE_FOLD,  # noqa: F401
@@ -173,7 +174,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 repo=None, audience=None, approved_plan=None, grounding=None,
                 memory_enabled=True,
                 model_override=None, discussion=False, supervise_enforce=True, effort=None,
-                attachments=None):
+                attachments=None, frontman=False):
     """One execution attempt via `claude -p`. Builds the invocation (folding in the
     previous critique on a retry) and picks the model (escalated on the final attempt).
     Returns the raw result + metadata; verification and auditing are separate steps so the
@@ -365,6 +366,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             # contract forbids. See contracts._resume_contract.
             _resume_contract(audience),
             _output_contract(audience) if audience else None,
+            contracts._FRONTMAN_DELEGATE if frontman else None,
             # A resumed turn re-uses the session's ORIGINAL system prompt, so the worker
             # contract's wrong-branch clause is not in scope for this message. When the restored
             # tree contradicts the follow-up, this note is the only thing carrying that
@@ -403,7 +405,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         if not (repo and cwd):
             workspace.refresh_repos()
         sysctx = "\n\n".join(
-            filter(None, [_output_contract(audience), _approved_plan_note(approved_plan),
+            filter(None, [_output_contract(audience), contracts._FRONTMAN_DELEGATE if frontman else None,
+                          _approved_plan_note(approved_plan),
                           _grounding_note(grounding), _write_gate_note(cap),
                           _mcp_notes_note(cap),
                           _repo_scope_note(repo, cwd), _repo_source_note(repo, cwd),

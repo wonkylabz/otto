@@ -4419,9 +4419,11 @@ class BrainstormModeTests(unittest.TestCase):
         is the hardest version of this bug to notice."""
         import contracts
         self.assertNotIn("**TLDR**", contracts._resume_contract(contracts.BRAINSTORM_AUDIENCE))
+        # A Slack DM's turn 2 opened "**TLDR** —" to a colleague (2026-10-02).
+        self.assertNotIn("**TLDR**", contracts._resume_contract(contracts.CONVERSATION_AUDIENCE))
         self.assertIn("**TLDR**", contracts._resume_contract(None))
-        # Both variants keep the clause that is true of every resume: it is one-shot.
-        for a in (None, contracts.BRAINSTORM_AUDIENCE):
+        # Every variant keeps the clause that is true of every resume: it is one-shot.
+        for a in (None, contracts.BRAINSTORM_AUDIENCE, contracts.CONVERSATION_AUDIENCE):
             self.assertIn("report back when done", contracts._resume_contract(a))
 
     def test_engine_picks_the_resume_contract_by_audience(self):
@@ -4523,8 +4525,8 @@ class BrainstormModeTests(unittest.TestCase):
         src = workflow_src()
         self.assertIn('if not subtask and not _is_brainstorm(cap) and '
                       '(not unattended or params.get("clarify")):', src)
-        self.assertIn('if cap["risk"] == "read" and not unattended and not _is_brainstorm(cap):',
-                      src)
+        self.assertIn('if (cap["risk"] == "read" and (not unattended or params.get("delegated"))\n'
+                      '                    and not _is_brainstorm(cap)):', src)
 
     def test_a_follow_up_never_re_classifies_out_of_the_mode(self):
         """A bound session has no redirect available, so an up-classify on turn 4 ("so we'd just

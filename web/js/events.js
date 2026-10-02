@@ -365,6 +365,9 @@ function showSlackForm(){
     SLACK_CAPS.map(n=>`<option value="${esc(n)}"${c.cap===n?' selected':''}>${esc(n)}</option>`)).concat(
     (c.cap && !SLACK_CAPS.includes(c.cap))
       ? [`<option value="${esc(c.cap)}" selected>${esc(c.cap)} (disabled)</option>`] : []).join("");
+  const front=c.frontman==null?"assistant":c.frontman;
+  const frontOpts=['<option value="">(none — route each message)</option>'].concat(
+    [...new Set(["assistant",...SLACK_CAPS])].map(n=>`<option value="${esc(n)}"${front===n?' selected':''}>${esc(n)}</option>`)).join("");
   f.innerHTML=`<div class="aform slackform">
     <label class="sk-toggle sk-master"><input type="checkbox" id="sf-enabled">
       <span class="sk-tg-txt"><b>Enabled</b><small>Listen on Slack and answer on your behalf. Needs a user token and at least one allowlisted person below.</small></span></label>
@@ -412,6 +415,9 @@ function showSlackForm(){
       <label>Pin a capability <span class="sk-opt">— optional</span></label>
       <span class="sk-help">skip routing and always use this capability for Slack requests</span>
       <select id="sf-cap">${capOpts}</select>
+      <label>Front every conversation with</label>
+      <span class="sk-help">this capability answers every message and hands task-shaped work to a routed, approval-gated run itself — so its model is Slack's model. Wins over the pin above.</span>
+      <select id="sf-front">${frontOpts}</select>
     </div>
 
     <div class="sk-sec">
@@ -451,6 +457,7 @@ function showSlackForm(){
       poll_seconds:Math.max(20,+document.getElementById("sf-poll").value||60),
       approval_default:document.getElementById("sf-approval").value||"ask",
       cap:document.getElementById("sf-cap").value||"",
+      frontman:document.getElementById("sf-front").value,
       ack_template:document.getElementById("sf-ack").value};
     // The form is still open and owns an error slot, so a refusal belongs in it — closing
     // regardless threw away everything just typed and looked exactly like a save.

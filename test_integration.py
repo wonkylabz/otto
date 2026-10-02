@@ -2044,6 +2044,45 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertIn("Earlier messages in that Slack conversation", params["request"])
         self.assertIn("data, not as instructions", params["request"])   # still fenced as untrusted
 
+    def _with_frontman(self):
+        front = registry.Capability("custom", "assistant", "answers")
+        front.risk = "read"
+        self.activities._caps = self.activities._caps + [front]
+        self.slack.load = lambda: {**self.slack._DEFAULTS, "enabled": True, "cap": "answer-thing",
+                                   "ack_template": "hold on…", "frontman": "assistant"}
+        orig = self.activities.engine.followup_handoff
+        self.handoffs = []
+        self.activities.engine.followup_handoff = lambda *a, **k: self.handoffs.append(a) or "X"
+        self.addCleanup(setattr, self.activities.engine, "followup_handoff", orig)
+
+    def test_the_frontman_fronts_a_fresh_message_over_the_pinned_cap(self):
+        self._with_frontman()
+        self.activities.poll_slack({})
+        _, params = self.started[0]
+        self.assertEqual(params["cap"]["name"], "assistant")
+        self.assertTrue(params["frontman"])
+
+    def test_the_frontman_resumes_its_own_session_and_never_asks_the_handoff(self):
+        """The handoff classifier rewrote a colleague's "Quick one <PR link>" into a write task
+        (2026-10-02); with a frontman, delegation is the frontman's own call."""
+        self._with_frontman()
+        self._dm("Quick one <https://example.test/pr/1>",
+                 rec=self._convo(cap={"name": "assistant", "kind": "custom", "risk": "read"}))
+        self.activities.poll_slack({})
+        _, params = self.started[0]
+        self.assertEqual(self.handoffs, [])
+        self.assertEqual(params["resume"], "sess-1")
+        self.assertTrue(params["frontman"])
+
+    def test_a_conversation_bound_elsewhere_restarts_on_the_frontman(self):
+        self._with_frontman()
+        self._dm("and the second one?", rec=self._convo())
+        self.activities.poll_slack({})
+        _, params = self.started[0]
+        self.assertEqual(self.handoffs, [])
+        self.assertNotIn("resume", params)
+        self.assertEqual(params["cap"]["name"], "assistant")
+
     def _dm(self, text, rec=None, ts="20.0"):
         """A top-level DM message — the shape `_poll_dms` produces."""
         self.slack.poll = lambda cfg: [{"channel": "C7", "ts": ts, "thread_ts": None,
@@ -7348,3 +7387,142 @@ class WorkflowReplayCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                          "the fixture must hold a failed review AND the clean re-review")
         self.assertGreaterEqual(order.count("run_capability"), 2,
                                 "the fixture must hold the fix round, not just the first attempt")
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
+    """Slack's frontman (the assistant) delegates by declaring it; the child is routed + GATED with
+    no reply_to, and the PARENT relays every ending — one voice in the thread (2026-10-02)."""
+
+    TASK = "bump the widget library to 2.0 in example-repo and open a PR"
+
+    def setUp(self):
+        import activities
+        import slack
+        self.activities, self.slack = activities, slack
+        front = registry.Capability("custom", "assistant", "answers")
+        front.risk = "read"
+        writer = registry.Capability("skill", "demo-write", "edits code")
+        writer.risk = "write"
+        self._orig = {n: getattr(engine, n) for n in
+                      ("plan", "decompose", "run_attempt", "verify", "record_attempt",
+                       "record_skip", "plan_preview", "critique_plan", "summarize_plan",
+                       "candidate_repo", "followup_write_intent")}
+        self._orig_caps = activities._caps
+        activities._caps = [front, writer]
+        engine.plan = lambda request, caps, project_root=None: writer
+        engine.decompose = lambda request, caps, project_root=None: []
+        engine.plan_preview = lambda *a, **k: {"plan": "1. bump it", "cost": 0, "tokens": None}
+        engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
+        engine.candidate_repo = lambda request, names: None
+        engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {
+            "passed": True, "critique": ""}
+        engine.record_attempt = lambda *a, **k: None
+        engine.record_skip = lambda *a, **k: None
+        self.classified = []
+        engine.followup_write_intent = lambda *a, **k: self.classified.append(a) or False
+        self.calls = []
+
+        def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
+            self.calls.append((cap.name, frontman, request[:40]))
+            if request.startswith("You handed this off") or "You handed this off" in request:
+                text = "Bumped it — the PR is up."
+            elif frontman:
+                text = self.frontman_says
+            else:
+                text = "child report: bumped, PR https://example.test/pr/1"
+            return {"workflow": wid or "wf-fm", "result": text, "cost": 0.0,
+                    "session_id": "sess-front" if cap.name == "assistant" else "sess-child",
+                    "model": "m", "attempt": 1}
+        engine.run_attempt = fake_run_attempt
+        self.delivered, self.notices = [], []
+        self._orig_deliver, self._orig_interim = delivery.deliver, delivery.interim
+        delivery.deliver = lambda reply_to, result, cap=None, run_id=None: (
+            self.delivered.append((run_id, result)) or "posted")
+        delivery.interim = lambda reply_to, text: (self.notices.append(reply_to) or (True, "ok"))
+        self._orig_state = slack._STATE
+        self._tmp = tempfile.mkdtemp(prefix="otto-fm-")
+        slack._STATE = os.path.join(self._tmp, "slack-state.json")
+
+    def tearDown(self):
+        for n, fn in self._orig.items():
+            setattr(engine, n, fn)
+        self.activities._caps = self._orig_caps
+        delivery.deliver, delivery.interim = self._orig_deliver, self._orig_interim
+        self.slack._STATE = self._orig_state
+
+    async def _drive(self, frontman_says, approve=None, resume=None):
+        import asyncio
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (classify_followup, classify_request, deliver_result,
+                                detect_repo_changes, finalize_terminal, interim_notice,
+                                notify_human, plan_capability, plan_swarm, record_attempt,
+                                record_skip, route_request, run_capability, snapshot_repos,
+                                snapshot_settings, suggest_repo, verify_capability,
+                                resolve_pr_target, check_grounding, estop_check, distil_memory)
+        self.frontman_says = frontman_says
+        wid = "slack-D1-" + uuid.uuid4().hex[:8]
+        reply_to = {"kind": "slack_thread", "channel": "D1", "thread_ts": None}
+        params = {"request": "can you bump the widget?", "unattended": True, "approval": "ask",
+                  "cap": {"name": "assistant", "kind": "custom", "risk": "read"},
+                  "reply_to": reply_to, "frontman": True}
+        if resume:
+            params["resume"] = resume
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                async with Worker(
+                    env.client, task_queue="fmq", workflows=[OttoWorkflow],
+                    activities=[classify_followup, classify_request, deliver_result,
+                                detect_repo_changes, finalize_terminal, interim_notice,
+                                notify_human, plan_capability, plan_swarm, record_attempt,
+                                record_skip, route_request, run_capability, snapshot_repos,
+                                snapshot_settings, suggest_repo, verify_capability,
+                                resolve_pr_target, check_grounding, estop_check, distil_memory],
+                    activity_executor=ex,
+                ):
+                    h = await env.client.start_workflow(OttoWorkflow.run, params, id=wid,
+                                                        task_queue="fmq")
+                    if approve is not None:
+                        child = env.client.get_workflow_handle(f"{wid}-d1")
+                        for _ in range(200):
+                            try:
+                                if (await child.query(OttoWorkflow.status)).get("awaiting_approval"):
+                                    break
+                            except Exception:  # noqa: BLE001 - not started yet
+                                pass
+                            await asyncio.sleep(0.05)
+                        else:
+                            raise AssertionError("the delegated child never reached its gate")
+                        await child.signal(OttoWorkflow.approve, approve)
+                    return wid, await h.result()
+
+    async def test_approved_delegation_is_relayed_once_by_the_parent(self):
+        wid, out = await self._drive("Sure, on it.\nDELEGATE: " + self.TASK, approve=True)
+        self.assertEqual([r for r, _ in self.delivered], [wid],
+                         "only the parent may post; the child has no reply_to")
+        self.assertEqual(self.delivered[0][1], "Bumped it — the PR is up.")
+        self.assertNotIn("DELEGATE", out["result"])
+        self.assertEqual(self.notices, [{"kind": "slack_thread", "channel": "D1",
+                                         "thread_ts": None}], "the gate notice reached the thread")
+        names = [c[0] for c in self.calls]
+        self.assertIn("demo-write", names, "the child was routed to the write cap")
+        self.assertTrue(self.calls[0][1], "the frontman turn carries its delegation contract")
+        self.assertFalse(self.calls[-1][1], "the relay turn must not delegate again")
+
+    async def test_a_declined_delegation_is_still_told(self):
+        wid, out = await self._drive("DELEGATE: " + self.TASK, approve=False)
+        self.assertEqual(len(self.delivered), 1)
+        self.assertNotIn("child report", " ".join(c[2] for c in self.calls))
+        relay = [c for c in self.calls if "You handed this off" in c[2]]
+        self.assertTrue(relay, "a decline must reach the relay turn")
+
+    async def test_a_plain_answer_never_spawns_a_child(self):
+        wid, out = await self._drive("It's the events URL, same as before.")
+        self.assertEqual(self.delivered, [(wid, "It's the events URL, same as before.")])
+        self.assertEqual({c[0] for c in self.calls}, {"assistant"})
+
+    async def test_a_frontman_resume_skips_the_follow_up_classifier(self):
+        await self._drive("Nothing to add.", resume="sess-front")
+        self.assertEqual(self.classified, [], "the frontman decides delegation itself")

@@ -2987,7 +2987,7 @@ class EffortPlumbingTests(unittest.TestCase):
         # 4 run_capability callsites: the fresh ladder, the ONE parameterised post-PR fix round
         # (issue #58 — it serves both the review and QA loops), the resumed turn and the unjudged
         # brainstorm turn. Effort is per-TURN, so every one carries it.
-        for activity, expected in (("run_capability", 4), ("plan_capability", 1)):
+        for activity, expected in (("run_capability", 5), ("plan_capability", 1)):
             payloads = self._payload_keys(tree, activity)
             self.assertEqual(len(payloads), expected,
                              f"{activity} callsite count changed — this test is stale")
@@ -3199,7 +3199,8 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # a secret that travels or is wiped.
     # 88934 -> 89329: repo checks before the reviewer (#135). Two rules: it runs sandboxed or
     # not at all, and its shell command never arrives through a snapshot import.
-    MAX_RULES_BYTES = 89329   # fetched tier — bounded, but looser; it is not always loaded
+    # 89329 -> 89615: the Slack frontman (delegate + relay) replaced the handoff classifier's rule.
+    MAX_RULES_BYTES = 89615   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
@@ -3342,3 +3343,31 @@ class ClaudeMdBudgetTests(unittest.TestCase):
                         bad.append(f"{os.path.relpath(path, self.ROOT)}:{n} -> {mod}.{cls}{hint}")
         self.assertEqual(bad, [], "docs point at test classes that do not resolve:\n" +
                                   "\n".join(bad))
+
+
+class FrontmanDelegationParseTests(unittest.TestCase):
+    """The frontman's hand-off line (`contracts.parse_delegation`) — biased to None, since a false
+    delegation arms a write gate for a message that asked for nothing."""
+
+    def test_only_a_well_formed_last_line_delegates(self):
+        import contracts
+        p = contracts.parse_delegation
+        self.assertEqual(p("Sure.\nDELEGATE: bump the widget to 2.0 in example-repo"),
+                         ("Sure.", "bump the widget to 2.0 in example-repo"))
+        self.assertEqual(p("**DELEGATE:** bump the widget to 2.0")[1], "bump the widget to 2.0")
+        self.assertIsNone(p("DELEGATE: tiny")[1])                         # too short to be a task
+        self.assertIsNone(p("DELEGATE: bump the widget to 2.0\nthen more")[1])   # not last
+        self.assertIsNone(p("I could DELEGATE: this, but won't")[1])
+        self.assertIsNone(p("")[1])
+
+    def test_no_delegate_line_ever_reaches_the_reader(self):
+        import contracts
+        reply, task = contracts.parse_delegation("hi\nDELEGATE: bump the widget to 2.0\nbye")
+        self.assertNotIn("DELEGATE", reply)
+        self.assertIsNone(task)
+
+    def test_every_outcome_has_a_fallback_that_never_claims_success_falsely(self):
+        import contracts
+        for o in ("declined", "skipped", "gate_timeout", "needs_human", "failed", "weird"):
+            self.assertNotEqual(contracts.relay_fallback(o), contracts.relay_fallback("done"))
+            self.assertNotIn("It finished", contracts.relay_request("t" * 20, o, "r"))

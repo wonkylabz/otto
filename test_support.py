@@ -289,7 +289,7 @@ def ui_src():
     return _UI_TAG.sub(inline, doc)
 
 
-_WF_MODULES = ("wf_runtime.py", "wf_repo.py", "wf_postpr.py", "wf_swarm.py")
+_WF_MODULES = ("wf_runtime.py", "wf_repo.py", "wf_postpr.py", "wf_swarm.py", "wf_frontman.py")
 
 
 def workflow_src():

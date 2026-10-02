@@ -570,7 +570,7 @@ def run_capability(payload: dict) -> dict:
             effort=payload.get("effort"),
             discussion=discussion,
             supervise_enforce=payload.get("supervise_enforce", True),
-            attachments=atts)
+            attachments=atts, frontman=bool(payload.get("frontman")))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "session_id": att.get("session_id"), "attempt": att["attempt"],
@@ -1156,13 +1156,23 @@ def poll_slack(payload: dict) -> dict:
             continue
 
         params, resume, handoff = None, False, None
+        # The frontman fronts EVERY turn and decides delegation itself (contracts.
+        # _FRONTMAN_DELEGATE), so `followup_handoff` has no say here; a conversation bound to
+        # another cap (pre-frontman) restarts fresh on the frontman, with its context.
+        front = _cap(cfg.get("frontman")) if cfg.get("frontman") else None
         # Resolve the bound capability ONLY when there is a session to continue. A watched
         # conversation need not have either: a greeting starts watching before any run exists,
         # and a run that dies before delivering never records one. `cap` may be absent, None or
         # {}, so this walks it defensively rather than assuming the shape a happy path leaves.
         session = (rec or {}).get("session")
         bound = _cap(((rec or {}).get("cap") or {}).get("name")) if session else None
-        if session and bound:
+        if session and bound and front:
+            if bound.name == front.name:
+                params = {**slack.to_followup(
+                    msg, {**rec, "cap": {"name": front.name, "kind": front.kind,
+                                         "risk": front.risk}}, cfg), "frontman": True}
+                resume = True
+        elif session and bound:
             # A NEW task inside an existing conversation must not run inside the bound session (see
             # the docstring). Classified against the last reply Otto sent here, exactly as
             # /api/continue does; anything unclear stays a continuation.
@@ -1187,6 +1197,8 @@ def poll_slack(payload: dict) -> dict:
                 earlier = slack.channel_context(msg["channel"], msg["ts"], identity=identity)
             msg = {**msg, "thread": [ln for ln in earlier if msg["text"] not in ln]}
             params = slack.to_request(msg, cfg)
+            if front:
+                params["cap"], params["frontman"] = front.name, True
             if handoff:
                 # The classifier resolved the references, so the routed request stands alone.
                 params["request"] = handoff

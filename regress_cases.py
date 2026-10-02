@@ -478,6 +478,53 @@ def _c_slack_bot_speaks_for_itself():
     return out
 
 
+def _frontman_reply(text):
+    msg = {"channel": "D9", "ts": str(time.time()), "text": text, "is_dm": True}
+    params = slack.to_request(msg, {})
+    return (gateway.complete("execution", contracts._DIRECT_REPLY_FORMAT + "\n\n"
+                             + contracts._FRONTMAN_DELEGATE + "\n\n" + params["request"]) or "").strip()
+
+
+def _c_frontman_answers_quick_one():
+    return _frontman_reply("Quick one <https://github.com/example-org/example-web/pull/696>")
+
+
+def _k_frontman_answers_quick_one(out):
+    """PASS iff a shared link with no request is never turned into a task (the 2026-10-02 DM)."""
+    task = contracts.parse_delegation(out)[1]
+    return (task is None, f"delegated: {task!r}" if task else "answered")
+
+
+def _c_frontman_delegates_a_write():
+    return _frontman_reply("can you bump the widget-sdk dependency to 3.2.0 in example-web "
+                           "and open a PR for it?")
+
+
+def _k_frontman_delegates_a_write(out):
+    """PASS iff an explicit write request is handed off, self-contained (repo + version)."""
+    task = contracts.parse_delegation(out)[1] or ""
+    ok = "3.2.0" in task and "example-web" in task
+    return (ok, f"task: {task!r}" if task else f"no delegation: {out[:160]!r}")
+
+
+def _c_frontman_relays_a_decline():
+    relay = contracts.relay_request("bump widget-sdk to 3.2.0 in example-web and open a PR",
+                                    "declined", "Declined — nothing was run.")
+    return (gateway.complete("execution", contracts._DIRECT_REPLY_FORMAT + "\n\n" + relay)
+            or "").strip()
+
+
+_RELAY_LEAK = re.compile(r"\bTLDR\b|approval card|\bgate\b|workflow|DELEGATE", re.I)
+_NOT_DONE = re.compile(r"\b(haven't|have not|didn't|did not|not done|nothing|wasn't|won't)\b", re.I)
+
+
+def _k_frontman_relays_a_decline(out):
+    """PASS iff a declined hand-off says nothing was done, in the asker's words, not Otto's."""
+    leak = _RELAY_LEAK.search(out)
+    ok = bool(_NOT_DONE.search(out)) and not leak and not config.is_no_reply(out)
+    return (ok, f"leak {leak.group(0)!r}" if leak else out[:160])
+
+
 _OWNER = "|".join(re.escape(w) for w in config.OWNER_NAME.split() if len(w) > 2) or "owner"
 
 # The STAND-IN claim, in the two shapes it actually comes out as. Measured on claude-sonnet-5,
@@ -975,6 +1022,15 @@ CASES = [
      "what": "a reply to Otto's own open question is never 'nothing to say' — the control still is",
      "run": _c_answering_an_open_question_is_never_silence,
      "check": _k_answering_an_open_question_is_never_silence},
+    {"id": "frontman-answers-quick-one", "tier": "cheap", "incident": "slack-D06G601G0R1, 2026-10-02",
+     "what": "a shared link with no request is answered, never delegated as a write task",
+     "run": _c_frontman_answers_quick_one, "check": _k_frontman_answers_quick_one},
+    {"id": "frontman-delegates-a-write", "tier": "cheap", "incident": "control for the above",
+     "what": "an explicit write request IS delegated, with repo and version resolved",
+     "run": _c_frontman_delegates_a_write, "check": _k_frontman_delegates_a_write},
+    {"id": "frontman-relays-a-decline", "tier": "cheap", "incident": "PR: Slack frontman",
+     "what": "a declined hand-off is told as not done, with no Otto vocabulary",
+     "run": _c_frontman_relays_a_decline, "check": _k_frontman_relays_a_decline},
     {"id": "slack-bot-speaks-for-itself", "tier": "cheap", "incident": "PR: Slack bot identity",
      "what": "the bot answers under its own name and never claims to relay for the owner",
      "run": _c_slack_bot_speaks_for_itself, "check": _k_slack_bot_speaks_for_itself},

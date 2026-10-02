@@ -12,7 +12,7 @@ import conventions
 import facade
 import gateway
 import ladder
-from contracts import CONVERSATION_AUDIENCE, _write_gate_note
+from contracts import CONVERSATION_AUDIENCE, _write_gate_note, parse_delegation
 from ui import trace
 
 
@@ -412,6 +412,11 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
     if audience == CONVERSATION_AUDIENCE and config.is_no_reply(result):
         trace("VERIFY", "nothing to reply — accepted, nothing will be posted")
         return {"passed": True, "critique": ""}
+    # A frontman handing work off is judged where the work happens (the delegated run), and its
+    # relay turn writes the reply; failing the hand-off here would retry it into an answer.
+    if audience == CONVERSATION_AUDIENCE and parse_delegation(result)[1]:
+        trace("VERIFY", "delegation — accepted, the delegated run is judged on its own")
+        return {"passed": True, "critique": "", "source": "delegate"}
     trace("VERIFY", f"judging output of [{cap.kind}] {cap.name}")
     conv = conventions.judge_block(project, request) if project else None
     # The cap's own rules, so a contract-mandated limit isn't judged as an invented one.

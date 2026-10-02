@@ -854,6 +854,8 @@ def _dismiss(wid):
 
 def _slack_reply_target(wid):
     """Last-resort reply target for a Slack-originated run whose Temporal history is gone."""
+    if re.search(r"-d\d+$", wid or ""):
+        return None         # a frontman's delegated child: its parent relays, it never posts
     try:
         import slack
         return slack.reply_target_from_wid(wid)
