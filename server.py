@@ -305,7 +305,7 @@ def _transcript_events(wid, attempt, cap=250, since=0):
     secrets). Returns (lines[since:], truncated, total, hidden) where `hidden` counts thinking
     blocks the CLI sent EMPTY (pre-`--thinking-display` runs), so the drawer can say why none show.
     Missing file (swept transcript) -> []."""
-    path = os.path.join(claude_cli.TRANSCRIPTS, f"{wid}-a{attempt}.jsonl")
+    path = _attempt_path(wid, attempt)
     lines, hidden = [], 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -329,6 +329,42 @@ def _transcript_events(wid, attempt, cap=250, since=0):
     if truncated:
         out.append(f"… ({len(lines) - cap} more events truncated)")
     return out, truncated, total, hidden
+
+
+# The plan preview rides the drawer as attempt 0 — no execution attempt ever writes `-a0`.
+PLAN_ATTEMPT = 0
+
+
+def _attempt_path(wid, attempt):
+    if attempt == PLAN_ATTEMPT:
+        return claude_cli.plan_transcript_path(wid)
+    return os.path.join(claude_cli.TRANSCRIPTS, f"{wid}-a{attempt}.jsonl")
+
+
+def _plan_live(wid, meta_rows):
+    """The preview is over once it wrote its `result`, an attempt started, or the run ended —
+    a finished preview sitting at the gate must not read as live."""
+    if meta_rows or _transcript_attempts(wid):
+        return False
+    try:
+        with open(claude_cli.plan_transcript_path(wid), encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                try:
+                    if json.loads(raw).get("type") == "result":
+                        return False
+                except (ValueError, AttributeError):
+                    continue
+    except OSError:
+        return False
+    return True
+
+
+def _plan_model(wid):
+    try:
+        with open(claude_cli.plan_transcript_path(wid), encoding="utf-8") as f:
+            return json.loads(f.readline() or "{}").get("model")
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def _transcript_attempts(wid):
@@ -366,8 +402,10 @@ def _run_events(wid, attempt, since):
     meta_rows = engine.audit_entries_for(wid)
     events, truncated, total, hidden = _transcript_events(wid, attempt, cap=_LIVE_EVENTS_CAP,
                                                           since=max(0, since))
+    live = (_plan_live(wid, meta_rows) if attempt == PLAN_ATTEMPT
+            else _is_live(attempt, meta_rows))
     return {"found": True, "events": events, "next": total, "truncated": truncated,
-            "thinking_hidden": hidden, "live": _is_live(attempt, meta_rows),
+            "thinking_hidden": hidden, "live": live,
             "newer": any(a > attempt for a in _transcript_attempts(wid))}
 
 
@@ -383,7 +421,8 @@ def _run_detail(wid):
     meta_rows = engine.audit_entries_for(wid)
     content_rows = engine.content_entries_for(wid)
     on_disk = _transcript_attempts(wid)
-    if not meta_rows and not content_rows and not on_disk:
+    has_plan = os.path.exists(claude_cli.plan_transcript_path(wid))
+    if not meta_rows and not content_rows and not on_disk and not has_plan:
         return {"found": False}
     # Content (request/result/critique) keyed by attempt; the run's request is the first seen.
     request, content_by_attempt = None, {}
@@ -432,6 +471,13 @@ def _run_detail(wid):
         attempts.append({"attempt": a, "events": events, "events_truncated": truncated,
                          "events_next": total, "thinking_hidden": hidden,
                          "live": _is_live(a, meta_rows)})
+    if has_plan:
+        events, truncated, total, hidden = _transcript_events(wid, PLAN_ATTEMPT,
+                                                              cap=_LIVE_EVENTS_CAP)
+        attempts.append({"attempt": PLAN_ATTEMPT, "plan": True, "model": _plan_model(wid),
+                         "events": events, "events_truncated": truncated,
+                         "events_next": total, "thinking_hidden": hidden,
+                         "live": _plan_live(wid, meta_rows)})
     attempts.sort(key=lambda x: x["attempt"])
     # Where the run actually spent itself, stage by stage (issue #129). Merged across the run's
     # rows because `_times` only grows and each row is a snapshot of it at that write — see

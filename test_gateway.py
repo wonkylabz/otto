@@ -5461,6 +5461,35 @@ class RunDetailTests(unittest.TestCase):
         a = server._run_detail("web-x10")["attempts"]
         self.assertEqual([(x["attempt"], x["verified"], x["cost_usd"]) for x in a], [(1, True, 0.4)])
 
+    def test_the_plan_preview_is_shown_live_until_it_writes_its_result(self):
+        """The preview is a 15-min agentic pass before any `-aN` exists — the drawer read only
+        execution attempts, so the whole PLAN stage showed nothing."""
+        import server
+        path = self.claude_cli.plan_transcript_path("web-p1")
+        with open(path, "w") as f:
+            f.write(json.dumps({"type": "otto-meta", "model": "opus"}) + "\n")
+            f.write(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "a"}}]}}) + "\n")
+        d = server._run_detail("web-p1")
+        self.assertTrue(d["found"])
+        p = d["attempts"][0]
+        self.assertEqual((p["attempt"], p["plan"], p["live"], p["model"]), (0, True, True, "opus"))
+        self.assertIn("tool_use Read", p["events"][0])
+        self.assertTrue(server._run_events("web-p1", 0, 0)["live"])
+        with open(path, "a") as f:
+            f.write(json.dumps({"type": "result", "result": "the plan"}) + "\n")
+        self.assertFalse(server._run_events("web-p1", 0, 0)["live"])   # parked at the gate
+
+    def test_the_plan_preview_stops_being_live_once_an_attempt_starts(self):
+        import server
+        with open(self.claude_cli.plan_transcript_path("web-p2"), "w") as f:
+            f.write(json.dumps({"type": "otto-meta"}) + "\n")
+        self._live_transcript("web-p2", 1, {"type": "otto-meta"})
+        ev = server._run_events("web-p2", 0, 0)
+        self.assertEqual((ev["live"], ev["newer"]), (False, True))
+        self.assertEqual([(a["attempt"], a["live"]) for a in server._run_detail("web-p2")["attempts"]],
+                         [(0, False), (1, True)])
+
     def test_empty_claude_thinking_is_counted_so_the_drawer_can_say_why(self):
         import server
         self._live_transcript("web-x7", 1, {"type": "assistant", "message": {"content": [
