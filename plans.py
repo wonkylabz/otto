@@ -20,7 +20,7 @@ import facade
 import gateway
 import local_runtime
 from audit import _audit
-from contracts import _plan_invocation, _setting_sources
+from contracts import _clipped_input, _plan_invocation, _setting_sources  # noqa: F401
 from memory import _resolve_project
 from ui import trace
 
@@ -662,23 +662,6 @@ _PLAN_CRITIQUE_CHARS = 24_000
 _PLAN_REQUEST_CHARS = 6_000
 # How much of ONE step's output the final synthesis reads.
 _SYNTH_STEP_CHARS = 3_000
-
-
-def _clipped_input(text, limit):
-    """(text, note) for a prompt that FEEDS work — a prior step's output, a digest — rather than
-    one that judges it. Same contract as `_clipped` and the same reason (an unmarked cut is read
-    as the source's own content), but the instruction is the opposite: a judge must ignore what
-    it cannot see, whereas an executor must NOT silently build a count, a diff or a "complete"
-    list on top of a hole. Both failure modes were live: a step handed a Helm table cut mid-row
-    either reported a confident total over the visible rows or refused the whole step, and the
-    verifier then failed it for a truncation Otto itself introduced."""
-    text = text or ""
-    if len(text) <= limit:
-        return text, ""
-    return (text[:limit],
-            "\n\n[CUT at {} of {} characters — the rest was NOT passed to you. What is missing is "
-            "UNKNOWN, not absent: do not present a total, a diff or a complete list built on this "
-            "without stating plainly which part you could not see.]".format(limit, len(text)))
 
 
 def _clipped(text, limit):

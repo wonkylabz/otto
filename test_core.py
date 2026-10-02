@@ -3371,3 +3371,8 @@ class FrontmanDelegationParseTests(unittest.TestCase):
         for o in ("declined", "skipped", "gate_timeout", "needs_human", "failed", "weird"):
             self.assertNotEqual(contracts.relay_fallback(o), contracts.relay_fallback("done"))
             self.assertNotIn("It finished", contracts.relay_request("t" * 20, o, "r"))
+
+    def test_a_long_report_is_clipped_with_a_marker(self):
+        import contracts
+        r = contracts.relay_request("t" * 20, "done", "x" * 13000)
+        self.assertIn("[CUT at 12000 of 13000 characters", r)
