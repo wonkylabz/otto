@@ -938,6 +938,20 @@ def awaiting_gate(rec, now=None):
     return slack_state.awaiting_gate(rec, now if now is not None else time.time(), GATE_STALE_S)
 
 
+def live_gate(rec, now=None):
+    """`awaiting_gate`, but released the moment Temporal CONFIRMS the run is gone — the pollers'
+    one question. A non-decision is held while a gate stands, and only a decision ever cleared
+    the marker, so a run terminated at its gate left the conversation deaf for GATE_STALE_S (25h).
+    Same self-heal as `is_busy`: unknown keeps the gate, a definite "gone" clears it once."""
+    wid = awaiting_gate(rec, now)
+    if wid and run_alive(wid) is False:
+        trace("SLACK", f"gate released — the run parked at it ({wid}) is gone")
+        mark_awaiting_gate(rec.get("channel"), rec.get("thread_ts"), wid=None,
+                           identity=slack_state.identity_of(rec))
+        return None
+    return wid
+
+
 def record_conversation_session(channel, thread_ts=None, session=None, cap=None, last_reply=None,
                                 identity=USER):
     """Record what the NEXT message in this conversation needs in order to continue it, and clear
@@ -1469,7 +1483,7 @@ def _poll_dms(cfg, out, identity=USER):
         # (see conversation_key). Skipped — not dropped — while the previous run is in flight: the
         # cursor doesn't advance, so these messages are picked up on a later poll, in order.
         rec = conversation_record(cid, identity=identity)
-        gate_wid = awaiting_gate(rec)
+        gate_wid = live_gate(rec)
         if is_busy(rec) and not gate_wid:
             continue
         hist = _api("conversations.history", identity=identity, channel=cid, oldest=cur,
@@ -1607,7 +1621,7 @@ def _poll_threads(cfg, out):
         # decides that, because `pending` means "one turn at a time" and only a DECISION is
         # exempt from it. Without this the "yes" sat unread for PENDING_STALE_S (30min) and the
         # feature would have looked broken in exactly the way the gate already did.
-        gate_wid = awaiting_gate(rec, now)
+        gate_wid = live_gate(rec, now)
         if is_busy(rec, now) and not gate_wid:
             continue
         self_ok = _self_test(cfg, cid) if identity == USER else False
