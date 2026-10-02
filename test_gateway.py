@@ -4776,6 +4776,12 @@ class ClaudeCliEnvStripTests(unittest.TestCase):
         self.assertIn("PATH", env)
         self.assertIn("HOME", env)
 
+    def test_background_tasks_are_disabled_for_every_cli_child(self):
+        # Measured: with streaming stdin a background Agent left the turn at "still waiting"
+        # 3/3 (the slack-qna-harvest ladder burned on it); with this var set, 3/3 returned.
+        os.environ.pop("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", None)
+        self.assertEqual(claude_cli.child_env().get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"), "1")
+
     def test_an_endpoint_key_named_in_the_model_store_is_stripped_too(self):
         orig, tmp = gateway._PATH, tempfile.mkdtemp(prefix="otto-cliedenv-")
         try:

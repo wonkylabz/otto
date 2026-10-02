@@ -93,7 +93,10 @@ def child_env():
     of what counts as Otto's credential material. Imported at call time: `mcp_client` imports
     THIS module, so the dependency can only run one way at import time."""
     import mcp_client            # noqa: PLC0415 — deferred, mcp_client imports claude_cli
-    return mcp_client.claude_env()
+    env = mcp_client.claude_env()
+    # Streaming stdin ends the turn on the first `result`, before a background agent reports.
+    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+    return env
 
 
 def kill_tree(proc):
