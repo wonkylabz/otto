@@ -533,7 +533,7 @@ function _dbgRender(body, r, openSet, ended){
         <span class="an">${a.plan?'plan preview':'attempt '+a.attempt}</span>${v}<span>${fb}${dur}${cost}${a.backend?' · '+esc(a.backend):''}</span>
       </div><div class="dbgbody">
         ${a.critique?`<div class="dbgsec">verify critique</div><div class="dbgcrit">${esc(a.critique)}</div>`:''}
-        <div class="dbgsec">execution transcript</div>${_dbgTraceHtml(a)}${a.events_truncated?'<div class="sub">(transcript truncated)</div>':''}
+        <div class="dbgsec">${a.plan?'plan':'execution'} transcript</div>${_dbgTraceHtml(a)}${a.events_truncated?'<div class="sub">(transcript truncated)</div>':''}
         ${a.result?`<div class="dbgsec">attempt result</div><div class="dbgresult">${esc((a.result||'').slice(0,4000))}</div>`:''}
       </div></div>`;
   }).join("");

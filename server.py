@@ -333,6 +333,8 @@ def _transcript_events(wid, attempt, cap=250, since=0):
 
 # The plan preview rides the drawer as attempt 0 — no execution attempt ever writes `-a0`.
 PLAN_ATTEMPT = 0
+# Every backend's end-of-turn marker: Claude/local `result`, Codex `turn.completed`, the watchdog's.
+_TURN_END = ("result", "turn.completed", "otto-timeout")
 
 
 def _attempt_path(wid, attempt):
@@ -350,7 +352,7 @@ def _plan_live(wid, meta_rows):
         with open(claude_cli.plan_transcript_path(wid), encoding="utf-8", errors="replace") as f:
             for raw in f:
                 try:
-                    if json.loads(raw).get("type") == "result":
+                    if json.loads(raw).get("type") in _TURN_END:
                         return False
                 except (ValueError, AttributeError):
                     continue

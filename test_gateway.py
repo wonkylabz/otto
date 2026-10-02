@@ -5480,6 +5480,16 @@ class RunDetailTests(unittest.TestCase):
             f.write(json.dumps({"type": "result", "result": "the plan"}) + "\n")
         self.assertFalse(server._run_events("web-p1", 0, 0)["live"])   # parked at the gate
 
+    def test_every_backends_end_of_turn_ends_the_plan_preview(self):
+        """Only Claude and local write `result` — a Codex or timed-out preview read live at the gate."""
+        import server
+        for i, end in enumerate(("turn.completed", "otto-timeout")):
+            wid = f"web-p3{i}"
+            with open(self.claude_cli.plan_transcript_path(wid), "w") as f:
+                f.write(json.dumps({"type": "otto-meta"}) + "\n")
+                f.write(json.dumps({"type": end}) + "\n")
+            self.assertFalse(server._run_events(wid, 0, 0)["live"], end)
+
     def test_the_plan_preview_stops_being_live_once_an_attempt_starts(self):
         import server
         with open(self.claude_cli.plan_transcript_path("web-p2"), "w") as f:
