@@ -6,6 +6,7 @@
 - **Every in-test Temporal `Worker` must register `snapshot_settings`** — or the workflow silently falls back to import-time defaults instead of the store (`ResidentRuleGuardTests`).
 - **A test reads the pipeline through `test_support.workflow_src()`, never `workflows.py`** — the class is four files, so a guard pointed at one silently stops covering whatever moved into a mixin, and still passes (`PipelineSourceReaderTests`).
 - **The ORDER of a run's activity commands is its replay contract** — reordering, adding or dropping one NondeterminismErrors every run in flight, and no restart fixes it. A recorded history in `regress/fixtures/` guards it (`WorkflowReplayCompatibilityTests`).
+- **Anything workflow code calls must not IMPORT at call time** (`contracts.relay_request`) — a lazy `from plans import …` loads outside the passthrough set, the workflow task fails forever and the suite HANGS rather than failing (`WorkflowFrontmanDelegationTests`).
 - **A snapshot missing a key poisons the run forever** — `self._settings` is a recorded activity result replayed verbatim, so a run in flight when a key was added KeyErrors on every replay. No restart fixes it; only `temporal workflow terminate` + resubmit.
 
 ## Plan-first approval preview
