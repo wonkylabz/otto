@@ -115,9 +115,21 @@ def governs(msg):
 
 # --- downtime guard ----------------------------------------------------------
 
-def record_poll(st, now):
+def record_poll(st, now, listening=None):
     st["last_poll"] = float(now)
+    if listening is not None:
+        st["listening"] = sorted(listening)
     return st
+
+
+def to_floor(st, enabled, resuming):
+    """Identities whose cursors are stale: all of them after a gap, else any that just came ON.
+    The gap clock is shared, so it alone can't see one identity re-enabled while the other ran."""
+    if resuming:
+        return set(enabled)
+    if "listening" not in st:          # pre-upgrade state: unknown, and the gap clock says live
+        return set()
+    return set(enabled) - set(st["listening"])
 
 
 def is_resuming(last_poll, now, downtime_s):
@@ -127,18 +139,19 @@ def is_resuming(last_poll, now, downtime_s):
     return last_poll is None or (now - last_poll) > downtime_s
 
 
-def floor_cursors(st, floor):
+def floor_cursors(st, floor, identities=(USER, BOT)):
     """Move every cursor (channels AND conversation records, both identities) forward to `floor`.
     A resume must burn the backlog by CURSOR, not per fetched message: each read is bounded
     (`limit=50`, busy/pending skips), so whatever one poll didn't fetch was answered as live."""
     floor = float(floor)
     moved = False
     for k, cur in (st.get("cursors") or {}).items():
-        if float(cur) < floor:
+        ident = k.split(":", 1)[0] if ":" in k else USER
+        if ident in identities and float(cur) < floor:
             st["cursors"][k] = normalize_ts(floor)
             moved = True
     for rec in (st.get("threads") or {}).values():
-        if rec.get("cursor") and float(rec["cursor"]) < floor:
+        if identity_of(rec) in identities and rec.get("cursor") and float(rec["cursor"]) < floor:
             rec["cursor"] = normalize_ts(floor)
             moved = True
     return st if moved else UNCHANGED

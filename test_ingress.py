@@ -1464,6 +1464,7 @@ class SlackTests(unittest.TestCase):
                 slack._record_poll(now - 200 * 3600)
                 self.assertEqual(slack.poll(cfg), [])
                 self.assertEqual(slack.poll(cfg), [])     # steady state: nothing old left to answer
+                self.assertEqual(slack._state().get("listening"), ["user"])
         finally:
             slack._api, slack._ME, slack._STATE, slack.USER_TOKEN = \
                 orig_api, orig_me, orig_state, orig_tok
@@ -3490,6 +3491,24 @@ class SlackStateMachineTests(unittest.TestCase):
         self.assertEqual(len(live) + len(backlog), len(msgs))     # nothing dropped or duplicated
         self.assertTrue(all(now - float(m["ts"]) <= grace for m in live))
         self.assertTrue(all(now - float(m["ts"]) > grace for m in backlog))
+
+    def test_re_enabling_one_identity_floors_only_its_cursors(self):
+        """The shared gap clock can't see the owner's listener re-enabled while the bot kept
+        polling — `listening` can, and only the identity that came back ON is floored."""
+        U, B = slack_state.USER, slack_state.BOT
+        st = {"cursors": {"D1": "100.000000", slack_state.ns("C1", B): "100.000000"},
+              "threads": {"D1|5": {"cursor": "100.000000"},
+                          "b": {"cursor": "100.000000", "identity": B}},
+              "listening": [B]}
+        stale = slack_state.to_floor(st, [U, B], resuming=False)
+        self.assertEqual(stale, {U})
+        slack_state.floor_cursors(st, 500, stale)
+        self.assertEqual(st["cursors"]["D1"], "500.000000")
+        self.assertEqual(st["threads"]["D1|5"]["cursor"], "500.000000")
+        self.assertEqual(st["cursors"][slack_state.ns("C1", B)], "100.000000")   # bot untouched
+        self.assertEqual(st["threads"]["b"]["cursor"], "100.000000")
+        self.assertEqual(slack_state.to_floor(st, [U, B], resuming=True), {U, B})
+        self.assertEqual(slack_state.to_floor({}, [U], resuming=False), set())   # pre-upgrade
 
     def test_first_sight_seed_never_stamps_a_live_message_read(self):
         import random
