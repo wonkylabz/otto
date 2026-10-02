@@ -382,28 +382,33 @@ def _pr_branch_note(pr):
         f"will execute on branch `{pr.get('branch')}`, so write the plan as it applies there.\n")
 
 
-def _live_checkout_note(cwd):
+def _live_checkout_note(cwd, pr=None):
     """What to tell a planner previewing a REPO-MODE run from the operator's live checkout.
 
     That checkout is wherever the operator left it — `web-e2c5f562` found `infra` on a feature
     branch with dirty files, so sre-minion's own Phase 0 ("pick the clean clone on master") sent
     the planner into the stale sibling `infra3`, and every later step cited it. Execution never
-    sees either tree: it gets a fresh clone of origin's default branch. Say so, and point the
-    planner at the refs that clone will start from."""
+    sees either tree: it gets a fresh clone (default branch, or the PR's). Say so, and point the
+    planner at the refs that clone will start from — the PR's head when `_pr_branch_note` named
+    one, or the two notes contradict each other about which branch the run gets."""
     if not cwd:
         return ""
+    base = (f"open pull request #{pr['number']}'s branch" if pr and pr.get("number")
+            else "this repo's remote default branch")
+    read = (f"`gh pr diff {pr['number']}`" if pr and pr.get("number")
+            else "`git show origin/HEAD:<path>` (or `origin/<default>` if HEAD is unset), "
+                 "`git log origin/HEAD`, `git diff HEAD origin/HEAD`")
     return (
         f"\n\nIMPORTANT — WHERE THIS RUN WILL ACTUALLY EXECUTE.\n"
         f"Your working directory `{cwd}` is the operator's own live checkout, read-only for you. "
         f"It may be on an unrelated branch, dirty, or behind. It is NOT where the work happens: "
-        f"once approved, Otto provisions a fresh isolated clone of this repo's remote default "
-        f"branch, on its own branch, and the run executes there.\n"
+        f"once approved, Otto provisions a fresh isolated clone of {base}, and the run executes "
+        f"there.\n"
         f"So any step of the capability's instructions about choosing a clone, pulling, or "
         f"creating a branch is ALREADY DONE — plan it as done, never perform it. Never read or "
         f"cite any other directory on disk as this repo, including sibling clones such as "
-        f"`<name>2` or `<name>-123`. Read the code as it is on the remote default branch, which "
-        f"is what the clone starts from: `git show origin/HEAD:<path>`, `git log origin/HEAD`, "
-        f"`git diff HEAD origin/HEAD`, and don't rely on this directory's working tree.\n")
+        f"`<name>2` or `<name>-123`. Read the code the clone starts from — {read} — and don't "
+        f"rely on this directory's working tree.\n")
 
 
 def _local_wall_reason(out):
@@ -546,7 +551,7 @@ def plan_preview(request, cap, cwd=None, resume_session=None, wid=None, pr=None,
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
     att_note = attachments_mod.note(attachments)
     invocation = ((request if resume_session else _plan_invocation(cap, request))
-                  + _pr_branch_note(pr) + (_live_checkout_note(cwd) if live_checkout else "")
+                  + _pr_branch_note(pr) + (_live_checkout_note(cwd, pr) if live_checkout else "")
                   + (f"\n\n{att_note}" if att_note else "")
                   + _PLAN_INSTRUCTION
                   # After the instruction, not before: a revision round REPLACES "write a plan"

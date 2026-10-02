@@ -3954,6 +3954,12 @@ class PlanLiveCheckoutNoteTests(unittest.TestCase):
         self.assertIn("git show origin/HEAD:", p)
         self.assertEqual(plans._live_checkout_note(None), "")
 
+    def test_with_a_pr_target_it_agrees_with_the_pr_note_on_the_branch(self):
+        n = plans._live_checkout_note("/srv/infra", {"number": 106, "branch": "otto/x"})
+        self.assertIn("#106", n)
+        self.assertIn("gh pr diff 106", n)
+        self.assertNotIn("default branch", n, "contradicts _pr_branch_note's 'executes on the PR branch'")
+
 
 class RunModeFlagTests(unittest.TestCase):
     """A run-mode flag is read ONCE and passed down, never re-read from `params` further on.

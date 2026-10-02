@@ -301,7 +301,7 @@ def plan_capability(payload: dict) -> dict:
                                       resume_session=payload.get("resume"),
                                       wid=payload.get("wid"),
                                       # The open PR this request works on, resolved before the gate:
-                                      # the preview's cwd is the DEFAULT branch, so without this the
+                                      # the preview's cwd is a live checkout, so without this the
                                       # planner reasons about a tree missing the code (web-a6122d6c).
                                       pr=payload.get("pr"),
                                       # cwd is the operator's checkout, not the clone the run gets.
