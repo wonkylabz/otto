@@ -1124,9 +1124,11 @@ def poll_slack(payload: dict) -> dict:
                 # The run is gone (finished, expired, terminated). Clear the marker so the
                 # conversation stops interpreting replies as verdicts on a run that no longer
                 # exists, and leave the message to be handled normally next poll.
-                slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity)
+                slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity,
+                                         expect=gate_wid)
                 continue
-            slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity)
+            slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity,
+                                     expect=gate_wid)
             _seen()
             slack.post(msg["channel"],
                        "Approved — running it now." if decision

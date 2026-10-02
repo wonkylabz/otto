@@ -1849,7 +1849,7 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.disarmed = []
         self.slack.signal_decision = lambda wid, ok: (
             self.signalled.append((wid, ok)) or True)
-        self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user": (
+        self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
             self.disarmed.append((ch, root, wid)))
         self.slack.load = lambda: {**self.slack._DEFAULTS, "enabled": True, "bot_enabled": True,
                                    "cap": "answer-thing", "ack_template": "hold on…",
@@ -1897,7 +1897,7 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.signalled = []
         self.disarmed = []
         self.slack.signal_decision = lambda wid, ok: False        # the workflow is gone
-        self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user": (
+        self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
             self.disarmed.append((ch, root, wid)))
         self.slack.load = lambda: {**self.slack._DEFAULTS, "bot_enabled": True,
                                    "bot_approvers": ["U1"], "cap": "answer-thing"}

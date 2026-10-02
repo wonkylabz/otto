@@ -930,16 +930,12 @@ def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=
     if not channel:
         return
     now = time.time()
-    key = slack_state.conversation_key(channel, thread_ts, identity)
-
-    def _mutate(st):
-        if expect is not None and (
-                ((st.get("threads") or {}).get(key) or {}).get("gate_wid") != expect):
-            return storage.UNCHANGED
-        return slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
-                                       wid=wid, identity=identity)
-
-    storage.mutate_json(_STATE, _mutate, slack_state.empty())
+    storage.mutate_json(
+        _STATE,
+        lambda st: slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
+                                           wid=wid, identity=identity, expect=expect)
+        or storage.UNCHANGED,
+        slack_state.empty())
 
 
 def awaiting_gate(rec, now=None):
