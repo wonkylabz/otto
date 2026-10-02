@@ -4,8 +4,8 @@ description: >
   Refines ONE existing GitHub issue into an implementation-ready ticket: grounds every
   claim in the repo(s) it touches, asks only load-bearing questions, scores the original's
   readiness 1-5 and ends on a VERDICT line (READY / NEEDS-INPUT). Rewrites the issue only
-  when the request asks to apply it. Use for "refine #N", "is #N ready", "prep this ticket
-  for implementation". Never implements the ticket and never creates new issues.
+  when the request asks to apply it. Use for "refine issue #N", "is issue #N ready to
+  implement", "prep this ticket for implementation", single-ticket readiness checks. Never implements the ticket and never creates new issues.
 ---
 
 # GitHub Ticket Refiner

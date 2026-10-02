@@ -3,9 +3,9 @@ name: explain-like-a-story
 description: >
   Explains a design doc, PR, architecture, incident or subsystem to a smart non-engineer as
   a plain-language story built on one sustained real-world analogy, with a before/after
-  ASCII diagram and the honest messy parts left in. Read-only. Use for "explain this
-  simply", "like a story", "ELI5", "explain this for my manager/PM", "what does this
-  actually mean".
+  ASCII diagram and the honest messy parts left in. Read-only. Use only when the request
+  asks for that register: "explain this simply", "like a story", "ELI5", "explain this
+  for my manager/PM". Not for debugging or ordinary technical questions.
 ---
 
 # Explain like a story
