@@ -10,7 +10,7 @@ Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver t
 
 - **Cursor/conversation/poll decisions live in `slack_state.py`, pure** — no I/O, clock, or env; `slack.py` is the shell passing tunables at call time. Invariants guarded by `SlackStateMachineTests`.
 - **A cursor must be a Slack ts** (10 digits + exactly 6 decimals, `slack._slack_ts`) — a 7-decimal cursor makes `conversations.history` return 0 messages with `ok:True` forever.
-- **Downtime guard** (`DOWNTIME_S`=300, `RESUME_GRACE_S`=120) — a cursor means "read up to here", true only while polling runs; a wider gap marks old messages seen so an outage doesn't dump backlog as fresh replies. A slow in-flight run is not downtime.
+- **Downtime guard** (`DOWNTIME_S`=300, `RESUME_GRACE_S`=120) — a poll gap, or an identity switched back on, FLOORS every cursor to `now - RESUME_GRACE_S`; reads are bounded, so marking only what one poll fetched replays the rest (`SlackTests`).
 - **First sight of a channel isn't its first message** — seed the cursor at `now - RESUME_GRACE_S`, and don't `continue` after seeding.
 - **An ack is a REACTION, not a post** (`slack.ACK_REACTION`, `activities.poll_slack`) — a posted ack promises a reply before there is one, so a `NO_REPLY` turn read as a dead run. Exception: USER first contact, whose ack introduces Otto (`SlackListenerActivityTests`).
 - **A reply to Otto's OWN question is never silence** (`contracts._DIRECT_REPLY_FORMAT`) — it reads as an acknowledgement, and the decision Otto asked for is left outstanding with nobody told (`SlackDirectReplyContractTests`).

@@ -1437,6 +1437,38 @@ class SlackTests(unittest.TestCase):
             slack._api, slack._ME, slack._STATE, slack.USER_TOKEN = \
                 orig_api, orig_me, orig_state, orig_tok
 
+    def test_resume_burns_backlog_beyond_one_bounded_read(self):
+        """The 2026-10-02 failure: re-enabling burned the 50 messages one history call returned,
+        then answered the rest of a 10-day DM backlog 5 per poll. A resume must floor the cursor,
+        not just mark what one bounded read happened to fetch."""
+        orig_api, orig_me, orig_state, orig_tok = slack._api, slack._ME, slack._STATE, slack.USER_TOKEN
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "slack-state.json")
+                slack._ME, slack.USER_TOKEN = {"user": "U1"}, "xoxp-test"
+                cfg = self._cfg(watch_mentions=False)
+                now = time.time()
+                backlog = [{"type": "message", "user": "U2", "ts": f"{now - 3600 * (120 - i):.6f}",
+                            "text": f"old {i}"} for i in range(120)]
+
+                def fake(method, **params):
+                    if method == "conversations.list":
+                        return {"ok": True, "channels": [{"id": "D2", "user": "U2"}]}
+                    if method == "conversations.history" and params.get("channel") == "D2":
+                        # Real Slack: bounded by `oldest` and `limit`, oldest first.
+                        new = [m for m in backlog if float(m["ts"]) > float(params["oldest"])]
+                        return {"ok": True, "messages": new[:params.get("limit", 100)]}
+                    return {"ok": True}
+                slack._api = fake
+                slack.record_seen("D2", now - 200 * 3600)
+                slack._record_poll(now - 200 * 3600)
+                self.assertEqual(slack.poll(cfg), [])
+                self.assertEqual(slack.poll(cfg), [])     # steady state: nothing old left to answer
+                self.assertEqual(slack._state().get("listening"), ["user"])
+        finally:
+            slack._api, slack._ME, slack._STATE, slack.USER_TOKEN = \
+                orig_api, orig_me, orig_state, orig_tok
+
     def test_disabled_listener_does_not_stamp_last_poll(self):
         """What makes the toggle case work: while disabled, `last_poll` goes stale, so the first
         poll after re-enabling reads as a resume. If a disabled poll stamped it, re-enabling would
@@ -3459,6 +3491,24 @@ class SlackStateMachineTests(unittest.TestCase):
         self.assertEqual(len(live) + len(backlog), len(msgs))     # nothing dropped or duplicated
         self.assertTrue(all(now - float(m["ts"]) <= grace for m in live))
         self.assertTrue(all(now - float(m["ts"]) > grace for m in backlog))
+
+    def test_re_enabling_one_identity_floors_only_its_cursors(self):
+        """The shared gap clock can't see the owner's listener re-enabled while the bot kept
+        polling — `listening` can, and only the identity that came back ON is floored."""
+        U, B = slack_state.USER, slack_state.BOT
+        st = {"cursors": {"D1": "100.000000", slack_state.ns("C1", B): "100.000000"},
+              "threads": {"D1|5": {"cursor": "100.000000"},
+                          "b": {"cursor": "100.000000", "identity": B}},
+              "listening": [B]}
+        stale = slack_state.to_floor(st, [U, B], resuming=False)
+        self.assertEqual(stale, {U})
+        slack_state.floor_cursors(st, 500, stale)
+        self.assertEqual(st["cursors"]["D1"], "500.000000")
+        self.assertEqual(st["threads"]["D1|5"]["cursor"], "500.000000")
+        self.assertEqual(st["cursors"][slack_state.ns("C1", B)], "100.000000")   # bot untouched
+        self.assertEqual(st["threads"]["b"]["cursor"], "100.000000")
+        self.assertEqual(slack_state.to_floor(st, [U, B], resuming=True), {U, B})
+        self.assertEqual(slack_state.to_floor({}, [U], resuming=False), set())   # pre-upgrade
 
     def test_first_sight_seed_never_stamps_a_live_message_read(self):
         import random

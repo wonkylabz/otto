@@ -2541,7 +2541,7 @@ class RuleEnforcementTests(unittest.TestCase):
         "gateway-backends.md:Which 400 is an overflow is error_classifier.classify, not _context_fi",
         "gateway-backends.md:Which failures are walls is error_classifier.classify, not an if-chain",
         "gateway-backends.md:discover_models groups by root, not one row per id",
-        # --- ingress.md (15) ---
+        # --- ingress.md (14) ---
         "ingress.md:\"Run now\" starts a workflow directly, not ScheduleHandle.trigger()",
         "ingress.md:A Schedule fires from the Temporal server, so it has no in-process ste",
         "ingress.md:A cron and a required param with no default are mutually exclusive",
@@ -2553,7 +2553,6 @@ class RuleEnforcementTests(unittest.TestCase):
         "ingress.md:A runbook's doc IS its approved plan",
         "ingress.md:A thread Otto replied in is watched",
         "ingress.md:Continuity is per-conversation",
-        "ingress.md:Downtime guard",
         "ingress.md:First sight of a channel isn't its first message",
         "ingress.md:Per-step caps resolve up front or the plan never starts",
         "ingress.md:The store keeps a cap NAME, never its risk",

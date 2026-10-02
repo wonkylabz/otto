@@ -693,8 +693,9 @@ def last_pick():
         return None
 
 
-def _record_poll(now):
-    storage.mutate_json(_STATE, lambda st: slack_state.record_poll(st, now), slack_state.empty())
+def _record_poll(now, listening=None):
+    storage.mutate_json(_STATE, lambda st: slack_state.record_poll(st, now, listening),
+                        slack_state.empty())
 
 
 # The decision logic lives in slack_state (pure, unit-testable); this alias keeps the old name.
@@ -1654,6 +1655,11 @@ def poll(cfg=None):
         return []
     now = time.time()
     resuming = slack_state.is_resuming(last_poll(), now, DOWNTIME_S)
+    stale = slack_state.to_floor(_state(), enabled_identities(cfg), resuming)
+    if stale:
+        storage.mutate_json(
+            _STATE, lambda st: slack_state.floor_cursors(st, now - RESUME_GRACE_S, stale),
+            slack_state.empty())
     out = []
     try:
         if enabled(cfg):
@@ -1670,7 +1676,7 @@ def poll(cfg=None):
         # talking in, so dropping its replies would abandon a live conversation. It filters by
         # identity itself, so an identity that is off contributes nothing here either.
         _poll_threads(cfg, out)
-        _record_poll(now)
+        _record_poll(now, enabled_identities(cfg))
     except Exception as e:  # noqa: BLE001 - a polling glitch must not crash the schedule
         trace("SLACK", f"poll error ({str(e)[:120]})")
     if resuming:
