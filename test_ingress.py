@@ -2787,6 +2787,34 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertEqual(out[0]["gate_wid"], "slack-b-C9-5-0",
                          "the picked message must carry WHICH run it would decide")
 
+    def test_the_poller_reads_past_a_gate_whose_run_is_gone(self):
+        """The poller half of `live_gate`: a run terminated at its gate left the conversation
+        armed, the activity held every non-decision, and the DM was deaf for 25h (observed). Run
+        `_poll_threads` itself — a source grep passes whatever shape the guard takes."""
+        orig = (slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.USER_TOKEN,
+                slack.run_alive)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME = {"bot": "U9", "user": "U0"}
+                slack.BOT_TOKEN, slack.USER_TOKEN = "xoxb-t", "xoxp-t"
+                slack.run_alive = lambda wid: False
+                slack._api = lambda method, identity="user", **k: (
+                    {"ok": True, "messages": [{"user": "U1", "ts": "20.0", "text": "hello?"}]}
+                    if method == "conversations.replies" else {"ok": True})
+                slack.watch_conversation("C9", "5.0", seen="5.0", pending=True,
+                                         pending_wid="slack-b-C9-5-0", identity=slack.BOT)
+                slack.mark_awaiting_gate("C9", "5.0", wid="slack-b-C9-5-0", identity=slack.BOT)
+                out = []
+                slack._poll_threads(self._cfg(), out)
+                rec = slack.conversation_record("C9", "5.0", identity=slack.BOT)
+        finally:
+            (slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.USER_TOKEN,
+             slack.run_alive) = orig
+        self.assertEqual([m["text"] for m in out], ["hello?"])
+        self.assertNotIn("gate_wid", out[0], "a dead run's gate must not turn this into a decision")
+        self.assertIsNone(slack.awaiting_gate(rec), "the stale marker must be cleared on disk")
+
     def test_a_delivered_run_disarms_the_conversation(self):
         """EVERY exit resolves the gate — approved, declined, expired, crashed — and all of them
         end in a delivery. A stale marker would make the next plain "no" a verdict on a run that
