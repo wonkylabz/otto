@@ -379,9 +379,26 @@ class StockCapabilityTests(unittest.TestCase):
             self.assertNotIn("---", body[:4], "frontmatter must be stripped from the body")
             self.assertTrue(body.strip())
         # The optional catalog is discovered too, tagged with its tier.
-        for name in ("researcher", "technical-writer"):
+        for name in ("researcher", "technical-writer", "github-ticket-refiner",
+                     "empirical-investigation", "design-doc", "explain-like-a-story"):
             self.assertIn(name, stock, f"{name}.md should ship in capabilities/optional/")
             self.assertEqual(stock[name][3], "optional")
+
+    def test_stock_caps_carry_no_operator_specific_context(self):
+        # Stock caps ship to every install; one lifted from a personal skill must not keep its
+        # author's paths, org or infra, or it instructs a stranger's run to use them.
+        for name, desc, body, _p, _t, _k in registry.stock_caps():
+            text = (desc + body).lower()
+            for leak in ("uneeq", "matias", "~/repositories", "claude-notes", "ripley", "mosaic"):
+                self.assertNotIn(leak, text, f"{name} leaks operator context: {leak}")
+
+    def test_lifted_stock_caps_pin_their_risk(self):
+        by_name = {c.name: c for c in registry.load() if c.source == "stock"}
+        for name, risk in (("github-ticket-refiner", "write"), ("design-doc", "write"),
+                           ("empirical-investigation", "read"), ("explain-like-a-story", "read")):
+            if name in by_name:   # a same-named user cap shadows the stock copy on this install
+                self.assertEqual(by_name[name].risk, risk, name)
+            self.assertEqual(registry.classify(name, ""), risk, name)
 
     def test_load_tags_stock_caps_and_makes_them_gated_custom(self):
         by_name = {c.name: c for c in registry.load()}
