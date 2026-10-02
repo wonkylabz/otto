@@ -1850,7 +1850,7 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.slack.signal_decision = lambda wid, ok: (
             self.signalled.append((wid, ok)) or True)
         self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
-            self.disarmed.append((ch, root, wid)))
+            self.disarmed.append((ch, root, wid, expect)))
         self.slack.load = lambda: {**self.slack._DEFAULTS, "enabled": True, "bot_enabled": True,
                                    "cap": "answer-thing", "ack_template": "hold on…",
                                    "bot_approvers": list(approvers)}
@@ -1868,7 +1868,8 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(self.started, [], "a decision must never also start a run")
         self.assertIn("Approved", self.posts[-1][1])
         # Disarmed, or the next message in the thread is read as another verdict.
-        self.assertIn(("C9", "5.0", None), self.disarmed)
+        # compare-and-clear: only THIS run's gate, never a newer arming
+        self.assertIn(("C9", "5.0", None, "slack-b-C9-5-0"), self.disarmed)
 
     def test_a_non_approver_saying_yes_clears_nothing_and_is_not_told_why(self):
         """Telling a colleague "you may not approve that" advertises that a gate exists and
@@ -1898,7 +1899,7 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.disarmed = []
         self.slack.signal_decision = lambda wid, ok: False        # the workflow is gone
         self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
-            self.disarmed.append((ch, root, wid)))
+            self.disarmed.append((ch, root, wid, expect)))
         self.slack.load = lambda: {**self.slack._DEFAULTS, "bot_enabled": True,
                                    "bot_approvers": ["U1"], "cap": "answer-thing"}
         self.slack.poll = lambda cfg: [{
@@ -1907,7 +1908,8 @@ class SlackListenerActivityTests(unittest.TestCase):
             "conversation": {"channel": "C9", "thread_ts": "5.0", "cursor": "5.000000"}}]
         out = self.activities.poll_slack({})
         self.assertEqual(out["decided"], [])
-        self.assertIn(("C9", "5.0", None), self.disarmed)
+        # compare-and-clear: only THIS run's gate, never a newer arming
+        self.assertIn(("C9", "5.0", None, "slack-b-C9-5-0"), self.disarmed)
         self.assertEqual(self.seen, [], "left for normal handling on the next poll")
 
     def test_a_channel_mention_watches_the_THREAD_it_replied_in(self):

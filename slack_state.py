@@ -311,9 +311,11 @@ def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, ident
     messages. This only says that one specific kind of reply — a decision — is now meaningful,
     and which run it belongs to."""
     key = conversation_key(channel, thread_ts, identity)
-    if expect is not None and ((st.get("threads") or {}).get(key) or {}).get("gate_wid") != expect:
-        return None
     threads = prune_threads(st.setdefault("threads", {}), now, ttl_s, max_threads)
+    # Checked AFTER the prune: a TTL-expired record still holding that gate would otherwise pass,
+    # and the clear below would resurrect it as a fresh, cursorless record.
+    if expect is not None and (threads.get(key) or {}).get("gate_wid") != expect:
+        return None
     rec = dict(threads.get(key) or {})
     rec.update({"channel": channel, "thread_ts": thread_ts, "identity": identity or USER,
                 "at": now})
