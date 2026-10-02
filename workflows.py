@@ -1008,7 +1008,6 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                                  "frontman": self._frontman},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
-            out = await self._frontman_turn(params, out, 1)
             result = out["result"]
             if ws:
                 pr = await workflow.execute_activity(
@@ -1030,6 +1029,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                  "result": result, "cost": out.get("cost", 0), "attempt": 1,
                  "tokens": out.get("tokens"), "model": out.get("model"),
                  "verdict": None, "repo": repo}, learn=True)
+            relayed = await self._frontman_turn(params, out, 1)
+            if relayed is not out:
+                out, result = relayed, relayed["result"]
             # An UNATTENDED resume has no on-screen audience either (a Slack thread follow-up):
             # deliver it and finalize its Chat turn, exactly as the fresh path below does. Without
             # this the answer to a follow-up reached only the audit log.

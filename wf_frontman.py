@@ -15,6 +15,7 @@ from temporalio import workflow
 from wf_runtime import _EXEC_CEILING, _HEARTBEAT, _RETRY_EXEC, _failure_detail
 
 with workflow.unsafe.imports_passed_through():
+    import config
     import contracts
     from activities import run_capability
 
@@ -25,6 +26,8 @@ def _outcome(res):
         return "failed"
     if res.get("outcome"):
         return res["outcome"]
+    if res.get("paused"):
+        return "paused"
     nh = res.get("needs_human") or {}
     if nh:
         return "gate_timeout" if nh.get("reason") == "gate_timeout" else "needs_human"
@@ -49,7 +52,9 @@ class FrontmanMixin:
         try:
             res = await workflow.execute_child_workflow(
                 type(self).run,
-                {"request": task, "unattended": True, "delegated": True,
+                # Framing AFTER the task, so routing still ranks the task's own words.
+                {"request": task + contracts.DELEGATED_FRAMING, "unattended": True,
+                 "delegated": True,
                  "approval": params.get("approval", "ask"),
                  # The gate notice is the ONE thing the child posts: it arms the conversation so
                  # a Slack "yes" reaches this child's gate. Everything else the parent relays.
@@ -79,7 +84,8 @@ class FrontmanMixin:
             workflow.logger.warning(f"frontman relay failed ({_failure_detail(e)})")
             rout = {"result": "", "session_id": out.get("session_id"), "cost": 0}
         text, _ = contracts.parse_delegation(rout.get("result"))
-        if not text or text == "(no output)" or rout.get("is_error"):
+        if (not text or text == "(no output)" or rout.get("is_error")
+                or config.is_no_reply(text)):
             text = contracts.relay_fallback(outcome)
         await self._audit_attempt(
             {"wid": rout.get("workflow") or wid, "request": relay, "name": cap["name"],

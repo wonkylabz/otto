@@ -7418,7 +7418,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         engine.candidate_repo = lambda request, names: None
         engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {
             "passed": True, "critique": ""}
-        engine.record_attempt = lambda *a, **k: None
+        self.audited = []
+        engine.record_attempt = lambda *a, **k: self.audited.append((a[5], a[3]))
         engine.record_skip = lambda *a, **k: None
         self.classified = []
         engine.followup_write_intent = lambda *a, **k: self.classified.append(a) or False
@@ -7426,8 +7427,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
 
         def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
             self.calls.append((cap.name, frontman, request[:40]))
-            if request.startswith("You handed this off") or "You handed this off" in request:
-                text = "Bumped it — the PR is up."
+            if "You handed this off" in request:
+                text = self.relay_says
             elif frontman:
                 text = self.frontman_says
             else:
@@ -7451,6 +7452,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.activities._caps = self._orig_caps
         delivery.deliver, delivery.interim = self._orig_deliver, self._orig_interim
         self.slack._STATE = self._orig_state
+
+    relay_says = "Bumped it — the PR is up."
 
     async def _drive(self, frontman_says, approve=None, resume=None):
         import asyncio
@@ -7526,3 +7529,25 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_frontman_resume_skips_the_follow_up_classifier(self):
         await self._drive("Nothing to add.", resume="sess-front")
         self.assertEqual(self.classified, [], "the frontman decides delegation itself")
+
+    async def test_a_silent_relay_still_tells_the_asker(self):
+        """NO_REPLY after a hand-off would leave the person with an ack and then nothing."""
+        self.relay_says = "NO_REPLY"
+        await self._drive("DELEGATE: " + self.TASK, approve=False)
+        self.assertEqual(len(self.delivered), 1)
+        self.assertEqual(self.delivered[0][1], __import__("contracts").relay_fallback("declined"))
+
+    async def test_a_resumed_delegation_audits_both_turns_once(self):
+        await self._drive("DELEGATE: " + self.TASK, approve=False, resume="sess-front")
+        rows = dict(r for r in self.audited if r[1] != "child report: bumped, PR https://example.test/pr/1")
+        self.assertTrue(rows[1].startswith("DELEGATE:"), "attempt 1 must record the hand-off itself")
+        self.assertEqual(rows[2], self.relay_says, "the relay is its own attempt")
+
+    def test_a_paused_child_is_never_relayed_as_done(self):
+        from wf_frontman import _outcome
+        self.assertEqual(_outcome({"result": "paused", "paused": True}), "paused")
+        self.assertEqual(_outcome({"result": "x", "outcome": "declined"}), "declined")
+        self.assertEqual(_outcome({"result": "x", "needs_human": {"reason": "gate_timeout"}}),
+                         "gate_timeout")
+        self.assertEqual(_outcome(RuntimeError("x")), "failed")
+        self.assertEqual(_outcome({"result": "x"}), "done")
