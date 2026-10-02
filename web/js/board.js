@@ -512,16 +512,17 @@ function _dbgRender(body, r, openSet, ended){
   const meta=[];
   if(r.cap) meta.push(`<span class="k">${esc(r.cap)}</span>${r.risk?' · '+esc(r.risk):''}`);
   if(r.repo) meta.push(`repo: <span class="k">${esc(r.repo)}</span>`);
-  const done=r.attempts.filter(a=>!a.live);
+  const done=r.attempts.filter(a=>!a.live&&!a.plan);
   if(r.needs_human) meta.push(`status: <span class="k" style="color:var(--warn)">needs human — ${esc(r.needs_human)}</span>`);
   else if(r.attempts.some(a=>a.live)) meta.push(`status: <span class="k">running</span>`);
   else if(done.length) { const v=done[done.length-1].verified; meta.push(`status: <span class="k">${v===true?'verified':(v===false?'completed (unverified)':'done')}</span>`); }
-  const totCost=r.attempts.reduce((s,a)=>s+(a.cost_usd||0),0);
-  meta.push(`${r.attempts.length} attempt${r.attempts.length===1?'':'s'}`+(totCost?` · $${totCost.toFixed(2)}`:''));
+  const totCost=r.attempts.reduce((s,a)=>s+(a.cost_usd||0),0), nAtt=r.attempts.filter(a=>!a.plan).length;
+  meta.push(`${nAtt} attempt${nAtt===1?'':'s'}`+(totCost?` · $${totCost.toFixed(2)}`:''));
   meta.push(`<label class="dbgthtoggle" title="Model reasoning between tool calls — verbose"><input type="checkbox" data-dbgthink${_dbgThinkingOn()?' checked':''}> show thinking</label>`);
   const hint=r.needs_human?(NEEDS_HINT[NEEDS_LABEL[r.needs_human]]||NEEDS_HINT[r.needs_human]):null;
   const atts=r.attempts.map(a=>{
     const v=a.live?'<span class="dbgverd live">● live</span>'
+      :a.plan?'<span class="dbgverd none">plan</span>'
       :(a.verified===true?'<span class="dbgverd pass">✓ verify pass</span>'
       :(a.verified===false?'<span class="dbgverd fail">✗ verify fail</span>':'<span class="dbgverd none">no verify</span>'));
     const fb=a.fallback_from?` · <span title="${esc((a.fallback_reason||'')+(a.fallback_detail?` (${a.fallback_detail})`:''))}">${esc((a.fallback_from||'').split('/').pop())} ⇢ ${esc((a.model||'').split('/').pop())}</span>`:(a.model?` · ${esc((a.model||'').split('/').pop())}`:'');
@@ -529,10 +530,10 @@ function _dbgRender(body, r, openSet, ended){
     const cost=a.cost_usd?` · $${(a.cost_usd).toFixed(2)}`:'';
     const isOpen=openSet?openSet.has(String(a.attempt)):(a.verified===false||a.live);   // failed + live expanded by default
     return `<div class="dbgatt${isOpen?' open':''}" data-att="${a.attempt}"><div class="dbgatt-h" data-dbgtoggle>
-        <span class="an">attempt ${a.attempt}</span>${v}<span>${fb}${dur}${cost}${a.backend?' · '+esc(a.backend):''}</span>
+        <span class="an">${a.plan?'plan preview':'attempt '+a.attempt}</span>${v}<span>${fb}${dur}${cost}${a.backend?' · '+esc(a.backend):''}</span>
       </div><div class="dbgbody">
         ${a.critique?`<div class="dbgsec">verify critique</div><div class="dbgcrit">${esc(a.critique)}</div>`:''}
-        <div class="dbgsec">execution transcript</div>${_dbgTraceHtml(a)}${a.events_truncated?'<div class="sub">(transcript truncated)</div>':''}
+        <div class="dbgsec">${a.plan?'plan':'execution'} transcript</div>${_dbgTraceHtml(a)}${a.events_truncated?'<div class="sub">(transcript truncated)</div>':''}
         ${a.result?`<div class="dbgsec">attempt result</div><div class="dbgresult">${esc((a.result||'').slice(0,4000))}</div>`:''}
       </div></div>`;
   }).join("");
