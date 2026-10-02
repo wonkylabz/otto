@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import time
 import unittest
+import unittest.mock
 import claude_cli
 import config
 import conventions
@@ -3905,6 +3906,53 @@ class PlanBranchNoteTests(unittest.TestCase):
         pre = src.index("self._pr_target = await workflow.execute_activity(")
         self.assertLess(pre, gate, "the PR target must resolve BEFORE the plan preview runs")
         self.assertIn('"pr": self._pr_target', src)
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class PlanLiveCheckoutNoteTests(unittest.TestCase):
+    """A repo-mode preview reads the operator's live checkout, but the run executes in a fresh
+    clone. `web-e2c5f562`: `infra` was on a dirty feature branch, so sre-minion's Phase 0 sent the
+    planner into the stale sibling `infra3` and the whole plan cited it."""
+
+    def _preview_kwargs(self, payload):
+        seen = {}
+        cap = _cap_stub()
+        with unittest.mock.patch.object(activities, "_cap", return_value=cap), \
+             unittest.mock.patch.object(workspace, "resolve", return_value={"path": "/srv/infra"}), \
+             unittest.mock.patch.object(workspace, "refresh_repos", side_effect=lambda: seen.setdefault("fetched", True)), \
+             unittest.mock.patch.object(engine, "plan_preview",
+                                        side_effect=lambda *a, **k: seen.update(k) or {"plan": "", "cost": 0, "tokens": None}), \
+             unittest.mock.patch.object(engine, "critique_plan", return_value={"concerns": []}), \
+             unittest.mock.patch.object(engine, "summarize_plan", side_effect=lambda p, c: p):
+            activities.plan_capability({"request": "work on #1", "name": "sre-minion", **payload})
+        return seen
+
+    def test_a_repo_mode_preview_from_the_live_checkout_is_told_so(self):
+        seen = self._preview_kwargs({"repo": "infra"})
+        self.assertEqual(seen["cwd"], "/srv/infra")
+        self.assertTrue(seen["live_checkout"])
+        self.assertTrue(seen.get("fetched"), "origin/HEAD is what the note points at; fetch it first")
+
+    def test_a_provisioned_cwd_is_not_the_live_checkout(self):
+        seen = self._preview_kwargs({"repo": "infra", "cwd": "/data/workspaces/w1"})
+        self.assertFalse(seen["live_checkout"])
+        self.assertNotIn("fetched", seen)
+
+    def test_the_note_reaches_the_planner_and_forbids_siblings(self):
+        sent = {}
+        with unittest.mock.patch.object(engine, "_claude",
+                                        side_effect=lambda prompt, **k: sent.setdefault("p", prompt) and {"result": ""}):
+            try:
+                plans.plan_preview("work on #1", _cap_stub(), cwd="/srv/infra",
+                                   live_checkout=True)
+            except Exception:  # noqa: BLE001 - only the prompt matters here
+                pass
+        p = sent.get("p", "")
+        self.assertIn("/srv/infra", p)
+        self.assertIn("ALREADY DONE", p)
+        self.assertIn("sibling clones", p)
+        self.assertIn("git show origin/HEAD:", p)
+        self.assertEqual(plans._live_checkout_note(None), "")
 
 
 class RunModeFlagTests(unittest.TestCase):

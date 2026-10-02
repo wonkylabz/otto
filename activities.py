@@ -286,9 +286,14 @@ def plan_capability(payload: dict) -> dict:
     if cap is None:
         return {"plan": "", "concerns": [], "cost": 0, "tokens": None}
     cwd = payload.get("cwd")
+    live = False
     if not cwd and payload.get("repo"):
         r = workspace.resolve(payload["repo"])
         cwd = r["path"] if r else None
+        live = bool(cwd)
+        if live:
+            # The note points the planner at origin/HEAD; make it current first.
+            workspace.refresh_repos()
     atts = payload.get("attachments") or []
     with file_safety.upload_grant(attachments.granted_dirs(
             atts + (payload.get("prior_attachments") or []))):
@@ -299,6 +304,8 @@ def plan_capability(payload: dict) -> dict:
                                       # the preview's cwd is the DEFAULT branch, so without this the
                                       # planner reasons about a tree missing the code (web-a6122d6c).
                                       pr=payload.get("pr"),
+                                      # cwd is the operator's checkout, not the clone the run gets.
+                                      live_checkout=live,
                                       # Same level the execution will run at, so the human approves
                                       # the plan the run actually follows.
                                       effort=payload.get("effort"),
