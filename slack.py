@@ -123,6 +123,9 @@ _DEFAULTS = {
     "watch_mentions": True,   # answer @-mentions of you in channels you're in (best-effort search)
     "approval_default": "ask",  # writes pause on the Needs-you board; reads auto-answer
     "cap": "",                # optional pinned capability (skip Router #1)
+    # The cap that FRONTS every Slack conversation (registry.ASSISTANT_NAME): it answers and
+    # delegates task-shaped work itself, so its model is Slack's model. "" = route each message.
+    "frontman": "assistant",
     "ack_template": _ACK_DEFAULT,
     "greeting_template": _GREETING_DEFAULT,  # reply to a pleasantry-only message (no run started)
     "max_per_poll": 5,        # cap how many new messages one poll turns into runs
@@ -886,9 +889,17 @@ def is_busy(rec, now=None):
     lookup at all and the cost stays one describe per JAMMED conversation, once."""
     rec = rec or {}
     now = now if now is not None else time.time()
-    if not slack_state.is_pending(rec, now, PENDING_STALE_S):
-        return False
     wid = rec.get("pending_wid")
+    if not slack_state.is_pending(rec, now, PENDING_STALE_S):
+        # A frontman holding a delegated run (its gate, then the work) outlives the stale window;
+        # only a run Temporal CONFIRMS alive keeps holding it.
+        if not (wid and slack_state.is_pending(rec, now, GATE_STALE_S)):
+            return False
+        if run_alive(wid) is True:
+            return True
+        watch_conversation(rec.get("channel"), rec.get("thread_ts"), pending=False,
+                           identity=slack_state.identity_of(rec), clear_pending=True)
+        return False
     alive = run_alive(wid) if wid else None
     if slack_state.is_busy(rec, now, PENDING_STALE_S, alive):
         return True
@@ -1709,6 +1720,8 @@ def start_run(wid, params):
                             else ["slack"])}
     if params.get("resume"):
         full["resume"] = params["resume"]
+    if params.get("frontman"):
+        full["frontman"] = True
     return ingress.start_run(wid, full, estop_key="slack", trace_tag="SLACK")
 
 

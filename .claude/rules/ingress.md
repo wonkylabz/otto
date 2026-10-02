@@ -18,7 +18,8 @@ Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver t
 - **A thread Otto replied in is watched** (`slack._poll_threads`) — `history` omits thread replies. `conversations.replies` includes the parent and treats `oldest` as inclusive, so filter `ts > cursor` yourself. One turn at a time via a pending flag (`PENDING_STALE_S`=1800).
 - **Continuity is per-conversation** (`slack.conversation_key`) — a DM keys on the channel, a channel thread on `channel|thread_ts`. Keying a DM on the thread breaks continuity.
 - **One-turn-at-a-time is DERIVED, never a stored flag** (`slack.is_busy` → `run_alive`) — `pending_at` is cleared only on DELIVERY, so any terminal path that skips it (a decline shipped this) leaves a DM deaf for 30min. Unknown = still running (`SlackConversationBusyTests`).
-- **A new task in an old conversation is handed off, not resumed** (`engine.followup_handoff`) — resume binds the session's cap for life and skips repo-mode/verify/review.
+- **The assistant FRONTS every Slack turn and delegates by DECLARING it** (`wf_frontman`) — classifiers turned chat into write tasks. A `DELEGATE:` last line starts a gated `-d1` child with no reply_to; the parent relays EVERY ending (`WorkflowFrontmanDelegationTests`).
+- **A new task in an old conversation is handed off, not resumed** (`engine.followup_handoff`, `frontman: ""` only) — resume binds the session's cap for life and skips repo-mode/verify/review.
 - **Every context line is DATED** (`slack.stamp`) — the spine is the last N messages whenever they were sent, and undated they read as now: "summarise what you've seen today" retold a days-old incident as today's news (`SlackTests`).
 - `channel_context`/`thread_context` are the cold-start fallback only, not the continuity mechanism.
 - `allow_self` is scoped to the owner's own self-DM (`slack._self_test`) — raw, it also answers the owner inside a third party's DM.

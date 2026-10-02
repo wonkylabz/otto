@@ -47,6 +47,7 @@ with workflow.unsafe.imports_passed_through():
                             _PLAN_CEILING, _RETRY, _RETRY_EXEC, _failure_detail)
     from wf_postpr import PostPrMixin
     from wf_repo import RepoFlowMixin
+    from wf_frontman import FrontmanMixin
     from wf_swarm import SwarmMixin
 
 
@@ -119,7 +120,7 @@ def _is_brainstorm(cap):
 
 
 @workflow.defn
-class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
+class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
     """The one workflow every ingress normalizes into.
 
     Three seams live in mixins rather than here, and are documented where they live: the repo-mode
@@ -147,6 +148,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         self._attempt = 0          # current verify->retry attempt (0 until execution starts)
         self._verified = None      # last verify verdict (None until first attempt judged)
         self._swarm = False        # True once this run fans out into a parallel sub-task swarm
+        self._frontman = False     # a Slack frontman turn (wf_frontman): may delegate
         self._children = []        # [{id, cap, request, risk}] of the swarm's child workflows
         self._repo = None          # repo this run targets in an isolated workspace (issue #57/#59)
         self._git_run_id = None    # ORIGINAL run whose workspace path/branch a resume re-provisions
@@ -400,7 +402,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                         start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                 await self._record_chat(params, request, skipped, None, cap)
                 return {"result": skipped, "session_id": None, "cap": cap,
-                        "times": self._times}, request
+                        "outcome": "skipped", "times": self._times}, request
             else:
                 # Interactive gate, OR unattended approval == "ask" — wait for a human decision.
                 # When unattended, the pending workflow shows up under "Waiting on you" on the
@@ -503,12 +505,13 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                     # Conversation audiences only (delivery.interim), and once per run however
                     # many revision rounds the gate goes through — the asker is not the one
                     # revising, so a notice per round is noise from their side.
-                    if reply_to and not self._gate_told_asker:
+                    notice_to = reply_to or params.get("notice_to")
+                    if notice_to and not self._gate_told_asker:
                         self._gate_told_asker = True
                         try:
                             await workflow.execute_activity(
                                 interim_notice,
-                                {"reply_to": reply_to,
+                                {"reply_to": notice_to,
                                  "text": (f"That needs {config.OWNER_NAME}'s approval before I "
                                           f"can do it — I've put it in front of them. I'll reply "
                                           f"here as soon as it's cleared."),
@@ -614,6 +617,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                             start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
                     await self._record_chat(params, request, msg, resume, cap)
                     return ({"result": msg, "session_id": resume, "cap": cap,
+                             "outcome": "gate_timeout" if gate_expired else "declined",
                              "needs_human": self._terminal, "times": self._times}, request)
         return None, request
 
@@ -665,7 +669,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
             # ("so we'd just delete the QA loop then?") would bump the session to write and park
             # the conversation behind an approval card for work nobody asked to start. Asking for
             # the work itself is a NEW request in a normal chat, not a follow-up in this one.
-            if not _is_brainstorm(cap) and (cap["risk"] == "read" or downgradeable):
+            frontman = bool(params.get("frontman")
+                            and workflow.patched("frontman-no-followup-classify"))
+            if (not _is_brainstorm(cap) and not frontman
+                    and (cap["risk"] == "read" or downgradeable)):
                 emergent = await workflow.execute_activity(
                     classify_followup,
                     {"message": request, "name": cap["name"], "repo": repo},
@@ -771,7 +778,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
             # write-shaped musing ("should we just delete the QA loop?") would fall through to the
             # risk bump and park a conversation behind an approval card. The toolset is still the
             # real guard: cap.risk stays "read", so this turn holds no Edit/Write either way.
-            if cap["risk"] == "read" and not unattended and not _is_brainstorm(cap):
+            if (cap["risk"] == "read" and (not unattended or params.get("delegated"))
+                    and not _is_brainstorm(cap)):
                 intent = await workflow.execute_activity(
                     classify_request, {"request": request, "name": cap["name"]},
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
@@ -798,6 +806,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         if isinstance(params, str):
             params = {"request": params}
         request = params["request"]
+        self._frontman = bool(params.get("frontman"))
         # Global pause (estop.py), checked BEFORE the first side effect — no chat thread, no
         # workspace clone, no settings snapshot. Every in-process ingress already refuses while
         # paused; this catches the one that can't be, a Temporal Schedule firing from the server.
@@ -904,7 +913,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
         # gate shows the clone target). The picker stays as an explicit OVERRIDE. Skipped on resume
         # (repo-mode is fresh-only) and for sub-tasks; the board path already carries repo_hint.
         if (not repo and not repo_hint and not resume and not subtask
-                and not unattended and cap["risk"] == "write"):
+                and (not unattended or params.get("delegated")) and cap["risk"] == "write"):
             sug = await workflow.execute_activity(
                 suggest_repo, {"request": request, "name": cap["name"]},
                 start_to_close_timeout=timedelta(seconds=90), retry_policy=_RETRY)
@@ -995,7 +1004,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                                  # session binding the way the model is.
                                  "risk": cap["risk"], "effort": self._effort,
                                  "attachments": self._attachments,
-                                 "prior_attachments": self._prior_attachments},
+                                 "prior_attachments": self._prior_attachments,
+                                 "frontman": self._frontman},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
             result = out["result"]
@@ -1019,6 +1029,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                  "result": result, "cost": out.get("cost", 0), "attempt": 1,
                  "tokens": out.get("tokens"), "model": out.get("model"),
                  "verdict": None, "repo": repo}, learn=True)
+            relayed = await self._frontman_turn(params, out, 1)
+            if relayed is not out:
+                out, result = relayed, relayed["result"]
             # An UNATTENDED resume has no on-screen audience either (a Slack thread follow-up):
             # deliver it and finalize its Chat turn, exactly as the fresh path below does. Without
             # this the answer to a follow-up reached only the audit log.
@@ -1119,6 +1132,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
             out, verdict, attempt, wid = await self._verify_ladder(
                 request, cap, cwd, repo, recall=not subtask, unattended=unattended)
         self._leave("RUN")
+        out = await self._frontman_turn(params, out, attempt)
 
         result = out["result"]
         # Notes ABOUT THE RUN, in Otto's own vocabulary — for the operator's record only, see
@@ -1484,7 +1498,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin):
                      "effort": self._effort, "attachments": self._attachments,
                      # Arm the supervisor's kill switch only while a rung remains for its
                      # critique to steer and the run has kills left to spend (ladder.plan_attempt).
-                     "supervise_enforce": nxt.supervise_enforce},
+                     "supervise_enforce": nxt.supervise_enforce, "frontman": self._frontman},
                     start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY_EXEC)
             except exceptions.ActivityError:
