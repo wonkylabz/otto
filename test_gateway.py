@@ -4972,7 +4972,7 @@ class ClaudeSteerTests(unittest.TestCase):
         self._orig_subprocess = claude_cli.subprocess
         self._orig_transcripts = claude_cli.TRANSCRIPTS
         claude_cli.TRANSCRIPTS = self.dir
-        self.popen_cmds, self.sent, self.new_sessions = [], [], []
+        self.popen_cmds, self.sent, self.new_sessions, self.envs = [], [], [], []
         tests = self
 
         class _Stdin:
@@ -5005,6 +5005,7 @@ class ClaudeSteerTests(unittest.TestCase):
                          start_new_session=False, env=None):
                 tests.popen_cmds.append(cmd)
                 tests.new_sessions.append(start_new_session)
+                tests.envs.append(env or {})
                 _s.stdout = _Stdout() if stdin is not None else io.StringIO(
                     json.dumps(tests._RESULT) + "\n")
                 _s.stderr = io.StringIO("")
@@ -5068,6 +5069,15 @@ class ClaudeSteerTests(unittest.TestCase):
         with open(transcript) as f:
             kinds = [json.loads(l).get("type") for l in f]
         self.assertIn("otto-steer", kinds)
+
+    def test_background_tasks_are_disabled_only_when_steering(self):
+        # Measured: a steered child's background Agent left the turn at "still waiting" 3/3
+        # (the slack-qna-harvest ladder burned on it); with the var, 3/3 returned. Plain -p waits.
+        self.steer_written.set()
+        self.cli.run_json("do the thing")
+        self.cli.run_json("do the thing", steer=supervisor.Steer(budget=1))
+        self.assertNotIn("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", self.envs[0])
+        self.assertEqual(self.envs[1].get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"), "1")
 
     def test_result_event_ends_the_turn_and_closes_stdin(self):
         # A streaming child waits for more input after `result` instead of EOF-ing. If the read

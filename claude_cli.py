@@ -400,8 +400,12 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     # `start_new_session` is what makes the kill paths able to reach the whole tree: it gives
     # the child its own process group, so `kill_tree` can signal the group without touching
     # the worker or its siblings.
+    env = child_env()
+    if streaming_in:
+        # The read loop ends on the first `result`, before a background task can report back.
+        env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            cwd=cwd, start_new_session=True, env=child_env(),
+                            cwd=cwd, start_new_session=True, env=env,
                             **({"stdin": subprocess.PIPE} if streaming_in else {}))
     send_lock = threading.Lock()
 
