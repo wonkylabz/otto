@@ -326,6 +326,29 @@ class RunbookSlackDeliveryTests(unittest.TestCase):
             (slack.post, slack.was_posted, slack.mark_posted,
              slack.record_conversation_session) = orig
 
+    def test_a_runbook_destination_posts_as_the_bot_when_there_is_no_user_token(self):
+        # A bot-only install: the owner default had no token, so a judged-PASS digest failed
+        # `no_token` and the run went to needs-you (runbook-rb-8707935b-bf1ec4).
+        if not _HAS_TEMPORAL:
+            self.skipTest("temporalio not installed")
+        import activities
+        seen = []
+        orig = (slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN)
+        try:
+            slack.post = lambda ch, text, **k: seen.append(k.get("identity")) or True
+            slack.was_posted = lambda rid: False
+            slack.mark_posted = lambda rid: None
+            target = {"kind": "slack_post", "channel": "#events"}
+            slack.BOT_TOKEN = "xoxb-test"
+            activities.deliver_result({"reply_to": target, "result": "gigs",
+                                       "run_id": "runbook-rb-1a2b3c4d-0001"})
+            slack.BOT_TOKEN = ""
+            activities.deliver_result({"reply_to": target, "result": "gigs",
+                                       "run_id": "runbook-rb-1a2b3c4d-0002"})
+            self.assertEqual(seen, [slack.BOT, slack.USER])
+        finally:
+            slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN = orig
+
     def test_a_runbook_with_no_destination_has_no_reply_target(self):
         # The control, and the back-compat case: every runbook stored before this field existed
         # has no `slack` key at all, and must keep working — quietly, into the audit log.

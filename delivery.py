@@ -409,6 +409,8 @@ def _slack(reply_to, result, run_id=None):
     # own account or the bot user. Anything without one is the owner's, which is what an in-flight
     # run submitted before the bot existed carries.
     identity = slack.identity_of(reply_to)
+    if reply_to.get("kind") == "slack_post" and not reply_to.get("identity"):
+        identity = slack.post_identity()
     if run_id and slack.was_posted(run_id):
         return "already delivered to slack"
     # The run decided there was nothing to say back (config.NO_REPLY). Staying silent IS the

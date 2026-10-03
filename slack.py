@@ -747,6 +747,17 @@ def mark_seen(msg):
         record_seen(msg["channel"], msg["ts"], identity)
 
 
+def post_identity():
+    """Who posts a runbook's one-way `slack_post` — the BOT when one is configured, else the owner.
+
+    A scheduled digest is the job speaking, not the owner, so the bot is the honest author. And
+    `identity_of`'s owner default needs a USER token that a bot-only install never has: the post
+    failed `no_token` and the run, which had passed its judge, landed in needs-you. Decided at
+    DELIVERY, never stored on the target — a schedule's action args are frozen at creation, so a
+    token added or removed later would otherwise keep the stale pick forever."""
+    return BOT if BOT_TOKEN else USER
+
+
 def identity_of(msg):
     """Which identity a picked message / reply target belongs to. Anything without one is the
     owner's — the pre-bot default, and what a stale `reply_to` from an in-flight run carries."""
