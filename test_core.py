@@ -535,6 +535,84 @@ class DecomposeTests(unittest.TestCase):
         self.assertEqual(engine.decompose("x", self._caps()[:1]), [])
 
 
+class SequentialRequestGuardTests(unittest.TestCase):
+    """Issue #198: a conditional/sequential request is kept SINGLE in CODE, before the plan call —
+    swarm children run in parallel and never wait, so a dependent split answers against nothing
+    (runbook "Entertainment - HB Events": researcher + worker, the worker checked a calendar)."""
+
+    HB = ("check online for events in Hawkes Bay happening this weekend. Send me a message to "
+          "Slack only if you find something")
+
+    def setUp(self):
+        import routing
+        self.routing = routing
+        for pt in (mock.patch.object(engine.gateway, "complete", side_effect=self._boom),
+                   mock.patch.object(workspace, "git_repos", return_value=[]),
+                   mock.patch.object(workspace, "linked_issue", return_value=None),
+                   mock.patch.object(routing, "trace", lambda *a, **k: None)):
+            pt.start()
+            self.addCleanup(pt.stop)
+
+    @staticmethod
+    def _boom(task, prompt):
+        raise AssertionError("the planner must not be consulted about a conditional request")
+
+    def _split(self, reply="0: check the build\n1: open a ticket\n2: post to slack"):
+        engine.gateway.complete.side_effect = lambda task, prompt: reply
+
+    _caps = DecomposeTests._caps
+
+    def test_the_incident_request_never_reaches_the_planner(self):
+        self.assertEqual(engine.decompose(self.HB, self._caps()), [])
+
+    def test_each_marker_alone_suppresses_the_fan_out_case_insensitively(self):
+        for request in ("check the build ONLY IF the deploy failed, open a ticket",
+                        "check the build Then open a ticket",
+                        "scan the cluster and open a ticket WITH THE RESULTS",
+                        "research the incident and If You Find a regression, file an issue",
+                        "check the build, then open a ticket",
+                        "run the tests and post to Slack only when they fail"):
+            with self.subTest(request=request):
+                self.assertEqual(engine.decompose(request, self._caps()), [])
+
+    def test_a_dependency_need_not_be_announced(self):
+        # The later half just consumes the earlier half's output ("… about them") — #198's
+        # request with the conditional dropped, and the same wrong answer if it fans out.
+        self._split("0: check online for events\n2: post them to Slack")
+        for request in ("check online for events this weekend and send me a Slack message about them",
+                        "gather the failing pods' logs and open a ticket describing them",
+                        "find the slowest queries and write them up in a doc"):
+            with self.subTest(request=request):
+                self.assertEqual(engine.decompose(request, self._caps()), [])
+
+    def test_word_boundaries_hold(self):
+        # A substring "then" trips on "strengthen", which would silently disable this fan-out.
+        self._split("0: strengthen the auth path\n1: open a ticket")
+        tasks = engine.decompose("strengthen the auth path and open a ticket", self._caps())
+        self.assertEqual([t["cap"].name for t in tasks], ["ci-cli", "github-issue"])
+
+    def test_independent_deliverables_still_fan_out(self):
+        self._split()
+        for request in ("check the build and open a ticket",
+                        "check the failing build AND open a ticket AND post an update to Slack"):
+            with self.subTest(request=request):
+                tasks = engine.decompose(request, self._caps())
+                self.assertEqual([t["cap"].name for t in tasks],
+                                 ["ci-cli", "github-issue", "slack-maintenance-thread"])
+
+    def test_a_multi_repo_change_is_exempt(self):
+        # Its parts depend on each other BY DEFINITION and are split one per repo on purpose,
+        # merge-ordered; the body's own wording is sequential, and so is this request's.
+        m = MultiRepoDecomposeTests
+        issue = {**m.ISSUE, "body": m.ISSUE["body"] + "\nOwn PR, no-op until a policy references it."}
+        with mock.patch.object(workspace, "git_repos", return_value=m.REPOS), \
+                mock.patch.object(workspace, "linked_issue", return_value=issue):
+            self._split(m.REPLY)
+            tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42, then "
+                                     "open the PRs", m._caps(None))
+        self.assertEqual([t["repo"] for t in tasks], ["infra", "teamcity", "vllm"])
+
+
 class MultiRepoDecomposeTests(unittest.TestCase):
     """A change spanning several registered repos splits one part per repo (web-8a2764b8: a
     three-repo issue linked by URL alone ran as ONE vllm run, which rightly refused to ship
@@ -3200,7 +3278,11 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 88934 -> 89329: repo checks before the reviewer (#135). Two rules: it runs sandboxed or
     # not at all, and its shell command never arrives through a snapshot import.
     # 89329 -> 89615: the Slack frontman (delegate + relay) replaced the handoff classifier's rule.
-    MAX_RULES_BYTES = 90139   # fetched tier — bounded, but looser; it is not always loaded
+    # 89615 -> 90396 (#198): the swarm planner's one deterministic gate. Children run in PARALLEL
+    # and never wait, so a conditional/sequential request must be kept SINGLE in code — before the
+    # plan call — and the rule names the half an edit drops by "simplifying" the guard back into
+    # the prompt clause that the model already ignored on a runbook fire.
+    MAX_RULES_BYTES = 90396   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

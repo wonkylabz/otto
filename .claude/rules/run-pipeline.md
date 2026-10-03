@@ -33,6 +33,7 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 ## Swarm / fan-out
 
 `engine.decompose`+`plan_swarm`: ≥2 `{cap,request}` fan out (`MAX_SWARM=5`), each gating its writes. **Many repos: one part each, merge-ordered, from the LINKED issue** — a run gets one clone (`MultiRepoDecomposeTests`).
+**A conditional/sequential request never fans out — in CODE, before the plan call** (`routing._sequential_phrasing`, biased to SINGLE: a lost fan-out costs speed, a dependent split a wrong answer). Multi-repo is exempt (`SequentialRequestGuardTests`).
 
 
 ## Plan-then-execute

@@ -310,6 +310,61 @@ def _brief_repo_parts(tasks, issue):
             "merge after.")
 
 
+# A CONDITIONAL or SEQUENTIAL request must never fan out. Swarm children run in PARALLEL and never
+# wait for one another (`workflows._run_swarm`), so a part that depends on another part's RESULT is
+# handed a world where that result does not exist yet — and answers against nothing. Runbook
+# "Entertainment - HB Events" (issue #198) is the observed cost: "check online for events … send me
+# a Slack message ONLY IF you find something" split into researcher + worker, the worker did not
+# wait for the research, checked a calendar instead, found nothing and PASSED verify — a wrong
+# ANSWER, not merely a slow one. The prompt below already forbids that split, but the plan tier can
+# be a local model (Qwen3-Coder-30B ignored the clause) and a prompt is a request, never a gate.
+# This one is code, so it holds whatever the planner replies — and it decides before the model call,
+# so no sampling can re-introduce the split.
+#
+# Biased toward SINGLE on purpose: the markers are lexical, with no model judgement in the loop. A
+# false positive costs only a lost fan-out — the run still does the whole task, one step at a time —
+# while a false negative costs a wrong result. It reads the REQUEST (`contracts.task_text`), not a
+# linked issue's body: that body is DATA the planner is shown, not the user's own phrasing of the
+# task, and a doc that merely mentions a dependency is not itself a sequential task.
+_SEQUENCE_MARKERS = (
+    r"only\s+(?:if|when|after|once)",              # "… send a Slack message only if you find …"
+    r"if\s+(?:you|it|they|there|any|so|not|none|nothing|something|anything|we)\b",
+    r"if\s+the\s+(?:build|tests?|deploy\w*|check|result|results|run|job|logs?|scan|search"
+    r"|research|report)",
+    r"and\s+then\b|,\s*then\b",
+    r"then\s+(?:open|post|send|create|file|write|comment|tell|reply|report|update|message|do|fix"
+    r"|run|deploy)",
+    r"with\s+the\s+(?:results?|findings|output|details|answer|list)",
+    r"based\s+on\s+the\s+(?:results?|findings|output)",
+    r"using\s+the\s+(?:results?|findings|output)",
+    # …and the dependency need not be NAMED to be one: the later half can just refer back to the
+    # earlier half's output ("… send me a Slack message about them" — issue #198's request with
+    # the conditional dropped, same dependency, same wrong answer). The noun list is the artifact
+    # vocabulary a handoff names; the same handoff passes it on as "it"/"them" instead ("post it").
+    r"(?:about|with|from|using|including|based\s+on)\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
+    r"(?:describ\w*|quot\w*|summari[sz]\w*|attach\w*|inclu\w*|post\w*|send\w*|shar\w*|writ\w*)"
+    r"\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))\b",
+    r"depending\s+on|as\s+long\s+as|provided\s+(?:that|the)",
+    r"if\s+so|in\s+that\s+case|otherwise|wait\s+for",
+    r"once\s+(?:that|you|the\s+(?:results?|findings|run|build|research|check))",
+    r"after\s+that|when\s+(?:done|finished|complete)",
+    r"then",                                        # bare "then" anywhere: "build it then ship"
+)
+# Word-boundary anchored at BOTH ends, and that is load-bearing: a bare substring "then" also
+# matches "strengthen"/"authenticate", and "if you" matches "gif you", silently disabling
+# legitimate fan-outs.
+_SEQUENCE_RE = re.compile(r"\b(?:" + "|".join(_SEQUENCE_MARKERS) + r")\b", re.I)
+
+
+def _sequential_phrasing(request):
+    """The phrase that makes `request` a conditional/sequential task, or "" when it isn't — PURE,
+    so the fan-out decision is reproducible whatever the plan tier returns (`_SEQUENCE_RE`)."""
+    m = _SEQUENCE_RE.search(task_text(request) or "")
+    return m.group(0).strip() if m else ""
+
+
 def decompose(request, caps, project_root=None):
     """Swarm planner: decide whether a request is really SEVERAL independent sub-tasks that
     can run in parallel, each handled by a different capability. Returns a list of
@@ -319,12 +374,22 @@ def decompose(request, caps, project_root=None):
     Runs on its own 'plan' model tier (configurable in the Admin tab — local-capable like
     routing, but separable so the fan-out decision can use a stronger model than Router #1).
     Conservative by design: it only splits when the deliverables are genuinely independent, so
-    the common single-task case keeps costing just one extra (cheap) planning call."""
+    the common single-task case keeps costing just one extra (cheap) planning call. For a
+    conditional/sequential request the SINGLE decision is DETERMINISTIC, not prompt-only
+    (`_sequential_phrasing`), and costs no planning call at all — multi-repo changes excepted."""
     caps = [c for c in caps if getattr(c, "enabled", True)]
     caps = _repo_eligible(caps, project_root)   # repo-scoped project caps need matching repo ctx
     if len(caps) < 2:
         return []
     issue, repos, repo_note = _multi_repo_context(request)
+    # Code, not a prompt: swarm children never wait. A multi-repo change is EXEMPT — its parts
+    # depend on each other by definition and are split one per repo on purpose, merge-ordered
+    # (`_multi_repo_context`), so a blanket guard would silently delete that feature. No
+    # `gateway.decided` here: it attaches to the last `complete()`, and there is none.
+    conditional = "" if repos else _sequential_phrasing(request)
+    if conditional:
+        trace("PLANNER", f"conditional/sequential request ({conditional!r}) -> no fan-out")
+        return []
     shortlist = _shortlist(request, caps)
     listing = "\n".join(
         f"{i}. [{c.kind}] {c.name}: {c.description[:ROUTE_DESC_CHARS]}" for i, c in enumerate(shortlist))
