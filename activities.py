@@ -1113,16 +1113,17 @@ def poll_slack(payload: dict) -> dict:
         # it. Handled BEFORE everything else — a parked run is holding the conversation, so
         # nothing else may be started here, and the message must not be read as a new task.
         gate_wid = msg.get("gate_wid")
-        if gate_wid in decided:
-            # Already decided THIS poll — a DM gate takes decisions at its top level and in its
-            # notice's thread, so one approver can land two. A second signal would re-post the
-            # confirmation (or, yes-then-no, tell the asker both outcomes); leaving it unread
-            # would answer it as a new request once the run delivers.
-            _seen()
-            continue
         if gate_wid:
             decision = slack.parse_decision(msg.get("text"))
             allowed = slack.may_approve(cfg, msg.get("user"), identity)
+            if gate_wid in decided and decision is not None and allowed:
+                # A SECOND decision for a gate decided this poll — a DM gate takes them at its
+                # top level and in its notice's thread, so one approver can land two. Re-signalling
+                # would re-post the confirmation (or, yes-then-no, tell the asker both outcomes);
+                # leaving it unread would answer it as a new request once the run delivers. Only
+                # a decision: anything else is held below, exactly as before.
+                _seen()
+                continue
             if decision is None or not allowed:
                 # Not a decision, or not from someone who may make one. The cursor deliberately
                 # does NOT advance: the conversation is still one-turn-at-a-time, so this message

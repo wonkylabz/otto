@@ -3084,6 +3084,22 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertEqual(len(posted), 1)
         self.assertEqual(started, [])
 
+    def test_a_non_decision_after_a_decision_is_held_not_dropped(self):
+        """Every top-level message in a gated DM carries `gate_wid`, so skipping on the gate alone
+        marked "also send me the summary" seen and it was never answered."""
+        top = {"thread_ts": None, "gate_notice": False}
+        seen = []
+        orig = slack.mark_seen
+        try:
+            slack.mark_seen = lambda m: seen.append(m["ts"])
+            posted, signalled, started, _ = self._run_activity(
+                [("6.0", "U1", "yes", top), ("7.0", "U1", "also send me the summary", top)])
+        finally:
+            slack.mark_seen = orig
+        self.assertEqual(signalled, [("w1", True)])
+        self.assertEqual(seen, ["6.0"], "the follow-up must stay unread for the next poll")
+        self.assertEqual(started, [])
+
     def test_a_non_decision_or_non_approver_in_the_notice_thread_is_ignored(self):
         posted, signalled, started, after = self._run_activity(
             [("6.0", "U5", "approve"), ("7.0", "U1", "what does this do?")])
