@@ -728,10 +728,17 @@ def mark_seen(msg):
     own conversation's, everything else the channel's; see activities.poll_slack). The identity
     rides on the message, so a message the bot handled never marks it read for the owner."""
     if msg.get("gate_notice"):
-        # A reply in a gate notice's thread is re-read from the notice on every poll while the
-        # gate stands, and only clearing the gate stops that. Neither cursor is its own: the
-        # channel's would skip unhandled top-level messages, and a conversation record would
-        # make the notice thread a watched conversation whose next reply starts a run.
+        # A reply in a gate notice's thread advances neither cursor: the channel's would skip
+        # unhandled top-level messages, and a conversation record would make the notice thread
+        # a watched conversation whose next reply starts a run. It floors the notice read on the
+        # DM's own gate record instead (slack_state.record_notice_seen).
+        conv = msg.get("conversation") or {}
+        storage.mutate_json(
+            _STATE,
+            lambda st: slack_state.record_notice_seen(
+                st, msg["channel"], conv.get("thread_ts"), msg.get("gate_wid"), msg["ts"],
+                identity_of(msg)),
+            slack_state.empty())
         return
     identity = identity_of(msg)
     if slack_state.governs(msg) == "conversation":
@@ -1539,15 +1546,17 @@ def _poll_gate_notice(cfg, cid, rec, gate_wid, self_ok, identity, out):
     decision itself. Every pick carries `gate_wid` and `gate_notice`, so it can only DECIDE the
     gate: this thread is a ballot box, not a second conversation. The notice ts is the floor
     (strictly after it, which also drops the parent) and the gate's own clear is what stops the
-    re-reading. Paged, so a long thread cannot hide a decision behind `limit`."""
+    re-reading. Paged, so a long thread cannot hide a decision behind `limit`. A reply burned as
+    downtime backlog raises the floor (`gate_notice_seen`), so it is never read again."""
     notice = rec["gate_notice_ts"]
+    floor = rec.get("gate_notice_seen") or notice
     page = None
     for _ in range(_NOTICE_MAX_PAGES):
         res = _api("conversations.replies", identity=identity, channel=cid, ts=notice,
-                   oldest=notice, limit=200, **({"cursor": page} if page else {}))
+                   oldest=floor, limit=200, **({"cursor": page} if page else {}))
         for m in res.get("messages") or []:
             c = _clean(m, cid, self_ok, identity)
-            if not (c and slack_state.past_cursor(c["ts"], notice)):
+            if not (c and slack_state.past_cursor(c["ts"], floor)):
                 continue
             if parse_decision(c["text"]) is None or not may_approve(cfg, c["user"], identity):
                 continue

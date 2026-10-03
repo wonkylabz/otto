@@ -2861,6 +2861,63 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertEqual(armed[0][1]["notice_ts"], "7.000100")
         self.assertIsNone(armed[1][1]["notice_ts"])
 
+    def test_a_user_identity_gate_records_no_notice_ts(self):
+        """Nobody can approve under the user identity (`may_approve`), so reading its notice
+        thread would spend the user token's rate limit for 25h on a pick that cannot happen."""
+        import activities
+        armed = []
+        orig = slack.post, slack.mark_awaiting_gate
+        try:
+            slack.post = lambda *a, **k: "7.000100"
+            slack.mark_awaiting_gate = lambda ch, root=None, **k: armed.append(k)
+            activities.interim_notice({"reply_to": {"kind": "slack_thread", "channel": "D1",
+                                                    "identity": "user"},
+                                       "text": "needs approval", "awaiting_wid": "w1"})
+        finally:
+            slack.post, slack.mark_awaiting_gate = orig
+        self.assertIsNone(armed[0]["notice_ts"])
+
+    def test_a_reply_burned_as_backlog_is_never_read_again(self):
+        """The notice thread has no cursor, so a reply the downtime guard burned came back on the
+        next poll and an approval written while Otto was down ran the write hours late."""
+        def replies(k):
+            msgs = [{"user": "U1", "ts": "6.0", "text": "approve"}]
+            return {"ok": True, "messages": [m for m in msgs
+                                             if float(m["ts"]) >= float(k["oldest"])]}
+        calls, out = [], []
+        orig = slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.run_alive
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack.run_alive = lambda wid: True
+                slack._api = lambda method, identity="user", **k: (
+                    calls.append(k) or
+                    {"ok": True, "channels": [{"id": "D1", "user": "U5"}]}
+                    if method == "conversations.list" else
+                    replies(k) if method == "conversations.replies" else
+                    {"ok": True, "messages": []})
+                self._gated_dm(d)
+                cfg = {**slack._DEFAULTS, "bot_enabled": True, "bot_allow_users": ["U5"],
+                       "bot_approvers": ["U1"]}
+                slack._poll_dms(cfg, out, slack.BOT)
+                self.assertEqual(len(out), 1)
+                slack._drop_backlog(out, 6.0 + slack.RESUME_GRACE_S + 1)   # burned
+                again = []
+                slack._poll_dms(cfg, again, slack.BOT)
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+                st = slack._state()
+                # ...and a NEW arming starts from its own notice, not the old floor.
+                slack.mark_awaiting_gate("D1", None, wid="w2", identity=slack.BOT,
+                                         notice_ts="5.0")
+                rearmed = slack.conversation_record("D1", identity=slack.BOT)
+        finally:
+            slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.run_alive = orig
+        self.assertEqual(again, [], "a burned approval must not be acted on later")
+        self.assertEqual(rec["gate_notice_seen"], "6.000000")
+        self.assertEqual(slack.awaiting_gate(rec), "w1", "burning a reply decides nothing")
+        self.assertEqual([k for k in st["threads"] if "5.0" in k], [],
+                         "the notice thread must never become a watched conversation")
+        self.assertNotIn("gate_notice_seen", rearmed)
+
     def test_the_notice_ts_is_cleared_with_the_gate(self):
         with tempfile.TemporaryDirectory() as d:
             orig = slack._STATE, slack._ME, slack.BOT_TOKEN

@@ -791,10 +791,14 @@ def interim_notice(payload: dict) -> dict:
         import slack
         # A notice at a DM's top level grows its own thread, which the DM poll never reads —
         # so its ts is recorded and that thread is read too. In a channel thread the notice is
-        # already a reply inside the watched thread, and Slack does not nest threads.
+        # already a reply inside the watched thread, and Slack does not nest threads. BOT only:
+        # nobody can approve under the user identity (slack.may_approve), so reading its thread
+        # would spend the user token's rate limit for 25h on a pick that can never happen.
+        identity = slack.identity_of(reply_to)
         slack.mark_awaiting_gate(reply_to.get("channel"), reply_to.get("thread_ts"),
-                                 wid=wid, identity=slack.identity_of(reply_to),
-                                 notice_ts=None if reply_to.get("thread_ts") else notice_ts)
+                                 wid=wid, identity=identity,
+                                 notice_ts=(notice_ts if identity == slack.BOT
+                                            and not reply_to.get("thread_ts") else None))
     activity.logger.info(f"interim notice -> {status}")
     return {"status": status}
 
