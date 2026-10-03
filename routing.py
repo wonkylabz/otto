@@ -262,9 +262,9 @@ def _parse_plan(text, n_caps):
 # "and ... then ..." split; that costs only latency.
 _SEQUENTIAL_MARKERS = (
     r"only\s+(?:if|when|after|once)",              # "… send a Slack message only if you find …"
-    r"if\s+(?:you|it|they|there|any|so|not|none|nothing|something|anything|we)",
-    r"if\s+the\s+(?:build|tests?|deploy\w*|check|results?|run|job|logs?|scan|search|research"
-    r"|report)",
+    # Bare conditionals, not "if <one of a word list>": a list misses "if a pod …", "when the
+    # build fails", "unless it is green" — and a miss is a wrong answer, a match a lost split.
+    r"if|unless|when(?:ever)?",
     r"then",                                        # also covers "and then" / ", then"
     r"with\s+the\s+(?:results?|findings|output|details|answer|list)",
     r"(?:based\s+on|using)\s+the\s+(?:results?|findings|output)",
@@ -279,7 +279,7 @@ _SEQUENTIAL_MARKERS = (
     r"depending\s+on|as\s+long\s+as|provided\s+(?:that|the)",
     r"in\s+that\s+case|otherwise|wait\s+for",
     r"once\s+(?:that|you|the\s+(?:results?|findings|run|build|research|check))",
-    r"after\s+that|when\s+(?:done|finished|complete)",
+    r"after\s+that",
 )
 _SEQUENTIAL_RE = re.compile(r"\b(?:" + "|".join(_SEQUENTIAL_MARKERS) + r")\b", re.I)
 
@@ -294,6 +294,18 @@ def _sequential_request(text):
     "only if you find" reports "only if"."""
     m = _SEQUENTIAL_RE.search(text or "")
     return " ".join(m.group(0).lower().split()) if m else None
+
+
+def _own_words(request):
+    """The asker's own phrasing of the task — what `slack.to_request` was handed, when it framed
+    this request, else the task text (`contracts.task_text`). PURE. Slack's framing is OTTO's own
+    instruction text ("each prefixed with when it was sent", "whenever you refer back") plus other
+    people's earlier messages; scanning it vetoed every threaded Slack fan-out. Every other ingress
+    (a board ticket's fenced body included) is scanned whole, which only errs toward SINGLE."""
+    import slack
+    text = task_text(request) or ""
+    words = slack.own_words(text)
+    return text if words is None else words
 
 
 _REPO_TAG_RE = re.compile(r"^\[\s*repo\s*=\s*([A-Za-z0-9._-]+)\s*\]\s*(.+)$", re.I)
@@ -378,16 +390,15 @@ def decompose(request, caps, project_root=None):
     if len(caps) < 2:
         return []
     issue, repos, repo_note = _multi_repo_context(request)
-    if not repos:
-        # A multi-repo change is split on purpose, so the exemption above is part of the fix: a
-        # blanket guard here would delete that feature. Reads the request TEXT only, never the
-        # linked issue's body. A board ticket's fenced body IS its request, so it is scanned: the
-        # same "only if you find" in a ticket is the same dependency (and the same over-eager bias).
-        marker = _sequential_request(task_text(request))
-        if marker:
-            trace("PLANNER", f"sequential/conditional request ({marker!r}) -> "
-                             "single cohesive task, no fan-out")
-            return []                          # before gateway.complete: no plan call is spent
+    # A multi-repo change is split on purpose, so the exemption is part of the fix: a blanket
+    # guard here would delete that feature. Reads the request TEXT only, never the linked issue's
+    # body. But naming two repos is not proof of a code change ("check the vllm and infra
+    # dashboards; if …"), so the exemption is settled on the PLAN below, not here.
+    marker = _sequential_request(_own_words(request))
+    if marker and not repos:
+        trace("PLANNER", f"sequential/conditional request ({marker!r}) -> "
+                         "single cohesive task, no fan-out")
+        return []                              # before gateway.complete: no plan call is spent
     shortlist = _shortlist(request, caps)
     listing = "\n".join(
         f"{i}. [{c.kind}] {c.name}: {c.description[:ROUTE_DESC_CHARS]}" for i, c in enumerate(shortlist))
@@ -426,6 +437,13 @@ def decompose(request, caps, project_root=None):
             continue
         tasks.append({"cap": cap, "request": sub, "repo": repo})
     if len(tasks) < 2:
+        return []
+    # The [repo=] tags come from the same planner that ignored the do-not-depend clause, so they
+    # alone prove nothing ("check vllm's CI; if red, fix it in infra" tags both halves). The
+    # exemption also needs a LINKED issue — where a real multi-repo change is specified.
+    if marker and not (issue and all(t["repo"] for t in tasks)):
+        trace("PLANNER", f"sequential/conditional request ({marker!r}), not a linked per-repo "
+                         "split -> no fan-out")
         return []
     _brief_repo_parts(tasks, issue)
     trace("PLANNER", f"fanned out into {len(tasks)} sub-tasks: "

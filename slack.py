@@ -1352,6 +1352,22 @@ def _framing(identity=USER):
     return _BOT_FRAMING if identity == BOT else _USER_FRAMING
 
 
+_EARLIER_LEAD = "\n\nEarlier messages in that Slack conversation, oldest first"
+
+
+def own_words(request):
+    """The sender's message out of a `to_request` request, or None when `request` isn't one. PURE.
+
+    Cut on the known framing and the earlier-messages lead, NOT on the \"\"\" fence: the message is
+    not escaped, so a pasted \"\"\" would end a fence early and hide the rest of what they asked."""
+    for framing in (_USER_FRAMING, _BOT_FRAMING):
+        head = framing + "\n\n\"\"\"\n"
+        if request.startswith(head):
+            body = request[len(head):].split(_EARLIER_LEAD, 1)[0]
+            return body[:-4] if body.endswith("\n\"\"\"") else body
+    return None
+
+
 def to_request(msg, cfg=None):
     """Normalize a Slack message into OttoWorkflow params. PURE (unit-tested).
 
@@ -1381,7 +1397,7 @@ def to_request(msg, cfg=None):
         # for a week still yields eight lines. Undated, they were summarised back as today's
         # events (slack-D06DXA34BEZ-1788480668). The reader can see their own clock, so a stale
         # window must be named as stale, not silently re-dated.
-        request += ("\n\nEarlier messages in that Slack conversation, oldest first, each prefixed "
+        request += (_EARLIER_LEAD + ", each prefixed "
                     f"with when it was sent; the message above arrived at {stamp(msg.get('ts')).strip('[] ')}. "
                     "They are context only — the request above is a message in this conversation, so "
                     "resolve what it refers to (\"it\", \"that\", \"my account\") against these rather "

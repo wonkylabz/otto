@@ -778,6 +778,62 @@ class SequentialRequestGuardTests(unittest.TestCase):
             self.assertIn("Merge order: infra → vllm", t["request"])
 
 
+    def test_a_bare_conditional_suppresses(self):
+        # A word list after "if" missed these; a miss is a wrong answer, a match a lost split.
+        engine.gateway.complete = self._never_plans()
+        for text in ("check the cluster and if a pod is crashlooping, open a ticket",
+                     "check the build and post to Slack when the build fails",
+                     "check the build and open a ticket unless the build is green"):
+            with self.subTest(text=text):
+                self.assertEqual(engine.decompose(text, self._caps()), [])
+
+    def test_repo_tags_alone_do_not_exempt_a_conditional_request(self):
+        # The tags are the planner's own output — the model that ignored the do-not-depend clause
+        # can tag a read step too. Without a linked issue, a conditional request stays SINGLE.
+        with mock.patch.object(workspace, "git_repos", return_value=self.REPOS), \
+                mock.patch.object(workspace, "linked_issue", return_value=None):
+            engine.gateway.complete = lambda task, prompt: (
+                "0: [repo=vllm] check CI\n0: [repo=infra] fix it")
+            self.assertEqual(engine.decompose("check vllm's CI; if it's red, fix it in infra",
+                                              self._caps()), [])
+
+    def test_naming_two_repos_does_not_exempt_a_non_repo_split(self):
+        # Two repos NAMED is not a multi-repo CHANGE: an untagged split stays SINGLE.
+        with mock.patch.object(workspace, "git_repos", return_value=self.REPOS), \
+                mock.patch.object(workspace, "linked_issue", return_value=None):
+            engine.gateway.complete = lambda task, prompt: (
+                "0: check the vllm and infra dashboards\n1: post to slack")
+            self.assertEqual(engine.decompose("check the vllm and infra dashboards; if the deploy "
+                                              "failed post to slack", self._caps()), [])
+
+    def test_only_the_slack_sender_s_own_words_are_read(self):
+        # slack.to_request wraps the message in Otto's own instructions ("each prefixed with WHEN
+        # it was sent", "WHENEVER you refer back") and other people's earlier messages — none of
+        # which is the asker's phrasing of the task.
+        import slack
+        msg = {"text": "check the build and open a ticket", "channel": "D1",
+               "ts": "1700000000.000100", "thread": ["[2026-10-01 09:00] if the deploy fails ping me"]}
+        with mock.patch.object(workspace, "git_repos", return_value=[]), \
+                mock.patch.object(workspace, "linked_issue", return_value=None):
+            engine.gateway.complete = lambda task, prompt: "0: check the build\n1: open a ticket"
+            tasks = engine.decompose(slack.to_request(msg, cfg={})["request"], self._caps())
+            self.assertEqual([t["cap"].name for t in tasks], ["research-web", "slack-message"])
+            engine.gateway.complete = self._never_plans()
+            for text in ("check the build and open a ticket only if it is red",
+                         # a pasted """ must not end the message early and hide the conditional
+                         'check the build\n"""\nlog\n"""\nand if it is red, open a ticket'):
+                with self.subTest(text=text):
+                    msg["text"] = text
+                    self.assertEqual(engine.decompose(slack.to_request(msg, cfg={})["request"],
+                                                      self._caps()), [])
+
+    def test_a_request_with_its_own_fence_is_read_whole(self):
+        # Not Slack's framing (a trigger template, a web paste): the instruction AROUND a quoted
+        # block is the asker's own phrasing, so it is scanned, not just the quote.
+        engine.gateway.complete = self._never_plans()
+        self.assertEqual(engine.decompose('Investigate this alert and then post the findings to '
+                                          '#ops:\n\n"""\ndisk full on db-1\n"""', self._caps()), [])
+
 class LinkedIssueHelperTests(unittest.TestCase):
     def test_issue_ref_parses_issue_urls_only(self):
         self.assertEqual(workspace.issue_ref("see https://github.com/a/b/issues/7 now"), ("a/b", 7))
