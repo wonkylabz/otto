@@ -1120,6 +1120,10 @@ def poll_slack(payload: dict) -> dict:
                         f"(not in bot_approvers)")
                 continue
             ok = slack.signal_decision(gate_wid, decision)
+            if ok is None:
+                # Temporal could not say. Keep the gate and leave the cursor: the decision is
+                # retried next poll, and `live_gate` releases the gate if the run turns out gone.
+                continue
             if not ok:
                 # The run is gone (finished, expired, terminated). Clear the marker so the
                 # conversation stops interpreting replies as verdicts on a run that no longer

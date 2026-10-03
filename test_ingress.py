@@ -2875,23 +2875,28 @@ class SlackReviewFixTests(unittest.TestCase):
         a field nothing re-reads — the signal SUCCEEDS — so the poller told the thread "OK, I
         won't do it. Nothing was run." while the approved write ran and delivered into it."""
         seen = []
-        orig_open, orig_tc = slack.gate_open, None
+        orig_open, orig_alive, orig_tc = slack.gate_open, slack.run_alive, None
         import temporal_client as tc
         orig_tc = tc.OK, tc.run
         try:
             tc.OK = True
-            tc.run = lambda coro: seen.append("signalled") or True
+            tc.run = lambda coro: coro.close() or seen.append("signalled") or True
             slack.gate_open = lambda wid: False            # already past the gate
-            self.assertFalse(slack.signal_decision("w1", False))
+            self.assertIs(slack.signal_decision("w1", False), False)
             self.assertEqual(seen, [], "no signal may be sent to a run that has moved on")
-            slack.gate_open = lambda wid: None             # unknown -> treated as closed
-            self.assertFalse(slack.signal_decision("w1", True))
+            slack.gate_open = lambda wid: None             # unreadable, and the run is gone
+            slack.run_alive = lambda wid: False
+            self.assertIs(slack.signal_decision("w1", True), False)
+            # Unreadable and Temporal can't say either: NOT False, or the caller disarms a gate
+            # whose run is still parked and the approver's "yes" becomes an ordinary message.
+            slack.run_alive = lambda wid: None
+            self.assertIsNone(slack.signal_decision("w1", True))
             self.assertEqual(seen, [])
             slack.gate_open = lambda wid: True             # genuinely parked
             self.assertTrue(slack.signal_decision("w1", True))
             self.assertEqual(seen, ["signalled"])
         finally:
-            slack.gate_open = orig_open
+            slack.gate_open, slack.run_alive = orig_open, orig_alive
             tc.OK, tc.run = orig_tc
 
     def test_a_conversation_is_armed_only_when_the_notice_actually_posted(self):

@@ -1778,7 +1778,12 @@ def gate_open(wid):
 
 
 def signal_decision(wid, approved):
-    """Send an approve/deny decision to a parked workflow. Returns True on success.
+    """Send an approve/deny decision to a parked workflow. True on success, False when the run has
+    definitely left its gate (or is gone), None when Temporal cannot say.
+
+    None is not False: the caller disarms the conversation on False, so a Temporal blip mapped to
+    False dropped a live gate and the approver's "yes" became an ordinary message. Unknown keeps
+    the gate — `live_gate` releases it once Temporal CONFIRMS the run is gone.
 
     The same signal the web gate's Approve/Deny buttons send (`server._wf_signal`) — a Slack
     decision is not a second kind of approval, it is the same one arriving by a different door,
@@ -1789,7 +1794,12 @@ def signal_decision(wid, approved):
 
     # The gate must still be OPEN. Checked here rather than at the call site so no future caller
     # can signal a run that has moved on.
-    if gate_open(wid) is not True:
+    state = gate_open(wid)
+    if state is not True:
+        # A closed run's query raises too, so an unreadable gate is "gone" only if the run is.
+        if state is None and run_alive(wid) is not False:
+            trace("SLACK", f"holding a decision for {wid} — its gate state is unreadable")
+            return None
         trace("SLACK", f"ignoring a decision for {wid} — it is no longer at its gate")
         return False
 
@@ -1801,9 +1811,9 @@ def signal_decision(wid, approved):
 
     try:
         return bool(tc.run(_go()))
-    except Exception as e:  # noqa: BLE001 - a dead/finished run is the common case
+    except Exception as e:  # noqa: BLE001 - the gate was open a moment ago: unknown, not gone
         trace("SLACK", f"gate signal to {wid} failed: {str(e)[:120]}")
-        return False
+        return None
 
 
 # --- Temporal poll schedule (mirrors board.reconcile_schedule) -------------

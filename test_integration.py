@@ -1912,6 +1912,25 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertIn(("C9", "5.0", None, "slack-b-C9-5-0"), self.disarmed)
         self.assertEqual(self.seen, [], "left for normal handling on the next poll")
 
+    def test_a_decision_temporal_cannot_place_keeps_the_gate(self):
+        """Unknown is not gone: clearing on a Temporal blip disarmed a gate whose run was still
+        parked, and the approver's "yes" was held as an ordinary message until the 24h deadline
+        declined the run. The gate stays and the decision is retried next poll."""
+        self.disarmed = []
+        self.slack.signal_decision = lambda wid, ok: None        # Temporal could not say
+        self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
+            self.disarmed.append((ch, root, wid, expect)))
+        self.slack.load = lambda: {**self.slack._DEFAULTS, "bot_enabled": True,
+                                   "bot_approvers": ["U1"], "cap": "answer-thing"}
+        self.slack.poll = lambda cfg: [{
+            "channel": "C9", "ts": "20.0", "thread_ts": "5.0", "user": "U1", "text": "approve",
+            "identity": "bot", "in_thread": True, "gate_wid": "slack-b-C9-5-0",
+            "conversation": {"channel": "C9", "thread_ts": "5.0", "cursor": "5.000000"}}]
+        out = self.activities.poll_slack({})
+        self.assertEqual(out["decided"], [])
+        self.assertEqual(self.disarmed, [], "an unknown outcome must not disarm the gate")
+        self.assertEqual(self.seen, [], "the cursor stays, so the decision is retried")
+
     def test_a_channel_mention_watches_the_THREAD_it_replied_in(self):
         """Otto answers a channel @-mention IN A THREAD, so the thread is the conversation from
         that moment on. Watching the CHANNEL instead leaves that thread unwatched: a follow-up in
