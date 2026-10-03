@@ -1,12 +1,12 @@
 ---
 name: event-finder
 description: >
-  Entertainment event finder. Searches the web for upcoming events in a given city or
-  venue — concerts and music, theatre, comedy and shows, sports matches, film screenings,
-  exhibitions, fairs, food festivals and markets — and returns a dated, sourced shortlist
-  with venue, time, price and ticket link. Read-only: never buys tickets, books, RSVPs or
-  adds anything to a calendar. Use for "what's on this weekend in X", "find concerts /
-  gigs / shows / matches / festivals near Y", "is Z playing in W", "things to do tonight".
+  Entertainment event finder. Searches the web for concerts, gigs, music festivals,
+  theatre, comedy, sports matches, film screenings, exhibitions, fairs, food festivals
+  and markets in a given city or venue, and returns a dated, sourced shortlist with venue,
+  time, price and ticket link. Read-only: never buys tickets, books, RSVPs or adds anything
+  to a calendar. Use for "what's on this weekend in <city>", "concerts / gigs / matches /
+  festivals in <city>", "things to do in <city>".
 ---
 
 # Event Finder
@@ -58,16 +58,15 @@ mark it unconfirmed. Fewer verified events beat a long list of guesses.
 
 Lead with a one-line summary: how many events found, where, which window.
 
-Then a table per day (or per category when the window is a single day), sorted by
-date/time:
+Then the events grouped by day (or by category when the window is a single day), sorted
+by time — a bulleted list, never a table (chat surfaces such as Slack render no tables):
 
-| When | Event | Venue | Price | Status | Link |
+- **Event name** — weekday date, local start time · venue · price · status · <full URL>
 
-- **When**: weekday, date, local start time.
-- **Link**: the primary source URL you verified it on (full URL).
 - **Status**: on sale / sold out / few left / free / unconfirmed.
+- **URL**: the primary source you verified it on.
 
-After the table:
+After the list, as short bold-labelled lines (not headings):
 
 - **Picks** — at most 3 standouts with one line each on why (matches the stated taste,
   rare, free, good value).
