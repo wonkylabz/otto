@@ -247,6 +247,55 @@ def _parse_plan(text, n_caps):
     return out
 
 
+# A request whose parts depend on each other must never fan out: `wf_swarm` runs every child
+# CONCURRENTLY under one `asyncio.gather` with no dependency wiring between them (issue #58), so a
+# split whose second deliverable consumes the first starts the consumer before its producer — and
+# the consumer dead-ends waiting for work that was never ordered. Runbook `Entertainment - HB
+# Events` ("check online for events in Hawkes Bay … send me a message to Slack only if you find
+# something") fanned into `runbook-rb-8707935b-ce0a7e-s1`/`-s2`: the worker checked a calendar
+# instead of waiting for the research, and the research child ran out of attempts at
+# `verify_exhausted`. The prompt below already says "do NOT depend on each other's output", but
+# the `plan` tier is a local 30B that ignored it, so the gate has to be code, not prose.
+#
+# The bias, deliberately: a suppressed fan-out costs LATENCY; a wrong split costs a WRONG ANSWER.
+# So this is over-eager — widen the marker set freely. It can also suppress an ordinary
+# "and ... then ..." split; that costs only latency.
+_SEQUENTIAL_MARKERS = (
+    r"only\s+(?:if|when|after|once)",              # "… send a Slack message only if you find …"
+    r"if\s+(?:you|it|they|there|any|so|not|none|nothing|something|anything|we)",
+    r"if\s+the\s+(?:build|tests?|deploy\w*|check|results?|run|job|logs?|scan|search|research"
+    r"|report)",
+    r"then",                                        # also covers "and then" / ", then"
+    r"with\s+the\s+(?:results?|findings|output|details|answer|list)",
+    r"(?:based\s+on|using)\s+the\s+(?:results?|findings|output)",
+    # …and the dependency need not be NAMED to be one: the later half can just refer back to the
+    # earlier half's output ("… send me a Slack message about them" — #198's request with the
+    # conditional dropped: same dependency, same wrong answer).
+    r"(?:about|with|from|using|including|based\s+on)\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
+    r"(?:describ\w*|quot\w*|summari[sz]\w*|attach\w*|inclu\w*|post\w*|send\w*|shar\w*|writ\w*)"
+    r"\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
+    r"depending\s+on|as\s+long\s+as|provided\s+(?:that|the)",
+    r"in\s+that\s+case|otherwise|wait\s+for",
+    r"once\s+(?:that|you|the\s+(?:results?|findings|run|build|research|check))",
+    r"after\s+that|when\s+(?:done|finished|complete)",
+)
+_SEQUENTIAL_RE = re.compile(r"\b(?:" + "|".join(_SEQUENTIAL_MARKERS) + r")\b", re.I)
+
+
+def _sequential_request(text):
+    r"""The sequential/conditional marker in `text`, or None. PURE (no LLM) so it's unit-testable.
+
+    Word-boundary anchored ON PURPOSE: a bare `then` substring also matches "strengthen" and
+    "authenticate", which would silently suppress the fan-out of a whole class of legitimate
+    requests. (`\b` still matches inside hyphenated compounds; that only costs latency.)
+    Ordering inside the alternation is irrelevant — `re.search` returns the LEFTMOST match, so
+    "only if you find" reports "only if"."""
+    m = _SEQUENTIAL_RE.search(text or "")
+    return " ".join(m.group(0).lower().split()) if m else None
+
+
 _REPO_TAG_RE = re.compile(r"^\[\s*repo\s*=\s*([A-Za-z0-9._-]+)\s*\]\s*(.+)$", re.I)
 # How much of a linked issue's body the planner reads.
 _LINKED_ISSUE_CHARS = 8_000
@@ -319,12 +368,26 @@ def decompose(request, caps, project_root=None):
     Runs on its own 'plan' model tier (configurable in the Admin tab — local-capable like
     routing, but separable so the fan-out decision can use a stronger model than Router #1).
     Conservative by design: it only splits when the deliverables are genuinely independent, so
-    the common single-task case keeps costing just one extra (cheap) planning call."""
+    the common single-task case keeps costing just one extra (cheap) planning call. For
+    conditional/sequential wording that decision is DETERMINISTIC rather than prompt-only —
+    `_sequential_request` returns [] before the model is called at all. The one exception is a
+    change spanning several registered repos, which is split one part per repo ON PURPOSE even
+    though the parts depend on each other (`_multi_repo_context`), so the guard stays out of it."""
     caps = [c for c in caps if getattr(c, "enabled", True)]
     caps = _repo_eligible(caps, project_root)   # repo-scoped project caps need matching repo ctx
     if len(caps) < 2:
         return []
     issue, repos, repo_note = _multi_repo_context(request)
+    if not repos:
+        # A multi-repo change is split on purpose, so the exemption above is part of the fix: a
+        # blanket guard here would delete that feature. Reads the request TEXT only, never the
+        # linked issue's body. A board ticket's fenced body IS its request, so it is scanned: the
+        # same "only if you find" in a ticket is the same dependency (and the same over-eager bias).
+        marker = _sequential_request(task_text(request))
+        if marker:
+            trace("PLANNER", f"sequential/conditional request ({marker!r}) -> "
+                             "single cohesive task, no fan-out")
+            return []                          # before gateway.complete: no plan call is spent
     shortlist = _shortlist(request, caps)
     listing = "\n".join(
         f"{i}. [{c.kind}] {c.name}: {c.description[:ROUTE_DESC_CHARS]}" for i, c in enumerate(shortlist))
