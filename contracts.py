@@ -176,6 +176,21 @@ def _write_gate_note(cap):
     return _WRITE_ALREADY_AUTHORIZED_NOTE if getattr(cap, "risk", None) == "write" else None
 
 
+def fast_lane_note(tools):
+    """None unless this run took the fast lane (issue #193); then what its grant IS. The grant
+    enforces itself — this only makes it legible, so a request that needs more comes back as a
+    sentence the person can act on rather than as a run of permission errors."""
+    if tools is None:
+        return None
+    names = ", ".join(tools) if tools else "(none)"
+    return ("--- FAST LANE\n"
+            "This run skipped the approval step because it only needs these tools, which the "
+            f"operator marked safe: {names}. They are the ONLY tools you have — no shell, no "
+            "file reads or edits, no other service. Do the request with them. If any part of it "
+            "needs anything else, do not attempt it: say what you did and what still needs doing, "
+            "so it can be asked for as a normal request.\n--- END FAST LANE")
+
+
 def _repo_scope_note(repo, cwd):
     """Repo-mode runs (issue #57) provision an isolated clone at an Otto-owned path — the
     model's only anchor to the CORRECT repo is that cwd, and a weak/local model can `cd`

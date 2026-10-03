@@ -795,6 +795,40 @@ def _spec_name(server, tool):
     return name[:_MAX_NAME]
 
 
+def tool_id(server, tool):
+    """The id a grant names one tool by — the SAME string the local `Pool` offers and checks
+    with `_allowed`, so a fast-lane grant (`policy.safe_tools`) admits exactly that tool on both
+    backends."""
+    return _spec_name(server, tool)
+
+
+def server_tools(server, pol=None, refresh=False):
+    """`(tools, error)` for one server, for the Admin tag editor: the cached catalogue, or —
+    on a miss or `refresh` — a one-off spawn of a SERVABLE stdio server to list it (which warms
+    the cache). Never spawns anything `servable` refuses: an unactivated def stays inert here too.
+    A connector has nothing to spawn, so it says so rather than listing nothing silently."""
+    if not refresh:
+        cached = catalogue(pol).get(server)
+        if cached:
+            return cached, None
+    spec = servable(pol).get(server)
+    if not spec:
+        return [], ("no tool list: Otto can only list a launchable stdio server "
+                    "(claude.ai connectors and remote servers are listed by Claude Code itself)")
+    sess = Session(server, spec)
+    try:
+        sess.start()
+        tools = sess.list_tools()
+    except Exception as e:  # noqa: BLE001 - a broken server is shown, never raised
+        _record_catalogue(server, spec, [], failed=True)
+        return [], f"could not start {server}: {e}"
+    finally:
+        sess.close()
+    _record_catalogue(server, spec, tools)
+    return [{"name": t.get("name"), "description": (t.get("description") or "")[:400]}
+            for t in tools], None
+
+
 class Pool:
     """The MCP tools offered to one local run: lazily started servers, a flat name→(server,
     tool) map, and one `close()` the runtime calls in its `finally`.

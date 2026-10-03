@@ -1035,6 +1035,17 @@ def may_approve(cfg, user, identity=USER):
     return bool(identity == BOT and user and user in allow_ids(cfg, "bot_approvers"))
 
 
+def may_fast_lane(cfg, user, identity, owner):
+    """Whether this Slack author's request may take the fast lane (issue #193). PURE.
+
+    The owner (`owner`, the user token's own id) or anyone `may_approve` admits — the people
+    whose word would clear the gate anyway. A colleague's request always meets the gate: the
+    lane skips the human, and a skipped human is only ever one who could have said yes."""
+    if not user:
+        return False
+    return bool((owner and user == owner) or may_approve(cfg, user, identity))
+
+
 # The decision vocabulary, exact and closed. A false APPROVE executes a write nobody reviewed, so
 # this recognises whole messages only — never a word found inside one. "yes, but change X first"
 # must not approve anything, and neither must "no idea, go ahead and try" (which contains both).
@@ -1741,6 +1752,8 @@ def start_run(wid, params):
         full["resume"] = params["resume"]
     if params.get("frontman"):
         full["frontman"] = True
+    if params.get("trusted_asker"):
+        full["trusted_asker"] = True
     return ingress.start_run(wid, full, estop_key="slack", trace_tag="SLACK")
 
 

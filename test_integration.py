@@ -22,6 +22,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from socketserver import ThreadingTCPServer
@@ -3532,6 +3533,132 @@ class DiscussionTurnTests(unittest.IsolatedAsyncioTestCase):
         await self._drive("what does that helper do?", write_intent=False,
                           params={"repo": "otto", "git_run_id": None})
         self.assertEqual([r for _, r in self.classified], ["otto"])
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class FastLaneWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    """Issue #193 end to end through the real workflow. A trusted asker's request that needs only
+    safe-tagged tools runs with no plan preview and no gate, holding ONLY those tools, and every
+    attempt row says so. Anything else — a GATED verdict, an unanswerable classifier, a colleague
+    asking — takes the normal gated path, with the full toolset only after approval."""
+
+    SAFE = ["mcp__ha__HassTurnOn"]
+
+    def setUp(self):
+        import activities
+        import gateway
+        import intents
+        import policy
+        self.activities = activities
+        cap = registry.Capability("builtin", config.WORKER_CAP, "does tasks")
+        cap.risk = "write"
+        self._orig = {n: getattr(engine, n) for n in
+                      ("run_attempt", "verify", "record_attempt", "record_skip",
+                       "plan_preview", "critique_plan", "summarize_plan")}
+        self._orig_caps = activities._caps
+        activities._caps = [cap]
+        self._patches = [mock.patch.object(policy, "safe_tools", lambda pol=None: list(self.SAFE)),
+                         mock.patch.object(gateway, "backend_of", lambda e: "claude"),
+                         mock.patch.object(activities, "_mcp", lambda: ([], None))]
+        for p in self._patches:
+            p.start()
+        self.previews, self.grants, self.asked, self.audited = [], [], [], []
+        self.verdict = {"fast": True}
+
+        def _intent(request, tools):
+            self.asked.append(request)
+            if self.verdict.get("raise"):
+                raise RuntimeError("classifier down")
+            return self.verdict["fast"]
+        self._patches.append(mock.patch.object(intents, "fast_lane_intent", _intent))
+        self._patches[-1].start()
+
+        def _plan(request, c, cwd=None, resume_session=None, wid=None, **kw):
+            self.previews.append(request)
+            return {"plan": "1. switch it on", "cost": 0, "tokens": None}
+        engine.plan_preview = _plan
+        engine.critique_plan = lambda *a, **k: {"concerns": []}
+        engine.summarize_plan = lambda plan, *a, **k: plan
+        engine.verify = lambda request, c, result, **k: {"passed": True, "critique": ""}
+        engine.record_attempt = lambda *a, **k: self.audited.append(k.get("fast_lane"))
+        engine.record_skip = lambda *a, **k: None
+
+        def _run(request, cap, **k):
+            self.grants.append(k.get("fast_lane"))
+            return {"workflow": k.get("wid") or "wf-fl", "result": "the light is on",
+                    "cost": 0.0, "session_id": "s", "model": "m", "attempt": 1}
+        engine.run_attempt = _run
+
+    def tearDown(self):
+        for n, fn in self._orig.items():
+            setattr(engine, n, fn)
+        self.activities._caps = self._orig_caps
+        for p in self._patches:
+            p.stop()
+
+    async def _drive(self, *, trusted, approve=None, params=None):
+        import asyncio
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (classify_fast_lane, plan_capability, record_attempt, record_skip,
+                                run_capability, snapshot_settings, verify_capability)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="fl", workflows=[OttoWorkflow],
+                    activities=[snapshot_settings, classify_fast_lane, plan_capability,
+                                run_capability, verify_capability, record_attempt, record_skip],
+                    activity_executor=ex,
+                ):
+                    h = await env.client.start_workflow(
+                        OttoWorkflow.run,
+                        {"request": "turn on the kitchen light", "unattended": True,
+                         "approval": "ask", "trusted_asker": trusted,
+                         "cap": {"name": config.WORKER_CAP, "kind": "builtin", "risk": "write"},
+                         **(params or {})},
+                        id="fl-" + uuid.uuid4().hex[:8], task_queue="fl")
+                    if approve is not None:
+                        for _ in range(200):
+                            st = await h.query(OttoWorkflow.status)
+                            if st["awaiting_approval"]:
+                                break
+                            await asyncio.sleep(0.05)
+                        else:
+                            self.fail("the run never reached the gate")
+                        await h.signal(OttoWorkflow.approve, approve)
+                    return await h.result()
+
+    async def test_a_safe_only_request_skips_preview_and_gate_holding_only_safe_tools(self):
+        out = await self._drive(trusted=True)
+        self.assertIn("the light is on", out["result"])
+        self.assertEqual(self.previews, [], "a fast-lane run paid for a plan preview")
+        self.assertEqual(self.grants, [self.SAFE])
+        self.assertTrue(self.audited and all(a == self.SAFE for a in self.audited),
+                        "a fast-lane attempt was audited without its grant")
+
+    async def test_a_gated_verdict_takes_the_normal_path(self):
+        self.verdict = {"fast": False}
+        await self._drive(trusted=True, approve=True)
+        self.assertEqual(len(self.previews), 1)
+        self.assertEqual(self.grants, [None], "a gated run was handed the fast-lane grant")
+        self.assertEqual(self.audited, [None])
+
+    async def test_an_unanswerable_classifier_takes_the_normal_path(self):
+        self.verdict = {"raise": True}
+        await self._drive(trusted=True, approve=True)
+        self.assertEqual(len(self.previews), 1)
+        self.assertEqual(self.grants, [None])
+
+    async def test_a_colleague_always_meets_the_gate(self):
+        await self._drive(trusted=False, approve=True)
+        self.assertEqual(self.asked, [], "the classifier ran for an untrusted asker")
+        self.assertEqual(len(self.previews), 1)
+        self.assertEqual(self.grants, [None])
+
+    async def test_pre_authorization_keeps_its_full_toolset(self):
+        await self._drive(trusted=True, params={"approval": "auto"})
+        self.assertEqual(self.asked, [])
+        self.assertEqual(self.grants, [None])
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")

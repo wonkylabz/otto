@@ -23,7 +23,7 @@ TASK_QUEUE = os.environ.get("OTTO_TASK_QUEUE", "otto")
 ACTIVITIES = [
     activities.route_request, activities.clarify_request,
     activities.resolve_pinned_cap,
-    activities.classify_request, activities.classify_followup,
+    activities.classify_request, activities.classify_followup, activities.classify_fast_lane,
     activities.plan_capability, activities.suggest_repo,
     activities.plan_swarm, activities.merge_results,
     activities.plan_task_steps, activities.execute_plan,

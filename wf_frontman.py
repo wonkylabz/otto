@@ -55,6 +55,8 @@ class FrontmanMixin:
                 # Framing AFTER the task, so routing still ranks the task's own words.
                 {"request": task + contracts.DELEGATED_FRAMING, "unattended": True,
                  "delegated": True,
+                 # The fast lane follows the ASKER, decided by the Slack ingress (issue #193).
+                 "trusted_asker": bool(params.get("trusted_asker")),
                  "approval": params.get("approval", "ask"),
                  # The gate notice is the ONE thing the child posts: it arms the conversation so
                  # a Slack "yes" reaches this child's gate. Everything else the parent relays.

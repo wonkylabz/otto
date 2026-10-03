@@ -50,8 +50,9 @@ def audit_repo_changes(wid, request, changed):
     trace("GUARD", f"in-place repo edit flagged: {names}")
 
 
-def audit_mcp_change(action, name, entry=None, actor="admin"):
-    """Audit a change to the MCP server registry: `add`, `edit`, `activate` or `remove`.
+def audit_mcp_change(action, name, entry=None, actor="admin", detail=None):
+    """Audit a change to the MCP server registry: `add`, `edit`, `activate` or `remove` — or
+    `safe-tools`, a change to which tools skip the gate (issue #193), described by `detail`.
 
     Registering a command and running it are two separate acts (policy.add_mcp_def), and this is
     the durable record of both — it is the only place the exact command line that became runnable
@@ -71,9 +72,12 @@ def audit_mcp_change(action, name, entry=None, actor="admin"):
         "risk": "write", "outcome": "ran", "cost_usd": 0,
         "mcp": {"action": action, "name": name, "command": cmdline, "env": env_keys},
     }
+    if detail:
+        entry_row["mcp"]["detail"] = detail
     _append_audit(entry_row)
     _append_content(wid, at, request=f"MCP server {action}: {name}",
-                    result=(f"`{cmdline}`{env_note}" if cmdline else f"removed `{name}`"))
+                    result=(detail or (f"`{cmdline}`{env_note}" if cmdline
+                                       else f"removed `{name}`")))
     trace("MCP", f"{action} {name}" + (f" -> {cmdline}" if cmdline else ""))
     return wid
 
@@ -658,7 +662,7 @@ def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=
            model=None, repo=None, outcome=None, reason=None, needs_human=None, duration_s=None,
            backend=None, fallback_from=None, fallback_reason=None, fallback_detail=None,
            critique=None, times=None,
-           verdict_source=None, verdict_model=None):
+           verdict_source=None, verdict_model=None, fast_lane=None):
     at = datetime.datetime.now().isoformat(timespec="seconds")
     entry = {
         "at": at, "workflow": wid,
@@ -675,6 +679,10 @@ def _audit(wid, request, cap, result, cost, attempt=None, verified=None, tokens=
     # The repo an isolated-workspace run targeted (issue #59) — so the audit shows it.
     if repo:
         entry["repo"] = repo
+    # A run that skipped the plan preview and the gate (issue #193) says so on EVERY row, with
+    # the exact grant it held instead — the only record that no human looked at it, and why.
+    if fast_lane is not None:
+        entry["fast_lane"] = list(fast_lane)
     # Token usage is the real resource on a subscription; model lets the Audit tab
     # segment tokens by tier (so a cheap cap silently running on Opus stays visible).
     # Normalized to the CANONICAL model id (gateway.model_id): the Claude paths hand over an id

@@ -245,6 +245,57 @@ def set_mcp_note(name, note):
     return storage.mutate_json(_PATH, _apply, {"capabilities": {}, "mcps": {}})
 
 
+# --- per-tool risk tags (the fast lane, issue #193) -----------------------------------------
+# A tool is `safe` only when an operator ticked it; everything else — a new tool, an unknown
+# server, a tool on a server nobody has opened yet — is GATED. Stored per server as a list of
+# bare tool names (`policy.json` → mcps.<server>.safe_tools), beside `notes` and for the same
+# reason: one mechanism for every source, and `set_safe_tools` is the ONLY writer.
+#
+# What `safe` buys: a request from the owner or a Slack approver that needs ONLY safe tools runs
+# with no plan preview and no gate — granted exactly those tools and nothing else (no Bash, no
+# Edit, no other MCP tool). The tag is the guard; the classifier only picks the lane.
+
+
+def safe_tool_names(pol, server):
+    """The bare tool names ticked safe on one server, or [] (unset = gated)."""
+    entry = ((pol or {}).get("mcps") or {}).get(server) or {}
+    return list(entry.get("safe_tools") or []) if isinstance(entry, dict) else []
+
+
+def safe_tools(pol=None):
+    """Every safe tool on an ENABLED server, as the `mcp__<server>__<tool>` id both backends
+    grant by. A disabled server's tags are kept but grant nothing — the switch must win."""
+    import mcp_client           # noqa: PLC0415 — mcp_client imports this module
+    pol = load() if pol is None else pol
+    out = []
+    for server, entry in ((pol or {}).get("mcps") or {}).items():
+        if not isinstance(entry, dict) or not entry.get("enabled", True):
+            continue
+        out += [mcp_client.tool_id(server, t) for t in entry.get("safe_tools") or []]
+    return sorted(set(out))
+
+
+def set_safe_tools(server, tools):
+    """Replace one server's safe set IN PLACE (empty clears it), returning the whole policy.
+    `mutate_json` for the same reason as `set_mcp_note`: the run path reads this file."""
+    tools = sorted({str(t).strip() for t in (tools or []) if str(t).strip()})
+
+    def _apply(pol):
+        pol.setdefault("capabilities", {})
+        entry = pol.setdefault("mcps", {}).setdefault(server, {})
+        if tools:
+            entry["safe_tools"] = tools
+        else:
+            entry.pop("safe_tools", None)
+        return pol
+    return storage.mutate_json(_PATH, _apply, {"capabilities": {}, "mcps": {}})
+
+
+# Keys on an `mcps` entry that ONE dedicated endpoint writes — a whole-policy save carries
+# neither, so both are re-attached from the store and never trusted from the client.
+_SERVER_OWNED = ("notes", "safe_tools")
+
+
 def keep_notes(saved, incoming):
     """Re-attach the stored notes to a client-supplied `mcps` map.
 
@@ -257,16 +308,24 @@ def keep_notes(saved, incoming):
     out = {}
     for name, entry in (incoming or {}).items():
         if isinstance(entry, dict):
-            entry = {k: v for k, v in entry.items() if k != "notes"}
+            entry = {k: v for k, v in entry.items() if k not in _SERVER_OWNED}
         out[name] = entry
     for name, entry in (saved or {}).items():
-        note = ((entry or {}).get("notes") or "").strip() if isinstance(entry, dict) else ""
-        if not note:
+        if not isinstance(entry, dict):
+            continue
+        kept = {}
+        note = (entry.get("notes") or "").strip()
+        if note:
+            kept["notes"] = note
+        if entry.get("safe_tools"):
+            # The safe tags ride the same rule: a toggle must not un-tag every tool.
+            kept["safe_tools"] = list(entry["safe_tools"])
+        if not kept:
             continue
         if isinstance(out.get(name), dict):
-            out[name]["notes"] = note
+            out[name].update(kept)
         elif name not in out:
-            out[name] = {"notes": note}
+            out[name] = kept
     return out
 
 
@@ -523,8 +582,11 @@ def all_mcps(pol, allow_refresh=False, force=False):
 
     def note(n):
         return (ov.get(n, {}).get("notes") or "")
+
+    def safe(n):
+        return len(safe_tool_names(pol, n))
     out = [{"name": n, "enabled": ov.get(n, {}).get("enabled", True), "source": "claude",
-            "health": health.get(n), "notes": note(n)} for n in discover_mcps()]
+            "health": health.get(n), "notes": note(n), "safe": safe(n)} for n in discover_mcps()]
     # `confirmed` rides on the otto-source rows only: a server discovered from ~/.claude.json or
     # a claude.ai connector was registered outside Otto and is not ours to gate.
     out += [{"name": n, "enabled": ov.get(n, {}).get("enabled", True), "source": "otto",
@@ -532,10 +594,11 @@ def all_mcps(pol, allow_refresh=False, force=False):
              # Keys only — the activation gate must SAY that a def carries environment, and
              # must never render what is in it.
              "env_keys": mcp_env_keys(d),
-             "health": health.get(n), "notes": note(n)} for n, d in mcp_defs().items()]
+             "health": health.get(n), "notes": note(n), "safe": safe(n)}
+            for n, d in mcp_defs().items()]
     out += [{"name": c["name"], "display": c.get("display", c["name"]),
              "enabled": ov.get(c["name"], {}).get("enabled", True), "source": "connector",
-             "health": health.get(c["name"]), "notes": note(c["name"])}
+             "health": health.get(c["name"]), "notes": note(c["name"]), "safe": safe(c["name"])}
             for c in discover_connectors(status=status)]
     return out
 

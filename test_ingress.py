@@ -6997,7 +6997,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # resets the page's scroll), every row query is scoped to `.mpool` (the endpoints table shares
     # `.mrow`, and unscoped this moved the whole pool into it), and a mid-drag `refreshMcpHealth`
     # rebuild is held to dragend rather than fired under the drag (`ModelOrderTests`).
-    ASSET_MAX = 125275
+    # -> 125451 for the MCP row's "safe N" button (issue #193). The tag editor itself lives in its
+    # own `mcptools.js` to stay off this file; the bytes are the one button that opens it.
+    ASSET_MAX = 125451
 
     def _assets(self):
         out = {}

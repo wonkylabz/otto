@@ -174,7 +174,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 repo=None, audience=None, approved_plan=None, grounding=None,
                 memory_enabled=True,
                 model_override=None, discussion=False, supervise_enforce=True, effort=None,
-                attachments=None, frontman=False):
+                attachments=None, frontman=False, fast_lane=None):
     """One execution attempt via `claude -p`. Builds the invocation (folding in the
     previous critique on a retry) and picks the model (escalated on the final attempt).
     Returns the raw result + metadata; verification and auditing are separate steps so the
@@ -188,7 +188,12 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     `effort` is how hard the model thinks (config.EFFORT_LEVELS) — the per-chat pick if there is
     one, else the Admin default. Resolved from the settings store ONLY for callers outside
     Temporal: a workflow always passes the value from its own snapshot, because a store read
-    inside a run could serve a different level to attempt 2 than to attempt 1."""
+    inside a run could serve a different level to attempt 2 than to attempt 1.
+
+    `fast_lane` (issue #193) is the WHOLE grant of a run that skipped the plan preview and the
+    gate: a list of safe-tagged MCP tool ids, and nothing else — no Bash, no Edit, no other MCP
+    tool, no Task/Skill (a subagent or skill brings tools of its own). The grant is the guard,
+    so it replaces the risk allowlist rather than narrowing it, on every backend."""
     if not wid:
         wid = _next_wid()
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
@@ -196,6 +201,9 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # Project caps run from their repo and merge that repo's `.mcp.json` + its tools.
     mcp_config_path, cap_mcp_tools = _effective_mcp(cap, mcp_config_path)
     allowed += cap_mcp_tools
+    disallowed = None                  # None = _claude's default trim
+    if fast_lane is not None:
+        allowed, disallowed = list(fast_lane), config.FAST_LANE_DISALLOWED_TOOLS
     # An explicit cwd (an isolated repo workspace, issue #57) overrides the cap's own cwd, so a
     # global agent can run inside a freshly-cloned repo it doesn't otherwise belong to.
     cwd = cwd or getattr(cap, "cwd", None)
@@ -273,6 +281,17 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         trace("RUN", f"{wid} {cap.name} {why} — running on Claude")
     else:
         fb_forced = None
+    # A FAST-LANE run never goes to Codex: its guard there is a sandbox with a whole shell in it,
+    # and it grants no MCP — so the one grant this run has would be the one thing it lacked. The
+    # workflow refuses the lane for a codex pick up front; this is the backstop.
+    if fast_lane is not None and use_codex:
+        why = "a fast-lane run is granted MCP tools only, and the codex backend has a shell and no MCP"
+        if not config.setting("local_fallback"):
+            return _strict_stop_attempt(
+                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why), time.monotonic())
+        use_codex = False
+        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
+        trace("RUN", f"{wid} {why} — running on Claude")
     # THIS CAPABILITY HAS ALREADY PROVED IT CANNOT DO THE WORK ON THIS MODEL. Within one run the
     # ladder self-corrects (issue #172 re-dispatches the rest of it to Claude), but nothing
     # remembered that across runs, so every new run re-litigated the same doomed first attempt:
@@ -408,6 +427,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             filter(None, [_output_contract(audience), contracts._FRONTMAN_DELEGATE if frontman else None,
                           _approved_plan_note(approved_plan),
                           _grounding_note(grounding), _write_gate_note(cap),
+                          contracts.fast_lane_note(fast_lane),
                           _mcp_notes_note(cap),
                           _repo_scope_note(repo, cwd), _repo_source_note(repo, cwd),
                           _pr_body_note(repo, cwd), attachments_mod.note(attachments),
@@ -543,7 +563,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                         model=model, system_context=sysctx, cwd=cwd,
                         transcript=transcript_path, timeout=fb_timeout,
                         on_event=sup.note if sup else None, abort=abort, meta=fb_meta,
-                        setting_sources=_setting_sources(cwd), effort=effort),
+                        setting_sources=_setting_sources(cwd), effort=effort,
+                        disallowed_tools=disallowed),
                 model, "claude", fb_meta)
 
     started = time.monotonic()
@@ -633,7 +654,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                       model=model, resume_session=resume_session, system_context=sysctx, cwd=cwd,
                       transcript=transcript_path, timeout=config.EXEC_TIMEOUT_S,
                       on_event=sup.note if sup else None, abort=abort, steer=steer,
-                      meta=fb_meta, setting_sources=_setting_sources(cwd), effort=effort)
+                      meta=fb_meta, setting_sources=_setting_sources(cwd), effort=effort,
+                      disallowed_tools=disallowed)
     duration_s = time.monotonic() - started
     # The CLAUDE backend's deterministic walls: `claude -p` could not authenticate, the
     # subscription's usage limit is spent, or models.json names a model this account cannot

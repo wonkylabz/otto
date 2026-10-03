@@ -1508,6 +1508,17 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/chats/get"):
             cid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             self._send(200, json.dumps(chats.get(cid) or {}))
+        elif self.path.startswith("/api/mcp/tools"):
+            # ONE server's tool list with each tool's safe/gated tag (issue #193). Cached
+            # catalogue first; `refresh=1` (or a miss) lists a servable stdio server once.
+            q = parse_qs(urlparse(self.path).query)
+            nm = (q.get("name") or [""])[0]
+            if not any(m["name"] == nm for m in policy.all_mcps(POLICY)):
+                self._send(400, json.dumps({"error": "unknown MCP server"})); return
+            tools, err = mcp_client.server_tools(nm, refresh=(q.get("refresh") or [""])[0] == "1")
+            safe = set(policy.safe_tool_names(policy.load(), nm))
+            self._send(200, json.dumps({"name": nm, "error": err, "tools": [
+                {**t, "safe": t.get("name") in safe} for t in tools]}))
         elif self.path.startswith("/api/mcp/def"):
             # ONE server, in the shape its edit form needs. Separate from /api/policy on
             # purpose: that payload is fetched on every Admin load and feeds the activation
@@ -1690,7 +1701,8 @@ class Handler(BaseHTTPRequestHandler):
             if cap is None:
                 self._send(400, json.dumps({"error": "missing 'request'"})); return
             req = f"Run the {cap.name} {cap.kind}."
-        params = {"request": req}
+        # The operator at their own keyboard — the fast lane's trusted asker (issue #193).
+        params = {"request": req, "trusted_asker": True}
         if cap:
             params["cap"] = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
         atts, err = self._attachments_param(body)
@@ -2089,6 +2101,26 @@ class Handler(BaseHTTPRequestHandler):
         _set_policy(saved)
         self._send(200, json.dumps({"ok": True,
                                     "notes": (saved.get("mcps", {}).get(name) or {}).get("notes", "")}))
+
+    def _post_mcp_safe_tools(self, body):
+        """POST /api/mcp/safe-tools — replace one server's safe-tagged tools (issue #193). Only
+        names the server actually LISTS are kept: a tag is a grant, so a name nothing lists is
+        one nobody reviewed. Written in place, then swapped into the live POLICY like a note."""
+        name = (body.get("name") or "").strip()
+        if not name or not any(m["name"] == name for m in policy.all_mcps(POLICY)):
+            self._send(400, json.dumps({"error": "unknown MCP server"})); return
+        listed = {t.get("name") for t in (mcp_client.catalogue().get(name) or [])}
+        want = [t for t in (body.get("tools") or []) if isinstance(t, str)]
+        unknown = [t for t in want if t not in listed]
+        if unknown:
+            self._send(400, json.dumps({"error": "not tools this server lists: "
+                                        + ", ".join(unknown[:5])})); return
+        saved = policy.set_safe_tools(name, want)
+        _set_policy(saved)
+        engine.audit_mcp_change("safe-tools", name, detail="safe: " + (", ".join(sorted(want))
+                                                                    or "(none — all gated)"))
+        self._send(200, json.dumps({"ok": True,
+                                    "safe_tools": policy.safe_tool_names(saved, name)}))
 
     def _post_mcp_remove(self, body):
         """POST /api/mcp/remove"""
@@ -2603,6 +2635,7 @@ _POST_ROUTES = {
     "/api/mcp/activate": Handler._post_mcp_activate,
     "/api/mcp/add": Handler._post_mcp_add,
     "/api/mcp/note": Handler._post_mcp_note,
+    "/api/mcp/safe-tools": Handler._post_mcp_safe_tools,
     "/api/mcp/recheck": Handler._post_mcp_recheck,
     "/api/mcp/reconnect": Handler._post_mcp_reconnect,
     "/api/mcp/remove": Handler._post_mcp_remove,

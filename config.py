@@ -189,6 +189,11 @@ _BUILTIN_TOOLS = [
 # Handed to `--disallowedTools` on every execution turn.
 DISALLOWED_TOOLS = [t for t in _BUILTIN_TOOLS if t not in KEEP_TOOLS]
 
+# A FAST-LANE run (issue #193) holds safe-tagged MCP tools and nothing else, so every built-in
+# that can act goes — the risk tools AND the two that bring a grant of their own (a subagent via
+# `Task`, a skill via `Skill`). `ToolSearch` stays: deferred MCP schemas load through it.
+FAST_LANE_DISALLOWED_TOOLS = sorted(set(_BUILTIN_TOOLS) - {"ToolSearch"})
+
 # The plan preview also loses `Task`: a delegated preview runs the agent's whole workflow and a
 # timeout returns nothing. `Task` is the spelling that also removes its `Agent` alias (measured).
 PLAN_DISALLOWED_TOOLS = DISALLOWED_TOOLS + ["Task"]
