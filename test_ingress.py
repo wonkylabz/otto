@@ -1943,8 +1943,7 @@ class SlackTests(unittest.TestCase):
                     if method == "auth.test":
                         return {"ok": True, "user_id": "U1"}
                     if method == "conversations.replies":
-                        return (replies(k) if callable(replies)
-                                else {"ok": True, "messages": replies})
+                        return {"ok": True, "messages": replies}
                     return {"ok": True, "channels": [], "messages": []}
                 slack._api = fake
                 cfg = self._cfg(allow_users=["U2"], allow_channels=[], watch_dms=False,
