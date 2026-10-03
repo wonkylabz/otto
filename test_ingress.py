@@ -3049,9 +3049,10 @@ class SlackGateApprovalTests(unittest.TestCase):
                 rec = slack.conversation_record("D1", identity=slack.BOT)
                 slack.load = lambda: self._cfg(bot_allow_users=["U5"], bot_approvers=["U1"])
                 slack.poll = lambda cfg=None: [
-                    {"channel": "D1", "ts": ts, "thread_ts": "5.0", "user": u, "text": t,
-                     "identity": slack.BOT, "is_dm": True, "conversation": rec,
-                     "gate_wid": "w1", "gate_notice": True} for ts, u, t in msgs]
+                    {"channel": "D1", "ts": m[0], "thread_ts": "5.0", "user": m[1],
+                     "text": m[2], "identity": slack.BOT, "is_dm": True, "conversation": rec,
+                     "gate_wid": "w1", "gate_notice": True, **(m[3] if len(m) > 3 else {})}
+                    for m in msgs]
                 slack.post = lambda ch, text, thread_ts=None, **k: (
                     posted.append((ch, text, thread_ts)) or "9.0")
                 slack.react = lambda *a, **k: True
@@ -3072,6 +3073,16 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertEqual(started, [])
         self.assertIsNone(slack.awaiting_gate(after), "the DM's own gate must be cleared")
         self.assertNotIn("gate_notice_ts", after)
+
+    def test_one_gate_is_decided_once_per_poll(self):
+        """The top level and the notice thread are two doors to one gate, so one poll can carry
+        two decisions for it. Only the first is acted on; the late one is marked seen."""
+        top = {"thread_ts": None, "gate_notice": False}
+        posted, signalled, started, after = self._run_activity(
+            [("6.0", "U1", "approve", top), ("7.0", "U1", "no")])
+        self.assertEqual(signalled, [("w1", True)])
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(started, [])
 
     def test_a_non_decision_or_non_approver_in_the_notice_thread_is_ignored(self):
         posted, signalled, started, after = self._run_activity(
