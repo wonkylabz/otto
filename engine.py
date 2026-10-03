@@ -174,7 +174,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 repo=None, audience=None, approved_plan=None, grounding=None,
                 memory_enabled=True,
                 model_override=None, discussion=False, supervise_enforce=True, effort=None,
-                attachments=None, frontman=False):
+                attachments=None, frontman=False, fast_lane=None):
     """One execution attempt via `claude -p`. Builds the invocation (folding in the
     previous critique on a retry) and picks the model (escalated on the final attempt).
     Returns the raw result + metadata; verification and auditing are separate steps so the
@@ -188,7 +188,12 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     `effort` is how hard the model thinks (config.EFFORT_LEVELS) — the per-chat pick if there is
     one, else the Admin default. Resolved from the settings store ONLY for callers outside
     Temporal: a workflow always passes the value from its own snapshot, because a store read
-    inside a run could serve a different level to attempt 2 than to attempt 1."""
+    inside a run could serve a different level to attempt 2 than to attempt 1.
+
+    `fast_lane` (issue #193) is the WHOLE grant of a run that skipped the plan preview and the
+    gate: a list of safe-tagged MCP tool ids, and nothing else — no Bash, no Edit, no other MCP
+    tool, no Task/Skill (a subagent or skill brings tools of its own). The grant is the guard,
+    so it replaces the risk allowlist rather than narrowing it, on every backend."""
     if not wid:
         wid = _next_wid()
     effort = config.effort_level(effort if effort is not None else config.setting("effort"))
@@ -196,6 +201,17 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # Project caps run from their repo and merge that repo's `.mcp.json` + its tools.
     mcp_config_path, cap_mcp_tools = _effective_mcp(cap, mcp_config_path)
     allowed += cap_mcp_tools
+    disallowed, permission_mode = None, None   # None = _claude's default trim / the CLI's mode
+    if fast_lane is not None:
+        allowed = list(fast_lane)
+        disallowed = config.FAST_LANE_DISALLOWED_TOOLS + mcp_client.fast_lane_denies(fast_lane)
+        # Pinned, so a permissive `defaultMode` in the operator's settings cannot widen it.
+        permission_mode = "default"
+    # A fast-lane turn loads NO settings sources: the operator's `permissions.allow` (a plugin
+    # server, a connector, a tool its server added since it was listed) would otherwise widen a
+    # grant no human reviewed, and only `--allowedTools` may say what it holds. The deny list
+    # above stays as a second layer; `file_safety`'s own `--settings` deny is unaffected.
+    sources = "" if fast_lane is not None else _setting_sources(cwd)
     # An explicit cwd (an isolated repo workspace, issue #57) overrides the cap's own cwd, so a
     # global agent can run inside a freshly-cloned repo it doesn't otherwise belong to.
     cwd = cwd or getattr(cap, "cwd", None)
@@ -273,6 +289,17 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         trace("RUN", f"{wid} {cap.name} {why} — running on Claude")
     else:
         fb_forced = None
+    # A FAST-LANE run never goes to Codex: its guard there is a sandbox with a whole shell in it,
+    # and it grants no MCP — so the one grant this run has would be the one thing it lacked. The
+    # workflow refuses the lane for a codex pick up front; this is the backstop.
+    if fast_lane is not None and use_codex:
+        why = "a fast-lane run is granted MCP tools only, and the codex backend has a shell and no MCP"
+        if not config.setting("local_fallback"):
+            return _strict_stop_attempt(
+                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why), time.monotonic())
+        use_codex = False
+        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
+        trace("RUN", f"{wid} {why} — running on Claude")
     # THIS CAPABILITY HAS ALREADY PROVED IT CANNOT DO THE WORK ON THIS MODEL. Within one run the
     # ladder self-corrects (issue #172 re-dispatches the rest of it to Claude), but nothing
     # remembered that across runs, so every new run re-litigated the same doomed first attempt:
@@ -407,7 +434,11 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         sysctx = "\n\n".join(
             filter(None, [_output_contract(audience), contracts._FRONTMAN_DELEGATE if frontman else None,
                           _approved_plan_note(approved_plan),
-                          _grounding_note(grounding), _write_gate_note(cap),
+                          _grounding_note(grounding),
+                          # "A human approved this" is false on the fast lane, and invites the
+                          # broader actions the lane's own note tells it to leave alone.
+                          _write_gate_note(cap) if fast_lane is None else None,
+                          contracts.fast_lane_note(fast_lane),
                           _mcp_notes_note(cap),
                           _repo_scope_note(repo, cwd), _repo_source_note(repo, cwd),
                           _pr_body_note(repo, cwd), attachments_mod.note(attachments),
@@ -506,9 +537,13 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # valuable (it is the last chance to fix the run at all). Its own budget bounds it instead.
     steer_mode = str(config.setting("supervise_steer") or "off").lower()
     steer = (supervisor.Steer(config.setting("max_supervisor_steers"))
-             if (config.setting("supervise") and steer_mode == "enforce" and not resume_session)
+             if (config.setting("supervise") and steer_mode == "enforce" and not resume_session
+                 and fast_lane is None)
              else None)
-    sup = None if resume_session else supervisor.start(wid, attempt, request, cap,
+    # Never on the fast lane (issue #193): the supervisor judges against the cap's normal
+    # workflow, so it steers a one-tool run toward reads and tests it holds no tool for.
+    sup = None if (resume_session or fast_lane is not None) else supervisor.start(
+                                                       wid, attempt, request, cap,
                                                        transcript=transcript_path, abort=abort,
                                                        cwd=cwd, critique=critique, steer=steer,
                                                        steer_shadow=(steer_mode == "shadow"))
@@ -543,7 +578,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                         model=model, system_context=sysctx, cwd=cwd,
                         transcript=transcript_path, timeout=fb_timeout,
                         on_event=sup.note if sup else None, abort=abort, meta=fb_meta,
-                        setting_sources=_setting_sources(cwd), effort=effort),
+                        setting_sources=sources, effort=effort,
+                        disallowed_tools=disallowed, permission_mode=permission_mode),
                 model, "claude", fb_meta)
 
     started = time.monotonic()
@@ -559,13 +595,19 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                                      cwd=cwd, transcript=transcript_path,
                                      on_event=sup.note if sup else None, abort=abort,
                                      steer=steer,
-                                     mcp_servers=mcp_client.servers_for(cap, allowed, request),
+                                     # A fast-lane grant is offered WHOLE, never word-matched: it
+                                     # is the operator's explicit list, and ranking it against
+                                     # "dim the hallway" can leave the run with no tools at all.
+                                     mcp_servers=(mcp_client.fast_lane_servers(fast_lane)
+                                                  if fast_lane is not None else
+                                                  mcp_client.servers_for(cap, allowed, request)),
                                      mcp_request=request,
                                      # An UNDECLARED cap (general worker/assistant, stock caps)
                                      # only gets tools that actually match the request; a
                                      # declared one keeps filler up to the budget, since its
                                      # grant is explicit and "catch me up" matches no tool name.
-                                     mcp_require_score=not mcp_client.declared_servers(cap),
+                                     mcp_require_score=(fast_lane is None
+                                                        and not mcp_client.declared_servers(cap)),
                                      effort=effort, attachments=attachments)
         # TWO deterministic walls, one escape hatch: the serving stack rejects tool definitions
         # (vLLM missing --enable-auto-tool-choice/--tool-call-parser), or the endpoint is
@@ -633,7 +675,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                       model=model, resume_session=resume_session, system_context=sysctx, cwd=cwd,
                       transcript=transcript_path, timeout=config.EXEC_TIMEOUT_S,
                       on_event=sup.note if sup else None, abort=abort, steer=steer,
-                      meta=fb_meta, setting_sources=_setting_sources(cwd), effort=effort)
+                      meta=fb_meta, setting_sources=sources, effort=effort,
+                      disallowed_tools=disallowed, permission_mode=permission_mode)
     duration_s = time.monotonic() - started
     # The CLAUDE backend's deterministic walls: `claude -p` could not authenticate, the
     # subscription's usage limit is spent, or models.json names a model this account cannot

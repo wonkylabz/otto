@@ -47,7 +47,7 @@ would your yours reach reachable
 def record_attempt(wid, request, cap, result, cost, attempt, verdict, remember=False,
                    tokens=None, model=None, repo=None, project=None, duration_s=None,
                    backend=None, fallback_from=None, fallback_reason=None,
-                   fallback_detail=None, times=None):
+                   fallback_detail=None, times=None, fast_lane=None):
     """Audit one attempt (with its verify verdict, token usage, the model that ran it, and
     which backend — plus what it fell back from, if the chosen model couldn't run). On the
     final/passing attempt also distil memory from the result — facts go to the project's
@@ -63,7 +63,7 @@ def record_attempt(wid, request, cap, result, cost, attempt, verdict, remember=F
            verdict_model=None if verdict is None else verdict.get("model"),
            tokens=tokens, model=model, repo=repo, duration_s=duration_s,
            backend=backend, fallback_from=fallback_from, fallback_reason=fallback_reason,
-           fallback_detail=fallback_detail, times=times)
+           fallback_detail=fallback_detail, times=times, fast_lane=fast_lane)
     # Feed the per-capability local latch (gateway.record_cap_local). Deliberately HERE rather
     # than in either ladder: `_ladder_core` and `OttoWorkflow._verify_ladder` are two mirrors of
     # the same loop, and workflow code cannot touch the disk anyway — this activity is the one

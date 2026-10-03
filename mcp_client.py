@@ -795,6 +795,97 @@ def _spec_name(server, tool):
     return name[:_MAX_NAME]
 
 
+def tool_id(server, tool):
+    """The id a grant names one tool by — the SAME string the local `Pool` offers and checks
+    with `_allowed`, so a fast-lane grant (`policy.safe_tools`) admits exactly that tool on both
+    backends."""
+    return _spec_name(server, tool)
+
+
+def fast_lane_denies(granted, pol=None):
+    """Deny rules for every MCP tool a fast-lane grant does NOT name (issue #193).
+
+    `--allowedTools` is a permission ALLOW, and the operator's own settings can allow more: a
+    `permissions.allow` on a connector would otherwise admit it to a run nobody gated. A deny
+    beats any allow, so every other server is denied whole (`mcp__<server>`), and on a server
+    with a safe tool every OTHER listed tool is denied by name."""
+    pol = policy.load() if pol is None else pol
+    granted = set(granted or [])
+    cat = catalogue(pol)
+    out = []
+    for name in sorted({m["name"] for m in policy.all_mcps(pol)} | set(cat)):
+        # Compared and emitted in the SAME normalized spelling the grant ids use (`tool_id`), or
+        # `home.assistant` reads as ungranted and its own safe tool is denied whole.
+        prefix = tool_id(name, "")
+        if not any(g.startswith(prefix) for g in granted):
+            out.append(prefix.rstrip("_"))
+            continue
+        out += [tid for tid in (tool_id(name, t.get("name")) for t in cat.get(name) or [])
+                if tid not in granted]
+    return out
+
+
+def def_key(server, pol=None, have=None):
+    """The key a safe tag binds to (issue #193): the sha256 of the def this server would spawn
+    as, `_def_key` — the catalogue's own key. None — which grants nothing — when it is not a
+    servable stdio server (a connector, an unactivated/disabled/gone def), or when a same-named
+    PROJECT-scope def in Otto's own checkout would shadow it: a run with no cwd starts there, so
+    `claude -p` would spawn that one instead of the command the tag was reviewed against."""
+    spec = (servable(pol) if have is None else have).get(server)
+    if not spec or server in _shadowing_names():
+        return None
+    return _def_key(spec)
+
+
+def fast_lane_servers(granted, pol=None):
+    """The servable servers owning at least one granted tool — a fast-lane run's whole server
+    set, chosen by the GRANT rather than by matching the request (`servers_for`)."""
+    granted = list(granted or [])
+    return [n for n in servable(pol) if any(g.startswith(tool_id(n, "")) for g in granted)]
+
+
+def _shadowing_names():
+    """Server names a `claude -p` run from Otto's own cwd would resolve to a project/local def:
+    `~/.claude.json`'s `projects[<cwd>].mcpServers` and the checkout's `.mcp.json`."""
+    cwd = os.getcwd()
+    names = set()
+    try:
+        with open(os.path.expanduser("~/.claude.json")) as f:
+            proj = (json.load(f).get("projects") or {}).get(cwd) or {}
+        names |= set(proj.get("mcpServers") or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        with open(os.path.join(cwd, ".mcp.json")) as f:
+            names |= set(json.load(f).get("mcpServers") or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+    return names
+
+
+def server_tools(server, pol=None):
+    """`(tools, note)` for one server, for the Admin tag editor: a one-off spawn of a SERVABLE
+    stdio server to list it, warming the catalogue. Never spawns anything `servable` refuses: an
+    unactivated def stays inert here too. A connector has nothing to spawn, so it says so rather
+    than listing nothing silently. (The cached read is `catalogue()`.)"""
+    spec = servable(pol).get(server)
+    if not spec:
+        return [], ("no tool list: Otto can only list a launchable stdio server "
+                    "(claude.ai connectors and remote servers are listed by Claude Code itself)")
+    sess = Session(server, spec)
+    try:
+        sess.start()
+        tools = sess.list_tools()
+    except Exception as e:  # noqa: BLE001 - a broken server is shown, never raised
+        _record_catalogue(server, spec, [], failed=True)
+        return [], f"could not start {server}: {e}"
+    finally:
+        sess.close()
+    _record_catalogue(server, spec, tools)
+    return [{"name": t.get("name"), "description": (t.get("description") or "")[:400]}
+            for t in tools], None
+
+
 class Pool:
     """The MCP tools offered to one local run: lazily started servers, a flat name→(server,
     tool) map, and one `close()` the runtime calls in its `finally`.

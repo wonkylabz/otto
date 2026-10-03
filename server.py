@@ -1508,6 +1508,12 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/chats/get"):
             cid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             self._send(200, json.dumps(chats.get(cid) or {}))
+        elif self.path.startswith("/api/mcp/tools"):
+            # ONE server's tool list with each tool's safe/gated tag (issue #193). CACHE ONLY:
+            # listing a server SPAWNS it, and a GET is reachable cross-site (`_csrf_ok` guards
+            # POSTs), so the spawn is `POST /api/mcp/tools/list`.
+            nm = (parse_qs(urlparse(self.path).query).get("name") or [""])[0]
+            self._send_mcp_tools(nm, spawn=False)
         elif self.path.startswith("/api/mcp/def"):
             # ONE server, in the shape its edit form needs. Separate from /api/policy on
             # purpose: that payload is fetched on every Admin load and feeds the activation
@@ -1690,7 +1696,10 @@ class Handler(BaseHTTPRequestHandler):
             if cap is None:
                 self._send(400, json.dumps({"error": "missing 'request'"})); return
             req = f"Run the {cap.name} {cap.kind}."
-        params = {"request": req}
+        # The operator at their own keyboard — the fast lane's trusted asker (issue #193). Only
+        # with a browser Origin (which `_csrf_ok` has already matched): an Origin-less POST is a
+        # script — curl, a test, a run's own Bash — and must not skip the gate on our credit.
+        params = {"request": req, "trusted_asker": bool(self.headers.get("Origin"))}
         if cap:
             params["cap"] = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
         atts, err = self._attachments_param(body)
@@ -1914,6 +1923,10 @@ class Handler(BaseHTTPRequestHandler):
         if reached_run:
             params["unattended"] = True
             params["approval"] = "auto"
+        # A fast-lane run (never `reached_run`, see run_origin) is retried from the top, and may
+        # take the lane again only if its own asker could: the flag is the ORIGIN's, never new.
+        if origin.get("trusted_asker"):
+            params["trusted_asker"] = True
         new_id = "web-" + uuid.uuid4().hex[:8]
         # Record the retry into a Chat thread so its result lands in a conversation, not
         # just on the board: an interactive run records CLIENT-side, so retrying it from
@@ -2062,6 +2075,7 @@ class Handler(BaseHTTPRequestHandler):
             entry["env"] = env
         try:
             stored = policy.add_mcp_def(name, entry)
+            _set_policy(policy.load())          # add_mcp_def cleared its safe tags (#193)
         except ValueError as e:          # an unusable server name — policy is the authority
             self._send(400, json.dumps({"error": str(e)})); return
         engine.audit_mcp_change("edit" if existed else "add", name, stored)
@@ -2090,12 +2104,80 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True,
                                     "notes": (saved.get("mcps", {}).get(name) or {}).get("notes", "")}))
 
+    def _send_mcp_tools(self, name, spawn):
+        """One server's tools + safe flags. `note` (never `error`, which the UI's getJSON reads
+        as a failed request) says why a list is empty."""
+        if not any(m["name"] == name for m in policy.all_mcps(POLICY)):
+            self._send(400, json.dumps({"error": "unknown MCP server"})); return
+        if spawn:
+            tools, note = mcp_client.server_tools(name)
+        else:
+            tools = mcp_client.catalogue().get(name) or []
+            note = None if tools else "not listed yet — press Re-list tools to start it once"
+        pol = policy.load()
+        stored = policy.safe_tool_names(pol, name)
+        # Tags whose command has changed grant nothing (policy.safe_tools) — shown UNTICKED with
+        # a note, so trusting the new command is a fresh decision, never an inherited one.
+        live = set(stored) if (stored and ((pol.get("mcps") or {}).get(name) or {}).get("safe_key")
+                               == mcp_client.def_key(name, pol)) else set()
+        if stored and not live:
+            note = ((note + " ") if note else "") + ("This server's command changed since its "
+                                                     "tools were ticked — tick them again to trust it.")
+        listed = {t.get("name") for t in tools}
+        # A stored tag the list no longer shows stays visible, so it can always be UN-ticked.
+        rows = list(tools) + [{"name": t, "description": "", "unlisted": True}
+                              for t in stored if t not in listed]
+        # `key` rides back on Save: the tags bind to the command THIS list came from (409 if it
+        # changed meanwhile), never to whatever is stored when the POST lands.
+        self._send(200, json.dumps({"name": name, "note": note,
+                                    "key": mcp_client.def_key(name, pol), "tools": [
+            {**t, "safe": t.get("name") in live} for t in rows]}))
+
+    def _post_mcp_tools_list(self, body):
+        """POST /api/mcp/tools/list — start one servable stdio server once to list its tools
+        (warming the catalogue). A POST so `_csrf_ok` stands between a page and the spawn."""
+        self._send_mcp_tools((body.get("name") or "").strip(), spawn=True)
+
+    def _post_mcp_safe_tools(self, body):
+        """POST /api/mcp/safe-tools — replace one server's safe-tagged tools (issue #193). Only
+        names the server actually LISTS are kept: a tag is a grant, so a name nothing lists is
+        one nobody reviewed. Written in place, then swapped into the live POLICY like a note."""
+        name = (body.get("name") or "").strip()
+        if not name or not any(m["name"] == name for m in policy.all_mcps(POLICY)):
+            self._send(400, json.dumps({"error": "unknown MCP server"})); return
+        listed = {t.get("name") for t in (mcp_client.catalogue().get(name) or [])}
+        # Keeping a tag already stored is not a new grant, so an unlisted one may stay; a NEW
+        # name must be one the server lists.
+        listed |= set(policy.safe_tool_names(policy.load(), name))
+        want = [t for t in (body.get("tools") or []) if isinstance(t, str)]
+        unknown = [t for t in want if t not in listed]
+        if unknown:
+            self._send(400, json.dumps({"error": "not tools this server lists: "
+                                        + ", ".join(unknown[:5])})); return
+        key = mcp_client.def_key(name)
+        if want and not key:
+            self._send(400, json.dumps({"error": "only a launchable stdio server's tools can be "
+                                        "marked safe — this one has no command to bind them to"}))
+            return
+        if want and body.get("key") != key:
+            self._send(409, json.dumps({"error": "this server's command changed since the list "
+                                        "was opened — reopen it and review again"})); return
+        # Bound to the command the operator reviewed (policy.safe_tools).
+        saved = policy.set_safe_tools(name, want, key=key)
+        _set_policy(saved)
+        engine.audit_mcp_change("safe-tools", name, detail="safe: " + (", ".join(sorted(want))
+                                                                    or "(none — all gated)"))
+        self._send(200, json.dumps({"ok": True,
+                                    "safe_tools": policy.safe_tool_names(saved, name)}))
+
     def _post_mcp_remove(self, body):
         """POST /api/mcp/remove"""
         name = body.get("name")
         defs = policy.mcp_defs(); gone = defs.pop(name, None)
         policy.save_mcp_defs(defs)
         if gone is not None:
+            # Its tags go with it: a later def under this name is a different command (#193).
+            _set_policy(policy.set_safe_tools(name, []))
             engine.audit_mcp_change("remove", name, gone)
         self._send(200, json.dumps({"ok": True}))
 
@@ -2603,6 +2685,8 @@ _POST_ROUTES = {
     "/api/mcp/activate": Handler._post_mcp_activate,
     "/api/mcp/add": Handler._post_mcp_add,
     "/api/mcp/note": Handler._post_mcp_note,
+    "/api/mcp/safe-tools": Handler._post_mcp_safe_tools,
+    "/api/mcp/tools/list": Handler._post_mcp_tools_list,
     "/api/mcp/recheck": Handler._post_mcp_recheck,
     "/api/mcp/reconnect": Handler._post_mcp_reconnect,
     "/api/mcp/remove": Handler._post_mcp_remove,

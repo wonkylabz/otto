@@ -348,6 +348,37 @@ def suggest_repo(payload: dict) -> dict:
 
 
 @activity.defn
+def classify_fast_lane(payload: dict) -> dict:
+    """May this write run skip the plan preview and the gate (issue #193)? `{fast, tools}` —
+    `tools` is the grant it would hold: every safe-tagged MCP tool, and nothing else.
+
+    The workflow asks only for a trusted asker's fresh worker run; the checks here are the ones
+    it cannot make without the disk. No safe tools means no model call. A Codex execution model
+    never qualifies (a shell, no MCP — see engine.run_attempt). Any failure is the gated path."""
+    import gateway
+    import intents
+    try:
+        cap = _cap(payload["name"])
+        safe = policy.safe_tools()
+        if cap is None or not safe:
+            return {"fast": False, "tools": []}
+        override = (gateway.resolve_model(payload["model_override"])
+                    if payload.get("model_override") else None)
+        if gateway.backend_of(override or gateway.exec_model_entry(cap.name)) == "codex":
+            return {"fast": False, "tools": []}
+        desc = {}
+        for server, tools in mcp_client.catalogue().items():
+            for t in tools:
+                desc[mcp_client.tool_id(server, t.get("name"))] = t.get("description") or ""
+        fast = intents.fast_lane_intent(payload["request"],
+                                       [{"id": t, "description": desc.get(t, "")} for t in safe])
+    except Exception as e:  # noqa: BLE001 - an unanswerable question is the gated path
+        activity.logger.info(f"fast-lane check failed, gating: {e}")
+        return {"fast": False, "tools": []}
+    return {"fast": bool(fast), "tools": safe if fast else []}
+
+
+@activity.defn
 def classify_request(payload: dict) -> dict:
     """Re-assess a freshly-routed request for write intent, so a write-intent request that
     Router #1 misrouted to a read-classified capability still hits the approval gate. When the
@@ -541,6 +572,13 @@ def run_capability(payload: dict) -> dict:
     if discussion:
         cap = copy.copy(cap)
         cap.risk = "read"
+    # A fast-lane grant (issue #193) is re-checked against the LIVE tags: it can only narrow to
+    # what is still marked safe, so an operator un-ticking a tool mid-run takes it off the next
+    # attempt, and nothing reaching this dict can name a tool the operator never tagged.
+    fast_lane = payload.get("fast_lane")
+    if fast_lane is not None:
+        live = set(policy.safe_tools())
+        fast_lane = [t for t in fast_lane if t in live]
     mcp_tools, mcp_path = _mcp()
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
     _warm_conventions(project)
@@ -568,7 +606,7 @@ def run_capability(payload: dict) -> dict:
             memory_enabled=payload.get("memory_enabled", True),
             model_override=payload.get("model_override"),
             effort=payload.get("effort"),
-            discussion=discussion,
+            discussion=discussion, fast_lane=fast_lane,
             supervise_enforce=payload.get("supervise_enforce", True),
             attachments=atts, frontman=bool(payload.get("frontman")))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
@@ -584,6 +622,8 @@ def run_capability(payload: dict) -> dict:
             # The tools this attempt actually CALLED — the judge's real grant. Must be listed
             # HERE or it never reaches the workflow: this dict is a whitelist, not a passthrough.
             "tools_used": att.get("tools_used") or [],
+            # The fast-lane grant this attempt actually held, after narrowing to the live tags.
+            "fast_lane": fast_lane,
             "tools_failed": att.get("tools_failed") or [],
             # Corrections the mid-run supervisor delivered into this attempt. Listed HERE for the
             # same reason as tools_used — this dict is a whitelist, and the verify activity below
@@ -645,7 +685,9 @@ def verify_capability(payload: dict) -> dict:
                          tools_used=payload.get("tools_used"),
                          tools_failed=payload.get("tools_failed"),
                          steers=payload.get("steers"),
-                         attachments=payload.get("attachments"))
+                         attachments=payload.get("attachments"),
+                         # The fast lane's whole grant — the judge must not read the risk floor.
+                         fast_lane=payload.get("fast_lane"))
 
 
 # The two post-PR loops are one parameterised body in `wf_postpr._LOOPS`; this is the same seam,
@@ -738,6 +780,8 @@ def record_attempt(payload: dict) -> None:
                               # Audited from INSIDE the RUN span, so RUN/DELIVER are still open
                               # here — every consumer merges across the run's rows.
                               times=payload.get("times"),
+                              # The grant a run that skipped the gate held (issue #193).
+                              fast_lane=payload.get("fast_lane"),
                               project=engine._resolve_project(cap, payload.get("repo")))
 
 
@@ -1238,6 +1282,17 @@ def poll_slack(payload: dict) -> dict:
             if rec and rec.get("wid"):
                 params["chat_key"] = rec["wid"]         # same conversation, new session
         wid = slack.wid_for(msg)
+        # The fast lane follows the ASKER (issue #193): the owner, or a listed approver. Decided
+        # here, from the message's own author — never from anything in its text. DMs only: a
+        # channel's context lines (and its session history) carry OTHER people's words, which
+        # would steer a run no human reviews on the trusted asker's credit.
+        params["trusted_asker"] = (str(msg.get("channel") or "").startswith("D") and
+                                   slack.may_fast_lane(cfg, msg.get("user"), identity,
+                                                       slack.whoami(slack.USER)))
+        if params["trusted_asker"]:
+            # The lane is decided on THESE words — the person's own — never on a task text the
+            # frontman wrote after reading mail or a page (wf_frontman's `asker_text`).
+            params["asker_text"] = msg.get("text") or ""
         status = slack.start_run(wid, params)
         if status == "started":
             # A bare DM's ack_ts is always None, so keying on ack_ts alone would wrongly

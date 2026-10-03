@@ -26,7 +26,7 @@ with workflow.unsafe.imports_passed_through():
     # Pure prompt-text module — no I/O, no clock. Only BRAINSTORM_AUDIENCE is read here; the
     # contract text itself is interpolated activity-side (engine._output_contract).
     import contracts
-    from activities import (clarify_request, classify_followup, classify_request,
+    from activities import (clarify_request, classify_fast_lane, classify_followup, classify_request,
                             cleanup_workspace, deliver_result, detect_repo_changes,
                             estop_check, execute_plan, finalize_terminal, finalize_workspace,
                             resolve_pinned_cap,
@@ -84,7 +84,7 @@ def _repo_of(params):
     return None if _is_brainstorm(params.get("cap")) else params.get("repo")
 
 
-def _may_plan_steps(authored, plan_mode, repo, subtask, cap):
+def _may_plan_steps(authored, plan_mode, repo, subtask, cap, fast_lane=None):
     """May this run ask the planner to decompose the request into atomic steps?
 
     A runbook brings its OWN graph (`authored`) so it never re-plans; repo-mode and swarm
@@ -97,9 +97,12 @@ def _may_plan_steps(authored, plan_mode, repo, subtask, cap):
     mutually exclusive; this is the backstop, and it resolves toward the narrower, read-only,
     cheaper of the two modes.
 
+    A fast-lane run (issue #193) is the sixth: its grant is a handful of safe tools, chosen for
+    the request whole, and a decomposition would only hand each step the same few.
+
     PURE — safe on the replayed workflow path (the caller reads the setting from its snapshot)."""
     return (not authored and plan_mode != "off" and not repo and not subtask
-            and not _is_brainstorm(cap))
+            and not _is_brainstorm(cap) and fast_lane is None)
 
 
 def _verified_of(verdict):
@@ -145,6 +148,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # skips the plan preview + gate entirely. Per-turn only — the chat's cap is re-resolved
         # from the registry on the next follow-up, so nothing about the session is de-escalated.
         self._discussion = False
+        # The FAST LANE (issue #193): None, or the whole tool grant of a write run that skipped
+        # the plan preview and the gate because it needs only operator-tagged safe MCP tools.
+        self._fast_lane = None
         self._attempt = 0          # current verify->retry attempt (0 until execution starts)
         self._verified = None      # last verify verdict (None until first attempt judged)
         self._swarm = False        # True once this run fans out into a parallel sub-task swarm
@@ -264,6 +270,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         (`WorkflowReplayCompatibilityTests`). The cost is that RUN and DELIVER are still OPEN
         here — they close after the ladder — so consumers merge across a run's rows and a needs-
         human run's terminal row, written from DELIVER, is the one that closes them."""
+        if self._fast_lane is not None:
+            payload = {**payload, "fast_lane": self._fast_lane}   # every row says no gate ran
         await workflow.execute_activity(
             record_attempt, {**payload, "remember": False, "times": dict(self._times)},
             start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
@@ -351,6 +359,38 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             except Exception:  # noqa: BLE001 - best-effort; never mask the original error
                 pass
             raise
+
+    async def _take_fast_lane(self, params, request, cap, approval, unattended, resume, subtask,
+                              repo):
+        """The fast lane (issue #193): True when this write run skips the plan preview and the
+        gate, having set `self._fast_lane` to its WHOLE grant — exactly the safe-tagged tools.
+
+        `trusted_asker` is set by an ingress, never by a client: the web composer (the operator at
+        their own keyboard) and Slack's owner or `bot_approvers`. The classifier only picks the
+        lane; what stands behind a wrong pick is the grant (engine.run_attempt). The general worker
+        only — any other cap is a prompt (or a subagent) the grant was not chosen for. Never a
+        resume, a sub-task or repo-mode. Only where a gate would otherwise RUN — interactive, or
+        unattended "ask": "auto" already skips it with the FULL toolset the human pre-authorized,
+        and unattended "skip" means writes never run here at all. Never with attachments: the grant
+        holds no Read to open them. Behind `patched` like every new command."""
+        if not (params.get("trusted_asker") and not resume and not subtask and not repo
+                and cap["risk"] == "write" and cap["name"] == config.WORKER_CAP
+                and (approval == "ask" if unattended else approval != "auto")
+                and not self._attachments and workflow.patched("fast-lane")):
+            return False
+        try:
+            # The asker's own words when an ingress kept them (Slack; a delegated child) — a task
+            # text written by a model is not what the trusted person asked for.
+            lane = await workflow.execute_activity(
+                classify_fast_lane, {"request": params.get("asker_text") or request,
+                                     "name": cap["name"],
+                                     "model_override": self._model_override},
+                start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+        except exceptions.ActivityError:
+            return False            # a check that never answered is the gated path, not a failure
+        if lane.get("fast"):
+            self._fast_lane = list(lane.get("tools") or [])
+        return self._fast_lane is not None
 
     async def _plan_and_gate(self, params, request, cap, approval, unattended, reply_to,
                              repo, git_run_id, resume, resume_ws, authored_doc):
@@ -962,12 +1002,14 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 resolve_pr_target, {"repo": repo, "request": request},
                 start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY) or {}
 
-        # Approval for writes.
-        done, request = await self._plan_and_gate(
-            params, request, cap, approval, unattended, reply_to,
-            repo, git_run_id, resume, resume_ws, authored_doc)
-        if done is not None:
-            return done
+        # Approval for writes. Unless the fast lane (issue #193) already decided it needs none.
+        if not await self._take_fast_lane(params, request, cap, approval, unattended, resume,
+                                          subtask, repo):
+            done, request = await self._plan_and_gate(
+                params, request, cap, approval, unattended, reply_to,
+                repo, git_run_id, resume, resume_ws, authored_doc)
+            if done is not None:
+                return done
 
         # A resumed session is a raw follow-up in an ongoing conversation, not a fresh
         # task to judge — run it once, no verification. Bracketed as its own RUN span (mirroring
@@ -1117,7 +1159,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # regardless of plan_mode/repo, because those gate whether Otto should *invent* a plan,
         # which has no bearing on whether it should run one a human already wrote.
         plan_list, authored = authored_steps, bool(authored_steps)
-        if _may_plan_steps(authored, self._setting("plan_mode"), repo, subtask, cap):
+        if _may_plan_steps(authored, self._setting("plan_mode"), repo, subtask, cap, self._fast_lane):
             sres = await workflow.execute_activity(
                 plan_task_steps,
                 {"request": request, "name": cap["name"], "requested": params.get("plan_mode", False)},
@@ -1496,6 +1538,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                      # Per-chat composer overrides (memory checkbox + model picker).
                      "memory_enabled": self._memory_enabled, "model_override": self._model_override,
                      "effort": self._effort, "attachments": self._attachments,
+                     # The fast lane's WHOLE grant (None = the normal risk toolset).
+                     "fast_lane": self._fast_lane,
                      # Arm the supervisor's kill switch only while a rung remains for its
                      # critique to steer and the run has kills left to spend (ladder.plan_attempt).
                      "supervise_enforce": nxt.supervise_enforce, "frontman": self._frontman},
@@ -1510,6 +1554,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                        "is_error": True, "cost": 0, "tokens": None, "model": None,
                        "attempt": attempt}
             wid = out["workflow"]
+            # The grant the attempt really HELD — run_capability narrows to the live tags, and the
+            # judge and the audit row must describe that, never the one decided before the run.
+            if self._fast_lane is not None and out.get("fast_lane") is not None:
+                self._fast_lane = list(out["fast_lane"])
             state = ladder.record_attempt(
                 state, nxt, killed=bool(out.get("killed_by_supervisor")),
                 local_incapable=out.get("local_incapable", False))
@@ -1573,7 +1621,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                      "tools_failed": out.get("tools_failed"),
                      # Mid-run supervisor corrections this attempt was given: the request the
                      # judge scores against is the AMENDED one. Mirrors engine._ladder_core.
-                     "steers": out.get("steers"), "attachments": self._attachments},
+                     "steers": out.get("steers"), "attachments": self._attachments,
+                     "fast_lane": self._fast_lane},
                     start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],

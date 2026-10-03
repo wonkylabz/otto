@@ -3992,16 +3992,17 @@ class RunModeFlagTests(unittest.TestCase):
         self.assertNotIn('"unattended": unattended', spawn)
         self.assertNotIn('params.get("unattended")', spawn)
 
-    def test_the_plan_step_exclusions_stay_five(self):
-        """`_may_plan_steps` ANDs five mode flags, and the brainstorm one was added only after
-        plan-mode silently replaced the whole brainstorm turn. Adding a sixth mode without a
-        matching exclusion is how that repeats."""
+    def test_the_plan_step_exclusions_stay_six(self):
+        """`_may_plan_steps` ANDs six mode flags, and the brainstorm one was added only after
+        plan-mode silently replaced the whole brainstorm turn. Adding a seventh mode without a
+        matching exclusion is how that repeats. The sixth is the fast lane (issue #193)."""
         import workflows
         self.assertEqual(
             list(inspect.signature(workflows._may_plan_steps).parameters),
-            ["authored", "plan_mode", "repo", "subtask", "cap"])
+            ["authored", "plan_mode", "repo", "subtask", "cap", "fast_lane"])
         for kwargs in ({"authored": True}, {"plan_mode": "off"}, {"repo": "r"},
-                       {"subtask": True}, {"cap": {"name": "brainstorm", "kind": "skill"}}):
+                       {"subtask": True}, {"cap": {"name": "brainstorm", "kind": "skill"}},
+                       {"fast_lane": ["mcp__ha__HassTurnOn"]}):
             base = {"authored": False, "plan_mode": "on", "repo": None, "subtask": False,
                     "cap": {"name": "worker", "kind": "skill"}}
             base.update(kwargs)

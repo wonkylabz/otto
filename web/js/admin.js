@@ -1214,7 +1214,7 @@ function renderAdmin(data, models, el, settings){
         <button class="clearbtn mn-save" data-mcpnote="${esc(m.name)}">Save</button>
       </div></td>
       <td class="c-on"><span class="switch ${m.enabled?'on':''}" data-mcp="${esc(m.name)}" title="enable / disable"></span></td>
-      <td class="c-act r">${m.source==='otto'?`<span class="ctl r">
+      <td class="c-act r"><button class="mcpbtn" data-mcptools="${esc(m.name)}" data-mcpdisplay="${esc(m.display||m.name)}" title="which tools may skip the approval gate">safe ${m.safe||'\u00b7'}</button>${m.source==='otto'?`<span class="ctl r">
           <button class="mcpbtn" data-editmcp="${esc(m.name)}"
             title="edit this server's command, arguments and environment">Edit</button>
           <button class="remove" data-delmcp="${esc(m.name)}" title="remove">&times;</button>
