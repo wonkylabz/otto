@@ -1696,8 +1696,10 @@ class Handler(BaseHTTPRequestHandler):
             if cap is None:
                 self._send(400, json.dumps({"error": "missing 'request'"})); return
             req = f"Run the {cap.name} {cap.kind}."
-        # The operator at their own keyboard — the fast lane's trusted asker (issue #193).
-        params = {"request": req, "trusted_asker": True}
+        # The operator at their own keyboard — the fast lane's trusted asker (issue #193). Only
+        # with a browser Origin (which `_csrf_ok` has already matched): an Origin-less POST is a
+        # script — curl, a test, a run's own Bash — and must not skip the gate on our credit.
+        params = {"request": req, "trusted_asker": bool(self.headers.get("Origin"))}
         if cap:
             params["cap"] = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
         atts, err = self._attachments_param(body)
@@ -2125,7 +2127,10 @@ class Handler(BaseHTTPRequestHandler):
         # A stored tag the list no longer shows stays visible, so it can always be UN-ticked.
         rows = list(tools) + [{"name": t, "description": "", "unlisted": True}
                               for t in stored if t not in listed]
-        self._send(200, json.dumps({"name": name, "note": note, "tools": [
+        # `key` rides back on Save: the tags bind to the command THIS list came from (409 if it
+        # changed meanwhile), never to whatever is stored when the POST lands.
+        self._send(200, json.dumps({"name": name, "note": note,
+                                    "key": mcp_client.def_key(name, pol), "tools": [
             {**t, "safe": t.get("name") in live} for t in rows]}))
 
     def _post_mcp_tools_list(self, body):
@@ -2149,8 +2154,16 @@ class Handler(BaseHTTPRequestHandler):
         if unknown:
             self._send(400, json.dumps({"error": "not tools this server lists: "
                                         + ", ".join(unknown[:5])})); return
-        # Bound to the command the operator is looking at now (policy.safe_tools).
-        saved = policy.set_safe_tools(name, want, key=mcp_client.def_key(name))
+        key = mcp_client.def_key(name)
+        if want and not key:
+            self._send(400, json.dumps({"error": "only a launchable stdio server's tools can be "
+                                        "marked safe — this one has no command to bind them to"}))
+            return
+        if want and body.get("key") != key:
+            self._send(409, json.dumps({"error": "this server's command changed since the list "
+                                        "was opened — reopen it and review again"})); return
+        # Bound to the command the operator reviewed (policy.safe_tools).
+        saved = policy.set_safe_tools(name, want, key=key)
         _set_policy(saved)
         engine.audit_mcp_change("safe-tools", name, detail="safe: " + (", ".join(sorted(want))
                                                                     or "(none — all gated)"))

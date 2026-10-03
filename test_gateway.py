@@ -10387,8 +10387,17 @@ class FastLanePolicyTests(unittest.TestCase):
         self._path = policy._PATH
         self.tmp = tempfile.mkdtemp()
         policy._PATH = os.path.join(self.tmp, "policy.json")
+        # One servable stdio server, `ha`, so a tag has a command to bind to.
+        self._serv = mock.patch.object(mcp_client, "servable",
+                                       lambda pol=None: {"ha": {"command": "ha-mcp", "args": []}})
+        self._serv.start()
+        self._shadow = mock.patch.object(mcp_client, "_shadowing_names", lambda: set())
+        self._shadow.start()
+        self.key = mcp_client.def_key("ha")
 
     def tearDown(self):
+        self._serv.stop()
+        self._shadow.stop()
         policy._PATH = self._path
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -10397,7 +10406,7 @@ class FastLanePolicyTests(unittest.TestCase):
         self.assertEqual(policy.safe_tool_names(policy.load(), "ha"), [])
 
     def test_a_tagged_tool_is_granted_by_the_id_both_backends_check(self):
-        policy.set_safe_tools("ha", ["HassTurnOn", "HassTurnOff"])
+        policy.set_safe_tools("ha", ["HassTurnOn", "HassTurnOff"], key=self.key)
         ids = policy.safe_tools()
         self.assertEqual(ids, ["mcp__ha__HassTurnOff", "mcp__ha__HassTurnOn"])
         # The local Pool admits a tool by exactly this id — and nothing beside it on that server.
@@ -10405,7 +10414,7 @@ class FastLanePolicyTests(unittest.TestCase):
         self.assertFalse(mcp_client._allowed("mcp__ha__lock_unlock", ids))
 
     def test_a_disabled_server_grants_nothing(self):
-        policy.set_safe_tools("ha", ["HassTurnOn"])
+        policy.set_safe_tools("ha", ["HassTurnOn"], key=self.key)
         storage.mutate_json(policy._PATH, lambda p: (p["mcps"]["ha"].update(enabled=False), p)[1], {})
         self.assertEqual(policy.safe_tools(), [])
 
@@ -10542,7 +10551,7 @@ class FastLaneAskerTests(unittest.TestCase):
 
     def test_the_web_composer_is_the_operator_and_the_client_cannot_say_otherwise(self):
         src = inspect.getsource(server.Handler._post_submit)
-        self.assertIn('"trusted_asker": True', src)
+        self.assertIn('"trusted_asker": bool(self.headers.get("Origin"))', src)
         self.assertNotIn('body.get("trusted_asker")', src)
 
 
@@ -10626,8 +10635,40 @@ class FastLaneReviewRoundTwoTests(unittest.TestCase):
         return mock.patch.object(mcp_client, "servable",
                                  lambda pol=None: {"k8s": {"command": cmd, "args": []}})
 
+    def test_a_tag_with_nothing_to_bind_to_never_grants(self):
+        with mock.patch.object(mcp_client, "servable", lambda pol=None: {}):
+            policy.set_safe_tools("claude_ai_Gmail", ["send_message"], key=None)
+            self.assertEqual(policy.safe_tools(), [], "a None key matched a None key")
+
+    def test_a_project_scope_def_shadowing_the_server_voids_its_tags(self):
+        with self._servable("kubectl-dev"), \
+             mock.patch.object(mcp_client, "_shadowing_names", lambda: set()):
+            policy.set_safe_tools("k8s", ["get_pods"], key=mcp_client.def_key("k8s"))
+        with self._servable("kubectl-dev"), \
+             mock.patch.object(mcp_client, "_shadowing_names", lambda: {"k8s"}):
+            self.assertEqual(policy.safe_tools(), [])
+
+    def test_a_dotted_server_name_is_matched_in_its_tool_id_spelling(self):
+        rows = [{"name": "home.assistant"}]
+        with mock.patch.object(policy, "all_mcps", lambda pol, **k: rows), \
+             mock.patch.object(mcp_client, "catalogue", lambda pol=None: {}):
+            denies = mcp_client.fast_lane_denies(["mcp__home_assistant__on"], pol={})
+        self.assertNotIn("mcp__home_assistant", denies, "the granted server was denied whole")
+
+    def test_a_local_fast_lane_run_is_offered_its_grant_unranked(self):
+        src = inspect.getsource(engine.run_attempt)
+        self.assertIn("mcp_client.fast_lane_servers(fast_lane)", src)
+        self.assertIn("mcp_require_score=(fast_lane is None", src)
+        self.assertIn("sup = None if (resume_session or fast_lane is not None)", src)
+
+    def test_a_delegated_child_is_judged_on_the_askers_own_words(self):
+        import wf_frontman
+        self.assertIn('"asker_text": params.get("asker_text")', inspect.getsource(wf_frontman))
+        self.assertIn('params.get("asker_text") or request', test_support.workflow_src())
+
     def test_a_tag_grants_only_while_the_command_is_the_reviewed_one(self):
-        with self._servable("kubectl-dev"):
+        with self._servable("kubectl-dev"), \
+             mock.patch.object(mcp_client, "_shadowing_names", lambda: set()):
             policy.set_safe_tools("k8s", ["get_pods"], key=mcp_client.def_key("k8s"))
             self.assertEqual(policy.safe_tools(), ["mcp__k8s__get_pods"])
         with self._servable("kubectl-PROD"):

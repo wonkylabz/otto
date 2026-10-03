@@ -273,14 +273,17 @@ def safe_tools(pol=None):
     A tag was reviewed against ONE command, so it grants only while the server still runs that
     command (`safe_key` = `mcp_client.def_key`, the catalogue's own key). A def changed by an
     edit, a snapshot import or a hand edit of `~/.claude.json` — or not servable at all now —
-    grants nothing until someone re-ticks it. A connector has no def: its key is None."""
+    grants nothing until someone re-ticks it. A connector has no def to bind, so never grants."""
     import mcp_client           # noqa: PLC0415 — mcp_client imports this module
     pol = load() if pol is None else pol
+    have = mcp_client.servable(pol)
     out = []
     for server, entry in ((pol or {}).get("mcps") or {}).items():
+        # A None key never matches: a tag with nothing to bind to (a connector, a server Otto
+        # cannot launch) would otherwise be re-trusted by a mere re-save.
         if (not isinstance(entry, dict) or not entry.get("enabled", True)
-                or not entry.get("safe_tools")
-                or entry.get("safe_key") != mcp_client.def_key(server, pol)):
+                or not entry.get("safe_tools") or not entry.get("safe_key")
+                or entry["safe_key"] != mcp_client.def_key(server, pol, have)):
             continue
         out += [mcp_client.tool_id(server, t) for t in entry["safe_tools"]]
     return sorted(set(out))
@@ -600,8 +603,13 @@ def all_mcps(pol, allow_refresh=False, force=False):
     def note(n):
         return (ov.get(n, {}).get("notes") or "")
 
+    # What actually GRANTS (key-bound, enabled), so the row's count and the run agree.
+    granted = safe_tools(pol)
+
     def safe(n):
-        return len(safe_tool_names(pol, n))
+        import mcp_client       # noqa: PLC0415 — mcp_client imports this module
+        prefix = mcp_client.tool_id(n, "")
+        return sum(1 for t in granted if t.startswith(prefix))
     out = [{"name": n, "enabled": ov.get(n, {}).get("enabled", True), "source": "claude",
             "health": health.get(n), "notes": note(n), "safe": safe(n)} for n in discover_mcps()]
     # `confirmed` rides on the otto-source rows only: a server discovered from ~/.claude.json or

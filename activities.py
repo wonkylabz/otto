@@ -1266,6 +1266,10 @@ def poll_slack(payload: dict) -> dict:
         params["trusted_asker"] = (str(msg.get("channel") or "").startswith("D") and
                                    slack.may_fast_lane(cfg, msg.get("user"), identity,
                                                        slack.whoami(slack.USER)))
+        if params["trusted_asker"]:
+            # The lane is decided on THESE words — the person's own — never on a task text the
+            # frontman wrote after reading mail or a page (wf_frontman's `asker_text`).
+            params["asker_text"] = msg.get("text") or ""
         status = slack.start_run(wid, params)
         if status == "started":
             # A bare DM's ack_ts is always None, so keying on ack_ts alone would wrongly

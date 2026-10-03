@@ -1754,6 +1754,7 @@ def start_run(wid, params):
         full["frontman"] = True
     if params.get("trusted_asker"):
         full["trusted_asker"] = True
+        full["asker_text"] = params.get("asker_text") or ""
     return ingress.start_run(wid, full, estop_key="slack", trace_tag="SLACK")
 
 

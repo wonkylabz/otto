@@ -537,9 +537,13 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # valuable (it is the last chance to fix the run at all). Its own budget bounds it instead.
     steer_mode = str(config.setting("supervise_steer") or "off").lower()
     steer = (supervisor.Steer(config.setting("max_supervisor_steers"))
-             if (config.setting("supervise") and steer_mode == "enforce" and not resume_session)
+             if (config.setting("supervise") and steer_mode == "enforce" and not resume_session
+                 and fast_lane is None)
              else None)
-    sup = None if resume_session else supervisor.start(wid, attempt, request, cap,
+    # Never on the fast lane (issue #193): the supervisor judges against the cap's normal
+    # workflow, so it steers a one-tool run toward reads and tests it holds no tool for.
+    sup = None if (resume_session or fast_lane is not None) else supervisor.start(
+                                                       wid, attempt, request, cap,
                                                        transcript=transcript_path, abort=abort,
                                                        cwd=cwd, critique=critique, steer=steer,
                                                        steer_shadow=(steer_mode == "shadow"))
@@ -591,13 +595,19 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                                      cwd=cwd, transcript=transcript_path,
                                      on_event=sup.note if sup else None, abort=abort,
                                      steer=steer,
-                                     mcp_servers=mcp_client.servers_for(cap, allowed, request),
+                                     # A fast-lane grant is offered WHOLE, never word-matched: it
+                                     # is the operator's explicit list, and ranking it against
+                                     # "dim the hallway" can leave the run with no tools at all.
+                                     mcp_servers=(mcp_client.fast_lane_servers(fast_lane)
+                                                  if fast_lane is not None else
+                                                  mcp_client.servers_for(cap, allowed, request)),
                                      mcp_request=request,
                                      # An UNDECLARED cap (general worker/assistant, stock caps)
                                      # only gets tools that actually match the request; a
                                      # declared one keeps filler up to the budget, since its
                                      # grant is explicit and "catch me up" matches no tool name.
-                                     mcp_require_score=not mcp_client.declared_servers(cap),
+                                     mcp_require_score=(fast_lane is None
+                                                        and not mcp_client.declared_servers(cap)),
                                      effort=effort, attachments=attachments)
         # TWO deterministic walls, one escape hatch: the serving stack rejects tool definitions
         # (vLLM missing --enable-auto-tool-choice/--tool-call-parser), or the endpoint is

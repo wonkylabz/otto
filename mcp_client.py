@@ -814,20 +814,53 @@ def fast_lane_denies(granted, pol=None):
     cat = catalogue(pol)
     out = []
     for name in sorted({m["name"] for m in policy.all_mcps(pol)} | set(cat)):
-        if not any(g.startswith(f"mcp__{name}__") for g in granted):
-            out.append(f"mcp__{name}")
+        # Compared and emitted in the SAME normalized spelling the grant ids use (`tool_id`), or
+        # `home.assistant` reads as ungranted and its own safe tool is denied whole.
+        prefix = tool_id(name, "")
+        if not any(g.startswith(prefix) for g in granted):
+            out.append(prefix.rstrip("_"))
             continue
         out += [tid for tid in (tool_id(name, t.get("name")) for t in cat.get(name) or [])
                 if tid not in granted]
     return out
 
 
-def def_key(server, pol=None):
+def def_key(server, pol=None, have=None):
     """The key a safe tag binds to (issue #193): the sha256 of the def this server would spawn
-    as, `_def_key` — the catalogue's own key. None when it is not a servable stdio server (a
-    connector, or a def that is unactivated/disabled/gone)."""
-    spec = servable(pol).get(server)
-    return _def_key(spec) if spec else None
+    as, `_def_key` — the catalogue's own key. None — which grants nothing — when it is not a
+    servable stdio server (a connector, an unactivated/disabled/gone def), or when a same-named
+    PROJECT-scope def in Otto's own checkout would shadow it: a run with no cwd starts there, so
+    `claude -p` would spawn that one instead of the command the tag was reviewed against."""
+    spec = (servable(pol) if have is None else have).get(server)
+    if not spec or server in _shadowing_names():
+        return None
+    return _def_key(spec)
+
+
+def fast_lane_servers(granted, pol=None):
+    """The servable servers owning at least one granted tool — a fast-lane run's whole server
+    set, chosen by the GRANT rather than by matching the request (`servers_for`)."""
+    granted = list(granted or [])
+    return [n for n in servable(pol) if any(g.startswith(tool_id(n, "")) for g in granted)]
+
+
+def _shadowing_names():
+    """Server names a `claude -p` run from Otto's own cwd would resolve to a project/local def:
+    `~/.claude.json`'s `projects[<cwd>].mcpServers` and the checkout's `.mcp.json`."""
+    cwd = os.getcwd()
+    names = set()
+    try:
+        with open(os.path.expanduser("~/.claude.json")) as f:
+            proj = (json.load(f).get("projects") or {}).get(cwd) or {}
+        names |= set(proj.get("mcpServers") or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        with open(os.path.join(cwd, ".mcp.json")) as f:
+            names |= set(json.load(f).get("mcpServers") or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+    return names
 
 
 def server_tools(server, pol=None):

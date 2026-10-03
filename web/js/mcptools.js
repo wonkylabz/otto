@@ -9,14 +9,23 @@
    the server does not list. Its own file because admin.js sits at the asset ratchet; bound by one
    delegated listener, so nothing here runs at load beyond registering it. */
 
+// Which open of the shared modal is current: a slow Re-list must not paint server A's tools under
+// server B's title after the operator moved on.
+let MCPTOOLS_OPEN=0;
+
 async function showMcpToolsForm(name, display, refresh){
+  const mine=++MCPTOOLS_OPEN;
   const c=openFormModal("<b>Safe tools</b><br>"+esc(display||name));
   c.innerHTML=`<div class="aform"><span class="sk-help">Loading the tool list&hellip;</span></div>`;
   let d;
   // Re-list STARTS the server, so it is a POST (CSRF-checked); the plain open reads the cache.
   try { d=refresh ? await postJSON("/api/mcp/tools/list",{name:name})
                   : await getJSON("/api/mcp/tools?name="+encodeURIComponent(name)); }
-  catch(e){ c.innerHTML=`<div class="aform"><div class="ferr">${esc(e.message)}</div></div>`; return; }
+  catch(e){
+    if(mine===MCPTOOLS_OPEN) c.innerHTML=`<div class="aform"><div class="ferr">${esc(e.message)}</div></div>`;
+    return;
+  }
+  if(mine!==MCPTOOLS_OPEN || document.getElementById("formModal").hidden) return;
   const tools=d.tools||[];
   c.innerHTML=`<div class="aform">
     <span class="sk-help">A <b>safe</b> tool can run without a plan or an approval, when you or a
@@ -46,7 +55,7 @@ async function showMcpToolsForm(name, display, refresh){
   document.getElementById("mt-refresh").onclick=()=>showMcpToolsForm(name, display, true);
   document.getElementById("mt-save").onclick=async()=>{
     const want=[...document.querySelectorAll(".mt-box")].filter(b=>b.checked).map(b=>b.value);
-    try { await postJSON("/api/mcp/safe-tools",{name:name,tools:want}); }
+    try { await postJSON("/api/mcp/safe-tools",{name:name,tools:want,key:d.key}); }
     catch(e){ document.getElementById("mt-err").textContent=e.message; return; }
     closeFormModal(); loadAdmin();
   };

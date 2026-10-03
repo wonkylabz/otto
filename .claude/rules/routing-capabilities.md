@@ -34,7 +34,7 @@ Each capability is `read` or `write` (`registry._RISK` + keyword heuristic); unk
 - The fence is ADVISORY, never the gate — the cap's static risk + fail-to-WRITE default are. Fenced and unfenced measured equal, so a green `intent-write-survives-injected-instruction` is not fence validation.
 - **Assistant redirect** — when the tripped cap is the general assistant, a risk bump alone is wrong (its prompt forbids acting); swap in the general worker.
 - **The fast lane's guard is the GRANT, never the verdict** — a SAFE pick runs with ONLY the safe-tagged MCP tools: no Bash/Edit/Task/Skill, never Codex. Unset tag = gated; owner and `bot_approvers` only (`FastLaneGrantTests`, `FastLaneWorkflowTests`).
-- **`trusted_asker` is set by an ingress, never read from a client body** — web submit sets it, Slack derives it from the message's author (`slack.may_fast_lane`); a frontman child inherits it (`FastLaneAskerTests`).
+- **`trusted_asker` is set by an ingress, never read from a client body** — a browser-Origin web submit, or a Slack DM's author (`slack.may_fast_lane`). The lane is judged on the asker's OWN words (`asker_text`), never a frontman-written task (`FastLaneAskerTests`).
 - **Clarify parse biases toward proceeding** (`engine._parse_clarification`) — a weak local model leaks chatter instead of a literal `OK`, so the parser needs an actual `?` to pause. Opposite bias to the write-intent guards: a false "proceed" is cheap, a silent dead-end is worse.
 
 ## Slash commands & continuity

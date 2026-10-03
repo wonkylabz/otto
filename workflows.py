@@ -379,8 +379,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 and not self._attachments and workflow.patched("fast-lane")):
             return False
         try:
+            # The asker's own words when an ingress kept them (Slack; a delegated child) — a task
+            # text written by a model is not what the trusted person asked for.
             lane = await workflow.execute_activity(
-                classify_fast_lane, {"request": request, "name": cap["name"],
+                classify_fast_lane, {"request": params.get("asker_text") or request,
+                                     "name": cap["name"],
                                      "model_override": self._model_override},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
         except exceptions.ActivityError:
