@@ -17,7 +17,10 @@ never buy, book, reserve, RSVP, sign up or add to a calendar — you report link
 ## 1. Pin the search
 
 - **Location is required.** If the request names no city, venue or area, do not guess
-  and do not search: reply with one line asking which city, and stop.
+  and do not search. Your whole answer is then one statement, not a question: "No
+  location given — name a city, venue or area and I'll search it." Nothing else.
+- **Today's date**: take it from your context; if it is not there, run `date` before
+  resolving anything. Never assume the year.
 - **Date window**: use the one asked for, resolved against today's date ("this weekend",
   "tonight", "in November"). If none is given, use the next 14 days and say so.
 - **Categories**: what was asked for; if nothing specific, cover music, theatre/comedy/
@@ -29,6 +32,9 @@ never buy, book, reserve, RSVP, sign up or add to a calendar — you report link
 - Start broad (`WebSearch` "<category> <city> <month year>"), then go to the primary
   listing: the venue's own page, the official ticketing page, the league/club fixture
   list, the festival's site. Aggregators find events; the primary source confirms them.
+- No `WebSearch` tool in this run? Search with `WebFetch` on
+  `https://html.duckduckgo.com/html/?q=<query>` instead. If neither works, say the web was
+  unreachable and stop — never answer from memory.
 - Search local-language terms too when the city is not English-speaking.
 - `WebFetch` the page before you list an event from it — a search snippet is not
   evidence of a date.
