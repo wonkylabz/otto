@@ -802,6 +802,26 @@ def tool_id(server, tool):
     return _spec_name(server, tool)
 
 
+def fast_lane_denies(granted, pol=None):
+    """Deny rules for every MCP tool a fast-lane grant does NOT name (issue #193).
+
+    `--allowedTools` is a permission ALLOW, and the operator's own settings can allow more: a
+    `permissions.allow` on a connector would otherwise admit it to a run nobody gated. A deny
+    beats any allow, so every other server is denied whole (`mcp__<server>`), and on a server
+    with a safe tool every OTHER listed tool is denied by name."""
+    pol = policy.load() if pol is None else pol
+    granted = set(granted or [])
+    cat = catalogue(pol)
+    out = []
+    for name in sorted({m["name"] for m in policy.all_mcps(pol)} | set(cat)):
+        if not any(g.startswith(f"mcp__{name}__") for g in granted):
+            out.append(f"mcp__{name}")
+            continue
+        out += [tid for tid in (tool_id(name, t.get("name")) for t in cat.get(name) or [])
+                if tid not in granted]
+    return out
+
+
 def server_tools(server, pol=None, refresh=False):
     """`(tools, error)` for one server, for the Admin tag editor: the cached catalogue, or —
     on a miss or `refresh` — a one-off spawn of a SERVABLE stdio server to list it (which warms

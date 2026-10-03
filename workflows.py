@@ -360,7 +360,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 pass
             raise
 
-    async def _take_fast_lane(self, params, request, cap, approval, resume, subtask, repo):
+    async def _take_fast_lane(self, params, request, cap, approval, unattended, resume, subtask,
+                              repo):
         """The fast lane (issue #193): True when this write run skips the plan preview and the
         gate, having set `self._fast_lane` to its WHOLE grant — exactly the safe-tagged tools.
 
@@ -368,11 +369,14 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         their own keyboard) and Slack's owner or `bot_approvers`. The classifier only picks the
         lane; what stands behind a wrong pick is the grant (engine.run_attempt). The general worker
         only — any other cap is a prompt (or a subagent) the grant was not chosen for. Never a
-        resume, a sub-task or repo-mode, and never under "auto", where the gate is already skipped
-        with the FULL toolset the human pre-authorized. Behind `patched` like every new command."""
+        resume, a sub-task or repo-mode. Only where a gate would otherwise RUN — interactive, or
+        unattended "ask": "auto" already skips it with the FULL toolset the human pre-authorized,
+        and unattended "skip" means writes never run here at all. Never with attachments: the grant
+        holds no Read to open them. Behind `patched` like every new command."""
         if not (params.get("trusted_asker") and not resume and not subtask and not repo
                 and cap["risk"] == "write" and cap["name"] == config.WORKER_CAP
-                and approval != "auto" and workflow.patched("fast-lane")):
+                and (approval == "ask" if unattended else approval != "auto")
+                and not self._attachments and workflow.patched("fast-lane")):
             return False
         lane = await workflow.execute_activity(
             classify_fast_lane, {"request": request, "name": cap["name"],
@@ -993,7 +997,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY) or {}
 
         # Approval for writes. Unless the fast lane (issue #193) already decided it needs none.
-        if not await self._take_fast_lane(params, request, cap, approval, resume, subtask, repo):
+        if not await self._take_fast_lane(params, request, cap, approval, unattended, resume,
+                                          subtask, repo):
             done, request = await self._plan_and_gate(
                 params, request, cap, approval, unattended, reply_to,
                 repo, git_run_id, resume, resume_ws, authored_doc)
@@ -1606,7 +1611,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                      "tools_failed": out.get("tools_failed"),
                      # Mid-run supervisor corrections this attempt was given: the request the
                      # judge scores against is the AMENDED one. Mirrors engine._ladder_core.
-                     "steers": out.get("steers"), "attachments": self._attachments},
+                     "steers": out.get("steers"), "attachments": self._attachments,
+                     "fast_lane": self._fast_lane},
                     start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],

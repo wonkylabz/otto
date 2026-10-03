@@ -224,11 +224,11 @@ def request_write_intent(request, cap):
 
 
 def _parse_fast_lane(text):
-    """Pure parse of the fast-lane verdict: True only for a reply whose first word is SAFE.
-    Everything else — GATED, chatter, an empty or garbled reply — is False, the gated path.
-    Same bias as `_parse_write_intent`: a false SAFE skips a human, a false GATED costs a card."""
-    t = gateway._strip_reasoning(text or "").strip().strip("`*").upper()
-    return re.match(r"^SAFE\b", t) is not None
+    """Pure parse of the fast-lane verdict: True only when the WHOLE reply is SAFE (markdown and a
+    full stop aside). Everything else — GATED, "SAFE for part 1; GATED overall", chatter, empty —
+    is False. `slack.parse_decision`'s bias: a false SAFE skips a human, a false GATED costs a card."""
+    t = gateway._strip_reasoning(text or "").strip().strip("`*").strip().rstrip(".").upper()
+    return t == "SAFE"
 
 
 def fast_lane_intent(request, tools):

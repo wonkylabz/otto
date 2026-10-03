@@ -201,9 +201,12 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # Project caps run from their repo and merge that repo's `.mcp.json` + its tools.
     mcp_config_path, cap_mcp_tools = _effective_mcp(cap, mcp_config_path)
     allowed += cap_mcp_tools
-    disallowed = None                  # None = _claude's default trim
+    disallowed, permission_mode = None, None   # None = _claude's default trim / the CLI's mode
     if fast_lane is not None:
-        allowed, disallowed = list(fast_lane), config.FAST_LANE_DISALLOWED_TOOLS
+        allowed = list(fast_lane)
+        disallowed = config.FAST_LANE_DISALLOWED_TOOLS + mcp_client.fast_lane_denies(fast_lane)
+        # Pinned, so a permissive `defaultMode` in the operator's settings cannot widen it.
+        permission_mode = "default"
     # An explicit cwd (an isolated repo workspace, issue #57) overrides the cap's own cwd, so a
     # global agent can run inside a freshly-cloned repo it doesn't otherwise belong to.
     cwd = cwd or getattr(cap, "cwd", None)
@@ -426,7 +429,10 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         sysctx = "\n\n".join(
             filter(None, [_output_contract(audience), contracts._FRONTMAN_DELEGATE if frontman else None,
                           _approved_plan_note(approved_plan),
-                          _grounding_note(grounding), _write_gate_note(cap),
+                          _grounding_note(grounding),
+                          # "A human approved this" is false on the fast lane, and invites the
+                          # broader actions the lane's own note tells it to leave alone.
+                          _write_gate_note(cap) if fast_lane is None else None,
                           contracts.fast_lane_note(fast_lane),
                           _mcp_notes_note(cap),
                           _repo_scope_note(repo, cwd), _repo_source_note(repo, cwd),
@@ -564,7 +570,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                         transcript=transcript_path, timeout=fb_timeout,
                         on_event=sup.note if sup else None, abort=abort, meta=fb_meta,
                         setting_sources=_setting_sources(cwd), effort=effort,
-                        disallowed_tools=disallowed),
+                        disallowed_tools=disallowed, permission_mode=permission_mode),
                 model, "claude", fb_meta)
 
     started = time.monotonic()
@@ -655,7 +661,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                       transcript=transcript_path, timeout=config.EXEC_TIMEOUT_S,
                       on_event=sup.note if sup else None, abort=abort, steer=steer,
                       meta=fb_meta, setting_sources=_setting_sources(cwd), effort=effort,
-                      disallowed_tools=disallowed)
+                      disallowed_tools=disallowed, permission_mode=permission_mode)
     duration_s = time.monotonic() - started
     # The CLAUDE backend's deterministic walls: `claude -p` could not authenticate, the
     # subscription's usage limit is spent, or models.json names a model this account cannot

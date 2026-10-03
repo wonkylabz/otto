@@ -1509,16 +1509,11 @@ class Handler(BaseHTTPRequestHandler):
             cid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             self._send(200, json.dumps(chats.get(cid) or {}))
         elif self.path.startswith("/api/mcp/tools"):
-            # ONE server's tool list with each tool's safe/gated tag (issue #193). Cached
-            # catalogue first; `refresh=1` (or a miss) lists a servable stdio server once.
-            q = parse_qs(urlparse(self.path).query)
-            nm = (q.get("name") or [""])[0]
-            if not any(m["name"] == nm for m in policy.all_mcps(POLICY)):
-                self._send(400, json.dumps({"error": "unknown MCP server"})); return
-            tools, err = mcp_client.server_tools(nm, refresh=(q.get("refresh") or [""])[0] == "1")
-            safe = set(policy.safe_tool_names(policy.load(), nm))
-            self._send(200, json.dumps({"name": nm, "error": err, "tools": [
-                {**t, "safe": t.get("name") in safe} for t in tools]}))
+            # ONE server's tool list with each tool's safe/gated tag (issue #193). CACHE ONLY:
+            # listing a server SPAWNS it, and a GET is reachable cross-site (`_csrf_ok` guards
+            # POSTs), so the spawn is `POST /api/mcp/tools/list`.
+            nm = (parse_qs(urlparse(self.path).query).get("name") or [""])[0]
+            self._send_mcp_tools(nm, spawn=False)
         elif self.path.startswith("/api/mcp/def"):
             # ONE server, in the shape its edit form needs. Separate from /api/policy on
             # purpose: that payload is fetched on every Admin load and feeds the activation
@@ -1926,6 +1921,10 @@ class Handler(BaseHTTPRequestHandler):
         if reached_run:
             params["unattended"] = True
             params["approval"] = "auto"
+        # A fast-lane run (never `reached_run`, see run_origin) is retried from the top, and may
+        # take the lane again only if its own asker could: the flag is the ORIGIN's, never new.
+        if origin.get("trusted_asker"):
+            params["trusted_asker"] = True
         new_id = "web-" + uuid.uuid4().hex[:8]
         # Record the retry into a Chat thread so its result lands in a conversation, not
         # just on the board: an interactive run records CLIENT-side, so retrying it from
@@ -2074,6 +2073,7 @@ class Handler(BaseHTTPRequestHandler):
             entry["env"] = env
         try:
             stored = policy.add_mcp_def(name, entry)
+            _set_policy(policy.load())          # add_mcp_def cleared its safe tags (#193)
         except ValueError as e:          # an unusable server name — policy is the authority
             self._send(400, json.dumps({"error": str(e)})); return
         engine.audit_mcp_change("edit" if existed else "add", name, stored)
@@ -2102,6 +2102,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True,
                                     "notes": (saved.get("mcps", {}).get(name) or {}).get("notes", "")}))
 
+    def _send_mcp_tools(self, name, spawn):
+        """One server's tools + safe flags. `note` (never `error`, which the UI's getJSON reads
+        as a failed request) says why a list is empty."""
+        if not any(m["name"] == name for m in policy.all_mcps(POLICY)):
+            self._send(400, json.dumps({"error": "unknown MCP server"})); return
+        if spawn:
+            tools, note = mcp_client.server_tools(name, refresh=True)
+        else:
+            tools = mcp_client.catalogue().get(name) or []
+            note = None if tools else "not listed yet — press Re-list tools to start it once"
+        safe = set(policy.safe_tool_names(policy.load(), name))
+        self._send(200, json.dumps({"name": name, "note": note, "tools": [
+            {**t, "safe": t.get("name") in safe} for t in tools]}))
+
+    def _post_mcp_tools_list(self, body):
+        """POST /api/mcp/tools/list — start one servable stdio server once to list its tools
+        (warming the catalogue). A POST so `_csrf_ok` stands between a page and the spawn."""
+        self._send_mcp_tools((body.get("name") or "").strip(), spawn=True)
+
     def _post_mcp_safe_tools(self, body):
         """POST /api/mcp/safe-tools — replace one server's safe-tagged tools (issue #193). Only
         names the server actually LISTS are kept: a tag is a grant, so a name nothing lists is
@@ -2128,6 +2147,8 @@ class Handler(BaseHTTPRequestHandler):
         defs = policy.mcp_defs(); gone = defs.pop(name, None)
         policy.save_mcp_defs(defs)
         if gone is not None:
+            # Its tags go with it: a later def under this name is a different command (#193).
+            _set_policy(policy.set_safe_tools(name, []))
             engine.audit_mcp_change("remove", name, gone)
         self._send(200, json.dumps({"ok": True}))
 
@@ -2636,6 +2657,7 @@ _POST_ROUTES = {
     "/api/mcp/add": Handler._post_mcp_add,
     "/api/mcp/note": Handler._post_mcp_note,
     "/api/mcp/safe-tools": Handler._post_mcp_safe_tools,
+    "/api/mcp/tools/list": Handler._post_mcp_tools_list,
     "/api/mcp/recheck": Handler._post_mcp_recheck,
     "/api/mcp/reconnect": Handler._post_mcp_reconnect,
     "/api/mcp/remove": Handler._post_mcp_remove,

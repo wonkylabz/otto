@@ -374,7 +374,7 @@ def _grant_list(cap, tools_used=None):
 
 def verify(request, cap, result, project=None, local=False, unattended=False, audience=None,
            approved_plan=None, tools_used=None, tools_failed=None, grounding=None,
-           steers=None, attachments=None):
+           steers=None, attachments=None, fast_lane=None):
     """Claude (or the configured 'verify' tier) judges whether the run satisfied the
     request. Returns {passed, critique}. The critique is fed back into the next attempt.
     `project` (a registered repo path) injects that repo's own CLAUDE.md conventions with
@@ -422,7 +422,16 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
     # The cap's own rules, so a contract-mandated limit isn't judged as an invented one.
     contract = cap_contract_block(cap, request)
     tools = _grant_list(cap, tools_used)
-    if local:
+    if fast_lane is not None:
+        # A fast-lane attempt (issue #193) held exactly these tools and nothing else. Told the
+        # risk floor instead, the judge reads "the rest needs a shell" as an invented excuse.
+        grant = ("This attempt skipped human approval and held ONLY these tools: "
+                 f"{', '.join(fast_lane) or '(none)'} — no shell, no file access, no other "
+                 "service. Doing what those tools allow and naming the rest as needing a normal "
+                 "request is a complete, honest answer. FAIL it for claiming an action outside "
+                 "these tools, or for not doing what they could.\n"
+                 + _refused_note(tools_failed, tools_used))
+    elif local:
         # Local tool-free attempt (issue #42): the inverse framing of the Claude grant below —
         # this attempt had NO tools, so tool-shaped "evidence" cannot be real and must not be
         # credited (a local model fabricating command output would otherwise pass laundered).

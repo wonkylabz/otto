@@ -162,6 +162,9 @@ def add_mcp_def(name, entry):
     defs = mcp_defs()
     defs[name] = entry
     save_mcp_defs(defs)
+    # A safe tag was reviewed against the COMMAND it names a tool of; a new or edited command
+    # starts gated, whatever a same-named predecessor was trusted with (issue #193).
+    set_safe_tools(name, [])
     return entry
 
 

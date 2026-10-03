@@ -3655,6 +3655,21 @@ class FastLaneWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.previews), 1)
         self.assertEqual(self.grants, [None])
 
+    async def test_approvals_off_is_never_bypassed_by_the_lane(self):
+        # Unattended "skip" means a write never runs from this ingress — the lane must not be a
+        # way around it.
+        out = await self._drive(trusted=True, params={"approval": "skip"})
+        self.assertEqual(self.asked, [])
+        self.assertEqual(self.grants, [], "a write ran under approvals-off")
+        self.assertEqual(out.get("outcome"), "skipped")
+
+    async def test_attachments_keep_the_normal_path(self):
+        import activities
+        with mock.patch.object(activities.attachments, "granted_dirs", lambda atts: []):
+            await self._drive(trusted=True, approve=True,
+                              params={"attachments": [{"id": "a1", "name": "t.csv", "path": "/x"}]})
+        self.assertEqual(self.asked, [], "the lane was offered a run whose files it cannot read")
+
     async def test_pre_authorization_keeps_its_full_toolset(self):
         await self._drive(trusted=True, params={"approval": "auto"})
         self.assertEqual(self.asked, [])

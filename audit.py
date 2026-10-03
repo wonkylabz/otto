@@ -822,7 +822,7 @@ def run_origin(wid):
     `audit_content` (the audit table stays pure operational metadata — see _append_content).
 
     Also returns `reached_run`: whether any attempt under this wid actually ran (outcome "ran",
-    _audit's default) — proof the run passed its approval gate (or never needed one), as opposed
+    _audit's default, never a fast-lane row) — proof the run passed its approval gate (or never needed one), as opposed
     to dying during routing/clarify/planning or being declined. A retry can only skip straight
     back to execution when this is True; there is nothing to reuse otherwise.
 
@@ -833,7 +833,9 @@ def run_origin(wid):
             capname = e["capability"]
         if e.get("repo"):
             repo = e["repo"]
-        if e.get("outcome") == "ran":
+        # A FAST-LANE attempt ran without a gate (issue #193): re-running it pre-authorized would
+        # hand the retry the FULL write toolset nobody ever approved, so it does not count.
+        if e.get("outcome") == "ran" and e.get("fast_lane") is None:
             reached_run = True
     request = None
     for e in _eng().content_entries_for(wid):

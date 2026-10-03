@@ -10429,7 +10429,8 @@ class FastLaneClassifierTests(unittest.TestCase):
         for text in ("SAFE", "safe", "**SAFE**", "SAFE.", "<think>hmm</think>SAFE"):
             self.assertTrue(intents._parse_fast_lane(text), text)
         for text in ("GATED", "", None, "UNSAFE", "it is SAFE", "probably safe",
-                     "I think so"):
+                     "I think so", "SAFE? No — the second step needs a shell, GATED",
+                     "SAFE for part 1; GATED overall"):
             self.assertFalse(intents._parse_fast_lane(text), text)
 
     def test_no_safe_tools_costs_no_model_call(self):
@@ -10543,3 +10544,66 @@ class FastLaneAskerTests(unittest.TestCase):
         src = inspect.getsource(server.Handler._post_submit)
         self.assertIn('"trusted_asker": True', src)
         self.assertNotIn('body.get("trusted_asker")', src)
+
+
+class FastLaneReviewRoundOneTests(unittest.TestCase):
+    """The holes review round 1 found in the fast lane (PR #197), each pinned."""
+
+    def setUp(self):
+        self._path, self._defs = policy._PATH, policy._MCPDEF
+        self.tmp = tempfile.mkdtemp()
+        policy._PATH = os.path.join(self.tmp, "policy.json")
+        policy._MCPDEF = os.path.join(self.tmp, "mcp-servers.json")
+
+    def tearDown(self):
+        policy._PATH, policy._MCPDEF = self._path, self._defs
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_redefined_server_starts_gated(self):
+        policy.set_safe_tools("db", ["query"])
+        policy.add_mcp_def("db", {"command": "other-db", "args": []})
+        self.assertEqual(policy.safe_tool_names(policy.load(), "db"), [])
+
+    def test_claude_denies_every_mcp_tool_outside_the_grant(self):
+        rows = [{"name": "ha"}, {"name": "claude_ai_Gmail"}]
+        cat = {"ha": [{"name": "HassTurnOn"}, {"name": "lock_unlock"}]}
+        with mock.patch.object(policy, "all_mcps", lambda pol, **k: rows), \
+             mock.patch.object(mcp_client, "catalogue", lambda pol=None: cat):
+            denies = mcp_client.fast_lane_denies(["mcp__ha__HassTurnOn"], pol={})
+        self.assertIn("mcp__claude_ai_Gmail", denies, "a connector stayed reachable")
+        self.assertIn("mcp__ha__lock_unlock", denies, "a sibling tool on a safe server stayed")
+        self.assertNotIn("mcp__ha__HassTurnOn", denies)
+        self.assertNotIn("mcp__ha", denies, "the safe tool's own server was denied whole")
+
+    def test_the_judge_is_told_the_fast_lane_grant_not_the_risk_floor(self):
+        cap = registry.Capability("builtin", config.WORKER_CAP, "does tasks")
+        cap.risk = "write"
+        seen = []
+        with mock.patch.object(gateway, "complete",
+                               lambda tier, prompt, **k: seen.append(prompt) or "PASS"):
+            engine.verify("turn on the light", cap, "done", fast_lane=["mcp__ha__HassTurnOn"])
+        self.assertTrue(seen)
+        self.assertIn("held ONLY these tools: mcp__ha__HassTurnOn", seen[0])
+        self.assertNotIn("it had at least: Bash", seen[0])
+
+    def test_a_fast_lane_attempt_is_not_told_a_human_approved_it(self):
+        self.assertIsNone(contracts.fast_lane_note(None))
+        src = inspect.getsource(engine.run_attempt)
+        self.assertIn("_write_gate_note(cap) if fast_lane is None else None", src)
+
+    def test_listing_tools_by_GET_never_spawns_a_server(self):
+        src = inspect.getsource(server.Handler)
+        i = src.index('elif self.path.startswith("/api/mcp/tools")')
+        get_branch = src[i:src.index("elif", i + 10)]
+        self.assertIn("spawn=False", get_branch)
+        self.assertNotIn("server_tools(", get_branch)
+
+    def test_a_fast_lane_run_is_never_retried_pre_authorized(self):
+        with mock.patch.object(engine, "audit_entries_for", lambda wid: [
+                {"capability": "builtin:worker", "outcome": "ran", "fast_lane": ["mcp__ha__x"]}]), \
+             mock.patch.object(engine, "content_entries_for", lambda wid: [{"request": "r"}]):
+            self.assertFalse(engine.run_origin("w")[3])
+        with mock.patch.object(engine, "audit_entries_for", lambda wid: [
+                {"capability": "builtin:worker", "outcome": "ran"}]), \
+             mock.patch.object(engine, "content_entries_for", lambda wid: [{"request": "r"}]):
+            self.assertTrue(engine.run_origin("w")[3])
