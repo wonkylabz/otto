@@ -571,7 +571,10 @@ class SequentialRequestGuardTests(unittest.TestCase):
                         "scan the cluster and open a ticket WITH THE RESULTS",
                         "research the incident and If You Find a regression, file an issue",
                         "check the build, then open a ticket",
-                        "run the tests and post to Slack only when they fail"):
+                        "run the tests and post to Slack only when they fail",
+                        "check the cluster and if a pod is crashlooping, open a ticket",
+                        "check the build and post to Slack when the build fails",
+                        "check the build and open a ticket unless the build is green"):
             with self.subTest(request=request):
                 self.assertEqual(engine.decompose(request, self._caps()), [])
 
@@ -611,6 +614,16 @@ class SequentialRequestGuardTests(unittest.TestCase):
             tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42, then "
                                      "open the PRs", m._caps(None))
         self.assertEqual([t["repo"] for t in tasks], ["infra", "teamcity", "vllm"])
+
+    def test_naming_two_repos_does_not_exempt_a_non_repo_split(self):
+        # Two repos NAMED is not a multi-repo CHANGE: a conditional read across them must still
+        # stay SINGLE when the planner splits it into ordinary (untagged) parts.
+        m = MultiRepoDecomposeTests
+        with mock.patch.object(workspace, "git_repos", return_value=m.REPOS):
+            self._split("0: check the vllm and infra dashboards\n1: open a ticket")
+            tasks = engine.decompose("check the vllm and infra dashboards; if the deploy "
+                                     "failed open a ticket", self._caps())
+        self.assertEqual(tasks, [])
 
 
 class MultiRepoDecomposeTests(unittest.TestCase):

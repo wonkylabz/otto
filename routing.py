@@ -327,10 +327,9 @@ def _brief_repo_parts(tasks, issue):
 # linked issue's body: that body is DATA the planner is shown, not the user's own phrasing of the
 # task, and a doc that merely mentions a dependency is not itself a sequential task.
 _SEQUENCE_MARKERS = (
-    r"only\s+(?:if|when|after|once)",              # "… send a Slack message only if you find …"
-    r"if\s+(?:you|it|they|there|any|so|not|none|nothing|something|anything|we)\b",
-    r"if\s+the\s+(?:build|tests?|deploy\w*|check|result|results|run|job|logs?|scan|search"
-    r"|research|report)",
+    # Bare conditionals, not "if <one of a word list>": a list misses "if a pod …", "when the
+    # build fails", "unless it is green" — and a miss is a wrong answer, a match only a lost split.
+    r"if|unless|when(?:ever)?",
     r"and\s+then\b|,\s*then\b",
     r"then\s+(?:open|post|send|create|file|write|comment|tell|reply|report|update|message|do|fix"
     r"|run|deploy)",
@@ -347,9 +346,9 @@ _SEQUENCE_MARKERS = (
     r"\s+(?:them|it|those|these|"
     r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))\b",
     r"depending\s+on|as\s+long\s+as|provided\s+(?:that|the)",
-    r"if\s+so|in\s+that\s+case|otherwise|wait\s+for",
+    r"in\s+that\s+case|otherwise|wait\s+for",
     r"once\s+(?:that|you|the\s+(?:results?|findings|run|build|research|check))",
-    r"after\s+that|when\s+(?:done|finished|complete)",
+    r"after\s+that",
     r"then",                                        # bare "then" anywhere: "build it then ship"
 )
 # Word-boundary anchored at BOTH ends, and that is load-bearing: a bare substring "then" also
@@ -384,10 +383,12 @@ def decompose(request, caps, project_root=None):
     issue, repos, repo_note = _multi_repo_context(request)
     # Code, not a prompt: swarm children never wait. A multi-repo change is EXEMPT — its parts
     # depend on each other by definition and are split one per repo on purpose, merge-ordered
-    # (`_multi_repo_context`), so a blanket guard would silently delete that feature. No
+    # (`_multi_repo_context`), so a blanket guard would silently delete that feature. But naming
+    # two repos is not proof of a code change ("check the vllm and infra dashboards; if …"), so
+    # the exemption is decided on the PLAN below: only an all-per-repo split survives. No
     # `gateway.decided` here: it attaches to the last `complete()`, and there is none.
-    conditional = "" if repos else _sequential_phrasing(request)
-    if conditional:
+    conditional = _sequential_phrasing(request)
+    if conditional and not repos:
         trace("PLANNER", f"conditional/sequential request ({conditional!r}) -> no fan-out")
         return []
     shortlist = _shortlist(request, caps)
@@ -428,6 +429,10 @@ def decompose(request, caps, project_root=None):
             continue
         tasks.append({"cap": cap, "request": sub, "repo": repo})
     if len(tasks) < 2:
+        return []
+    if conditional and not all(t["repo"] for t in tasks):
+        trace("PLANNER", f"conditional/sequential request ({conditional!r}), not a per-repo "
+              "split -> no fan-out")
         return []
     _brief_repo_parts(tasks, issue)
     trace("PLANNER", f"fanned out into {len(tasks)} sub-tasks: "
