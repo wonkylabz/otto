@@ -536,7 +536,8 @@ class DecomposeTests(unittest.TestCase):
 
 
 class BoardTicketFanOutTests(unittest.TestCase):
-    """A board ticket's body is fenced untrusted DATA; its prose never decides fan-out."""
+    """A board ticket's fenced body IS its request, so its wording decides fan-out like any other
+    request's — a fence exemption reopened issue #198 for every board-ingress run."""
 
     def setUp(self):
         self._orig = engine.gateway.complete
@@ -544,24 +545,25 @@ class BoardTicketFanOutTests(unittest.TestCase):
     def tearDown(self):
         engine.gateway.complete = self._orig
 
-    def test_then_in_a_ticket_body_still_fans_out(self):
-        import board
-        caps = [registry.Capability("skill", "research-web", "research the build"),
+    def _caps(self):
+        return [registry.Capability("skill", "research-web", "research the build"),
                 registry.Capability("skill", "slack-message", "post to Slack")]
-        issue = {"number": 7, "title": "Check the build and post an update",
-                 "body": "Check the failing build, then summarise. Post to Slack, only if you can."}
+
+    def test_a_marker_in_the_ticket_body_suppresses(self):
+        import board
+        issue = {"number": 7, "title": "Hawkes Bay events",
+                 "body": "Check online for events. Post to Slack only if you find something."}
+        req = board.issue_to_request(issue, {})["request"]
+        engine.gateway.complete = lambda task, prompt: self.fail("plan call spent")
+        self.assertEqual(engine.decompose(req, self._caps()), [])
+
+    def test_an_independent_ticket_still_fans_out(self):
+        import board
+        issue = {"number": 7, "title": "Check the build and post an update", "body": ""}
         req = board.issue_to_request(issue, {})["request"]
         engine.gateway.complete = lambda task, prompt: "0: check the build\n1: post an update"
-        self.assertEqual([t["cap"].name for t in engine.decompose(req, caps)],
+        self.assertEqual([t["cap"].name for t in engine.decompose(req, self._caps())],
                          ["research-web", "slack-message"])
-
-    def test_a_marker_in_the_head_still_suppresses(self):
-        import board
-        caps = [registry.Capability("skill", "research-web", "research the build"),
-                registry.Capability("skill", "slack-message", "post to Slack")]
-        req = board.issue_to_request({"number": 7, "title": "t", "body": "b"}, {})["request"]
-        engine.gateway.complete = lambda task, prompt: self.fail("plan call spent")
-        self.assertEqual(engine.decompose("Do a, then b. " + req, caps), [])
 
 
 class MultiRepoDecomposeTests(unittest.TestCase):

@@ -261,23 +261,16 @@ def _parse_plan(text, n_caps):
 # So this is over-eager — widen the marker set freely. It can also suppress an ordinary
 # "and ... then ..." split; that costs only latency.
 _SEQUENTIAL_RE = re.compile(r"\b(?:only if|if you find|with the results|then)\b", re.I)
-# The opening line of a `contracts.fence_block(..., '"""')` DATA block (board tickets): everything
-# from it on is untrusted ticket prose, where an ordinary "then" says nothing about ordering.
-_DATA_FENCE_RE = re.compile(r'^"""$', re.M)
-
-
-def _request_head(request):
-    """The request's own wording: the task text with any `\"\"\"`-fenced DATA block cut off. PURE."""
-    return _DATA_FENCE_RE.split(task_text(request), 1)[0]
 
 
 def _sequential_request(text):
-    """The sequential/conditional marker in `text`, or None. PURE (no LLM) so it's unit-testable.
+    r"""The sequential/conditional marker in `text`, or None. PURE (no LLM) so it's unit-testable.
 
     Word-boundary anchored ON PURPOSE: a bare `then` substring also matches "strengthen" and
     "authenticate", which would silently suppress the fan-out of a whole class of legitimate
-    requests. (`\b` still matches inside hyphenated compounds; that only costs latency.) Ordering inside the alternation is irrelevant — `re.search` returns the LEFTMOST
-    match, so "only if you find" reports "only if"."""
+    requests. (`\b` still matches inside hyphenated compounds; that only costs latency.)
+    Ordering inside the alternation is irrelevant — `re.search` returns the LEFTMOST match, so
+    "only if you find" reports "only if"."""
     m = _SEQUENTIAL_RE.search(text or "")
     return m.group(0).lower() if m else None
 
@@ -366,9 +359,10 @@ def decompose(request, caps, project_root=None):
     issue, repos, repo_note = _multi_repo_context(request)
     if not repos:
         # A multi-repo change is split on purpose, so the exemption above is part of the fix: a
-        # blanket guard here would delete that feature. Reads the request TEXT only — never the
-        # linked issue's body, nor a fenced ticket body (`_request_head`): their prose is no signal.
-        marker = _sequential_request(_request_head(request))
+        # blanket guard here would delete that feature. Reads the request TEXT only, never the
+        # linked issue's body. A board ticket's fenced body IS its request, so it is scanned: the
+        # same "only if you find" in a ticket is the same dependency (and the same over-eager bias).
+        marker = _sequential_request(task_text(request))
         if marker:
             trace("PLANNER", f"sequential/conditional request ({marker!r}) -> "
                              "single cohesive task, no fan-out")
