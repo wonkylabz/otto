@@ -32,11 +32,13 @@ never buy, book, reserve, RSVP, sign up or add to a calendar — you report link
 
 - Search with whatever web search this run has — `WebSearch`, `web_search`, a search
   tool from an MCP server, or your model's built-in search; the name does not matter.
-- Start broad ("<category> <city> <month year>"), then go to the primary listing: the
-  venue's own page, the official ticketing page, the league/club fixture list, the
-  festival's site. Aggregators find events; the primary source confirms them.
-- Only if you have NO way to search the web at all, say so and stop — never answer from
-  memory, and never scrape a search engine's HTML instead.
+- Start broad ("<category> <city> <month year>"), then confirm on the primary source:
+  the venue, official ticketing, fixture list or festival site.
+- **No search tool? Go straight to the listings** with `WebFetch` (or `curl`): the city's
+  tourism "what's on" page, national ticketing and event-listing sites, the main venues'
+  own pages. That is a complete search, not a degraded one — say which sites you read.
+  Never scrape a search engine's HTML. Only if no page loads at all, say the web was
+  unreachable and stop; never answer from memory.
 - **Fetch politely, and few pages.** Read one or two listing pages per site, shortlist,
   then fetch only the shortlisted events' pages — never crawl a site's pagination or
   scrape every event. On a 429 or a block, drop that site and use another; never sleep
@@ -82,12 +84,10 @@ by time — a bulleted list, never a table (chat surfaces such as Slack render n
 
 After the list, as short bold-labelled lines (not headings):
 
-- **Picks** — at most 3 standouts with one line each on why (matches the stated taste,
-  rare, free, good value).
+- **Picks** — at most 3 standouts, one line each on why.
 - **Not confirmed** — events you saw mentioned but couldn't verify, with where you saw
   them, so the reader can check.
-- **Searched** — the main sources checked, in one line, so a thin result reads as "I
-  looked here" rather than "nothing exists".
+- **Searched** — the main sources checked, in one line.
 
 If nothing verified matches, say so plainly, list what was searched, and suggest the
 nearest alternative (a wider window, a nearby city, a related category). Do not pad the
