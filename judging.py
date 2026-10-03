@@ -359,7 +359,7 @@ def _refused_note(tools_failed, tools_used=None):
             "excuse. Equally, do not credit any data it claims to have gotten FROM them.")
 
 
-def _grant_list(cap, tools_used=None):
+def _grant_list(cap, tools_used=None, backend=None):
     """What to tell the judge this attempt could reach.
 
     `config.READ_TOOLS`/`WRITE_TOOLS` is the `--allowedTools` floor, not the grant: an `agent`
@@ -369,12 +369,18 @@ def _grant_list(cap, tools_used=None):
     so anything actually observed is folded in. The floor is still named because a tool granted
     and never called is still a tool it had."""
     floor = config.WRITE_TOOLS if cap.risk == "write" else config.READ_TOOLS
+    if backend == "local":
+        # The floor is `claude -p`'s allowlist; the local runtime implements only its own
+        # built-ins (no WebSearch). Told the floor, the judge FAILed a local run for truthfully
+        # reporting it had no web search — every retry on the same backend then hit the same wall.
+        import local_runtime  # noqa: PLC0415 — heavy, and only a local verdict needs it
+        floor = [t for t in floor if t in local_runtime._TOOL_IMPL]
     return sorted(set(floor) | {str(t) for t in (tools_used or []) if t})
 
 
 def verify(request, cap, result, project=None, local=False, unattended=False, audience=None,
            approved_plan=None, tools_used=None, tools_failed=None, grounding=None,
-           steers=None, attachments=None, fast_lane=None):
+           steers=None, attachments=None, fast_lane=None, backend=None):
     """Claude (or the configured 'verify' tier) judges whether the run satisfied the
     request. Returns {passed, critique}. The critique is fed back into the next attempt.
     `project` (a registered repo path) injects that repo's own CLAUDE.md conventions with
@@ -423,7 +429,7 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
     # Not on the fast lane (issue #193): the worker's contract is issues, repos and tests, and a
     # light switched with the one tool it held must not FAIL for running none of them.
     contract = cap_contract_block(cap, request) if fast_lane is None else None
-    tools = _grant_list(cap, tools_used)
+    tools = _grant_list(cap, tools_used, backend)
     if fast_lane is not None:
         # A fast-lane attempt (issue #193) held exactly these tools and nothing else. Told the
         # risk floor instead, the judge reads "the rest needs a shell" as an invented excuse.
