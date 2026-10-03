@@ -1943,7 +1943,8 @@ class SlackTests(unittest.TestCase):
                     if method == "auth.test":
                         return {"ok": True, "user_id": "U1"}
                     if method == "conversations.replies":
-                        return {"ok": True, "messages": replies}
+                        return (replies(k) if callable(replies)
+                                else {"ok": True, "messages": replies})
                     return {"ok": True, "channels": [], "messages": []}
                 slack._api = fake
                 cfg = self._cfg(allow_users=["U2"], allow_channels=[], watch_dms=False,
@@ -2886,14 +2887,16 @@ class SlackGateApprovalTests(unittest.TestCase):
                     if method == "conversations.list":
                         return {"ok": True, "channels": [{"id": "D1", "user": "U5"}]}
                     if method == "conversations.replies":
-                        return {"ok": True, "messages": replies}
+                        return (replies(k) if callable(replies)
+                                else {"ok": True, "messages": replies})
                     return {"ok": True, "messages": []}
                 slack._api = _api
                 self._gated_dm(d)
                 if not gated:
                     slack.mark_awaiting_gate("D1", None, wid=None, identity=slack.BOT)
                 slack._poll_dms({**slack._DEFAULTS, "bot_enabled": True,
-                                 "bot_allow_users": ["U5"]}, out, slack.BOT)
+                                 "bot_allow_users": ["U5"], "bot_approvers": ["U1"]},
+                                out, slack.BOT)
                 rec = slack.conversation_record("D1", identity=slack.BOT)
                 st = slack._state()
         finally:
@@ -2916,6 +2919,30 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertEqual(len(replies), 1, "one extra call per gated conversation per poll")
         self.assertEqual(replies[0]["ts"], "5.0")
 
+    def test_only_an_approvers_decision_is_picked_from_the_notice_thread(self):
+        """Nothing else there is ever answered, and a pick is never marked seen — so a held reply
+        came back every poll and five of them filled `max_per_poll` for the gate's whole 24h,
+        starving every other conversation and the decision itself."""
+        out = self._poll_gated_dm([
+            {"user": "U5", "ts": "6.0", "text": "what does this do?"},   # not a decision
+            {"user": "U5", "ts": "7.0", "text": "approve"},              # not an approver
+            {"user": "U1", "ts": "8.0", "text": "looks fine, approve"},  # not a WHOLE decision
+            {"user": "U1", "ts": "9.0", "text": "approve"}])[0]
+        self.assertEqual([m["ts"] for m in out], ["9.0"])
+
+    def test_a_decision_past_the_first_page_is_still_read(self):
+        """`limit` alone hid a decision once the thread outgrew one page."""
+        def replies(k):
+            if not k.get("cursor"):
+                return {"ok": True, "has_more": True,
+                        "response_metadata": {"next_cursor": "p2"},
+                        "messages": [{"user": "U5", "ts": "6.0", "text": "chatter"}]}
+            return {"ok": True, "messages": [{"user": "U1", "ts": "60.0", "text": "approve"}]}
+        out, calls, _, _ = self._poll_gated_dm(replies)
+        self.assertEqual([m["ts"] for m in out], ["60.0"])
+        self.assertEqual([k.get("cursor") for meth, k in calls
+                          if meth == "conversations.replies"], [None, "p2"])
+
     def test_no_gate_means_no_extra_call(self):
         _, calls, _, _ = self._poll_gated_dm([], gated=False)
         self.assertNotIn("conversations.replies", [meth for meth, _ in calls])
@@ -2924,7 +2951,7 @@ class SlackGateApprovalTests(unittest.TestCase):
         """Its ts is later than any unhandled top-level message, so advancing the DM's cursor on
         it would make Otto deaf to those — and a conversation record would make the notice
         thread a watched conversation whose next reply starts a SECOND run."""
-        out = self._poll_gated_dm([{"user": "U1", "ts": "6.0", "text": "hmm"}])[0]
+        out = self._poll_gated_dm([{"user": "U1", "ts": "6.0", "text": "approve"}])[0]
         orig = slack._STATE
         try:
             with tempfile.TemporaryDirectory() as d:

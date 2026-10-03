@@ -1519,30 +1519,46 @@ def _poll_dms(cfg, out, identity=USER):
                             "conversation": (None if c.get("thread_ts") else rec),
                             **({"gate_wid": gate_wid} if gate_wid else {})})
         if gate_wid and rec.get("gate_notice_ts"):
-            _poll_gate_notice(cid, rec, gate_wid, self_ok, identity, out)
+            _poll_gate_notice(cfg, cid, rec, gate_wid, self_ok, identity, out)
 
 
-def _poll_gate_notice(cid, rec, gate_wid, self_ok, identity, out):
+# Pages read from one gate notice's thread per poll. A notice thread holding more than this many
+# pages of chatter leaves a later decision unread; the gate's own deadline still declines it.
+_NOTICE_MAX_PAGES = 5
+
+
+def _poll_gate_notice(cfg, cid, rec, gate_wid, self_ok, identity, out):
     """Replies in the THREAD of a DM's gate notice — where an approver who clicks "Reply in
     thread" answers, and where `conversations.history` never looks. One call per gated DM per
     poll, none without a live gate.
 
-    Every pick carries `gate_wid` and `gate_notice`, so it can only DECIDE the gate: the activity
-    holds a non-decision without starting anything, and `mark_seen` leaves it unread. That keeps
-    the one-turn-at-a-time rule intact — this thread is a ballot box, not a second conversation.
-    The notice ts is the floor (strictly after it, which also drops the parent) and the gate's
-    own clear is what stops the re-reading."""
+    ONLY an approver's decision is picked (`parse_decision` + `may_approve`, re-checked by the
+    activity). Anything else here is never answered, and must not be picked either: `mark_seen`
+    leaves a pick unread so it returns every poll, and a few held replies would fill
+    `max_per_poll` for the gate's whole 24h, starving every other conversation — and the
+    decision itself. Every pick carries `gate_wid` and `gate_notice`, so it can only DECIDE the
+    gate: this thread is a ballot box, not a second conversation. The notice ts is the floor
+    (strictly after it, which also drops the parent) and the gate's own clear is what stops the
+    re-reading. Paged, so a long thread cannot hide a decision behind `limit`."""
     notice = rec["gate_notice_ts"]
-    msgs = _api("conversations.replies", identity=identity, channel=cid, ts=notice,
-                oldest=notice, limit=50).get("messages") or []
-    for m in msgs:
-        c = _clean(m, cid, self_ok, identity)
-        if not (c and slack_state.past_cursor(c["ts"], notice)):
-            continue
-        # The notice's ts as `thread_ts` makes `reply_target` confirm IN that thread; the gate's
-        # own key stays the DM's conversation record (`conversation`), which is what is cleared.
-        out.append({**c, "is_dm": True, "thread_ts": notice, "conversation": rec,
-                    "gate_wid": gate_wid, "gate_notice": True})
+    page = None
+    for _ in range(_NOTICE_MAX_PAGES):
+        res = _api("conversations.replies", identity=identity, channel=cid, ts=notice,
+                   oldest=notice, limit=200, **({"cursor": page} if page else {}))
+        for m in res.get("messages") or []:
+            c = _clean(m, cid, self_ok, identity)
+            if not (c and slack_state.past_cursor(c["ts"], notice)):
+                continue
+            if parse_decision(c["text"]) is None or not may_approve(cfg, c["user"], identity):
+                continue
+            # The notice's ts as `thread_ts` makes `reply_target` confirm IN that thread; the
+            # gate's own key stays the DM's conversation record (`conversation`), which is what
+            # is cleared.
+            out.append({**c, "is_dm": True, "thread_ts": notice, "conversation": rec,
+                        "gate_wid": gate_wid, "gate_notice": True})
+        page = (res.get("response_metadata") or {}).get("next_cursor")
+        if not (res.get("has_more") and page):
+            return
 
 
 def _poll_mentions(cfg, out):

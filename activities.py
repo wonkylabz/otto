@@ -1115,7 +1115,9 @@ def poll_slack(payload: dict) -> dict:
             if decision is None or not allowed:
                 # Not a decision, or not from someone who may make one. The cursor deliberately
                 # does NOT advance: the conversation is still one-turn-at-a-time, so this message
-                # is handled after the gate resolves, in order. An unauthorised "yes" is simply
+                # is handled after the gate resolves, in order. (A gate notice's THREAD is the
+                # exception: the poller picks only decisions there, and nothing else in it is ever
+                # answered — see slack._poll_gate_notice.) An unauthorised "yes" is simply
                 # not a decision — saying "you may not approve" would tell a colleague a gate
                 # exists and invite them to push at it.
                 if decision is not None and not allowed:
@@ -1135,7 +1137,8 @@ def poll_slack(payload: dict) -> dict:
             if not ok:
                 # The run is gone (finished, expired, terminated). Clear the marker so the
                 # conversation stops interpreting replies as verdicts on a run that no longer
-                # exists, and leave the message to be handled normally next poll.
+                # exists, and leave the message to be handled normally next poll (a decision in a
+                # gate notice's thread is dropped instead — that thread is never read again).
                 slack.mark_awaiting_gate(msg["channel"], gate_ts, wid=None, identity=identity,
                                          expect=gate_wid)
                 continue
