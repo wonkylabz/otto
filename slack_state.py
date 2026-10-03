@@ -154,6 +154,13 @@ def floor_cursors(st, floor, identities=(USER, BOT)):
         if identity_of(rec) in identities and rec.get("cursor") and float(rec["cursor"]) < floor:
             rec["cursor"] = normalize_ts(floor)
             moved = True
+        # A gate notice's thread is read from its own floor, not a cursor, so it is floored too —
+        # else an identity switched back on replays an approval written while it was off.
+        notice = rec.get("gate_notice_ts")
+        if notice and identity_of(rec) in identities and \
+                float(rec.get("gate_notice_seen") or notice) < floor:
+            rec["gate_notice_seen"] = normalize_ts(floor)
+            moved = True
     return st if moved else UNCHANGED
 
 

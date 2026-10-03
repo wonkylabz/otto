@@ -2918,6 +2918,21 @@ class SlackGateApprovalTests(unittest.TestCase):
                          "the notice thread must never become a watched conversation")
         self.assertNotIn("gate_notice_seen", rearmed)
 
+    def test_a_resume_floor_covers_the_notice_thread_too(self):
+        """An identity switched off and back on floors its cursors without `_drop_backlog`
+        running, so the notice thread — read from its own floor — replayed an approval written
+        while it was off and ran the write hours late."""
+        st = {"threads": {"bot:D1": {"channel": "D1", "thread_ts": None, "identity": "bot",
+                                     "gate_wid": "w1", "gate_at": 1.0, "gate_notice_ts": "5.0"},
+                          "D2": {"channel": "D2", "thread_ts": None,
+                                 "gate_wid": "w2", "gate_at": 1.0, "gate_notice_ts": "5.0"}}}
+        out = slack_state.floor_cursors(st, 100.0, identities=(slack_state.BOT,))
+        self.assertEqual(out["threads"]["bot:D1"]["gate_notice_seen"], "100.000000")
+        self.assertNotIn("gate_notice_seen", out["threads"]["D2"], "the other identity is not floored")
+        # Never moved backwards.
+        self.assertIs(slack_state.floor_cursors(out, 50.0, identities=(slack_state.BOT,)),
+                      slack_state.UNCHANGED)
+
     def test_the_notice_ts_is_cleared_with_the_gate(self):
         with tempfile.TemporaryDirectory() as d:
             orig = slack._STATE, slack._ME, slack.BOT_TOKEN
