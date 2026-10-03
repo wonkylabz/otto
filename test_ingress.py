@@ -237,6 +237,121 @@ class RunbookStructureTests(unittest.TestCase):
             runbooks.normalize({"name": "n", "steps": [{"id": "a", "goal": "  "}]})
 
 
+class RunbookSlackDeliveryTests(unittest.TestCase):
+    """Where an UNATTENDED runbook's result goes.
+
+    Every other ingress sets `reply_to` off the thing that triggered the run; a cron fire has no
+    such trigger, so a runbook's own `slack` field is the only possible source of a destination.
+    Without one the run's answer reached the audit log and nobody's eyes — which made a runbook
+    saying "send me a message to Slack only if you find something" unsatisfiable whatever its
+    request said (rb-8707935b, "Entertainment - HB Events")."""
+
+    def test_the_destination_becomes_the_run_s_reply_target(self):
+        rb = runbooks.normalize({"name": "events", "request": "find events",
+                                 "slack": "  #events  "})     # whitespace is trimmed, spaces refused
+        self.assertEqual(rb["slack"], "#events")
+        args = scheduler._args("rb-x", rb)
+        self.assertEqual(args["reply_to"], {"kind": "slack_post", "channel": "#events"})
+        # NOT a conversation: nobody asked Otto anything there and nobody can reply, so the
+        # direct-reply contract (a question back is a complete answer) is the wrong one.
+        self.assertEqual(delivery.audience_for(args["reply_to"]), "notice")
+        self.assertFalse(delivery.has_asker(args["reply_to"]))
+        self.assertTrue(delivery.has_asker({"kind": "slack_thread", "channel": "D1"}))
+        self.assertEqual(privacy.source_line(args["reply_to"], unattended=True), "source: runbook")
+
+    def test_the_notice_contract_offers_silence_and_forbids_a_question(self):
+        # "Only message me if you find something" is this feature's whole shape: the report
+        # alone cannot say "nothing worth posting", so the notice contract offers the sentinel.
+        c = contracts._output_contract("notice")
+        self.assertTrue(c.startswith(contracts._REPORT_FORMAT))
+        self.assertIn(config.NO_REPLY, c)
+        self.assertIn("never end on a question", c)
+
+    def test_the_judge_accepts_silence_and_keeps_the_dead_end_rule(self):
+        import judging
+        cap = registry.Capability("agent", "researcher", "research")
+        self.assertTrue(judging.verify("find events; post only if any", cap, "NO_REPLY",
+                                       audience="notice")["passed"])
+        prompts = []
+        with unittest.mock.patch.object(judging, "confirm_adverse",
+                                        side_effect=lambda t, p, *a, **k: prompts.append(p)
+                                        or {"passed": True, "critique": ""}):
+            judging.verify("find events", cap, "Found three. Want me to book one?",
+                           audience="notice")          # interactive "Run now": unattended=False
+        # The post is one-way whoever clicked Run, so a question at the bottom is a dead end.
+        self.assertIn("UNATTENDED", prompts[0])
+
+    def test_asker_facing_outcomes_skip_a_one_way_post(self):
+        # A decline/skip/error is worded to someone who asked; a channel a job posts into has no
+        # such person, and the operator who can act already sees it in the UI.
+        src = workflow_src()
+        self.assertIn('if delivery.has_asker(params.get("reply_to")):', src)
+        self.assertGreaterEqual(src.count("if delivery.has_asker(reply_to):"), 2)
+
+    def test_a_runbook_destination_is_posted_to_and_never_bound_as_a_conversation(self):
+        """What `deliver_result` does with a one-way `slack_post` target.
+
+        Binding the session is how the next message in a place Otto answered continues that
+        answer. A runbook's destination has no such message, so binding one would let the next
+        message in that channel or DM resume a run that never had a turn — and in a DM it also
+        reads as mid-conversation, which suppresses the first-contact introduction."""
+        if not _HAS_TEMPORAL:
+            self.skipTest("temporalio not installed")
+        import activities
+        posted, bound = [], []
+        orig = (slack.post, slack.was_posted, slack.mark_posted, slack.record_conversation_session)
+        try:
+            slack.post = lambda ch, text, **k: posted.append((ch, text)) or True
+            slack.was_posted = lambda rid: False
+            slack.mark_posted = lambda rid: None
+            slack.record_conversation_session = lambda *a, **k: bound.append(a)
+            activities.deliver_result({
+                "reply_to": {"kind": "slack_post", "channel": "#events"},
+                "result": "three gigs on this weekend", "cap": {"name": "researcher"},
+                "run_id": "runbook-rb-1a2b3c4d-9f8e"})
+            self.assertEqual([c for c, _ in posted], ["#events"])
+            self.assertEqual(bound, [], "nobody asked here — there is no conversation to continue")
+            # ...and no progress note either: nobody is waiting in a destination, and the gate
+            # notice that rides `interim` would arm it for a decision its author is watching in
+            # the UI. (Interims ARE how a Slack thread gets told what is happening to its run.)
+            self.assertEqual(
+                delivery.interim({"kind": "slack_post", "channel": "#events"},
+                                 "working on it")[0], False)
+            self.assertEqual(posted, [("#events", "three gigs on this weekend")])
+            # The control: a target that came from a message still binds its conversation.
+            activities.deliver_result({"reply_to": {"kind": "slack_thread", "channel": "D1"},
+                                       "result": "done", "run_id": "slack-b-D1-1-2"})
+            self.assertEqual(len(bound), 1)
+        finally:
+            (slack.post, slack.was_posted, slack.mark_posted,
+             slack.record_conversation_session) = orig
+
+    def test_a_runbook_with_no_destination_has_no_reply_target(self):
+        # The control, and the back-compat case: every runbook stored before this field existed
+        # has no `slack` key at all, and must keep working — quietly, into the audit log.
+        args = scheduler._args("rb-y", runbooks.normalize({"name": "n", "request": "do it"}))
+        self.assertNotIn("reply_to", args)
+        self.assertEqual(runbooks.render({"request": "do it"})["slack"], "")
+
+    def test_a_destination_with_a_space_is_refused_at_save_time(self):
+        # Slack would reject it at DELIVERY time — hours later, in a fire nobody is watching.
+        # The author is here now, so this is when to say no.
+        with self.assertRaises(ValueError) as cm:
+            runbooks.normalize({"name": "n", "request": "do it", "slack": "C0BAQSJHFSP and #ops"})
+        self.assertIn("slack", str(cm.exception))
+
+    def test_the_destination_takes_parameters(self):
+        rb = runbooks.normalize({"name": "n", "request": "do it", "slack": "{{channel}}",
+                                 "params": [{"name": "channel", "default": "#general"}]})
+        self.assertEqual(scheduler._args("rb-z", rb)["reply_to"]["channel"], "#general")
+        # A "Run now" value is re-checked after substitution, before anything starts.
+        with self.assertRaises(ValueError):
+            runbooks.render(rb, {"channel": "#ops and #dev"})
+        with self.assertRaises(ValueError) as cm:
+            runbooks.normalize({"name": "n", "request": "do it", "slack": "{{channel}}"})
+        self.assertIn("channel", str(cm.exception))
+
+
 class RunbookStoreTests(unittest.TestCase):
     def setUp(self):
         self._orig = runbooks._STORE
@@ -1032,7 +1147,7 @@ class SlackDirectReplyContractTests(unittest.TestCase):
         self.assertTrue(kinds, "could not find the delivery kinds")
         self.assertEqual(kinds - set(delivery.AUDIENCE), set(),
                          "a delivery kind with no declared audience")
-        self.assertEqual(set(delivery.AUDIENCE.values()) - {"conversation", "report"}, set())
+        self.assertEqual(set(delivery.AUDIENCE.values()) - {"conversation", "report", "notice"}, set())
 
     def test_audience_for_defaults_to_report(self):
         self.assertEqual(delivery.audience_for({"kind": "slack_thread"}), "conversation")
@@ -2585,7 +2700,7 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         deliver_at = block.index("deliver_result")
         expired_at = block.index("if gate_expired:")
         self.assertGreater(deliver_at, expired_at)
-        tail = block[block.index("if reply_to:"):]
+        tail = block[block.index("if delivery.has_asker(reply_to):"):]
         self.assertIn("deliver_result", tail)
         for line in tail.splitlines():
             if line.strip():

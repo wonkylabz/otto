@@ -288,6 +288,10 @@ def notify(title, *, lines=None, detail=None, click=None, tags=None, priority="h
 # skipped silently.
 AUDIENCE = {
     "slack_thread": "conversation",
+    # A runbook's Slack destination (scheduler._args): a ONE-WAY post. Nobody asked Otto anything
+    # there and nobody's reply resumes the run, so it is not a conversation — no session is bound,
+    # no interim or gate notice is posted, and the run must not end on a question.
+    "slack_post": "notice",
     "github_issue": "report",
     # A PR review is a durable record a reviewer reads later, not a conversation.
     "github_pr": "report",
@@ -297,6 +301,14 @@ DEFAULT_AUDIENCE = "report"
 # This module OWNS the value (contracts.CONVERSATION_AUDIENCE mirrors it by value, deliberately —
 # importing contracts here would be a cycle). Named so `interim` reads as a rule, not a string.
 CONVERSATION_AUDIENCE = "conversation"
+NOTICE_AUDIENCE = "notice"
+
+
+def has_asker(reply_to):
+    """Whether someone at this target ASKED for the run — and so is owed its decline, skip or
+    error message. False for a one-way post: those messages are written to an asker who does not
+    exist there, and the operator who can act sees them in the UI. PURE — workflow-safe."""
+    return bool(reply_to) and audience_for(reply_to) != NOTICE_AUDIENCE
 
 
 def audience_for(reply_to):
@@ -365,7 +377,7 @@ def deliver(reply_to, result, cap=None, run_id=None):
             return _github_issue(reply_to, result, cap, run_id)
         if kind == "github_pr":
             return _github_pr(reply_to, result)
-        if kind == "slack_thread":
+        if kind == "slack_thread" or kind == "slack_post":
             return _slack(reply_to, result, run_id)
         return f"unsupported reply kind: {kind!r}"
     except Exception as e:  # noqa: BLE001 - report, don't propagate

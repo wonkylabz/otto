@@ -621,6 +621,7 @@ CONVERSATION_AUDIENCE = "conversation"      # mirrors delivery.AUDIENCE's value;
 # Not a `delivery.AUDIENCE` value: brainstorm is a MODE the user opts into (the composer toggle
 # or /brainstorm), not a delivery target, so it is set from the capability rather than looked up.
 BRAINSTORM_AUDIENCE = "brainstorm"
+NOTICE_AUDIENCE = "notice"                  # mirrors delivery.NOTICE_AUDIENCE; see _output_contract
 
 
 def _resume_contract(audience=None):
@@ -634,6 +635,18 @@ def _resume_contract(audience=None):
             else _RESUME_CONTRACT)
 
 
+# A runbook's Slack destination: the report, posted one-way to a channel. Built ON the report
+# rather than beside it, so no existing prompt changes. The one thing a report cannot say is
+# "nothing worth posting" — and a request like "message me only if you find something" is this
+# feature's whole shape, so the silence sentinel is offered here too (judging.verify honours it).
+_NOTICE_FORMAT = (
+    _REPORT_FORMAT +
+    "\n\nThis result is posted to a Slack channel by a scheduled job. Nobody there asked for it "
+    "and nobody can reply, so never end on a question. If the request says to post only when "
+    f"something is true and it is not, answer with exactly {config.NO_REPLY} and nothing else — "
+    "nothing is posted then.")
+
+
 def _output_contract(audience=None):
     """The output-shaping directive for a run's system prompt, chosen by WHO reads the result
     (`delivery.audience_for`): a direct reply for a person in a live exchange, otherwise the
@@ -644,6 +657,8 @@ def _output_contract(audience=None):
         return _DIRECT_REPLY_FORMAT
     if audience == BRAINSTORM_AUDIENCE:
         return _THINKING_PARTNER_FORMAT
+    if audience == NOTICE_AUDIENCE:
+        return _NOTICE_FORMAT
     return _REPORT_FORMAT
 
 

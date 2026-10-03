@@ -118,6 +118,20 @@ def _args(rid, rb, values=None, unattended=True):
         args["steps"] = r["steps"]
     if r["doc"]:
         args["doc"] = r["doc"]
+    # WHERE an unattended run's result goes. Every other ingress sets `reply_to` off the thing
+    # that triggered it; a cron fire fires from Temporal itself, so a runbook's own `slack` field
+    # is the only place a destination can come from — and without one the run's answer reached
+    # the audit log and nobody's eyes. That made "send me a message to Slack only if you find
+    # something" unsatisfiable by ANY runbook, whatever its request said (rb-8707935b,
+    # "Entertainment - HB Events").
+    #
+    # Its own kind, `slack_post`, NOT a `slack_thread`: a thread target is a CONVERSATION — the
+    # run is told someone is waiting to reply, a question back passes the judge, a session is
+    # bound, and every decline/error is worded to an asker. None of that is true of a channel a
+    # job posts into. Same sink (`delivery._slack`: idempotent on the run id, honours NO_REPLY),
+    # its own audience (`notice`) and `privacy.source_line` branch (ingress.md).
+    if r["slack"]:
+        args["reply_to"] = {"kind": "slack_post", "channel": r["slack"]}
     return args
 
 
@@ -269,6 +283,7 @@ async def _enrich(store):
             "params": rb.get("params") or [],
             "steps": rb.get("steps") or [],
             "has_doc": bool(rb.get("doc")),
+            "slack": rb.get("slack") or "",
             "enabled": True,
             "next_run": None,
             "last_run": None,
@@ -350,8 +365,8 @@ def _rows_without_temporal(store):
              "cron": rb.get("cron", ""), "on_demand": not rb.get("cron"),
              "auto_approve": rb.get("auto_approve", False), "cap": rb.get("cap") or None,
              "params": rb.get("params") or [], "steps": rb.get("steps") or [],
-             "has_doc": bool(rb.get("doc")), "enabled": True, "next_run": None,
-             "last_run": None, "running": False}
+             "has_doc": bool(rb.get("doc")), "slack": rb.get("slack") or "",
+             "enabled": True, "next_run": None, "last_run": None, "running": False}
             for rid, rb in store.items()]
 
 
