@@ -371,7 +371,7 @@ class StockCapabilityTests(unittest.TestCase):
         stock = {name: (desc, body, path, tier)
                  for name, desc, body, path, tier, _k in registry.stock_caps()}
         # The bundled tier must be present with a real body and description.
-        for name in ("product-manager", "qa-tester", "code-reviewer"):
+        for name in ("product-manager", "qa-tester", "code-reviewer", "event-finder"):
             self.assertIn(name, stock, f"{name}.md should ship in capabilities/bundled/")
             desc, body, path, tier = stock[name]
             self.assertEqual(tier, "bundled")
@@ -395,7 +395,8 @@ class StockCapabilityTests(unittest.TestCase):
     def test_lifted_stock_caps_pin_their_risk(self):
         by_name = {c.name: c for c in registry.load() if c.source == "stock"}
         for name, risk in (("github-ticket-refiner", "write"), ("design-doc", "write"),
-                           ("empirical-investigation", "read"), ("explain-like-a-story", "read")):
+                           ("empirical-investigation", "read"), ("explain-like-a-story", "read"),
+                           ("event-finder", "read")):
             if name in by_name:   # a same-named user cap shadows the stock copy on this install
                 self.assertEqual(by_name[name].risk, risk, name)
             self.assertEqual(registry.classify(name, ""), risk, name)
