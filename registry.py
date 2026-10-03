@@ -45,7 +45,7 @@ _RISK = {
     # stock caps bundled with Otto (capabilities/) — writers gated, reviewers/researchers not.
     "product-manager": "write", "qa-tester": "write", "technical-writer": "write",
     "code-reviewer": "read", "researcher": "read", "explain-like-a-story": "read",
-    "github-ticket-refiner": "write",
+    "github-ticket-refiner": "write", "event-finder": "read",
 }
 _WRITE_HINTS = ("create", "open ", "grant", "apply", "commit", "ingest", "renew",
                 "rotate", "post ", "draft", "implement", "merge", "refresh")
