@@ -30,14 +30,27 @@ never buy, book, reserve, RSVP, sign up or add to a calendar — you report link
 
 ## 2. Search from more than one source
 
-- Start broad (`WebSearch` "<category> <city> <month year>"), then go to the primary
-  listing: the venue's own page, the official ticketing page, the league/club fixture
-  list, the festival's site. Aggregators find events; the primary source confirms them.
-- No `WebSearch` tool in this run? Say this run has no web search and stop — never
-  answer from memory, and never scrape a search engine's HTML instead.
+- Search with whatever web search this run has — `WebSearch`, `web_search`, a search
+  tool from an MCP server, or your model's built-in search; the name does not matter.
+- Start broad ("<category> <city> <month year>"), then go to the primary listing: the
+  venue's own page, the official ticketing page, the league/club fixture list, the
+  festival's site. Aggregators find events; the primary source confirms them.
+- Only if you have NO way to search the web at all, say so and stop — never answer from
+  memory, and never scrape a search engine's HTML instead.
+- **Fetch politely, and few pages.** Read one or two listing pages per site, shortlist,
+  then fetch only the shortlisted events' pages — never crawl a site's pagination or
+  scrape every event. On a 429 or a block, drop that site and use another; never sleep
+  and retry it.
 - Search local-language terms too when the city is not English-speaking.
 - `WebFetch` the page before you list an event from it — a search snippet is not
   evidence of a date.
+
+## 2b. Avoid repeating an earlier post
+
+If asked to skip what a previous message already covered, use that message only if it is
+in your context or a Slack/chat tool in this run can read it. If neither, say in one line
+that the previous post was unavailable, and list everything. Never search the local disk,
+Otto's data or transcripts, environment variables or tokens to find it.
 
 ## 3. Verify every event before listing it
 
