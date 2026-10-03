@@ -126,6 +126,8 @@ def source_line(reply_to, unattended=False):
     kind = (reply_to or {}).get("kind") if isinstance(reply_to, dict) else None
     if kind == "slack_thread":
         return "source: Slack message"
+    if kind == "slack_post":
+        return "source: runbook"            # a destination, not where the run came from
     if kind == "github_issue":
         repo, number = (reply_to.get("repo") or "?"), reply_to.get("number")
         return f"source: GitHub issue {repo}#{number}" if number else f"source: GitHub {repo}"

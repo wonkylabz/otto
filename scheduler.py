@@ -125,19 +125,13 @@ def _args(rid, rb, values=None, unattended=True):
     # something" unsatisfiable by ANY runbook, whatever its request said (rb-8707935b,
     # "Entertainment - HB Events").
     #
-    # The target is a channel-shaped `slack_thread`: delivery already posts to a channel with no
-    # thread root, so this needs no new sink, no new AUDIENCE entry and no new `privacy.source_line`
-    # branch (ingress.md: a new kind without both of those silently falls back to the report
-    # shape). It also keeps the two properties this use case needs: idempotency on the run id, and
-    # the NO_REPLY sentinel — a run with nothing to say still posts nothing.
-    #
-    # `conversation: False` is what this target is NOT: a conversation Otto took part in. Every
-    # other Slack target comes from a message someone sent, so delivery records the session and
-    # the next message there continues it. Nothing was asked here, so binding one would make the
-    # next message in that channel resume a run that never had a turn (activities.deliver_result).
+    # Its own kind, `slack_post`, NOT a `slack_thread`: a thread target is a CONVERSATION — the
+    # run is told someone is waiting to reply, a question back passes the judge, a session is
+    # bound, and every decline/error is worded to an asker. None of that is true of a channel a
+    # job posts into. Same sink (`delivery._slack`: idempotent on the run id, honours NO_REPLY),
+    # its own audience (`notice`) and `privacy.source_line` branch (ingress.md).
     if r["slack"]:
-        args["reply_to"] = {"kind": "slack_thread", "channel": r["slack"],
-                            "conversation": False}
+        args["reply_to"] = {"kind": "slack_post", "channel": r["slack"]}
     return args
 
 

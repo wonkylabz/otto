@@ -335,7 +335,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # vocabulary and can carry internals (memory-privacy.md: a run note never rides out
             # to a conversation). Its own try/except, so a failing delivery cannot mask the
             # original exception (issue #98).
-            if params.get("reply_to"):
+            if delivery.has_asker(params.get("reply_to")):   # never to a one-way post
                 try:
                     await workflow.execute_activity(
                         deliver_result,
@@ -434,7 +434,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 if self._audience == contracts.CONVERSATION_AUDIENCE:
                     said = (f"That needs {config.OWNER_NAME}'s approval and approvals are off "
                             f"for this, so I haven't done anything.")
-                if reply_to:
+                if delivery.has_asker(reply_to):
                     await workflow.execute_activity(
                         deliver_result,
                         {"reply_to": reply_to, "result": said, "cap": cap,
@@ -649,7 +649,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                     # conversation's in-flight flag set, so that DM answered NOTHING for the full
                     # PENDING_STALE_S (30min) afterwards, and would leave the gate-armed marker
                     # standing for 25h. One missing delivery, three symptoms.
-                    if reply_to:
+                    if delivery.has_asker(reply_to):
                         await workflow.execute_activity(
                             deliver_result,
                             {"reply_to": reply_to, "result": said, "cap": cap,

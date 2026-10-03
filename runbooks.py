@@ -122,7 +122,9 @@ def render(rb, supplied=None):
     return {"request": interpolate(rb.get("request") or rb.get("name") or "", values),
             "doc": interpolate(rb.get("doc") or "", values),
             "steps": steps, "cap": rb.get("cap"),
-            "slack": interpolate(rb.get("slack") or "", values), "values": values}
+            # Re-checked AFTER substitution: a "Run now" value fills {{channel}} with whatever was
+            # typed, and the save-time check only ever saw the template.
+            "slack": _norm_slack(interpolate(rb.get("slack") or "", values)), "values": values}
 
 
 # --- validation ------------------------------------------------------------

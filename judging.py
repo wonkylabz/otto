@@ -12,7 +12,7 @@ import conventions
 import facade
 import gateway
 import ladder
-from contracts import CONVERSATION_AUDIENCE, _write_gate_note, parse_delegation
+from contracts import CONVERSATION_AUDIENCE, NOTICE_AUDIENCE, _write_gate_note, parse_delegation
 from ui import trace
 
 
@@ -409,7 +409,7 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
     # into a retry ladder — the message it's declining to answer has nothing in it to do better at.
     # Deterministic, so it costs no LLM call. Never honoured for a report audience: a report saying
     # NO_REPLY is just a broken report.
-    if audience == CONVERSATION_AUDIENCE and config.is_no_reply(result):
+    if audience in (CONVERSATION_AUDIENCE, NOTICE_AUDIENCE) and config.is_no_reply(result):
         trace("VERIFY", "nothing to reply — accepted, nothing will be posted")
         return {"passed": True, "critique": ""}
     # A frontman handing work off is judged where the work happens (the delegated run), and its
@@ -474,7 +474,7 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
             "In the critique, say which part to drop rather than asking for a rewrite.\n"
             "A warm, natural, colleague-like phrasing is not itself a defect — don't fail a reply "
             "for its tone alone; judge it only against the concrete failures listed above.\n")
-    elif unattended:
+    elif unattended or audience == NOTICE_AUDIENCE:   # a one-way post: nobody can answer it
         dead_end = (
             "\nThis run is UNATTENDED: no human is watching and nothing can answer a question. "
             "FAIL any output whose bottom line is a question to the user, a request for "

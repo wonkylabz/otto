@@ -288,6 +288,10 @@ def notify(title, *, lines=None, detail=None, click=None, tags=None, priority="h
 # skipped silently.
 AUDIENCE = {
     "slack_thread": "conversation",
+    # A runbook's Slack destination (scheduler._args): a ONE-WAY post. Nobody asked Otto anything
+    # there and nobody's reply resumes the run, so it is not a conversation — no session is bound,
+    # no interim or gate notice is posted, and the run must not end on a question.
+    "slack_post": "notice",
     "github_issue": "report",
     # A PR review is a durable record a reviewer reads later, not a conversation.
     "github_pr": "report",
@@ -297,6 +301,14 @@ DEFAULT_AUDIENCE = "report"
 # This module OWNS the value (contracts.CONVERSATION_AUDIENCE mirrors it by value, deliberately —
 # importing contracts here would be a cycle). Named so `interim` reads as a rule, not a string.
 CONVERSATION_AUDIENCE = "conversation"
+NOTICE_AUDIENCE = "notice"
+
+
+def has_asker(reply_to):
+    """Whether someone at this target ASKED for the run — and so is owed its decline, skip or
+    error message. False for a one-way post: those messages are written to an asker who does not
+    exist there, and the operator who can act sees them in the UI. PURE — workflow-safe."""
+    return bool(reply_to) and audience_for(reply_to) != NOTICE_AUDIENCE
 
 
 def audience_for(reply_to):
@@ -319,11 +331,6 @@ def interim(reply_to, text):
     is a durable record read later by someone who is not sitting there, so a progress note is
     noise in a permanent place. That split is `AUDIENCE`, reused rather than re-decided.
 
-    And only to a target that IS one (`conversation: False` on a runbook's Slack destination,
-    scheduler._args): nobody is in that channel waiting on this run, and the gate notice that
-    rides this call would ARM it — a later message there would be read as a decision on a run
-    whose author was watching it in the UI.
-
     Never raises. Returns `(delivered, status, ts)` — a BOOLEAN plus a human status for the trace,
     not just the string, plus the posted message's ts (None when unknown): a gate notice records
     it so an approval sent as a reply in ITS thread can be found. Callers act on this (the gate notice arms a conversation only when the
@@ -331,8 +338,6 @@ def interim(reply_to, text):
     rewording of a status message silently changes behaviour with no test failing.
     """
     if not reply_to or audience_for(reply_to) != CONVERSATION_AUDIENCE:
-        return False, "no interim channel for this target", None
-    if not reply_to.get("conversation", True):
         return False, "no interim channel for this target", None
     text = privacy.redact(str(text or ""))
     if not text.strip():
@@ -372,7 +377,7 @@ def deliver(reply_to, result, cap=None, run_id=None):
             return _github_issue(reply_to, result, cap, run_id)
         if kind == "github_pr":
             return _github_pr(reply_to, result)
-        if kind == "slack_thread":
+        if kind == "slack_thread" or kind == "slack_post":
             return _slack(reply_to, result, run_id)
         return f"unsupported reply kind: {kind!r}"
     except Exception as e:  # noqa: BLE001 - report, don't propagate
