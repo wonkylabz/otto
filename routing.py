@@ -260,7 +260,28 @@ def _parse_plan(text, n_caps):
 # The bias, deliberately: a suppressed fan-out costs LATENCY; a wrong split costs a WRONG ANSWER.
 # So this is over-eager — widen the marker set freely. It can also suppress an ordinary
 # "and ... then ..." split; that costs only latency.
-_SEQUENTIAL_RE = re.compile(r"\b(?:only if|if you find|with the results|then)\b", re.I)
+_SEQUENTIAL_MARKERS = (
+    r"only\s+(?:if|when|after|once)",              # "… send a Slack message only if you find …"
+    r"if\s+(?:you|it|they|there|any|so|not|none|nothing|something|anything|we)",
+    r"if\s+the\s+(?:build|tests?|deploy\w*|check|results?|run|job|logs?|scan|search|research"
+    r"|report)",
+    r"then",                                        # also covers "and then" / ", then"
+    r"with\s+the\s+(?:results?|findings|output|details|answer|list)",
+    r"(?:based\s+on|using)\s+the\s+(?:results?|findings|output)",
+    # …and the dependency need not be NAMED to be one: the later half can just refer back to the
+    # earlier half's output ("… send me a Slack message about them" — #198's request with the
+    # conditional dropped: same dependency, same wrong answer).
+    r"(?:about|with|from|using|including|based\s+on)\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
+    r"(?:describ\w*|quot\w*|summari[sz]\w*|attach\w*|inclu\w*|post\w*|send\w*|shar\w*|writ\w*)"
+    r"\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
+    r"depending\s+on|as\s+long\s+as|provided\s+(?:that|the)",
+    r"in\s+that\s+case|otherwise|wait\s+for",
+    r"once\s+(?:that|you|the\s+(?:results?|findings|run|build|research|check))",
+    r"after\s+that|when\s+(?:done|finished|complete)",
+)
+_SEQUENTIAL_RE = re.compile(r"\b(?:" + "|".join(_SEQUENTIAL_MARKERS) + r")\b", re.I)
 
 
 def _sequential_request(text):
@@ -272,7 +293,7 @@ def _sequential_request(text):
     Ordering inside the alternation is irrelevant — `re.search` returns the LEFTMOST match, so
     "only if you find" reports "only if"."""
     m = _SEQUENTIAL_RE.search(text or "")
-    return m.group(0).lower() if m else None
+    return " ".join(m.group(0).lower().split()) if m else None
 
 
 _REPO_TAG_RE = re.compile(r"^\[\s*repo\s*=\s*([A-Za-z0-9._-]+)\s*\]\s*(.+)$", re.I)

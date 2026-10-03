@@ -721,6 +721,21 @@ class SequentialRequestGuardTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(engine.decompose(text, self._caps()), [])
 
+    def test_an_unnamed_dependency_still_suppresses(self):
+        # #198's request with the conditional dropped: the later half only REFERS BACK to the
+        # earlier half's output, which is the same dependency and the same wrong answer.
+        engine.gateway.complete = self._never_plans()
+        for text in ("find events in Hawkes Bay and send me a Slack message about them",
+                     "summarize the logs and post it to Slack",
+                     "check the build only when the tests pass",
+                     "run the scan and, depending on the output, open a ticket",
+                     "research the outage; once you have it, write the postmortem"):
+            with self.subTest(text=text):
+                self.assertEqual(engine.decompose(text, self._caps()), [])
+
+    def test_the_reported_marker_is_whitespace_normalised(self):
+        self.assertEqual(self.routing._sequential_request("page me ONLY\n  IF it fails"), "only if")
+
     def test_the_markers_are_case_insensitive(self):
         engine.gateway.complete = self._never_plans()
         for text in ("Check the build ONLY IF the tests pass",
