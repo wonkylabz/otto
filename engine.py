@@ -207,6 +207,11 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         disallowed = config.FAST_LANE_DISALLOWED_TOOLS + mcp_client.fast_lane_denies(fast_lane)
         # Pinned, so a permissive `defaultMode` in the operator's settings cannot widen it.
         permission_mode = "default"
+    # A fast-lane turn loads NO settings sources: the operator's `permissions.allow` (a plugin
+    # server, a connector, a tool its server added since it was listed) would otherwise widen a
+    # grant no human reviewed, and only `--allowedTools` may say what it holds. The deny list
+    # above stays as a second layer; `file_safety`'s own `--settings` deny is unaffected.
+    sources = "" if fast_lane is not None else _setting_sources(cwd)
     # An explicit cwd (an isolated repo workspace, issue #57) overrides the cap's own cwd, so a
     # global agent can run inside a freshly-cloned repo it doesn't otherwise belong to.
     cwd = cwd or getattr(cap, "cwd", None)
@@ -569,7 +574,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                         model=model, system_context=sysctx, cwd=cwd,
                         transcript=transcript_path, timeout=fb_timeout,
                         on_event=sup.note if sup else None, abort=abort, meta=fb_meta,
-                        setting_sources=_setting_sources(cwd), effort=effort,
+                        setting_sources=sources, effort=effort,
                         disallowed_tools=disallowed, permission_mode=permission_mode),
                 model, "claude", fb_meta)
 
@@ -660,7 +665,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                       model=model, resume_session=resume_session, system_context=sysctx, cwd=cwd,
                       transcript=transcript_path, timeout=config.EXEC_TIMEOUT_S,
                       on_event=sup.note if sup else None, abort=abort, steer=steer,
-                      meta=fb_meta, setting_sources=_setting_sources(cwd), effort=effort,
+                      meta=fb_meta, setting_sources=sources, effort=effort,
                       disallowed_tools=disallowed, permission_mode=permission_mode)
     duration_s = time.monotonic() - started
     # The CLAUDE backend's deterministic walls: `claude -p` could not authenticate, the

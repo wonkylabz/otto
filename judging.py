@@ -420,7 +420,9 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
     trace("VERIFY", f"judging output of [{cap.kind}] {cap.name}")
     conv = conventions.judge_block(project, request) if project else None
     # The cap's own rules, so a contract-mandated limit isn't judged as an invented one.
-    contract = cap_contract_block(cap, request)
+    # Not on the fast lane (issue #193): the worker's contract is issues, repos and tests, and a
+    # light switched with the one tool it held must not FAIL for running none of them.
+    contract = cap_contract_block(cap, request) if fast_lane is None else None
     tools = _grant_list(cap, tools_used)
     if fast_lane is not None:
         # A fast-lane attempt (issue #193) held exactly these tools and nothing else. Told the

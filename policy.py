@@ -163,7 +163,8 @@ def add_mcp_def(name, entry):
     defs[name] = entry
     save_mcp_defs(defs)
     # A safe tag was reviewed against the COMMAND it names a tool of; a new or edited command
-    # starts gated, whatever a same-named predecessor was trusted with (issue #193).
+    # starts gated, whatever a same-named predecessor was trusted with (issue #193). `safe_tools`
+    # already refuses a tag whose key no longer matches — this clears the stale rows too.
     set_safe_tools(name, [])
     return entry
 
@@ -267,27 +268,38 @@ def safe_tool_names(pol, server):
 
 def safe_tools(pol=None):
     """Every safe tool on an ENABLED server, as the `mcp__<server>__<tool>` id both backends
-    grant by. A disabled server's tags are kept but grant nothing — the switch must win."""
+    grant by. A disabled server's tags are kept but grant nothing — the switch must win.
+
+    A tag was reviewed against ONE command, so it grants only while the server still runs that
+    command (`safe_key` = `mcp_client.def_key`, the catalogue's own key). A def changed by an
+    edit, a snapshot import or a hand edit of `~/.claude.json` — or not servable at all now —
+    grants nothing until someone re-ticks it. A connector has no def: its key is None."""
     import mcp_client           # noqa: PLC0415 — mcp_client imports this module
     pol = load() if pol is None else pol
     out = []
     for server, entry in ((pol or {}).get("mcps") or {}).items():
-        if not isinstance(entry, dict) or not entry.get("enabled", True):
+        if (not isinstance(entry, dict) or not entry.get("enabled", True)
+                or not entry.get("safe_tools")
+                or entry.get("safe_key") != mcp_client.def_key(server, pol)):
             continue
-        out += [mcp_client.tool_id(server, t) for t in entry.get("safe_tools") or []]
+        out += [mcp_client.tool_id(server, t) for t in entry["safe_tools"]]
     return sorted(set(out))
 
 
-def set_safe_tools(server, tools):
-    """Replace one server's safe set IN PLACE (empty clears it), returning the whole policy.
-    `mutate_json` for the same reason as `set_mcp_note`: the run path reads this file."""
+def set_safe_tools(server, tools, key=None):
+    """Replace one server's safe set IN PLACE (empty clears it), bound to `key` — the def it was
+    reviewed against (`mcp_client.def_key`). Returns the whole policy. `mutate_json` for the same
+    reason as `set_mcp_note`: the run path reads this file."""
     tools = sorted({str(t).strip() for t in (tools or []) if str(t).strip()})
 
     def _apply(pol):
         pol.setdefault("capabilities", {})
         entry = pol.setdefault("mcps", {}).setdefault(server, {})
+        entry.pop("safe_key", None)
         if tools:
             entry["safe_tools"] = tools
+            if key:
+                entry["safe_key"] = key
         else:
             entry.pop("safe_tools", None)
         return pol
@@ -296,7 +308,7 @@ def set_safe_tools(server, tools):
 
 # Keys on an `mcps` entry that ONE dedicated endpoint writes — a whole-policy save carries
 # neither, so both are re-attached from the store and never trusted from the client.
-_SERVER_OWNED = ("notes", "safe_tools")
+_SERVER_OWNED = ("notes", "safe_tools", "safe_key")
 
 
 def keep_notes(saved, incoming):
@@ -323,6 +335,8 @@ def keep_notes(saved, incoming):
         if entry.get("safe_tools"):
             # The safe tags ride the same rule: a toggle must not un-tag every tool.
             kept["safe_tools"] = list(entry["safe_tools"])
+            if entry.get("safe_key"):
+                kept["safe_key"] = entry["safe_key"]
         if not kept:
             continue
         if isinstance(out.get(name), dict):

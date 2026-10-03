@@ -10607,3 +10607,63 @@ class FastLaneReviewRoundOneTests(unittest.TestCase):
                 {"capability": "builtin:worker", "outcome": "ran"}]), \
              mock.patch.object(engine, "content_entries_for", lambda wid: [{"request": "r"}]):
             self.assertTrue(engine.run_origin("w")[3])
+
+
+class FastLaneReviewRoundTwoTests(unittest.TestCase):
+    """Round 2 of the PR #197 review: a tag is bound to the COMMAND it was reviewed against, a
+    fast-lane turn loads no operator settings, and Slack's lane is DM-only."""
+
+    def setUp(self):
+        self._path = policy._PATH
+        self.tmp = tempfile.mkdtemp()
+        policy._PATH = os.path.join(self.tmp, "policy.json")
+
+    def tearDown(self):
+        policy._PATH = self._path
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _servable(self, cmd):
+        return mock.patch.object(mcp_client, "servable",
+                                 lambda pol=None: {"k8s": {"command": cmd, "args": []}})
+
+    def test_a_tag_grants_only_while_the_command_is_the_reviewed_one(self):
+        with self._servable("kubectl-dev"):
+            policy.set_safe_tools("k8s", ["get_pods"], key=mcp_client.def_key("k8s"))
+            self.assertEqual(policy.safe_tools(), ["mcp__k8s__get_pods"])
+        with self._servable("kubectl-PROD"):
+            self.assertEqual(policy.safe_tools(), [], "a changed command inherited the tag")
+        with mock.patch.object(mcp_client, "servable", lambda pol=None: {}):
+            self.assertEqual(policy.safe_tools(), [], "an unservable def kept its grant")
+
+    def test_a_fast_lane_turn_loads_no_settings_sources(self):
+        saved = (gateway.exec_model_entry, gateway.exec_model_id, engine._claude,
+                 config.SUPERVISE, workspace.refresh_repos)
+        calls = []
+        try:
+            config.SUPERVISE = False
+            workspace.refresh_repos = lambda *a, **k: None
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: {
+                "name": "sonnet", "provider": "claude", "model": "claude-sonnet"}
+            gateway.exec_model_id = lambda cap_name=None: "claude-sonnet"
+            engine._claude = lambda prompt, **kw: calls.append(kw) or {
+                "result": "on", "total_cost_usd": 0, "session_id": "s", "usage": {}}
+            cap = registry.Capability("builtin", config.WORKER_CAP, "does tasks")
+            cap.risk = "write"
+            engine.run_attempt("turn on the light", cap, wid="w1", fast_lane=["mcp__ha__on"])
+            engine.run_attempt("do it", cap, wid="w2")
+        finally:
+            (gateway.exec_model_entry, gateway.exec_model_id, engine._claude,
+             config.SUPERVISE, workspace.refresh_repos) = saved
+        self.assertEqual(calls[0]["setting_sources"], "", "the operator's allow rules applied")
+        self.assertEqual(calls[0]["permission_mode"], "default")
+        self.assertNotEqual(calls[1]["setting_sources"], "", "a normal run lost its settings")
+
+    def test_the_judge_drops_the_worker_contract_on_the_fast_lane(self):
+        self.assertIn("cap_contract_block(cap, request) if fast_lane is None else None",
+                      inspect.getsource(judging.verify))
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_slack_takes_the_lane_in_dms_only(self):
+        src = inspect.getsource(__import__("activities").poll_slack)
+        i = src.index('params["trusted_asker"]')
+        self.assertIn('startswith("D")', src[i:i + 300])

@@ -26,7 +26,7 @@ async function showMcpToolsForm(name, display, refresh){
     ${d.note?`<div class="ferr">${esc(d.note)}</div>`:''}
     <div class="disclist" id="mt-list"></div>
     <div class="ferr" id="mt-err"></div>
-    <div class="factions"><button class="btn approve" id="mt-save" ${tools.length?'':'disabled'}>Save</button>
+    <div class="factions"><button class="btn approve" id="mt-save">Save</button>
       <button class="btn" id="mt-refresh" title="start the server once and re-read its tools">Re-list tools</button>
       <button class="btn decline" id="mt-cancel">Cancel</button></div>
   </div>`;
@@ -39,7 +39,7 @@ async function showMcpToolsForm(name, display, refresh){
     const box=document.createElement("input");
     box.type="checkbox"; box.className="mt-box"; box.value=t.name; box.checked=!!t.safe;
     const txt=document.createElement("span");
-    txt.textContent=" "+t.name;
+    txt.textContent=" "+t.name+(t.unlisted?"  (not in the current tool list)":"");
     row.appendChild(box); row.appendChild(txt); list.appendChild(row);
   });
   document.getElementById("mt-cancel").onclick=closeFormModal;

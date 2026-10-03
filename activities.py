@@ -622,6 +622,8 @@ def run_capability(payload: dict) -> dict:
             # The tools this attempt actually CALLED — the judge's real grant. Must be listed
             # HERE or it never reaches the workflow: this dict is a whitelist, not a passthrough.
             "tools_used": att.get("tools_used") or [],
+            # The fast-lane grant this attempt actually held, after narrowing to the live tags.
+            "fast_lane": fast_lane,
             "tools_failed": att.get("tools_failed") or [],
             # Corrections the mid-run supervisor delivered into this attempt. Listed HERE for the
             # same reason as tools_used — this dict is a whitelist, and the verify activity below
@@ -1258,9 +1260,12 @@ def poll_slack(payload: dict) -> dict:
                 params["chat_key"] = rec["wid"]         # same conversation, new session
         wid = slack.wid_for(msg)
         # The fast lane follows the ASKER (issue #193): the owner, or a listed approver. Decided
-        # here, from the message's own author — never from anything in its text.
-        params["trusted_asker"] = slack.may_fast_lane(cfg, msg.get("user"), identity,
-                                                      slack.whoami(slack.USER))
+        # here, from the message's own author — never from anything in its text. DMs only: a
+        # channel's context lines (and its session history) carry OTHER people's words, which
+        # would steer a run no human reviews on the trusted asker's credit.
+        params["trusted_asker"] = (str(msg.get("channel") or "").startswith("D") and
+                                   slack.may_fast_lane(cfg, msg.get("user"), identity,
+                                                       slack.whoami(slack.USER)))
         status = slack.start_run(wid, params)
         if status == "started":
             # A bare DM's ack_ts is always None, so keying on ack_ts alone would wrongly

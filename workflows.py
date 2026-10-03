@@ -378,10 +378,13 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 and (approval == "ask" if unattended else approval != "auto")
                 and not self._attachments and workflow.patched("fast-lane")):
             return False
-        lane = await workflow.execute_activity(
-            classify_fast_lane, {"request": request, "name": cap["name"],
-                                 "model_override": self._model_override},
-            start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+        try:
+            lane = await workflow.execute_activity(
+                classify_fast_lane, {"request": request, "name": cap["name"],
+                                     "model_override": self._model_override},
+                start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+        except exceptions.ActivityError:
+            return False            # a check that never answered is the gated path, not a failure
         if lane.get("fast"):
             self._fast_lane = list(lane.get("tools") or [])
         return self._fast_lane is not None
@@ -1548,6 +1551,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                        "is_error": True, "cost": 0, "tokens": None, "model": None,
                        "attempt": attempt}
             wid = out["workflow"]
+            # The grant the attempt really HELD — run_capability narrows to the live tags, and the
+            # judge and the audit row must describe that, never the one decided before the run.
+            if self._fast_lane is not None and out.get("fast_lane") is not None:
+                self._fast_lane = list(out["fast_lane"])
             state = ladder.record_attempt(
                 state, nxt, killed=bool(out.get("killed_by_supervisor")),
                 local_incapable=out.get("local_incapable", False))

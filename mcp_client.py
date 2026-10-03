@@ -822,15 +822,19 @@ def fast_lane_denies(granted, pol=None):
     return out
 
 
-def server_tools(server, pol=None, refresh=False):
-    """`(tools, error)` for one server, for the Admin tag editor: the cached catalogue, or —
-    on a miss or `refresh` — a one-off spawn of a SERVABLE stdio server to list it (which warms
-    the cache). Never spawns anything `servable` refuses: an unactivated def stays inert here too.
-    A connector has nothing to spawn, so it says so rather than listing nothing silently."""
-    if not refresh:
-        cached = catalogue(pol).get(server)
-        if cached:
-            return cached, None
+def def_key(server, pol=None):
+    """The key a safe tag binds to (issue #193): the sha256 of the def this server would spawn
+    as, `_def_key` — the catalogue's own key. None when it is not a servable stdio server (a
+    connector, or a def that is unactivated/disabled/gone)."""
+    spec = servable(pol).get(server)
+    return _def_key(spec) if spec else None
+
+
+def server_tools(server, pol=None):
+    """`(tools, note)` for one server, for the Admin tag editor: a one-off spawn of a SERVABLE
+    stdio server to list it, warming the catalogue. Never spawns anything `servable` refuses: an
+    unactivated def stays inert here too. A connector has nothing to spawn, so it says so rather
+    than listing nothing silently. (The cached read is `catalogue()`.)"""
     spec = servable(pol).get(server)
     if not spec:
         return [], ("no tool list: Otto can only list a launchable stdio server "

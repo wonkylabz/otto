@@ -2108,13 +2108,25 @@ class Handler(BaseHTTPRequestHandler):
         if not any(m["name"] == name for m in policy.all_mcps(POLICY)):
             self._send(400, json.dumps({"error": "unknown MCP server"})); return
         if spawn:
-            tools, note = mcp_client.server_tools(name, refresh=True)
+            tools, note = mcp_client.server_tools(name)
         else:
             tools = mcp_client.catalogue().get(name) or []
             note = None if tools else "not listed yet — press Re-list tools to start it once"
-        safe = set(policy.safe_tool_names(policy.load(), name))
+        pol = policy.load()
+        stored = policy.safe_tool_names(pol, name)
+        # Tags whose command has changed grant nothing (policy.safe_tools) — shown UNTICKED with
+        # a note, so trusting the new command is a fresh decision, never an inherited one.
+        live = set(stored) if (stored and ((pol.get("mcps") or {}).get(name) or {}).get("safe_key")
+                               == mcp_client.def_key(name, pol)) else set()
+        if stored and not live:
+            note = ((note + " ") if note else "") + ("This server's command changed since its "
+                                                     "tools were ticked — tick them again to trust it.")
+        listed = {t.get("name") for t in tools}
+        # A stored tag the list no longer shows stays visible, so it can always be UN-ticked.
+        rows = list(tools) + [{"name": t, "description": "", "unlisted": True}
+                              for t in stored if t not in listed]
         self._send(200, json.dumps({"name": name, "note": note, "tools": [
-            {**t, "safe": t.get("name") in safe} for t in tools]}))
+            {**t, "safe": t.get("name") in live} for t in rows]}))
 
     def _post_mcp_tools_list(self, body):
         """POST /api/mcp/tools/list — start one servable stdio server once to list its tools
@@ -2129,12 +2141,16 @@ class Handler(BaseHTTPRequestHandler):
         if not name or not any(m["name"] == name for m in policy.all_mcps(POLICY)):
             self._send(400, json.dumps({"error": "unknown MCP server"})); return
         listed = {t.get("name") for t in (mcp_client.catalogue().get(name) or [])}
+        # Keeping a tag already stored is not a new grant, so an unlisted one may stay; a NEW
+        # name must be one the server lists.
+        listed |= set(policy.safe_tool_names(policy.load(), name))
         want = [t for t in (body.get("tools") or []) if isinstance(t, str)]
         unknown = [t for t in want if t not in listed]
         if unknown:
             self._send(400, json.dumps({"error": "not tools this server lists: "
                                         + ", ".join(unknown[:5])})); return
-        saved = policy.set_safe_tools(name, want)
+        # Bound to the command the operator is looking at now (policy.safe_tools).
+        saved = policy.set_safe_tools(name, want, key=mcp_client.def_key(name))
         _set_policy(saved)
         engine.audit_mcp_change("safe-tools", name, detail="safe: " + (", ".join(sorted(want))
                                                                     or "(none — all gated)"))

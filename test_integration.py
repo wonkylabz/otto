@@ -3670,6 +3670,30 @@ class FastLaneWorkflowTests(unittest.IsolatedAsyncioTestCase):
                               params={"attachments": [{"id": "a1", "name": "t.csv", "path": "/x"}]})
         self.assertEqual(self.asked, [], "the lane was offered a run whose files it cannot read")
 
+    def test_a_classifier_activity_that_dies_is_the_gate_not_a_failure(self):
+        # A Temporal timeout never reaches the activity's own except — the workflow must catch it.
+        import ast
+        src = test_support.workflow_src()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "_take_fast_lane")
+        body = ast.get_source_segment(src, fn)
+        self.assertIn("except exceptions.ActivityError:", body)
+        self.assertIn("return False", body[body.index("except exceptions.ActivityError:"):])
+
+    async def test_the_audited_grant_is_the_one_the_attempt_held(self):
+        # The operator un-ticks the only tool between the check and the attempt: run_capability
+        # narrows it away, and the audit must say [] — not the stale decision.
+        import policy
+        calls = {"n": 0}
+
+        def _tags(pol=None):
+            calls["n"] += 1
+            return list(self.SAFE) if calls["n"] == 1 else []
+        with mock.patch.object(policy, "safe_tools", _tags):
+            await self._drive(trusted=True)
+        self.assertEqual(self.grants, [[]])
+        self.assertTrue(self.audited and all(a == [] for a in self.audited))
+
     async def test_pre_authorization_keeps_its_full_toolset(self):
         await self._drive(trusted=True, params={"approval": "auto"})
         self.assertEqual(self.asked, [])

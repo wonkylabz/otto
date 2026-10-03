@@ -186,7 +186,9 @@ def fast_lane_note(tools):
     return ("--- FAST LANE\n"
             "This run skipped the approval step because it only needs these tools, which the "
             f"operator marked safe: {names}. They are the ONLY tools you have — no shell, no "
-            "file reads or edits, no other service. Do the request with them. If any part of it "
+            "file reads or edits, no other service — and this overrides your usual workflow: "
+            "there is no repository, issue or test suite to work with here. Do the request with "
+            "them. If any part of it "
             "needs anything else, do not attempt it: say what you did and what still needs doing, "
             "so it can be asked for as a normal request.\n--- END FAST LANE")
 
