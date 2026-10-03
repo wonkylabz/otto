@@ -921,21 +921,40 @@ def is_pending(rec, now=None):
 GATE_STALE_S = int(os.environ.get("OTTO_SLACK_GATE_STALE_H") or 25) * 3600
 
 
-def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER):
-    """Record (or clear, wid=None) that this conversation is waiting on an approval gate."""
+def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=None):
+    """Record (or clear, wid=None) that this conversation is waiting on an approval gate.
+
+    `expect` makes the write CONDITIONAL on the stored gate still being that run's — a release
+    decided on a stale read (a Temporal describe can take seconds) must never erase a NEWER run's
+    arming, e.g. a retry of the very run that was terminated, reaching its own gate meanwhile."""
     if not channel:
         return
     now = time.time()
     storage.mutate_json(
         _STATE,
         lambda st: slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
-                                           wid=wid, identity=identity),
+                                           wid=wid, identity=identity, expect=expect)
+        or storage.UNCHANGED,
         slack_state.empty())
 
 
 def awaiting_gate(rec, now=None):
     """The run id this conversation is waiting on approval for, or None. PURE given `now`."""
     return slack_state.awaiting_gate(rec, now if now is not None else time.time(), GATE_STALE_S)
+
+
+def live_gate(rec, now=None):
+    """`awaiting_gate`, but released the moment Temporal CONFIRMS the run is gone — the pollers'
+    one question. A non-decision is held while a gate stands, and only a decision ever cleared
+    the marker, so a run terminated at its gate left the conversation deaf for GATE_STALE_S (25h).
+    Same self-heal as `is_busy`: unknown keeps the gate, a definite "gone" clears it once."""
+    wid = awaiting_gate(rec, now)
+    if wid and run_alive(wid) is False:
+        trace("SLACK", f"gate released — the run parked at it ({wid}) is gone")
+        mark_awaiting_gate(rec.get("channel"), rec.get("thread_ts"), wid=None,
+                           identity=slack_state.identity_of(rec), expect=wid)
+        return None
+    return wid
 
 
 def record_conversation_session(channel, thread_ts=None, session=None, cap=None, last_reply=None,
@@ -1469,8 +1488,8 @@ def _poll_dms(cfg, out, identity=USER):
         # (see conversation_key). Skipped — not dropped — while the previous run is in flight: the
         # cursor doesn't advance, so these messages are picked up on a later poll, in order.
         rec = conversation_record(cid, identity=identity)
-        gate_wid = awaiting_gate(rec)
-        if is_busy(rec) and not gate_wid:
+        gate_wid = live_gate(rec)
+        if not gate_wid and is_busy(rec):     # a standing gate exempts: skip a second describe
             continue
         hist = _api("conversations.history", identity=identity, channel=cid, oldest=cur,
                     limit=50).get("messages") or []
@@ -1607,8 +1626,8 @@ def _poll_threads(cfg, out):
         # decides that, because `pending` means "one turn at a time" and only a DECISION is
         # exempt from it. Without this the "yes" sat unread for PENDING_STALE_S (30min) and the
         # feature would have looked broken in exactly the way the gate already did.
-        gate_wid = awaiting_gate(rec, now)
-        if is_busy(rec, now) and not gate_wid:
+        gate_wid = live_gate(rec, now)
+        if not gate_wid and is_busy(rec, now):  # a standing gate exempts: skip a second describe
             continue
         self_ok = _self_test(cfg, cid) if identity == USER else False
         msgs = _api("conversations.replies", identity=identity, channel=cid, ts=root, oldest=cur,
@@ -1759,7 +1778,12 @@ def gate_open(wid):
 
 
 def signal_decision(wid, approved):
-    """Send an approve/deny decision to a parked workflow. Returns True on success.
+    """Send an approve/deny decision to a parked workflow. True on success, False when the run has
+    definitely left its gate (or is gone), None when Temporal cannot say.
+
+    None is not False: the caller disarms the conversation on False, so a Temporal blip mapped to
+    False dropped a live gate and the approver's "yes" became an ordinary message. Unknown keeps
+    the gate — `live_gate` releases it once Temporal CONFIRMS the run is gone.
 
     The same signal the web gate's Approve/Deny buttons send (`server._wf_signal`) — a Slack
     decision is not a second kind of approval, it is the same one arriving by a different door,
@@ -1770,7 +1794,12 @@ def signal_decision(wid, approved):
 
     # The gate must still be OPEN. Checked here rather than at the call site so no future caller
     # can signal a run that has moved on.
-    if gate_open(wid) is not True:
+    state = gate_open(wid)
+    if state is not True:
+        # A closed run's query raises too, so an unreadable gate is "gone" only if the run is.
+        if state is None and run_alive(wid) is not False:
+            trace("SLACK", f"holding a decision for {wid} — its gate state is unreadable")
+            return None
         trace("SLACK", f"ignoring a decision for {wid} — it is no longer at its gate")
         return False
 
@@ -1782,9 +1811,9 @@ def signal_decision(wid, approved):
 
     try:
         return bool(tc.run(_go()))
-    except Exception as e:  # noqa: BLE001 - a dead/finished run is the common case
+    except Exception as e:  # noqa: BLE001 - the gate was open a moment ago: unknown, not gone
         trace("SLACK", f"gate signal to {wid} failed: {str(e)[:120]}")
-        return False
+        return None
 
 
 # --- Temporal poll schedule (mirrors board.reconcile_schedule) -------------

@@ -298,8 +298,13 @@ def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, 
     return st
 
 
-def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, identity=USER):
+def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, identity=USER,
+                expect=None):
     """Mark this conversation as WAITING on an approval gate for run `wid` (or clear it, wid=None).
+
+    `expect` makes it compare-and-set: unless the stored gate is still that run's, nothing changes
+    and None is returned (the caller skips the write) — a release decided on a stale read must
+    never erase a NEWER run's arming.
 
     Kept next to `pending_at` rather than replacing it: the conversation IS still in flight (its
     run has not delivered), so the one-turn-at-a-time rule must keep holding back ordinary
@@ -307,6 +312,10 @@ def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, ident
     and which run it belongs to."""
     key = conversation_key(channel, thread_ts, identity)
     threads = prune_threads(st.setdefault("threads", {}), now, ttl_s, max_threads)
+    # Checked AFTER the prune: a TTL-expired record still holding that gate would otherwise pass,
+    # and the clear below would resurrect it as a fresh, cursorless record.
+    if expect is not None and (threads.get(key) or {}).get("gate_wid") != expect:
+        return None
     rec = dict(threads.get(key) or {})
     rec.update({"channel": channel, "thread_ts": thread_ts, "identity": identity or USER,
                 "at": now})

@@ -2723,6 +2723,42 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertIsNone(slack.awaiting_gate({"channel": "C9"}, now))
         self.assertIsNone(slack.awaiting_gate(None, now))
 
+    def test_a_gate_whose_run_is_gone_releases_the_conversation(self):
+        """Only a DECISION cleared the marker, and a non-decision is held while it stands — so a
+        run terminated at its gate left a live DM deaf for GATE_STALE_S (25h, observed). The
+        pollers ask `live_gate`: a confirmed-dead run releases it, unknown keeps it."""
+        now = 1_000_000.0
+        armed = {"channel": "D9", "thread_ts": None, "identity": "bot",
+                 "gate_wid": "slack-b-D9-5-0", "gate_at": now - 10}
+        cleared = []
+        orig = slack.run_alive, slack.mark_awaiting_gate
+        try:
+            slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
+                cleared.append((ch, root, wid, identity, expect)))
+            slack.run_alive = lambda wid: None
+            self.assertEqual(slack.live_gate(armed, now), "slack-b-D9-5-0")
+            slack.run_alive = lambda wid: True
+            self.assertEqual(slack.live_gate(armed, now), "slack-b-D9-5-0")
+            self.assertEqual(cleared, [])
+            slack.run_alive = lambda wid: False
+            self.assertIsNone(slack.live_gate(armed, now))
+            # compare-and-clear: only THAT run's gate is dropped, never a newer arming
+            self.assertEqual(cleared, [("D9", None, None, "bot", "slack-b-D9-5-0")])
+        finally:
+            slack.run_alive, slack.mark_awaiting_gate = orig
+        src = inspect.getsource(slack)
+        self.assertNotIn("gate_wid = awaiting_gate(", src, "pollers must ask live_gate")
+
+    def test_a_gate_release_never_erases_a_newer_arming(self):
+        """`live_gate` decides on a read taken before a describe that can take seconds; a retry
+        of the terminated run can arm its OWN gate meanwhile. The release is compare-and-clear."""
+        slack.mark_awaiting_gate("D7", None, wid="new-run", identity="bot")
+        slack.mark_awaiting_gate("D7", None, wid=None, identity="bot", expect="old-run")
+        rec = slack.conversation_record("D7", identity="bot")
+        self.assertEqual(slack.awaiting_gate(rec), "new-run")
+        slack.mark_awaiting_gate("D7", None, wid=None, identity="bot", expect="new-run")
+        self.assertIsNone(slack.awaiting_gate(slack.conversation_record("D7", identity="bot")))
+
     def test_the_poller_actually_delivers_the_decision_past_the_pending_guard(self):
         """The previous test states the rule on the pure helpers; this one runs `_poll_threads`,
         because the guard that matters is in the poller and a rule nothing executes is a comment.
@@ -2750,6 +2786,34 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertEqual(out[0]["text"], "approve")
         self.assertEqual(out[0]["gate_wid"], "slack-b-C9-5-0",
                          "the picked message must carry WHICH run it would decide")
+
+    def test_the_poller_reads_past_a_gate_whose_run_is_gone(self):
+        """The poller half of `live_gate`: a run terminated at its gate left the conversation
+        armed, the activity held every non-decision, and the DM was deaf for 25h (observed). Run
+        `_poll_threads` itself — a source grep passes whatever shape the guard takes."""
+        orig = (slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.USER_TOKEN,
+                slack.run_alive)
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack._ME = {"bot": "U9", "user": "U0"}
+                slack.BOT_TOKEN, slack.USER_TOKEN = "xoxb-t", "xoxp-t"
+                slack.run_alive = lambda wid: False
+                slack._api = lambda method, identity="user", **k: (
+                    {"ok": True, "messages": [{"user": "U1", "ts": "20.0", "text": "hello?"}]}
+                    if method == "conversations.replies" else {"ok": True})
+                slack.watch_conversation("C9", "5.0", seen="5.0", pending=True,
+                                         pending_wid="slack-b-C9-5-0", identity=slack.BOT)
+                slack.mark_awaiting_gate("C9", "5.0", wid="slack-b-C9-5-0", identity=slack.BOT)
+                out = []
+                slack._poll_threads(self._cfg(), out)
+                rec = slack.conversation_record("C9", "5.0", identity=slack.BOT)
+        finally:
+            (slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.USER_TOKEN,
+             slack.run_alive) = orig
+        self.assertEqual([m["text"] for m in out], ["hello?"])
+        self.assertNotIn("gate_wid", out[0], "a dead run's gate must not turn this into a decision")
+        self.assertIsNone(slack.awaiting_gate(rec), "the stale marker must be cleared on disk")
 
     def test_a_delivered_run_disarms_the_conversation(self):
         """EVERY exit resolves the gate — approved, declined, expired, crashed — and all of them
@@ -2811,23 +2875,28 @@ class SlackReviewFixTests(unittest.TestCase):
         a field nothing re-reads — the signal SUCCEEDS — so the poller told the thread "OK, I
         won't do it. Nothing was run." while the approved write ran and delivered into it."""
         seen = []
-        orig_open, orig_tc = slack.gate_open, None
+        orig_open, orig_alive, orig_tc = slack.gate_open, slack.run_alive, None
         import temporal_client as tc
         orig_tc = tc.OK, tc.run
         try:
             tc.OK = True
-            tc.run = lambda coro: seen.append("signalled") or True
+            tc.run = lambda coro: coro.close() or seen.append("signalled") or True
             slack.gate_open = lambda wid: False            # already past the gate
-            self.assertFalse(slack.signal_decision("w1", False))
+            self.assertIs(slack.signal_decision("w1", False), False)
             self.assertEqual(seen, [], "no signal may be sent to a run that has moved on")
-            slack.gate_open = lambda wid: None             # unknown -> treated as closed
-            self.assertFalse(slack.signal_decision("w1", True))
+            slack.gate_open = lambda wid: None             # unreadable, and the run is gone
+            slack.run_alive = lambda wid: False
+            self.assertIs(slack.signal_decision("w1", True), False)
+            # Unreadable and Temporal can't say either: NOT False, or the caller disarms a gate
+            # whose run is still parked and the approver's "yes" becomes an ordinary message.
+            slack.run_alive = lambda wid: None
+            self.assertIsNone(slack.signal_decision("w1", True))
             self.assertEqual(seen, [])
             slack.gate_open = lambda wid: True             # genuinely parked
             self.assertTrue(slack.signal_decision("w1", True))
             self.assertEqual(seen, ["signalled"])
         finally:
-            slack.gate_open = orig_open
+            slack.gate_open, slack.run_alive = orig_open, orig_alive
             tc.OK, tc.run = orig_tc
 
     def test_a_conversation_is_armed_only_when_the_notice_actually_posted(self):
