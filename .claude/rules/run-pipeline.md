@@ -23,9 +23,9 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 - A plan can prescribe work the executor cannot do (no `kubectl`/`aws-vault` in the worker env) — `_approved_plan_note` requires such a step be reported unverified, never claimed done. Diagnose by counting `tool_use` blocks, never by trusting the report.
 - The plan must be the **last** thing said, by the planner ITSELF — an agent cap is inlined, never spawned (`_plan_invocation`, `PlanPreviewPermissionTests`).
 - Preview timeout is 900s; `plan_capability`'s activity timeout must stay well above it (17min).
-- A failed pass yields no plan text, never its error sentinel; an empty plan at the gate shows an explicit note, not a bare approval card.
+- A failed pass yields no plan text, never its error sentinel; an empty plan at the gate shows an explicit note, not a bare card.
 - **A parked gate TELLS THE ASKER** (`delivery.interim`, once per run) — the ntfy push goes to the OWNER, so the asker gets an ack then silence. Conversations only, and wrapped: a note must not kill a paid-for plan (`GateNoticeToTheAskerTests`).
-- **The gate wait is BOUNDED** (`_gate_wait`, `gate_timeout_h`=24h, 0=off) — an ingress whose asker can't see the card parks forever otherwise. Expiry DECLINES: `gate_timeout` needs-human + a word to `reply_to`, never an approval (`GateDeadlineAndDenialIdentityTests`).
+- **The gate wait is BOUNDED** (`_gate_wait`, `gate_timeout_h`=24h, 0=off) — an ingress whose asker can't see the card parks forever. Expiry DECLINES: `gate_timeout` needs-human + a word to `reply_to`, never an approval (`GateDeadlineAndDenialIdentityTests`).
 - **A decline is audited under the run's OWN wid** — `record_skip` minting a fresh one orphans the row from the preview the human declined, the chat and the board card.
 - **"Request changes" (`revise_plan`)** folds free-text feedback into the request and re-previews, bounded by `max_plan_revisions` (3).
 - **Only `replanning` says a revised plan is UP** — `plan_revisions` bumps before the re-preview runs, so a client polling it repaints the OLD plan and clears its note, making a re-plan read as dropped feedback (`PlanRevisionFeedbackTests`).
@@ -33,7 +33,7 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 ## Swarm / fan-out
 
 `engine.decompose`+`plan_swarm` (`MAX_SWARM=5`): ≥2 `{cap,request}` fan out, each gating its writes. **Many repos: one part each, merge-ordered, from the LINKED issue** — one clone per run (`MultiRepoDecomposeTests`).
-- **A sequential/conditional request never fans out** — `_sequential_request` beats the plan call, scanning the request's own words only (`_request_head`: not a `"""`-fenced board-ticket body), and standing aside for the multi-repo split: a dropped fan-out costs latency, a wrong split dead-ends the consuming child (`SequentialRequestGuardTests`).
+- **A sequential/conditional request never fans out** — `_sequential_request` beats the plan call, scanning only the request's own words (`_request_head`), and yields to the multi-repo split: a wrong split dead-ends the consumer (`SequentialRequestGuardTests`).
 
 
 ## Plan-then-execute
@@ -57,7 +57,7 @@ Attempt → judge (pass/fail + critique) → retry folding the critique in, up t
 - **An adverse judge verdict must REPRODUCE before it is acted on** (`judging.confirm_adverse`) — `claude -p` has no temperature/seed, so one sample is a coin flip on a good result; a PASS never re-samples (`JudgeConfirmationTests`).
   - **All FOUR judges route through it**, `judge_review`/`judge_qa` included — both were bare `gateway.complete`, and one FAILed a PR then PASSed the identical commit 21min later (`web-2bd1a194`). Non-pass is adverse: INCONCLUSIVE dead-ends a clean PR.
 - **Every model-bound excerpt is clipped WITH a marker, never a bare slice** — an unmarked cut manufactures the defect it is then failed for. `_clipped` for a prompt that JUDGES, `_clipped_input` for one that FEEDS work — opposite instructions (`StepInputTruncationTests`).
-- **A failed run records its CAUSE, never `str(e)`** (`workflows._failure_detail`) — `str(ActivityError)` is the fixed string "Activity task failed"; the real error hangs off `.cause`, and the traceback sits in a /tmp worker log (`FailureDetailTests`).
+- **A failed run records its CAUSE, never `str(e)`** (`workflows._failure_detail`) — `str(ActivityError)` is the fixed string "Activity task failed"; the real error hangs off `.cause` (`FailureDetailTests`).
 - **An ABSENT verdict is not a failed one** (`workflows._verified_of`; the `verdict is not None` gate on verify_exhausted) — an unjudged turn has `passed` False, so needs-human and the `verified` badge call it a failure (`BrainstormRunTests`).
 - **A completion push is UNATTENDED-only, tiered below the two that park a run** — an interactive run's answer is already on the reader's screen, so it trains the eye past the gate push (`WorkflowUnattendedTests`, `…does_not_push_on_completion`).
 - **A supervisor kill and a harness death are not judgements** — both record `verified=False` so the ladder can steer; `verdict["source"]` marks who decided and `scorecard` counts judge verdicts only (`ScorecardTests`).

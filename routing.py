@@ -258,8 +258,8 @@ def _parse_plan(text, n_caps):
 # the `plan` tier is a local 30B that ignored it, so the gate has to be code, not prose.
 #
 # The bias, deliberately: a suppressed fan-out costs LATENCY; a wrong split costs a WRONG ANSWER.
-# So this is over-eager — widen the marker set freely — and it never removes the "and"-style
-# independence splitting the prompt asks for.
+# So this is over-eager — widen the marker set freely. It can also suppress an ordinary
+# "and ... then ..." split; that costs only latency.
 _SEQUENTIAL_RE = re.compile(r"\b(?:only if|if you find|with the results|then)\b", re.I)
 # The opening line of a `contracts.fence_block(..., '"""')` DATA block (board tickets): everything
 # from it on is untrusted ticket prose, where an ordinary "then" says nothing about ordering.
@@ -276,7 +276,7 @@ def _sequential_request(text):
 
     Word-boundary anchored ON PURPOSE: a bare `then` substring also matches "strengthen" and
     "authenticate", which would silently suppress the fan-out of a whole class of legitimate
-    requests. Ordering inside the alternation is irrelevant — `re.search` returns the LEFTMOST
+    requests. (`\b` still matches inside hyphenated compounds; that only costs latency.) Ordering inside the alternation is irrelevant — `re.search` returns the LEFTMOST
     match, so "only if you find" reports "only if"."""
     m = _SEQUENTIAL_RE.search(text or "")
     return m.group(0).lower() if m else None
