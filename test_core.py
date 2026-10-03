@@ -535,127 +535,35 @@ class DecomposeTests(unittest.TestCase):
         self.assertEqual(engine.decompose("x", self._caps()[:1]), [])
 
 
-class SequentialRequestGuardTests(unittest.TestCase):
-    """Issue #198: a conditional/sequential request is kept SINGLE in CODE, before the plan call —
-    swarm children run in parallel and never wait, so a dependent split answers against nothing
-    (runbook "Entertainment - HB Events": researcher + worker, the worker checked a calendar)."""
-
-    HB = ("check online for events in Hawkes Bay happening this weekend. Send me a message to "
-          "Slack only if you find something")
+class BoardTicketFanOutTests(unittest.TestCase):
+    """A board ticket's fenced body IS its request, so its wording decides fan-out like any other
+    request's — a fence exemption reopened issue #198 for every board-ingress run."""
 
     def setUp(self):
-        import routing
-        self.routing = routing
-        for pt in (mock.patch.object(engine.gateway, "complete", side_effect=self._boom),
-                   mock.patch.object(workspace, "git_repos", return_value=[]),
-                   mock.patch.object(workspace, "linked_issue", return_value=None),
-                   mock.patch.object(routing, "trace", lambda *a, **k: None)):
-            pt.start()
-            self.addCleanup(pt.stop)
+        self._orig = engine.gateway.complete
 
-    @staticmethod
-    def _boom(task, prompt):
-        raise AssertionError("the planner must not be consulted about a conditional request")
+    def tearDown(self):
+        engine.gateway.complete = self._orig
 
-    def _split(self, reply="0: check the build\n1: open a ticket\n2: post to slack"):
-        engine.gateway.complete.side_effect = lambda task, prompt: reply
+    def _caps(self):
+        return [registry.Capability("skill", "research-web", "research the build"),
+                registry.Capability("skill", "slack-message", "post to Slack")]
 
-    _caps = DecomposeTests._caps
+    def test_a_marker_in_the_ticket_body_suppresses(self):
+        import board
+        issue = {"number": 7, "title": "Hawkes Bay events",
+                 "body": "Check online for events. Post to Slack only if you find something."}
+        req = board.issue_to_request(issue, {})["request"]
+        engine.gateway.complete = lambda task, prompt: self.fail("plan call spent")
+        self.assertEqual(engine.decompose(req, self._caps()), [])
 
-    def test_the_incident_request_never_reaches_the_planner(self):
-        self.assertEqual(engine.decompose(self.HB, self._caps()), [])
-
-    def test_each_marker_alone_suppresses_the_fan_out_case_insensitively(self):
-        for request in ("check the build ONLY IF the deploy failed, open a ticket",
-                        "check the build Then open a ticket",
-                        "scan the cluster and open a ticket WITH THE RESULTS",
-                        "research the incident and If You Find a regression, file an issue",
-                        "check the build, then open a ticket",
-                        "run the tests and post to Slack only when they fail",
-                        "check the cluster and if a pod is crashlooping, open a ticket",
-                        "check the build and post to Slack when the build fails",
-                        "check the build and open a ticket unless the build is green"):
-            with self.subTest(request=request):
-                self.assertEqual(engine.decompose(request, self._caps()), [])
-
-    def test_a_dependency_need_not_be_announced(self):
-        # The later half just consumes the earlier half's output ("… about them") — #198's
-        # request with the conditional dropped, and the same wrong answer if it fans out.
-        self._split("0: check online for events\n2: post them to Slack")
-        for request in ("check online for events this weekend and send me a Slack message about them",
-                        "gather the failing pods' logs and open a ticket describing them",
-                        "find the slowest queries and write them up in a doc"):
-            with self.subTest(request=request):
-                self.assertEqual(engine.decompose(request, self._caps()), [])
-
-    def test_word_boundaries_hold(self):
-        # A substring "then" trips on "strengthen", which would silently disable this fan-out.
-        self._split("0: strengthen the auth path\n1: open a ticket")
-        tasks = engine.decompose("strengthen the auth path and open a ticket", self._caps())
-        self.assertEqual([t["cap"].name for t in tasks], ["ci-cli", "github-issue"])
-
-    def test_independent_deliverables_still_fan_out(self):
-        self._split()
-        for request in ("check the build and open a ticket",
-                        "check the failing build AND open a ticket AND post an update to Slack"):
-            with self.subTest(request=request):
-                tasks = engine.decompose(request, self._caps())
-                self.assertEqual([t["cap"].name for t in tasks],
-                                 ["ci-cli", "github-issue", "slack-maintenance-thread"])
-
-    def test_a_multi_repo_change_is_exempt(self):
-        # Its parts depend on each other BY DEFINITION and are split one per repo on purpose,
-        # merge-ordered; the body's own wording is sequential, and so is this request's.
-        m = MultiRepoDecomposeTests
-        issue = {**m.ISSUE, "body": m.ISSUE["body"] + "\nOwn PR, no-op until a policy references it."}
-        with mock.patch.object(workspace, "git_repos", return_value=m.REPOS), \
-                mock.patch.object(workspace, "linked_issue", return_value=issue):
-            self._split(m.REPLY)
-            tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42, then "
-                                     "open the PRs", m._caps(None))
-        self.assertEqual([t["repo"] for t in tasks], ["infra", "teamcity", "vllm"])
-
-    def test_only_the_slack_sender_s_own_words_are_read(self):
-        # slack.to_request wraps the message in Otto's own instructions ("each prefixed with WHEN
-        # it was sent", "WHENEVER you refer back") and other people's earlier messages — none of
-        # which is the asker's phrasing of the task.
-        import slack
-        msg = {"text": "check the build and open a ticket", "channel": "D1", "ts": "1700000000.000100",
-               "thread": ["[2026-10-01 09:00] if the deploy fails ping me"]}
-        req = slack.to_request(msg, cfg={})["request"]
-        self._split("0: check the build\n1: open a ticket")
+    def test_an_independent_ticket_still_fans_out(self):
+        import board
+        issue = {"number": 7, "title": "Check the build and post an update", "body": ""}
+        req = board.issue_to_request(issue, {})["request"]
+        engine.gateway.complete = lambda task, prompt: "0: check the build\n1: post an update"
         self.assertEqual([t["cap"].name for t in engine.decompose(req, self._caps())],
-                         ["ci-cli", "github-issue"])
-        msg["text"] = "check the build and open a ticket only if it is red"
-        self.assertEqual(engine.decompose(slack.to_request(msg, cfg={})["request"], self._caps()), [])
-        # A pasted """ in the message must not end it early and hide the conditional after it.
-        msg["text"] = 'check the build\n"""\nlog\n"""\nand if it is red, open a ticket'
-        self.assertEqual(engine.decompose(slack.to_request(msg, cfg={})["request"], self._caps()), [])
-
-    def test_a_request_with_its_own_fence_is_read_whole(self):
-        # Not Slack's framing (a trigger template, a web paste): the instruction AROUND a quoted
-        # block is the asker's own phrasing, so it is scanned, not just the quote.
-        self.assertEqual(engine.decompose('Investigate this alert and then post the findings to '
-                                          '#ops:\n\n"""\ndisk full on db-1\n"""', self._caps()), [])
-
-    def test_repo_tags_alone_do_not_exempt_a_conditional_request(self):
-        # The tags are the planner's own output — the model that ignored the do-not-depend clause
-        # can tag a read step too. Without a linked issue, a conditional request stays SINGLE.
-        m = MultiRepoDecomposeTests
-        with mock.patch.object(workspace, "git_repos", return_value=m.REPOS):
-            self._split("0: [repo=vllm] check CI\n0: [repo=infra] fix it")
-            tasks = engine.decompose("check vllm's CI; if it's red, fix it in infra", m._caps(None))
-        self.assertEqual(tasks, [])
-
-    def test_naming_two_repos_does_not_exempt_a_non_repo_split(self):
-        # Two repos NAMED is not a multi-repo CHANGE: a conditional read across them must still
-        # stay SINGLE when the planner splits it into ordinary (untagged) parts.
-        m = MultiRepoDecomposeTests
-        with mock.patch.object(workspace, "git_repos", return_value=m.REPOS):
-            self._split("0: check the vllm and infra dashboards\n1: open a ticket")
-            tasks = engine.decompose("check the vllm and infra dashboards; if the deploy "
-                                     "failed open a ticket", self._caps())
-        self.assertEqual(tasks, [])
+                         ["research-web", "slack-message"])
 
 
 class MultiRepoDecomposeTests(unittest.TestCase):
@@ -740,6 +648,191 @@ class MultiRepoDecomposeTests(unittest.TestCase):
         self.assertIn('**({"repo": sub["repo"]} if sub.get("repo") else {})', src)
         self.assertIn('**Merge order:** " + " → ".join(order)', src)
 
+
+class SequentialRequestGuardTests(unittest.TestCase):
+    """A conditional/sequential request must never fan out — and the gate is CODE, not the
+    planner prompt.
+
+    Measured failure: runbook `Entertainment - HB Events` ("check online for events in Hawkes
+    Bay … send me a message to Slack ONLY IF you find something") was fanned into a researcher
+    and a worker child. `wf_swarm` runs children concurrently under one `asyncio.gather` with no
+    dependency wiring (issue #58), so the worker started 16s after the researcher and went off to
+    check a calendar instead of waiting for it, while the research child dead-ended at
+    `verify_exhausted`. The prompt already forbade splitting deliverables that "do NOT depend on
+    each other's output"; the local `plan` tier ignored it, so `routing._sequential_request`
+    decides this before any model call.
+
+    The bias is deliberate and tested here: a suppressed fan-out costs LATENCY, a wrong split
+    costs a WRONG ANSWER, so the guard is over-eager — but only in the direction of SINGLE."""
+
+    # The incident request, verbatim in shape: the second deliverable consumes the first.
+    HB = ("Check online for events in Hawkes Bay over the next month and find anything worth "
+          "going to. Send me a message to Slack only if you find something.")
+
+    # The multi-repo fixture: two registered repos named by a linked issue.
+    ISSUE = {"slug": "acme/vllm", "number": 42, "url": "https://github.com/acme/vllm/issues/42",
+             "title": "Route the policy through infra",
+             "body": "**infra repo**: publish the policy.\n**vllm repo**: call it, and then flip "
+                     "the default.\nEach half gets its own PR and is a no-op until a policy "
+                     "references it."}
+    REPOS = [{"name": n, "path": f"/r/{n}", "origin": f"git@github.com:acme/{n}.git"}
+             for n in ("infra", "vllm")]
+    REPLY = "0: [repo=infra] publish the policy\n0: [repo=vllm] call the policy"
+
+    def setUp(self):
+        import routing
+        self.routing = routing
+        self._complete, self._trace = engine.gateway.complete, routing.trace
+        routing.trace = lambda *a, **k: None
+
+    def tearDown(self):
+        engine.gateway.complete = self._complete
+        self.routing.trace = self._trace
+
+    def _caps(self):
+        return [registry.Capability("agent", "research-web", "search the web and report back"),
+                registry.Capability("skill", "slack-message", "send a Slack message")]
+
+    def _never_plans(self):
+        def boom(task, prompt):
+            self.fail(f"the plan model was called for a sequential request (tier={task!r})")
+        return boom
+
+    def test_the_incident_request_never_reaches_the_plan_model(self):
+        engine.gateway.complete = self._never_plans()
+        self.assertEqual(engine.decompose(self.HB, self._caps()), [])
+
+    def test_the_guard_says_which_marker_it_matched(self):
+        seen = []
+        with mock.patch.object(self.routing, "trace",
+                               side_effect=lambda tag, msg: seen.append((tag, msg))):
+            engine.gateway.complete = self._never_plans()
+            engine.decompose(self.HB, self._caps())
+        self.assertEqual(seen[0][0], "PLANNER")
+        self.assertIn("'only if'", seen[0][1])
+        self.assertIn("no fan-out", seen[0][1])
+
+    def test_each_marker_alone_suppresses_the_fanout(self):
+        engine.gateway.complete = self._never_plans()
+        for text in ("check the build only if the tests pass",
+                     "check the build then open a ticket",
+                     "summarize the incident with the results attached",
+                     "email me if you find anything odd"):
+            with self.subTest(text=text):
+                self.assertEqual(engine.decompose(text, self._caps()), [])
+
+    def test_an_unnamed_dependency_still_suppresses(self):
+        # #198's request with the conditional dropped: the later half only REFERS BACK to the
+        # earlier half's output, which is the same dependency and the same wrong answer.
+        engine.gateway.complete = self._never_plans()
+        for text in ("find events in Hawkes Bay and send me a Slack message about them",
+                     "summarize the logs and post it to Slack",
+                     "check the build only when the tests pass",
+                     "run the scan and, depending on the output, open a ticket",
+                     "research the outage; once you have it, write the postmortem"):
+            with self.subTest(text=text):
+                self.assertEqual(engine.decompose(text, self._caps()), [])
+
+    def test_the_reported_marker_is_whitespace_normalised(self):
+        self.assertEqual(self.routing._sequential_request("page me ONLY\n  IF it fails"), "only if")
+
+    def test_the_markers_are_case_insensitive(self):
+        engine.gateway.complete = self._never_plans()
+        for text in ("Check the build ONLY IF the tests pass",
+                     "check the build THEN open a ticket",
+                     "summarize it WITH THE RESULTS attached",
+                     "email me IF YOU FIND anything odd"):
+            with self.subTest(text=text):
+                self.assertEqual(engine.decompose(text, self._caps()), [])
+
+    def test_a_word_that_merely_contains_a_marker_still_fans_out(self):
+        # "strengthen"/"authenticate" hold the bare substring `then`; word boundaries are what
+        # keep a whole class of legitimate fan-outs alive.
+        self.assertIsNone(self.routing._sequential_request("strengthen the auth path"))
+        self.assertIsNone(self.routing._sequential_request("thenable"))
+        self.assertEqual(self.routing._sequential_request("do a THEN do b"), "then")
+        self.assertIsNone(self.routing._sequential_request(""))
+        self.assertIsNone(self.routing._sequential_request(None))
+        engine.gateway.complete = lambda task, prompt: "0: strengthen the auth path\n1: open a ticket"
+        tasks = engine.decompose("strengthen the auth path and open a ticket", self._caps())
+        self.assertEqual([t["cap"].name for t in tasks], ["research-web", "slack-message"])
+
+    def test_independent_controls_still_fan_out(self):
+        engine.gateway.complete = lambda task, prompt: "0: check the build\n1: open a ticket"
+        for text in ("check the build and open a ticket",
+                     "check the failing build AND open a ticket AND post an update to Slack"):
+            with self.subTest(text=text):
+                tasks = engine.decompose(text, self._caps())
+                self.assertEqual([t["cap"].name for t in tasks], ["research-web", "slack-message"])
+
+    def test_the_multi_repo_split_survives_the_guard(self):
+        """`not repos` is part of the fix, not an optimisation: several repos split one part each
+        ON PURPOSE even though the parts depend on each other."""
+        with mock.patch.object(workspace, "git_repos", return_value=self.REPOS), \
+                mock.patch.object(workspace, "linked_issue", return_value=self.ISSUE):
+            engine.gateway.complete = lambda task, prompt: self.REPLY
+            tasks = engine.decompose("Fix infra, then vllm. Work on this "
+                                     "https://github.com/acme/vllm/issues/42", self._caps())
+        self.assertEqual([t["repo"] for t in tasks], ["infra", "vllm"])
+        for t in tasks:
+            self.assertIn("Merge order: infra → vllm", t["request"])
+
+
+    def test_a_bare_conditional_suppresses(self):
+        # A word list after "if" missed these; a miss is a wrong answer, a match a lost split.
+        engine.gateway.complete = self._never_plans()
+        for text in ("check the cluster and if a pod is crashlooping, open a ticket",
+                     "check the build and post to Slack when the build fails",
+                     "check the build and open a ticket unless the build is green"):
+            with self.subTest(text=text):
+                self.assertEqual(engine.decompose(text, self._caps()), [])
+
+    def test_repo_tags_alone_do_not_exempt_a_conditional_request(self):
+        # The tags are the planner's own output — the model that ignored the do-not-depend clause
+        # can tag a read step too. Without a linked issue, a conditional request stays SINGLE.
+        with mock.patch.object(workspace, "git_repos", return_value=self.REPOS), \
+                mock.patch.object(workspace, "linked_issue", return_value=None):
+            engine.gateway.complete = lambda task, prompt: (
+                "0: [repo=vllm] check CI\n0: [repo=infra] fix it")
+            self.assertEqual(engine.decompose("check vllm's CI; if it's red, fix it in infra",
+                                              self._caps()), [])
+
+    def test_naming_two_repos_does_not_exempt_a_non_repo_split(self):
+        # Two repos NAMED is not a multi-repo CHANGE: an untagged split stays SINGLE.
+        with mock.patch.object(workspace, "git_repos", return_value=self.REPOS), \
+                mock.patch.object(workspace, "linked_issue", return_value=None):
+            engine.gateway.complete = lambda task, prompt: (
+                "0: check the vllm and infra dashboards\n1: post to slack")
+            self.assertEqual(engine.decompose("check the vllm and infra dashboards; if the deploy "
+                                              "failed post to slack", self._caps()), [])
+
+    def test_only_the_slack_sender_s_own_words_are_read(self):
+        # slack.to_request wraps the message in Otto's own instructions ("each prefixed with WHEN
+        # it was sent", "WHENEVER you refer back") and other people's earlier messages — none of
+        # which is the asker's phrasing of the task.
+        import slack
+        msg = {"text": "check the build and open a ticket", "channel": "D1",
+               "ts": "1700000000.000100", "thread": ["[2026-10-01 09:00] if the deploy fails ping me"]}
+        with mock.patch.object(workspace, "git_repos", return_value=[]), \
+                mock.patch.object(workspace, "linked_issue", return_value=None):
+            engine.gateway.complete = lambda task, prompt: "0: check the build\n1: open a ticket"
+            tasks = engine.decompose(slack.to_request(msg, cfg={})["request"], self._caps())
+            self.assertEqual([t["cap"].name for t in tasks], ["research-web", "slack-message"])
+            engine.gateway.complete = self._never_plans()
+            for text in ("check the build and open a ticket only if it is red",
+                         # a pasted """ must not end the message early and hide the conditional
+                         'check the build\n"""\nlog\n"""\nand if it is red, open a ticket'):
+                with self.subTest(text=text):
+                    msg["text"] = text
+                    self.assertEqual(engine.decompose(slack.to_request(msg, cfg={})["request"],
+                                                      self._caps()), [])
+
+    def test_a_request_with_its_own_fence_is_read_whole(self):
+        # Not Slack's framing (a trigger template, a web paste): the instruction AROUND a quoted
+        # block is the asker's own phrasing, so it is scanned, not just the quote.
+        engine.gateway.complete = self._never_plans()
+        self.assertEqual(engine.decompose('Investigate this alert and then post the findings to '
+                                          '#ops:\n\n"""\ndisk full on db-1\n"""', self._caps()), [])
 
 class LinkedIssueHelperTests(unittest.TestCase):
     def test_issue_ref_parses_issue_urls_only(self):
@@ -3323,11 +3416,7 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 88934 -> 89329: repo checks before the reviewer (#135). Two rules: it runs sandboxed or
     # not at all, and its shell command never arrives through a snapshot import.
     # 89329 -> 89615: the Slack frontman (delegate + relay) replaced the handoff classifier's rule.
-    # 89615 -> 90396 (#198): the swarm planner's one deterministic gate. Children run in PARALLEL
-    # and never wait, so a conditional/sequential request must be kept SINGLE in code — before the
-    # plan call — and the rule names the half an edit drops by "simplifying" the guard back into
-    # the prompt clause that the model already ignored on a runbook fire.
-    MAX_RULES_BYTES = 90396   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 90139   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

@@ -247,6 +247,67 @@ def _parse_plan(text, n_caps):
     return out
 
 
+# A request whose parts depend on each other must never fan out: `wf_swarm` runs every child
+# CONCURRENTLY under one `asyncio.gather` with no dependency wiring between them (issue #58), so a
+# split whose second deliverable consumes the first starts the consumer before its producer — and
+# the consumer dead-ends waiting for work that was never ordered. Runbook `Entertainment - HB
+# Events` ("check online for events in Hawkes Bay … send me a message to Slack only if you find
+# something") fanned into `runbook-rb-8707935b-ce0a7e-s1`/`-s2`: the worker checked a calendar
+# instead of waiting for the research, and the research child ran out of attempts at
+# `verify_exhausted`. The prompt below already says "do NOT depend on each other's output", but
+# the `plan` tier is a local 30B that ignored it, so the gate has to be code, not prose.
+#
+# The bias, deliberately: a suppressed fan-out costs LATENCY; a wrong split costs a WRONG ANSWER.
+# So this is over-eager — widen the marker set freely. It can also suppress an ordinary
+# "and ... then ..." split; that costs only latency.
+_SEQUENTIAL_MARKERS = (
+    r"only\s+(?:if|when|after|once)",              # "… send a Slack message only if you find …"
+    # Bare conditionals, not "if <one of a word list>": a list misses "if a pod …", "when the
+    # build fails", "unless it is green" — and a miss is a wrong answer, a match a lost split.
+    r"if|unless|when(?:ever)?",
+    r"then",                                        # also covers "and then" / ", then"
+    r"with\s+the\s+(?:results?|findings|output|details|answer|list)",
+    r"(?:based\s+on|using)\s+the\s+(?:results?|findings|output)",
+    # …and the dependency need not be NAMED to be one: the later half can just refer back to the
+    # earlier half's output ("… send me a Slack message about them" — #198's request with the
+    # conditional dropped: same dependency, same wrong answer).
+    r"(?:about|with|from|using|including|based\s+on)\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
+    r"(?:describ\w*|quot\w*|summari[sz]\w*|attach\w*|inclu\w*|post\w*|send\w*|shar\w*|writ\w*)"
+    r"\s+(?:them|it|those|these|"
+    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
+    r"depending\s+on|as\s+long\s+as|provided\s+(?:that|the)",
+    r"in\s+that\s+case|otherwise|wait\s+for",
+    r"once\s+(?:that|you|the\s+(?:results?|findings|run|build|research|check))",
+    r"after\s+that",
+)
+_SEQUENTIAL_RE = re.compile(r"\b(?:" + "|".join(_SEQUENTIAL_MARKERS) + r")\b", re.I)
+
+
+def _sequential_request(text):
+    r"""The sequential/conditional marker in `text`, or None. PURE (no LLM) so it's unit-testable.
+
+    Word-boundary anchored ON PURPOSE: a bare `then` substring also matches "strengthen" and
+    "authenticate", which would silently suppress the fan-out of a whole class of legitimate
+    requests. (`\b` still matches inside hyphenated compounds; that only costs latency.)
+    Ordering inside the alternation is irrelevant — `re.search` returns the LEFTMOST match, so
+    "only if you find" reports "only if"."""
+    m = _SEQUENTIAL_RE.search(text or "")
+    return " ".join(m.group(0).lower().split()) if m else None
+
+
+def _own_words(request):
+    """The asker's own phrasing of the task — what `slack.to_request` was handed, when it framed
+    this request, else the task text (`contracts.task_text`). PURE. Slack's framing is OTTO's own
+    instruction text ("each prefixed with when it was sent", "whenever you refer back") plus other
+    people's earlier messages; scanning it vetoed every threaded Slack fan-out. Every other ingress
+    (a board ticket's fenced body included) is scanned whole, which only errs toward SINGLE."""
+    import slack
+    text = task_text(request) or ""
+    words = slack.own_words(text)
+    return text if words is None else words
+
+
 _REPO_TAG_RE = re.compile(r"^\[\s*repo\s*=\s*([A-Za-z0-9._-]+)\s*\]\s*(.+)$", re.I)
 # How much of a linked issue's body the planner reads.
 _LINKED_ISSUE_CHARS = 8_000
@@ -310,72 +371,6 @@ def _brief_repo_parts(tasks, issue):
             "merge after.")
 
 
-# A CONDITIONAL or SEQUENTIAL request must never fan out. Swarm children run in PARALLEL and never
-# wait for one another (`workflows._run_swarm`), so a part that depends on another part's RESULT is
-# handed a world where that result does not exist yet — and answers against nothing. Runbook
-# "Entertainment - HB Events" (issue #198) is the observed cost: "check online for events … send me
-# a Slack message ONLY IF you find something" split into researcher + worker, the worker did not
-# wait for the research, checked a calendar instead, found nothing and PASSED verify — a wrong
-# ANSWER, not merely a slow one. The prompt below already forbids that split, but the plan tier can
-# be a local model (Qwen3-Coder-30B ignored the clause) and a prompt is a request, never a gate.
-# This one is code, so it holds whatever the planner replies — and it decides before the model call,
-# so no sampling can re-introduce the split.
-#
-# Biased toward SINGLE on purpose: the markers are lexical, with no model judgement in the loop. A
-# false positive costs only a lost fan-out — the run still does the whole task, one step at a time —
-# while a false negative costs a wrong result. It reads the REQUEST (`contracts.task_text`), not a
-# linked issue's body: that body is DATA the planner is shown, not the user's own phrasing of the
-# task, and a doc that merely mentions a dependency is not itself a sequential task.
-_SEQUENCE_MARKERS = (
-    # Bare conditionals, not "if <one of a word list>": a list misses "if a pod …", "when the
-    # build fails", "unless it is green" — and a miss is a wrong answer, a match only a lost split.
-    r"if|unless|when(?:ever)?",
-    r"and\s+then\b|,\s*then\b",
-    r"then\s+(?:open|post|send|create|file|write|comment|tell|reply|report|update|message|do|fix"
-    r"|run|deploy)",
-    r"with\s+the\s+(?:results?|findings|output|details|answer|list)",
-    r"based\s+on\s+the\s+(?:results?|findings|output)",
-    r"using\s+the\s+(?:results?|findings|output)",
-    # …and the dependency need not be NAMED to be one: the later half can just refer back to the
-    # earlier half's output ("… send me a Slack message about them" — issue #198's request with
-    # the conditional dropped, same dependency, same wrong answer). The noun list is the artifact
-    # vocabulary a handoff names; the same handoff passes it on as "it"/"them" instead ("post it").
-    r"(?:about|with|from|using|including|based\s+on)\s+(?:them|it|those|these|"
-    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))",
-    r"(?:describ\w*|quot\w*|summari[sz]\w*|attach\w*|inclu\w*|post\w*|send\w*|shar\w*|writ\w*)"
-    r"\s+(?:them|it|those|these|"
-    r"the\s+(?:results?|findings|output|details|summary|logs?|list|report))\b",
-    r"depending\s+on|as\s+long\s+as|provided\s+(?:that|the)",
-    r"in\s+that\s+case|otherwise|wait\s+for",
-    r"once\s+(?:that|you|the\s+(?:results?|findings|run|build|research|check))",
-    r"after\s+that",
-    r"then",                                        # bare "then" anywhere: "build it then ship"
-)
-# Word-boundary anchored at BOTH ends, and that is load-bearing: a bare substring "then" also
-# matches "strengthen"/"authenticate", and "if you" matches "gif you", silently disabling
-# legitimate fan-outs.
-_SEQUENCE_RE = re.compile(r"\b(?:" + "|".join(_SEQUENCE_MARKERS) + r")\b", re.I)
-
-
-def _own_words(request):
-    """The asker's own phrasing of the task — what `slack.to_request` was handed, when it framed
-    this request, else the task text (`contracts.task_text`). PURE. Slack's framing is OTTO's own
-    instruction text ("each prefixed with when it was sent", "whenever you refer back") plus other
-    people's earlier messages; scanning it vetoed every threaded Slack fan-out. Every other ingress
-    is scanned whole, which only errs toward SINGLE."""
-    import slack
-    text = task_text(request) or ""
-    words = slack.own_words(text)
-    return text if words is None else words
-
-
-def _sequential_phrasing(request):
-    """The phrase that makes `request` a conditional/sequential task, or "" when it isn't — PURE,
-    so the fan-out decision is reproducible whatever the plan tier returns (`_SEQUENCE_RE`)."""
-    m = _SEQUENCE_RE.search(_own_words(request))
-    return m.group(0).strip() if m else ""
-
-
 def decompose(request, caps, project_root=None):
     """Swarm planner: decide whether a request is really SEVERAL independent sub-tasks that
     can run in parallel, each handled by a different capability. Returns a list of
@@ -385,24 +380,25 @@ def decompose(request, caps, project_root=None):
     Runs on its own 'plan' model tier (configurable in the Admin tab — local-capable like
     routing, but separable so the fan-out decision can use a stronger model than Router #1).
     Conservative by design: it only splits when the deliverables are genuinely independent, so
-    the common single-task case keeps costing just one extra (cheap) planning call. For a
-    conditional/sequential request the SINGLE decision is DETERMINISTIC, not prompt-only
-    (`_sequential_phrasing`), and costs no planning call at all — multi-repo changes excepted."""
+    the common single-task case keeps costing just one extra (cheap) planning call. For
+    conditional/sequential wording that decision is DETERMINISTIC rather than prompt-only —
+    `_sequential_request` returns [] before the model is called at all. The one exception is a
+    change spanning several registered repos, which is split one part per repo ON PURPOSE even
+    though the parts depend on each other (`_multi_repo_context`), so the guard stays out of it."""
     caps = [c for c in caps if getattr(c, "enabled", True)]
     caps = _repo_eligible(caps, project_root)   # repo-scoped project caps need matching repo ctx
     if len(caps) < 2:
         return []
     issue, repos, repo_note = _multi_repo_context(request)
-    # Code, not a prompt: swarm children never wait. A multi-repo change is EXEMPT — its parts
-    # depend on each other by definition and are split one per repo on purpose, merge-ordered
-    # (`_multi_repo_context`), so a blanket guard would silently delete that feature. But naming
-    # two repos is not proof of a code change ("check the vllm and infra dashboards; if …"), so
-    # the exemption is decided on the PLAN below: only an all-per-repo split survives. No
-    # `gateway.decided` here: it attaches to the last `complete()`, and there is none.
-    conditional = _sequential_phrasing(request)
-    if conditional and not repos:
-        trace("PLANNER", f"conditional/sequential request ({conditional!r}) -> no fan-out")
-        return []
+    # A multi-repo change is split on purpose, so the exemption is part of the fix: a blanket
+    # guard here would delete that feature. Reads the request TEXT only, never the linked issue's
+    # body. But naming two repos is not proof of a code change ("check the vllm and infra
+    # dashboards; if …"), so the exemption is settled on the PLAN below, not here.
+    marker = _sequential_request(_own_words(request))
+    if marker and not repos:
+        trace("PLANNER", f"sequential/conditional request ({marker!r}) -> "
+                         "single cohesive task, no fan-out")
+        return []                              # before gateway.complete: no plan call is spent
     shortlist = _shortlist(request, caps)
     listing = "\n".join(
         f"{i}. [{c.kind}] {c.name}: {c.description[:ROUTE_DESC_CHARS]}" for i, c in enumerate(shortlist))
@@ -445,9 +441,9 @@ def decompose(request, caps, project_root=None):
     # The [repo=] tags come from the same planner that ignored the do-not-depend clause, so they
     # alone prove nothing ("check vllm's CI; if red, fix it in infra" tags both halves). The
     # exemption also needs a LINKED issue — where a real multi-repo change is specified.
-    if conditional and not (issue and all(t["repo"] for t in tasks)):
-        trace("PLANNER", f"conditional/sequential request ({conditional!r}), not a linked "
-              "per-repo split -> no fan-out")
+    if marker and not (issue and all(t["repo"] for t in tasks)):
+        trace("PLANNER", f"sequential/conditional request ({marker!r}), not a linked per-repo "
+                         "split -> no fan-out")
         return []
     _brief_repo_parts(tasks, issue)
     trace("PLANNER", f"fanned out into {len(tasks)} sub-tasks: "
