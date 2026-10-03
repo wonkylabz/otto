@@ -754,8 +754,8 @@ class SequentialRequestGuardTests(unittest.TestCase):
         with mock.patch.object(workspace, "git_repos", return_value=self.REPOS), \
                 mock.patch.object(workspace, "linked_issue", return_value=self.ISSUE):
             engine.gateway.complete = lambda task, prompt: self.REPLY
-            tasks = engine.decompose("Work on this https://github.com/acme/vllm/issues/42",
-                                     self._caps())
+            tasks = engine.decompose("Fix infra, then vllm. Work on this "
+                                     "https://github.com/acme/vllm/issues/42", self._caps())
         self.assertEqual([t["repo"] for t in tasks], ["infra", "vllm"])
         for t in tasks:
             self.assertIn("Merge order: infra → vllm", t["request"])
