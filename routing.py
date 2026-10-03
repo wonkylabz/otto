@@ -357,10 +357,24 @@ _SEQUENCE_MARKERS = (
 _SEQUENCE_RE = re.compile(r"\b(?:" + "|".join(_SEQUENCE_MARKERS) + r")\b", re.I)
 
 
+# A framed ingress (`slack.to_request`) puts the sender's message in the FIRST """ block; around it
+# is OTTO's own instruction text ("each prefixed with when it was sent", "whenever you refer
+# back") and other people's earlier messages. Scanning those vetoed every threaded Slack fan-out.
+_FIRST_FENCE_RE = re.compile(r'"""\n(.*?)\n"""', re.S)
+
+
+def _own_words(request):
+    """The asker's own phrasing of the task — the first fenced block when the ingress framed it,
+    else the task text (`contracts.task_text`). PURE."""
+    text = task_text(request) or ""
+    m = _FIRST_FENCE_RE.search(text)
+    return m.group(1) if m else text
+
+
 def _sequential_phrasing(request):
     """The phrase that makes `request` a conditional/sequential task, or "" when it isn't — PURE,
     so the fan-out decision is reproducible whatever the plan tier returns (`_SEQUENCE_RE`)."""
-    m = _SEQUENCE_RE.search(task_text(request) or "")
+    m = _SEQUENCE_RE.search(_own_words(request))
     return m.group(0).strip() if m else ""
 
 

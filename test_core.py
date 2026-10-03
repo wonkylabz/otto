@@ -615,6 +615,20 @@ class SequentialRequestGuardTests(unittest.TestCase):
                                      "open the PRs", m._caps(None))
         self.assertEqual([t["repo"] for t in tasks], ["infra", "teamcity", "vllm"])
 
+    def test_only_the_slack_sender_s_own_words_are_read(self):
+        # slack.to_request wraps the message in Otto's own instructions ("each prefixed with WHEN
+        # it was sent", "WHENEVER you refer back") and other people's earlier messages — none of
+        # which is the asker's phrasing of the task.
+        import slack
+        msg = {"text": "check the build and open a ticket", "channel": "D1", "ts": "1700000000.000100",
+               "thread": ["[2026-10-01 09:00] if the deploy fails ping me"]}
+        req = slack.to_request(msg, cfg={})["request"]
+        self._split("0: check the build\n1: open a ticket")
+        self.assertEqual([t["cap"].name for t in engine.decompose(req, self._caps())],
+                         ["ci-cli", "github-issue"])
+        msg["text"] = "check the build and open a ticket only if it is red"
+        self.assertEqual(engine.decompose(slack.to_request(msg, cfg={})["request"], self._caps()), [])
+
     def test_repo_tags_alone_do_not_exempt_a_conditional_request(self):
         # The tags are the planner's own output — the model that ignored the do-not-depend clause
         # can tag a read step too. Without a linked issue, a conditional request stays SINGLE.
