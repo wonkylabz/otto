@@ -535,6 +535,35 @@ class DecomposeTests(unittest.TestCase):
         self.assertEqual(engine.decompose("x", self._caps()[:1]), [])
 
 
+class BoardTicketFanOutTests(unittest.TestCase):
+    """A board ticket's body is fenced untrusted DATA; its prose never decides fan-out."""
+
+    def setUp(self):
+        self._orig = engine.gateway.complete
+
+    def tearDown(self):
+        engine.gateway.complete = self._orig
+
+    def test_then_in_a_ticket_body_still_fans_out(self):
+        import board
+        caps = [registry.Capability("skill", "research-web", "research the build"),
+                registry.Capability("skill", "slack-message", "post to Slack")]
+        issue = {"number": 7, "title": "Check the build and post an update",
+                 "body": "Check the failing build, then summarise. Post to Slack, only if you can."}
+        req = board.issue_to_request(issue, {})["request"]
+        engine.gateway.complete = lambda task, prompt: "0: check the build\n1: post an update"
+        self.assertEqual([t["cap"].name for t in engine.decompose(req, caps)],
+                         ["research-web", "slack-message"])
+
+    def test_a_marker_in_the_head_still_suppresses(self):
+        import board
+        caps = [registry.Capability("skill", "research-web", "research the build"),
+                registry.Capability("skill", "slack-message", "post to Slack")]
+        req = board.issue_to_request({"number": 7, "title": "t", "body": "b"}, {})["request"]
+        engine.gateway.complete = lambda task, prompt: self.fail("plan call spent")
+        self.assertEqual(engine.decompose("Do a, then b. " + req, caps), [])
+
+
 class MultiRepoDecomposeTests(unittest.TestCase):
     """A change spanning several registered repos splits one part per repo (web-8a2764b8: a
     three-repo issue linked by URL alone ran as ONE vllm run, which rightly refused to ship
@@ -721,9 +750,7 @@ class SequentialRequestGuardTests(unittest.TestCase):
 
     def test_the_multi_repo_split_survives_the_guard(self):
         """`not repos` is part of the fix, not an optimisation: several repos split one part each
-        ON PURPOSE even though the parts depend on each other. The linked body here says "then"
-        on purpose — the guard reads the request TEXT only, never the issue body, whose prose
-        cannot be keyword-matched safely."""
+        ON PURPOSE even though the parts depend on each other."""
         with mock.patch.object(workspace, "git_repos", return_value=self.REPOS), \
                 mock.patch.object(workspace, "linked_issue", return_value=self.ISSUE):
             engine.gateway.complete = lambda task, prompt: self.REPLY

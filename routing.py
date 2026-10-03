@@ -261,6 +261,14 @@ def _parse_plan(text, n_caps):
 # So this is over-eager — widen the marker set freely — and it never removes the "and"-style
 # independence splitting the prompt asks for.
 _SEQUENTIAL_RE = re.compile(r"\b(?:only if|if you find|with the results|then)\b", re.I)
+# The opening line of a `contracts.fence_block(..., '"""')` DATA block (board tickets): everything
+# from it on is untrusted ticket prose, where an ordinary "then" says nothing about ordering.
+_DATA_FENCE_RE = re.compile(r'^"""$', re.M)
+
+
+def _request_head(request):
+    """The request's own wording: the task text with any `\"\"\"`-fenced DATA block cut off. PURE."""
+    return _DATA_FENCE_RE.split(task_text(request), 1)[0]
 
 
 def _sequential_request(text):
@@ -359,8 +367,8 @@ def decompose(request, caps, project_root=None):
     if not repos:
         # A multi-repo change is split on purpose, so the exemption above is part of the fix: a
         # blanket guard here would delete that feature. Reads the request TEXT only — never the
-        # linked issue's body, whose prose ("no-op until a policy references it") is not a signal.
-        marker = _sequential_request(task_text(request))
+        # linked issue's body, nor a fenced ticket body (`_request_head`): their prose is no signal.
+        marker = _sequential_request(_request_head(request))
         if marker:
             trace("PLANNER", f"sequential/conditional request ({marker!r}) -> "
                              "single cohesive task, no fan-out")
