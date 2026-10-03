@@ -615,6 +615,15 @@ class SequentialRequestGuardTests(unittest.TestCase):
                                      "open the PRs", m._caps(None))
         self.assertEqual([t["repo"] for t in tasks], ["infra", "teamcity", "vllm"])
 
+    def test_repo_tags_alone_do_not_exempt_a_conditional_request(self):
+        # The tags are the planner's own output — the model that ignored the do-not-depend clause
+        # can tag a read step too. Without a linked issue, a conditional request stays SINGLE.
+        m = MultiRepoDecomposeTests
+        with mock.patch.object(workspace, "git_repos", return_value=m.REPOS):
+            self._split("0: [repo=vllm] check CI\n0: [repo=infra] fix it")
+            tasks = engine.decompose("check vllm's CI; if it's red, fix it in infra", m._caps(None))
+        self.assertEqual(tasks, [])
+
     def test_naming_two_repos_does_not_exempt_a_non_repo_split(self):
         # Two repos NAMED is not a multi-repo CHANGE: a conditional read across them must still
         # stay SINGLE when the planner splits it into ordinary (untagged) parts.

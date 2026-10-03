@@ -430,9 +430,12 @@ def decompose(request, caps, project_root=None):
         tasks.append({"cap": cap, "request": sub, "repo": repo})
     if len(tasks) < 2:
         return []
-    if conditional and not all(t["repo"] for t in tasks):
-        trace("PLANNER", f"conditional/sequential request ({conditional!r}), not a per-repo "
-              "split -> no fan-out")
+    # The [repo=] tags come from the same planner that ignored the do-not-depend clause, so they
+    # alone prove nothing ("check vllm's CI; if red, fix it in infra" tags both halves). The
+    # exemption also needs a LINKED issue — where a real multi-repo change is specified.
+    if conditional and not (issue and all(t["repo"] for t in tasks)):
+        trace("PLANNER", f"conditional/sequential request ({conditional!r}), not a linked "
+              "per-repo split -> no fan-out")
         return []
     _brief_repo_parts(tasks, issue)
     trace("PLANNER", f"fanned out into {len(tasks)} sub-tasks: "
