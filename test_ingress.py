@@ -237,6 +237,92 @@ class RunbookStructureTests(unittest.TestCase):
             runbooks.normalize({"name": "n", "steps": [{"id": "a", "goal": "  "}]})
 
 
+class RunbookSlackDeliveryTests(unittest.TestCase):
+    """Where an UNATTENDED runbook's result goes.
+
+    Every other ingress sets `reply_to` off the thing that triggered the run; a cron fire has no
+    such trigger, so a runbook's own `slack` field is the only possible source of a destination.
+    Without one the run's answer reached the audit log and nobody's eyes — which made a runbook
+    saying "send me a message to Slack only if you find something" unsatisfiable whatever its
+    request said (rb-8707935b, "Entertainment - HB Events")."""
+
+    def test_the_destination_becomes_the_run_s_reply_target(self):
+        rb = runbooks.normalize({"name": "events", "request": "find events",
+                                 "slack": "  #events  "})     # whitespace is trimmed, spaces refused
+        self.assertEqual(rb["slack"], "#events")
+        args = scheduler._args("rb-x", rb)
+        self.assertEqual(args["reply_to"]["kind"], "slack_thread")
+        self.assertEqual(args["reply_to"]["channel"], "#events")
+        # The KIND decides the output contract, and it has to stay the one that carries the
+        # "nothing to say -> say nothing" sentinel: "only if you find something" is this exact
+        # feature's whole shape, and a destination that can't be told to stay quiet spams the
+        # channel with a report about the absence of news.
+        self.assertEqual(delivery.audience_for(args["reply_to"]), "conversation")
+        # ...but it is NOT a conversation Otto took part in — nobody sent it anything. Marked on
+        # the target because only the target knows, and `deliver_result` acts on it.
+        self.assertFalse(args["reply_to"]["conversation"])
+
+    def test_a_runbook_destination_is_posted_to_and_never_bound_as_a_conversation(self):
+        """The other half of the flag: what `deliver_result` does with it.
+
+        Binding the session is how the next message in a place Otto answered continues that
+        answer. A runbook's destination has no such message, so binding one would let the next
+        message in that channel or DM resume a run that never had a turn — and in a DM it also
+        reads as mid-conversation, which suppresses the first-contact introduction."""
+        if not _HAS_TEMPORAL:
+            self.skipTest("temporalio not installed")
+        import activities
+        posted, bound = [], []
+        orig = (slack.post, slack.was_posted, slack.mark_posted, slack.record_conversation_session)
+        try:
+            slack.post = lambda ch, text, **k: posted.append((ch, text)) or True
+            slack.was_posted = lambda rid: False
+            slack.mark_posted = lambda rid: None
+            slack.record_conversation_session = lambda *a, **k: bound.append(a)
+            activities.deliver_result({
+                "reply_to": {"kind": "slack_thread", "channel": "#events", "conversation": False},
+                "result": "three gigs on this weekend", "cap": {"name": "researcher"},
+                "run_id": "runbook-rb-1a2b3c4d-9f8e"})
+            self.assertEqual([c for c, _ in posted], ["#events"])
+            self.assertEqual(bound, [], "nobody asked here — there is no conversation to continue")
+            # ...and no progress note either: nobody is waiting in a destination, and the gate
+            # notice that rides `interim` would arm it for a decision its author is watching in
+            # the UI. (Interims ARE how a Slack thread gets told what is happening to its run.)
+            self.assertEqual(
+                delivery.interim({"kind": "slack_thread", "channel": "#events",
+                                  "conversation": False}, "working on it")[0], False)
+            self.assertEqual(posted, [("#events", "three gigs on this weekend")])
+            # The control: a target that came from a message still binds its conversation.
+            activities.deliver_result({"reply_to": {"kind": "slack_thread", "channel": "D1"},
+                                       "result": "done", "run_id": "slack-b-D1-1-2"})
+            self.assertEqual(len(bound), 1)
+        finally:
+            (slack.post, slack.was_posted, slack.mark_posted,
+             slack.record_conversation_session) = orig
+
+    def test_a_runbook_with_no_destination_has_no_reply_target(self):
+        # The control, and the back-compat case: every runbook stored before this field existed
+        # has no `slack` key at all, and must keep working — quietly, into the audit log.
+        args = scheduler._args("rb-y", runbooks.normalize({"name": "n", "request": "do it"}))
+        self.assertNotIn("reply_to", args)
+        self.assertEqual(runbooks.render({"request": "do it"})["slack"], "")
+
+    def test_a_destination_with_a_space_is_refused_at_save_time(self):
+        # Slack would reject it at DELIVERY time — hours later, in a fire nobody is watching.
+        # The author is here now, so this is when to say no.
+        with self.assertRaises(ValueError) as cm:
+            runbooks.normalize({"name": "n", "request": "do it", "slack": "C0BAQSJHFSP and #ops"})
+        self.assertIn("slack", str(cm.exception))
+
+    def test_the_destination_takes_parameters(self):
+        rb = runbooks.normalize({"name": "n", "request": "do it", "slack": "{{channel}}",
+                                 "params": [{"name": "channel", "default": "#general"}]})
+        self.assertEqual(scheduler._args("rb-z", rb)["reply_to"]["channel"], "#general")
+        with self.assertRaises(ValueError) as cm:
+            runbooks.normalize({"name": "n", "request": "do it", "slack": "{{channel}}"})
+        self.assertIn("channel", str(cm.exception))
+
+
 class RunbookStoreTests(unittest.TestCase):
     def setUp(self):
         self._orig = runbooks._STORE

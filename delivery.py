@@ -319,6 +319,11 @@ def interim(reply_to, text):
     is a durable record read later by someone who is not sitting there, so a progress note is
     noise in a permanent place. That split is `AUDIENCE`, reused rather than re-decided.
 
+    And only to a target that IS one (`conversation: False` on a runbook's Slack destination,
+    scheduler._args): nobody is in that channel waiting on this run, and the gate notice that
+    rides this call would ARM it — a later message there would be read as a decision on a run
+    whose author was watching it in the UI.
+
     Never raises. Returns `(delivered, status, ts)` — a BOOLEAN plus a human status for the trace,
     not just the string, plus the posted message's ts (None when unknown): a gate notice records
     it so an approval sent as a reply in ITS thread can be found. Callers act on this (the gate notice arms a conversation only when the
@@ -326,6 +331,8 @@ def interim(reply_to, text):
     rewording of a status message silently changes behaviour with no test failing.
     """
     if not reply_to or audience_for(reply_to) != CONVERSATION_AUDIENCE:
+        return False, "no interim channel for this target", None
+    if not reply_to.get("conversation", True):
         return False, "no interim channel for this target", None
     text = privacy.redact(str(text or ""))
     if not text.strip():

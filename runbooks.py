@@ -9,6 +9,11 @@ things people mean by "runbook" are the same object with different fields filled
                                     escalation) handed to the executor as an APPROVED PLAN.
   * `steps: [...]`               -> an ordered dependency graph, each node optionally naming its
                                     own capability, executed by engine.run_plan.
+  * `slack: "#events"`           -> where the run's RESULT is posted (a channel id, `#name`, or a
+                                    user id to DM). Without one a runbook's answer reaches the audit
+                                    log and nobody's eyes: a cron fire has no ingress to set a reply
+                                    target, so the runbook is the only place one can come from
+                                    (scheduler._args).
 
 The graph is not new machinery: `engine.run_plan` has always been a DAG executor (toposort +
 dependency waves + per-step verify ladder). The only thing that ever authored its node list was
@@ -107,8 +112,8 @@ def resolve_values(rb, supplied=None):
 
 
 def render(rb, supplied=None):
-    """Apply parameters, returning {request, doc, steps, cap, values} ready to hand to a run.
-    Steps come back in dependency order (engine._toposort, via normalize at save time)."""
+    """Apply parameters, returning {request, doc, steps, cap, slack, values} ready to hand to a
+    run. Steps come back in dependency order (engine._toposort, via normalize at save time)."""
     values = resolve_values(rb, supplied)
     steps = [dict(s, goal=interpolate(s["goal"], values),
                   context=interpolate(s.get("context", ""), values),
@@ -116,10 +121,29 @@ def render(rb, supplied=None):
              for s in rb.get("steps") or []]
     return {"request": interpolate(rb.get("request") or rb.get("name") or "", values),
             "doc": interpolate(rb.get("doc") or "", values),
-            "steps": steps, "cap": rb.get("cap"), "values": values}
+            "steps": steps, "cap": rb.get("cap"),
+            "slack": interpolate(rb.get("slack") or "", values), "values": values}
 
 
 # --- validation ------------------------------------------------------------
+
+def _norm_slack(raw):
+    """The Slack destination for an unattended run's result — a channel id, a `#name`, or a user
+    id to DM — or "" for none (the result then reaches the audit log and nobody's eyes).
+
+    Whitespace is REFUSED, not trimmed: a channel is one token, so "C0BAQSJHFSP and #ops" would
+    otherwise be stored and then handed to Slack as a channel name containing spaces. That fails
+    at delivery time — hours later, in a cron fire with nobody watching — which is exactly the
+    class of silent failure this module refuses at SAVE time instead, while the author is here to
+    fix it."""
+    val = str(raw or "").strip()
+    if not val:
+        return ""
+    if any(c.isspace() for c in val):
+        raise ValueError(f"slack destination {val!r} must be a single channel or user id "
+                         f"(e.g. #events or C0BAQSJHFSP) — no spaces")
+    return val
+
 
 def _norm_params(raw):
     out, seen = [], set()
@@ -201,9 +225,10 @@ def normalize(rb):
     params = _norm_params(rb.get("params"))
     doc = str(rb.get("doc") or "").strip()
     cron = str(rb.get("cron") or "").strip()
+    slack = _norm_slack(rb.get("slack"))
 
     declared = {p["name"] for p in params}
-    used = placeholders(request, doc, *[s["goal"] for s in steps],
+    used = placeholders(request, doc, slack, *[s["goal"] for s in steps],
                         *[s.get("context", "") for s in steps],
                         *[s.get("done_when", "") for s in steps])
     undeclared = [p for p in used if p not in declared]
@@ -223,7 +248,7 @@ def normalize(rb):
                 ". Give it a default, make it optional, or remove the cron.")
     return {"name": name, "request": request, "cap": str(rb.get("cap") or "").strip(),
             "cron": cron, "auto_approve": bool(rb.get("auto_approve", False)),
-            "params": params, "doc": doc, "steps": steps}
+            "slack": slack, "params": params, "doc": doc, "steps": steps}
 
 
 def cron_valid(expr):

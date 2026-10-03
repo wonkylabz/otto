@@ -105,6 +105,10 @@ function jobRow(j){
     // would be the same fact twice.
     (j.params.length && !j.on_demand)?`<b>${j.params.length}</b> param${j.params.length===1?'':'s'}`:null,
     j.has_doc?'has notes':null,
+    // WHERE the run's answer goes. Without one an unattended run finishes into the audit log,
+    // so the destination is the difference between a job that reports back and a job that runs
+    // and is never heard from — it belongs on the row, not only in the editor.
+    j.slack?`<span class="jcap" title="the run's result is posted here">posts to ${esc(j.slack)}</span>`:null,
   ].filter(Boolean);
   // What Run will ask for is the on-demand analogue of a cron's next fire, so it takes the same
   // slot: the action gutter then lands at one x down BOTH sections. The {{name}} chips in the
@@ -363,6 +367,11 @@ function showJobForm(job){
     </div>
     <label style="flex-direction:row;align-items:center;gap:9px;margin-top:4px">
       <input type="checkbox" id="jf-auto"> <span class="warn">auto-approve writes (run mutating capabilities unattended)</span></label>
+
+    <label style="margin-top:12px">Deliver the result to Slack</label>
+    <span class="sub" style="margin:-2px 0 4px;font-size:12px">Where the run posts its answer — a channel (<code>#events</code>, <code>C0BAQSJHFSP</code>) or a user id to DM someone. Leave empty and the result reaches the audit log only. A run that answers <code>NO_REPLY</code> stays silent, so "only if you find something" works.</span>
+    <input id="jf-slack" placeholder="#events (leave empty for none)">
+
     <div class="ferr" id="jf-err"></div>
     <div class="factions"><button class="btn approve" id="jf-save">${editing?'Save changes':'Add runbook'}</button><button class="btn decline" id="jf-cancel">Cancel</button></div>
   </div>`;
@@ -373,6 +382,7 @@ function showJobForm(job){
     document.getElementById("jf-req").value=job.request||"";
     document.getElementById("jf-cron").value=job.cron||"";
     document.getElementById("jf-doc").value=job.doc||"";
+    document.getElementById("jf-slack").value=job.slack||"";
     document.getElementById("jf-auto").checked=!!job.auto_approve;
     if(job.cap) document.getElementById("jf-cap").value=job.cap;
     (job.params||[]).forEach(p=>pbox.insertAdjacentHTML("beforeend", paramRow(p)));
@@ -408,6 +418,7 @@ function showJobForm(job){
     const payload={
       name:val("jf-name"), request:val("jf-req"), cap:document.getElementById("jf-cap").value,
       cron:val("jf-cron"), auto_approve:document.getElementById("jf-auto").checked,
+      slack:val("jf-slack"),
       doc:document.getElementById("jf-doc").value, params, steps,
     };
     if(editing) payload.id=job.id;

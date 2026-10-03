@@ -859,7 +859,13 @@ def deliver_result(payload: dict) -> dict:
     # capability, and the reply text (which the handoff classifier reads next turn) so the next
     # message resumes this conversation. Also clears the in-flight marker, whatever the delivery
     # outcome — a jammed conversation would swallow every later message.
-    if reply_to.get("kind") == "slack_thread":
+    #
+    # NOT every Slack target is a conversation: a runbook posts its result to `slack` (its own
+    # destination, set by scheduler._args with `conversation: False`) where nobody sent Otto
+    # anything. Binding a session there would let the next message in that channel or DM resume a
+    # run that never had a turn, and in a DM it also suppresses the first-contact introduction
+    # (the poller reads a record with a `session` as mid-conversation).
+    if reply_to.get("kind") == "slack_thread" and reply_to.get("conversation", True):
         import slack
         # A silent turn still binds the session (the next message must resume it), but it must not
         # become `last_reply` — that's what the handoff classifier reads next turn, and "NO_REPLY"

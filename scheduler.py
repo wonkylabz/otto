@@ -118,6 +118,26 @@ def _args(rid, rb, values=None, unattended=True):
         args["steps"] = r["steps"]
     if r["doc"]:
         args["doc"] = r["doc"]
+    # WHERE an unattended run's result goes. Every other ingress sets `reply_to` off the thing
+    # that triggered it; a cron fire fires from Temporal itself, so a runbook's own `slack` field
+    # is the only place a destination can come from — and without one the run's answer reached
+    # the audit log and nobody's eyes. That made "send me a message to Slack only if you find
+    # something" unsatisfiable by ANY runbook, whatever its request said (rb-8707935b,
+    # "Entertainment - HB Events").
+    #
+    # The target is a channel-shaped `slack_thread`: delivery already posts to a channel with no
+    # thread root, so this needs no new sink, no new AUDIENCE entry and no new `privacy.source_line`
+    # branch (ingress.md: a new kind without both of those silently falls back to the report
+    # shape). It also keeps the two properties this use case needs: idempotency on the run id, and
+    # the NO_REPLY sentinel — a run with nothing to say still posts nothing.
+    #
+    # `conversation: False` is what this target is NOT: a conversation Otto took part in. Every
+    # other Slack target comes from a message someone sent, so delivery records the session and
+    # the next message there continues it. Nothing was asked here, so binding one would make the
+    # next message in that channel resume a run that never had a turn (activities.deliver_result).
+    if r["slack"]:
+        args["reply_to"] = {"kind": "slack_thread", "channel": r["slack"],
+                            "conversation": False}
     return args
 
 
@@ -269,6 +289,7 @@ async def _enrich(store):
             "params": rb.get("params") or [],
             "steps": rb.get("steps") or [],
             "has_doc": bool(rb.get("doc")),
+            "slack": rb.get("slack") or "",
             "enabled": True,
             "next_run": None,
             "last_run": None,
@@ -350,8 +371,8 @@ def _rows_without_temporal(store):
              "cron": rb.get("cron", ""), "on_demand": not rb.get("cron"),
              "auto_approve": rb.get("auto_approve", False), "cap": rb.get("cap") or None,
              "params": rb.get("params") or [], "steps": rb.get("steps") or [],
-             "has_doc": bool(rb.get("doc")), "enabled": True, "next_run": None,
-             "last_run": None, "running": False}
+             "has_doc": bool(rb.get("doc")), "slack": rb.get("slack") or "",
+             "enabled": True, "next_run": None, "last_run": None, "running": False}
             for rid, rb in store.items()]
 
 

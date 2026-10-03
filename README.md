@@ -105,7 +105,8 @@ Temporal is required — `server.py` refuses to start without it (the old non-du
   [Working on repos](#working-on-repos).
 - Tabs:
   - **Chat** — the front door, and the Needs-you board for anything parked.
-  - **Jobs** — runbooks: a saved request, on a cron schedule or on demand.
+  - **Jobs** — runbooks: a saved request, on a cron schedule or on demand, posted to a Slack
+    channel of your choosing if you name one.
   - **Events** — the webhook ingress, Slack, and GitHub PR reviews.
   - **Board** — live and recent runs, with the stage, model and cost of each.
   - **Memory** — facts Otto *learned* from past runs, injected as context into the next one.
@@ -137,7 +138,7 @@ split that matters is **interactive** (can clarify, waits for your approval) vs 
 | | What it is |
 |---|---|
 | **Web chat** | the front door; the only interactive one |
-| **Jobs** | runbooks on a Temporal Schedule — a saved request, optionally with prose that *is* its approved plan, or a human-authored dependency graph |
+| **Jobs** | runbooks on a Temporal Schedule — a saved request, optionally with prose that *is* its approved plan, or a human-authored dependency graph; a runbook with a Slack destination posts its result there (a channel id, `#name`, or a user id to DM) |
 | **Webhooks** | `POST /api/events/<cap>`, HMAC-signed over body **and** timestamp, replay-protected |
 | **GitHub board** | a Projects v2 board as a queue — moving a card to **Ready** is the approval; the result is commented back |
 | **Slack** | DMs and @-mentions, under your own account, a bot user, or both — see [docs/slack.md](docs/slack.md) |
