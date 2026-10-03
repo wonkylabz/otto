@@ -7462,7 +7462,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self._orig_deliver, self._orig_interim = delivery.deliver, delivery.interim
         delivery.deliver = lambda reply_to, result, cap=None, run_id=None: (
             self.delivered.append((run_id, result)) or "posted")
-        delivery.interim = lambda reply_to, text: (self.notices.append(reply_to) or (True, "ok"))
+        delivery.interim = lambda reply_to, text: (self.notices.append(reply_to)
+                                                    or (True, "ok", None))
         self._orig_state = slack._STATE
         self._tmp = tempfile.mkdtemp(prefix="otto-fm-")
         slack._STATE = os.path.join(self._tmp, "slack-state.json")

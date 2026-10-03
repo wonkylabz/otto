@@ -2501,7 +2501,7 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         try:
             slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
                 posted.append((ch, text, identity)) or True)
-            delivered, out = delivery.interim(
+            delivered, out, _ = delivery.interim(
                 {"kind": "slack_thread", "channel": "C9", "thread_ts": "1.0", "identity": "bot"},
                 "needs approval")
             self.assertTrue(delivered)
@@ -2511,7 +2511,7 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
             for target in ({"kind": "github_issue", "repo": "a/b", "number": 1},
                            {"kind": "github_pr", "repo": "a/b", "number": 1},
                            {"kind": "webhook", "url": "https://x"}, None, {}):
-                ok, why = delivery.interim(target, "needs approval")
+                ok, why, _ = delivery.interim(target, "needs approval")
                 self.assertFalse(ok)
                 self.assertIn("no interim channel", why)
             self.assertEqual(posted, [])
@@ -2562,7 +2562,7 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
                              "token sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLL")
             self.assertNotIn("sk-ant-api03-AAAABBBB", seen[0])
             slack.post = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("slack down"))
-            ok, why = delivery.interim({"kind": "slack_thread", "channel": "C9"}, "x")
+            ok, why, _ = delivery.interim({"kind": "slack_thread", "channel": "C9"}, "x")
             self.assertFalse(ok)
             self.assertIn("failed", why)
         finally:
@@ -2616,7 +2616,7 @@ class GateNoticeToTheAskerTests(unittest.TestCase):
         try:
             slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
                 posted.append((ch, text, thread_ts, identity)) or True)
-            slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user": (
+            slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", **k: (
                 armed.append((ch, root, wid, identity)))
             out = activities.interim_notice({
                 "reply_to": {"kind": "slack_thread", "channel": "D1", "thread_ts": None,
@@ -2828,6 +2828,283 @@ class SlackGateApprovalTests(unittest.TestCase):
         different door. Two signals would be two definitions of "approved"."""
         self.assertIn("OttoWorkflow.approve", inspect.getsource(slack.signal_decision))
         self.assertIn("OttoWorkflow.approve", inspect.getsource(server._wf_signal))
+
+
+    # --- a decision sent as a reply in the gate notice's THREAD (#194) -----------------------
+
+    def _gated_dm(self, d, notice="5.0"):
+        slack._STATE = os.path.join(d, "s.json")
+        slack._ME, slack.BOT_TOKEN = {"bot": "U9"}, "xoxb-t"
+        slack.record_seen("D1", "1.0", slack.BOT)
+        slack.watch_conversation("D1", None, pending=True, identity=slack.BOT, pending_wid="w1")
+        slack.mark_awaiting_gate("D1", None, wid="w1", identity=slack.BOT, notice_ts=notice)
+
+    def test_the_notice_records_its_own_ts_only_at_a_DMs_top_level(self):
+        """`conversations.history` never returns thread replies, so the notice's ts is the only
+        handle on the thread an approver answers in. In a channel thread the notice is already a
+        reply inside the watched thread, and Slack does not nest threads."""
+        import activities
+        armed = []
+        orig = slack.post, slack.mark_awaiting_gate
+        try:
+            slack.post = lambda *a, **k: "7.000100"
+            slack.mark_awaiting_gate = lambda ch, root=None, **k: armed.append((root, k))
+            activities.interim_notice({"reply_to": {"kind": "slack_thread", "channel": "D1",
+                                                    "identity": "bot"},
+                                       "text": "needs approval", "awaiting_wid": "w1"})
+            activities.interim_notice({"reply_to": {"kind": "slack_thread", "channel": "C9",
+                                                    "thread_ts": "5.0", "identity": "bot"},
+                                       "text": "needs approval", "awaiting_wid": "w2"})
+        finally:
+            slack.post, slack.mark_awaiting_gate = orig
+        self.assertEqual(armed[0][1]["notice_ts"], "7.000100")
+        self.assertIsNone(armed[1][1]["notice_ts"])
+
+    def test_a_user_identity_gate_records_no_notice_ts(self):
+        """Nobody can approve under the user identity (`may_approve`), so reading its notice
+        thread would spend the user token's rate limit for 25h on a pick that cannot happen."""
+        import activities
+        armed = []
+        orig = slack.post, slack.mark_awaiting_gate
+        try:
+            slack.post = lambda *a, **k: "7.000100"
+            slack.mark_awaiting_gate = lambda ch, root=None, **k: armed.append(k)
+            activities.interim_notice({"reply_to": {"kind": "slack_thread", "channel": "D1",
+                                                    "identity": "user"},
+                                       "text": "needs approval", "awaiting_wid": "w1"})
+        finally:
+            slack.post, slack.mark_awaiting_gate = orig
+        self.assertIsNone(armed[0]["notice_ts"])
+
+    def test_a_reply_burned_as_backlog_is_never_read_again(self):
+        """The notice thread has no cursor, so a reply the downtime guard burned came back on the
+        next poll and an approval written while Otto was down ran the write hours late."""
+        def replies(k):
+            msgs = [{"user": "U1", "ts": "6.0", "text": "approve"}]
+            return {"ok": True, "messages": [m for m in msgs
+                                             if float(m["ts"]) >= float(k["oldest"])]}
+        calls, out = [], []
+        orig = slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.run_alive
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack.run_alive = lambda wid: True
+                slack._api = lambda method, identity="user", **k: (
+                    calls.append(k) or
+                    {"ok": True, "channels": [{"id": "D1", "user": "U5"}]}
+                    if method == "conversations.list" else
+                    replies(k) if method == "conversations.replies" else
+                    {"ok": True, "messages": []})
+                self._gated_dm(d)
+                cfg = {**slack._DEFAULTS, "bot_enabled": True, "bot_allow_users": ["U5"],
+                       "bot_approvers": ["U1"]}
+                slack._poll_dms(cfg, out, slack.BOT)
+                self.assertEqual(len(out), 1)
+                slack._drop_backlog(out, 6.0 + slack.RESUME_GRACE_S + 1)   # burned
+                again = []
+                slack._poll_dms(cfg, again, slack.BOT)
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+                st = slack._state()
+                # ...and a NEW arming starts from its own notice, not the old floor.
+                slack.mark_awaiting_gate("D1", None, wid="w2", identity=slack.BOT,
+                                         notice_ts="5.0")
+                rearmed = slack.conversation_record("D1", identity=slack.BOT)
+        finally:
+            slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.run_alive = orig
+        self.assertEqual(again, [], "a burned approval must not be acted on later")
+        self.assertEqual(rec["gate_notice_seen"], "6.000000")
+        self.assertEqual(slack.awaiting_gate(rec), "w1", "burning a reply decides nothing")
+        self.assertEqual([k for k in st["threads"] if "5.0" in k], [],
+                         "the notice thread must never become a watched conversation")
+        self.assertNotIn("gate_notice_seen", rearmed)
+
+    def test_a_resume_floor_covers_the_notice_thread_too(self):
+        """An identity switched off and back on floors its cursors without `_drop_backlog`
+        running, so the notice thread — read from its own floor — replayed an approval written
+        while it was off and ran the write hours late."""
+        st = {"threads": {"bot:D1": {"channel": "D1", "thread_ts": None, "identity": "bot",
+                                     "gate_wid": "w1", "gate_at": 1.0, "gate_notice_ts": "5.0"},
+                          "D2": {"channel": "D2", "thread_ts": None,
+                                 "gate_wid": "w2", "gate_at": 1.0, "gate_notice_ts": "5.0"}}}
+        out = slack_state.floor_cursors(st, 100.0, identities=(slack_state.BOT,))
+        self.assertEqual(out["threads"]["bot:D1"]["gate_notice_seen"], "100.000000")
+        self.assertNotIn("gate_notice_seen", out["threads"]["D2"], "the other identity is not floored")
+        # Never moved backwards.
+        self.assertIs(slack_state.floor_cursors(out, 50.0, identities=(slack_state.BOT,)),
+                      slack_state.UNCHANGED)
+
+    def test_the_notice_ts_is_cleared_with_the_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = slack._STATE, slack._ME, slack.BOT_TOKEN
+            try:
+                self._gated_dm(d)
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+                self.assertEqual(rec["gate_notice_ts"], "5.0")
+                slack.mark_awaiting_gate("D1", None, wid=None, identity=slack.BOT, expect="w1")
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+            finally:
+                slack._STATE, slack._ME, slack.BOT_TOKEN = orig
+        self.assertNotIn("gate_notice_ts", rec)
+        self.assertIsNone(slack.awaiting_gate(rec))
+
+    def _poll_gated_dm(self, replies, gated=True):
+        calls, out = [], []
+        orig = slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.run_alive
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack.run_alive = lambda wid: True
+
+                def _api(method, identity="user", **k):
+                    calls.append((method, k))
+                    if method == "conversations.list":
+                        return {"ok": True, "channels": [{"id": "D1", "user": "U5"}]}
+                    if method == "conversations.replies":
+                        return (replies(k) if callable(replies)
+                                else {"ok": True, "messages": replies})
+                    return {"ok": True, "messages": []}
+                slack._api = _api
+                self._gated_dm(d)
+                if not gated:
+                    slack.mark_awaiting_gate("D1", None, wid=None, identity=slack.BOT)
+                slack._poll_dms({**slack._DEFAULTS, "bot_enabled": True,
+                                 "bot_allow_users": ["U5"], "bot_approvers": ["U1"]},
+                                out, slack.BOT)
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+                st = slack._state()
+        finally:
+            slack._api, slack._ME, slack._STATE, slack.BOT_TOKEN, slack.run_alive = orig
+        return out, calls, rec, st
+
+    def test_the_dm_poll_reads_the_notice_thread_while_the_gate_stands(self):
+        """The observed failure: the approver clicked "Reply in thread" on the notice, wrote
+        `Approved`, and nothing ever read it."""
+        out, calls, _, _ = self._poll_gated_dm([
+            {"user": "U9", "ts": "5.0", "text": "That needs the operator's approval"},  # parent
+            {"user": "U1", "ts": "6.0", "text": "Approved", "thread_ts": "5.0"}])
+        self.assertEqual([m["text"] for m in out], ["Approved"], "the parent is not a reply")
+        m = out[0]
+        self.assertEqual((m["gate_wid"], m["gate_notice"], m["thread_ts"]), ("w1", True, "5.0"))
+        self.assertIsNone(m["conversation"]["thread_ts"], "the gate is the DM's, not the thread's")
+        # Otto confirms IN the notice's thread.
+        self.assertEqual(slack.reply_target(m)["thread_ts"], "5.0")
+        replies = [k for meth, k in calls if meth == "conversations.replies"]
+        self.assertEqual(len(replies), 1, "one extra call per gated conversation per poll")
+        self.assertEqual(replies[0]["ts"], "5.0")
+
+    def test_only_an_approvers_decision_is_picked_from_the_notice_thread(self):
+        """Nothing else there is ever answered, and a pick is never marked seen — so a held reply
+        came back every poll and five of them filled `max_per_poll` for the gate's whole 24h,
+        starving every other conversation and the decision itself."""
+        out = self._poll_gated_dm([
+            {"user": "U5", "ts": "6.0", "text": "what does this do?"},   # not a decision
+            {"user": "U5", "ts": "7.0", "text": "approve"},              # not an approver
+            {"user": "U1", "ts": "8.0", "text": "looks fine, approve"},  # not a WHOLE decision
+            {"user": "U1", "ts": "9.0", "text": "approve"}])[0]
+        self.assertEqual([m["ts"] for m in out], ["9.0"])
+
+    def test_a_decision_past_the_first_page_is_still_read(self):
+        """`limit` alone hid a decision once the thread outgrew one page."""
+        def replies(k):
+            if not k.get("cursor"):
+                return {"ok": True, "has_more": True,
+                        "response_metadata": {"next_cursor": "p2"},
+                        "messages": [{"user": "U5", "ts": "6.0", "text": "chatter"}]}
+            return {"ok": True, "messages": [{"user": "U1", "ts": "60.0", "text": "approve"}]}
+        out, calls, _, _ = self._poll_gated_dm(replies)
+        self.assertEqual([m["ts"] for m in out], ["60.0"])
+        self.assertEqual([k.get("cursor") for meth, k in calls
+                          if meth == "conversations.replies"], [None, "p2"])
+
+    def test_no_gate_means_no_extra_call(self):
+        _, calls, _, _ = self._poll_gated_dm([], gated=False)
+        self.assertNotIn("conversations.replies", [meth for meth, _ in calls])
+
+    def test_a_notice_thread_reply_never_moves_a_cursor_or_becomes_a_conversation(self):
+        """Its ts is later than any unhandled top-level message, so advancing the DM's cursor on
+        it would make Otto deaf to those — and a conversation record would make the notice
+        thread a watched conversation whose next reply starts a SECOND run."""
+        out = self._poll_gated_dm([{"user": "U1", "ts": "6.0", "text": "approve"}])[0]
+        orig = slack._STATE
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                slack._STATE = os.path.join(d, "s.json")
+                slack.record_seen("D1", "1.0", slack.BOT)
+                slack.mark_seen(out[0])
+                st = slack._state()
+        finally:
+            slack._STATE = orig
+        self.assertEqual(st["cursors"][slack_state.ns("D1", slack.BOT)], "1.000000")
+        self.assertEqual([k for k in st.get("threads", {}) if "5.0" in k], [])
+
+    def _run_activity(self, msgs, decision_ok=True):
+        """Drive `poll_slack` over picked messages, against a real gated DM on disk."""
+        import activities
+        posted, signalled, started = [], [], []
+        saved = {n: getattr(slack, n) for n in
+                 ("_STATE", "_ME", "BOT_TOKEN", "load", "poll", "post", "react",
+                  "signal_decision", "start_run")}
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                self._gated_dm(d)
+                rec = slack.conversation_record("D1", identity=slack.BOT)
+                slack.load = lambda: self._cfg(bot_allow_users=["U5"], bot_approvers=["U1"])
+                slack.poll = lambda cfg=None: [
+                    {"channel": "D1", "ts": m[0], "thread_ts": "5.0", "user": m[1],
+                     "text": m[2], "identity": slack.BOT, "is_dm": True, "conversation": rec,
+                     "gate_wid": "w1", "gate_notice": True, **(m[3] if len(m) > 3 else {})}
+                    for m in msgs]
+                slack.post = lambda ch, text, thread_ts=None, **k: (
+                    posted.append((ch, text, thread_ts)) or "9.0")
+                slack.react = lambda *a, **k: True
+                slack.signal_decision = lambda wid, d: signalled.append((wid, d)) or decision_ok
+                slack.start_run = lambda *a, **k: started.append(a) or "started"
+                with contextlib.redirect_stdout(io.StringIO()):
+                    activities.poll_slack({})
+                after = slack.conversation_record("D1", identity=slack.BOT)
+        finally:
+            for n, f in saved.items():
+                setattr(slack, n, f)
+        return posted, signalled, started, after
+
+    def test_an_approvers_yes_in_the_notice_thread_signals_and_confirms_there(self):
+        posted, signalled, started, after = self._run_activity([("6.0", "U1", "Approved")])
+        self.assertEqual(signalled, [("w1", True)])
+        self.assertEqual(posted, [("D1", "Approved — running it now.", "5.0")])
+        self.assertEqual(started, [])
+        self.assertIsNone(slack.awaiting_gate(after), "the DM's own gate must be cleared")
+        self.assertNotIn("gate_notice_ts", after)
+
+    def test_one_gate_is_decided_once_per_poll(self):
+        """The top level and the notice thread are two doors to one gate, so one poll can carry
+        two decisions for it. Only the first is acted on; the late one is marked seen."""
+        top = {"thread_ts": None, "gate_notice": False}
+        posted, signalled, started, after = self._run_activity(
+            [("6.0", "U1", "approve", top), ("7.0", "U1", "no")])
+        self.assertEqual(signalled, [("w1", True)])
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(started, [])
+
+    def test_a_non_decision_after_a_decision_is_held_not_dropped(self):
+        """Every top-level message in a gated DM carries `gate_wid`, so skipping on the gate alone
+        marked "also send me the summary" seen and it was never answered."""
+        top = {"thread_ts": None, "gate_notice": False}
+        seen = []
+        orig = slack.mark_seen
+        try:
+            slack.mark_seen = lambda m: seen.append(m["ts"])
+            posted, signalled, started, _ = self._run_activity(
+                [("6.0", "U1", "yes", top), ("7.0", "U1", "also send me the summary", top)])
+        finally:
+            slack.mark_seen = orig
+        self.assertEqual(signalled, [("w1", True)])
+        self.assertEqual(seen, ["6.0"], "the follow-up must stay unread for the next poll")
+        self.assertEqual(started, [])
+
+    def test_a_non_decision_or_non_approver_in_the_notice_thread_is_ignored(self):
+        posted, signalled, started, after = self._run_activity(
+            [("6.0", "U5", "approve"), ("7.0", "U1", "what does this do?")])
+        self.assertEqual((posted, signalled, started), ([], [], []))
+        self.assertEqual(slack.awaiting_gate(after), "w1", "the gate must still stand")
+        self.assertEqual(after["gate_notice_ts"], "5.0")
 
 
 class SlackReviewFixTests(unittest.TestCase):

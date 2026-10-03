@@ -154,6 +154,13 @@ def floor_cursors(st, floor, identities=(USER, BOT)):
         if identity_of(rec) in identities and rec.get("cursor") and float(rec["cursor"]) < floor:
             rec["cursor"] = normalize_ts(floor)
             moved = True
+        # A gate notice's thread is read from its own floor, not a cursor, so it is floored too —
+        # else an identity switched back on replays an approval written while it was off.
+        notice = rec.get("gate_notice_ts")
+        if notice and identity_of(rec) in identities and \
+                float(rec.get("gate_notice_seen") or notice) < floor:
+            rec["gate_notice_seen"] = normalize_ts(floor)
+            moved = True
     return st if moved else UNCHANGED
 
 
@@ -299,7 +306,7 @@ def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, 
 
 
 def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, identity=USER,
-                expect=None):
+                expect=None, notice_ts=None):
     """Mark this conversation as WAITING on an approval gate for run `wid` (or clear it, wid=None).
 
     `expect` makes it compare-and-set: unless the stored gate is still that run's, nothing changes
@@ -309,7 +316,11 @@ def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, ident
     Kept next to `pending_at` rather than replacing it: the conversation IS still in flight (its
     run has not delivered), so the one-turn-at-a-time rule must keep holding back ordinary
     messages. This only says that one specific kind of reply — a decision — is now meaningful,
-    and which run it belongs to."""
+    and which run it belongs to.
+
+    `notice_ts` is the gate notice's own ts when it was posted at a DM's TOP LEVEL: replying in
+    its thread is the natural Slack gesture, and `conversations.history` never returns thread
+    replies, so the DM poll reads that one thread while the gate stands. Cleared with the gate."""
     key = conversation_key(channel, thread_ts, identity)
     threads = prune_threads(st.setdefault("threads", {}), now, ttl_s, max_threads)
     # Checked AFTER the prune: a TTL-expired record still holding that gate would otherwise pass,
@@ -322,11 +333,35 @@ def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, ident
     if wid:
         rec["gate_wid"] = wid
         rec["gate_at"] = now
+        if notice_ts:
+            rec["gate_notice_ts"] = notice_ts
+        else:
+            rec.pop("gate_notice_ts", None)
     else:
         rec.pop("gate_wid", None)
         rec.pop("gate_at", None)
+        rec.pop("gate_notice_ts", None)
+    rec.pop("gate_notice_seen", None)          # a floor belongs to one arming, never the next
     threads[key] = rec
     st["threads"] = prune_threads(threads, now, ttl_s, max_threads)
+    return st
+
+
+def record_notice_seen(st, channel, thread_ts, gate_wid, ts, identity=USER):
+    """Floor the gate notice's thread read at `ts` — how the downtime guard BURNS a reply there.
+
+    The notice thread has no cursor of its own (it is re-read from the notice while the gate
+    stands), so without this a reply burned as backlog came back on the next poll and an approval
+    written while Otto was down ran the write hours late — the very thing the guard exists for.
+    Writes only to the EXISTING record still armed for `gate_wid`: never creates one (that would
+    make the notice thread a watched conversation) and never touches a newer arming."""
+    key = conversation_key(channel, thread_ts, identity)
+    rec = (st.get("threads") or {}).get(key)
+    if not rec or rec.get("gate_wid") != gate_wid:
+        return UNCHANGED
+    if float(ts) <= float(rec.get("gate_notice_seen") or 0):
+        return UNCHANGED
+    rec["gate_notice_seen"] = normalize_ts(ts)
     return st
 
 

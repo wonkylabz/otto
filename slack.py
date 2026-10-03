@@ -604,7 +604,8 @@ def to_blocks(md):
 
 def post(channel, text, thread_ts=None, blocks=None, identity=USER):
     """Post a message (optionally threaded) AS `identity` — the owner (user token) or the bot user
-    (bot token). Returns True on success. Never raises. Records the
+    (bot token). Returns the posted message's ts on success (truthy — the gate notice needs it to
+    find replies in its thread), False on failure. Never raises. Records the
     posted message's ts so a self-answer (allow_self test mode) can never re-trigger on our own
     post — see poll(). When `blocks` is given it's sent as Block Kit (rich rendering) and `text`
     rides along as the notification/accessibility fallback.
@@ -626,6 +627,7 @@ def post(channel, text, thread_ts=None, blocks=None, identity=USER):
     out = _api("chat.postMessage", identity=identity, **params)
     if out.get("ok") and out.get("ts"):
         _record_posted_ts(out["ts"])
+        return out["ts"]
     return bool(out.get("ok"))
 
 
@@ -725,6 +727,19 @@ def mark_seen(msg):
     """Advance whichever cursor governs a picked message (slack_state.governs — a thread reply its
     own conversation's, everything else the channel's; see activities.poll_slack). The identity
     rides on the message, so a message the bot handled never marks it read for the owner."""
+    if msg.get("gate_notice"):
+        # A reply in a gate notice's thread advances neither cursor: the channel's would skip
+        # unhandled top-level messages, and a conversation record would make the notice thread
+        # a watched conversation whose next reply starts a run. It floors the notice read on the
+        # DM's own gate record instead (slack_state.record_notice_seen).
+        conv = msg.get("conversation") or {}
+        storage.mutate_json(
+            _STATE,
+            lambda st: slack_state.record_notice_seen(
+                st, msg["channel"], conv.get("thread_ts"), msg.get("gate_wid"), msg["ts"],
+                identity_of(msg)),
+            slack_state.empty())
+        return
     identity = identity_of(msg)
     if slack_state.governs(msg) == "conversation":
         watch_conversation(msg["channel"], msg["thread_ts"], seen=msg["ts"], identity=identity)
@@ -921,7 +936,8 @@ def is_pending(rec, now=None):
 GATE_STALE_S = int(os.environ.get("OTTO_SLACK_GATE_STALE_H") or 25) * 3600
 
 
-def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=None):
+def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=None,
+                       notice_ts=None):
     """Record (or clear, wid=None) that this conversation is waiting on an approval gate.
 
     `expect` makes the write CONDITIONAL on the stored gate still being that run's — a release
@@ -933,7 +949,8 @@ def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=
     storage.mutate_json(
         _STATE,
         lambda st: slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
-                                           wid=wid, identity=identity, expect=expect)
+                                           wid=wid, identity=identity, expect=expect,
+                                           notice_ts=notice_ts)
         or storage.UNCHANGED,
         slack_state.empty())
 
@@ -1508,6 +1525,49 @@ def _poll_dms(cfg, out, identity=USER):
                 out.append({**c, "is_dm": True,
                             "conversation": (None if c.get("thread_ts") else rec),
                             **({"gate_wid": gate_wid} if gate_wid else {})})
+        if gate_wid and rec.get("gate_notice_ts"):
+            _poll_gate_notice(cfg, cid, rec, gate_wid, self_ok, identity, out)
+
+
+# Pages read from one gate notice's thread per poll. A notice thread holding more than this many
+# pages of chatter leaves a later decision unread; the gate's own deadline still declines it.
+_NOTICE_MAX_PAGES = 5
+
+
+def _poll_gate_notice(cfg, cid, rec, gate_wid, self_ok, identity, out):
+    """Replies in the THREAD of a DM's gate notice — where an approver who clicks "Reply in
+    thread" answers, and where `conversations.history` never looks. One call per gated DM per
+    poll, none without a live gate.
+
+    ONLY an approver's decision is picked (`parse_decision` + `may_approve`, re-checked by the
+    activity). Anything else here is never answered, and must not be picked either: `mark_seen`
+    leaves a pick unread so it returns every poll, and a few held replies would fill
+    `max_per_poll` for the gate's whole 24h, starving every other conversation — and the
+    decision itself. Every pick carries `gate_wid` and `gate_notice`, so it can only DECIDE the
+    gate: this thread is a ballot box, not a second conversation. The notice ts is the floor
+    (strictly after it, which also drops the parent) and the gate's own clear is what stops the
+    re-reading. Paged, so a long thread cannot hide a decision behind `limit`. A reply burned as
+    downtime backlog raises the floor (`gate_notice_seen`), so it is never read again."""
+    notice = rec["gate_notice_ts"]
+    floor = rec.get("gate_notice_seen") or notice
+    page = None
+    for _ in range(_NOTICE_MAX_PAGES):
+        res = _api("conversations.replies", identity=identity, channel=cid, ts=notice,
+                   oldest=floor, limit=200, **({"cursor": page} if page else {}))
+        for m in res.get("messages") or []:
+            c = _clean(m, cid, self_ok, identity)
+            if not (c and slack_state.past_cursor(c["ts"], floor)):
+                continue
+            if parse_decision(c["text"]) is None or not may_approve(cfg, c["user"], identity):
+                continue
+            # The notice's ts as `thread_ts` makes `reply_target` confirm IN that thread; the
+            # gate's own key stays the DM's conversation record (`conversation`), which is what
+            # is cleared.
+            out.append({**c, "is_dm": True, "thread_ts": notice, "conversation": rec,
+                        "gate_wid": gate_wid, "gate_notice": True})
+        page = (res.get("response_metadata") or {}).get("next_cursor")
+        if not (res.get("has_more") and page):
+            return
 
 
 def _poll_mentions(cfg, out):

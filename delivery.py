@@ -319,26 +319,28 @@ def interim(reply_to, text):
     is a durable record read later by someone who is not sitting there, so a progress note is
     noise in a permanent place. That split is `AUDIENCE`, reused rather than re-decided.
 
-    Never raises. Returns `(delivered, status)` — a BOOLEAN plus a human status for the trace,
-    not just the string. Callers act on this (the gate notice arms a conversation only when the
+    Never raises. Returns `(delivered, status, ts)` — a BOOLEAN plus a human status for the trace,
+    not just the string, plus the posted message's ts (None when unknown): a gate notice records
+    it so an approval sent as a reply in ITS thread can be found. Callers act on this (the gate notice arms a conversation only when the
     asker was really told), and deciding that by matching a substring against prose means any
     rewording of a status message silently changes behaviour with no test failing.
     """
     if not reply_to or audience_for(reply_to) != CONVERSATION_AUDIENCE:
-        return False, "no interim channel for this target"
+        return False, "no interim channel for this target", None
     text = privacy.redact(str(text or ""))
     if not text.strip():
-        return False, "nothing to say"
+        return False, "nothing to say", None
     try:
         if (reply_to or {}).get("kind") == "slack_thread":
             import slack
             ok = slack.post(reply_to.get("channel"), slack.to_mrkdwn(text),
                             thread_ts=reply_to.get("thread_ts"),
                             identity=slack.identity_of(reply_to))
-            return bool(ok), ("interim posted to slack" if ok else "interim post failed")
+            return (bool(ok), ("interim posted to slack" if ok else "interim post failed"),
+                    ok if isinstance(ok, str) else None)
     except Exception as e:  # noqa: BLE001 - never let a progress note break the run
-        return False, f"interim failed: {str(e)[:80]}"
-    return False, "no interim channel for this target"
+        return False, f"interim failed: {str(e)[:80]}", None
+    return False, "no interim channel for this target", None
 
 
 def deliver(reply_to, result, cap=None, run_id=None):
