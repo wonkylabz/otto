@@ -1361,8 +1361,9 @@ def own_words(request):
     Cut on the known framing and the earlier-messages lead, NOT on the \"\"\" fence: the message is
     not escaped, so a pasted \"\"\" would end a fence early and hide the rest of what they asked."""
     for framing in (_USER_FRAMING, _BOT_FRAMING):
-        if request.startswith(framing + "\n\n\"\"\"\n"):
-            body = request[len(framing) + 5:].split(_EARLIER_LEAD, 1)[0]
+        head = framing + "\n\n\"\"\"\n"
+        if request.startswith(head):
+            body = request[len(head):].split(_EARLIER_LEAD, 1)[0]
             return body[:-4] if body.endswith("\n\"\"\"") else body
     return None
 
