@@ -299,7 +299,7 @@ def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, 
 
 
 def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, identity=USER,
-                expect=None):
+                expect=None, notice_ts=None):
     """Mark this conversation as WAITING on an approval gate for run `wid` (or clear it, wid=None).
 
     `expect` makes it compare-and-set: unless the stored gate is still that run's, nothing changes
@@ -309,7 +309,11 @@ def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, ident
     Kept next to `pending_at` rather than replacing it: the conversation IS still in flight (its
     run has not delivered), so the one-turn-at-a-time rule must keep holding back ordinary
     messages. This only says that one specific kind of reply — a decision — is now meaningful,
-    and which run it belongs to."""
+    and which run it belongs to.
+
+    `notice_ts` is the gate notice's own ts when it was posted at a DM's TOP LEVEL: replying in
+    its thread is the natural Slack gesture, and `conversations.history` never returns thread
+    replies, so the DM poll reads that one thread while the gate stands. Cleared with the gate."""
     key = conversation_key(channel, thread_ts, identity)
     threads = prune_threads(st.setdefault("threads", {}), now, ttl_s, max_threads)
     # Checked AFTER the prune: a TTL-expired record still holding that gate would otherwise pass,
@@ -322,9 +326,14 @@ def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, ident
     if wid:
         rec["gate_wid"] = wid
         rec["gate_at"] = now
+        if notice_ts:
+            rec["gate_notice_ts"] = notice_ts
+        else:
+            rec.pop("gate_notice_ts", None)
     else:
         rec.pop("gate_wid", None)
         rec.pop("gate_at", None)
+        rec.pop("gate_notice_ts", None)
     threads[key] = rec
     st["threads"] = prune_threads(threads, now, ttl_s, max_threads)
     return st

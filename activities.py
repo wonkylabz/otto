@@ -780,7 +780,7 @@ def interim_notice(payload: dict) -> dict:
     attempts in the worker log, a silent gate on the asker's side)."""
     import delivery
     reply_to = payload.get("reply_to")
-    delivered, status = delivery.interim(reply_to, payload.get("text", ""))
+    delivered, status, notice_ts = delivery.interim(reply_to, payload.get("text", ""))
     # A gate notice also ARMS the conversation: the reply that clears it has to be matchable to
     # this specific run, and the conversation record is the only place both ends can see. Gated on
     # the post SUCCEEDING, which is what makes the sentence above true — a Slack 500 otherwise
@@ -789,8 +789,12 @@ def interim_notice(payload: dict) -> dict:
     wid = payload.get("awaiting_wid")
     if wid and delivered and (reply_to or {}).get("kind") == "slack_thread":
         import slack
+        # A notice at a DM's top level grows its own thread, which the DM poll never reads —
+        # so its ts is recorded and that thread is read too. In a channel thread the notice is
+        # already a reply inside the watched thread, and Slack does not nest threads.
         slack.mark_awaiting_gate(reply_to.get("channel"), reply_to.get("thread_ts"),
-                                 wid=wid, identity=slack.identity_of(reply_to))
+                                 wid=wid, identity=slack.identity_of(reply_to),
+                                 notice_ts=None if reply_to.get("thread_ts") else notice_ts)
     activity.logger.info(f"interim notice -> {status}")
     return {"status": status}
 
@@ -1119,6 +1123,10 @@ def poll_slack(payload: dict) -> dict:
                         f"slack: ignoring a gate decision from {msg.get('user')} "
                         f"(not in bot_approvers)")
                 continue
+            # The gate belongs to the CONVERSATION, which is not always where the reply landed: a
+            # decision in a DM gate notice's thread confirms in that thread (ack_ts) but clears the
+            # DM's own record.
+            gate_ts = rec.get("thread_ts") if rec else ack_ts
             ok = slack.signal_decision(gate_wid, decision)
             if ok is None:
                 # Temporal could not say. Keep the gate and leave the cursor: the decision is
@@ -1128,10 +1136,10 @@ def poll_slack(payload: dict) -> dict:
                 # The run is gone (finished, expired, terminated). Clear the marker so the
                 # conversation stops interpreting replies as verdicts on a run that no longer
                 # exists, and leave the message to be handled normally next poll.
-                slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity,
+                slack.mark_awaiting_gate(msg["channel"], gate_ts, wid=None, identity=identity,
                                          expect=gate_wid)
                 continue
-            slack.mark_awaiting_gate(msg["channel"], ack_ts, wid=None, identity=identity,
+            slack.mark_awaiting_gate(msg["channel"], gate_ts, wid=None, identity=identity,
                                      expect=gate_wid)
             _seen()
             slack.post(msg["channel"],
