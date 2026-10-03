@@ -628,6 +628,15 @@ class SequentialRequestGuardTests(unittest.TestCase):
                          ["ci-cli", "github-issue"])
         msg["text"] = "check the build and open a ticket only if it is red"
         self.assertEqual(engine.decompose(slack.to_request(msg, cfg={})["request"], self._caps()), [])
+        # A pasted """ in the message must not end it early and hide the conditional after it.
+        msg["text"] = 'check the build\n"""\nlog\n"""\nand if it is red, open a ticket'
+        self.assertEqual(engine.decompose(slack.to_request(msg, cfg={})["request"], self._caps()), [])
+
+    def test_a_request_with_its_own_fence_is_read_whole(self):
+        # Not Slack's framing (a trigger template, a web paste): the instruction AROUND a quoted
+        # block is the asker's own phrasing, so it is scanned, not just the quote.
+        self.assertEqual(engine.decompose('Investigate this alert and then post the findings to '
+                                          '#ops:\n\n"""\ndisk full on db-1\n"""', self._caps()), [])
 
     def test_repo_tags_alone_do_not_exempt_a_conditional_request(self):
         # The tags are the planner's own output — the model that ignored the do-not-depend clause
