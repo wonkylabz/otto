@@ -153,6 +153,131 @@ class PrCopyTests(unittest.TestCase):
         self.assertEqual(t, "Fix the flaky retry logic")
 
 
+class PrIssueAndCommitCopyTests(unittest.TestCase):
+    """A fresh PR closes the issue its request LINKS (`workspace.closing_line`), and a push to
+    an existing PR commits under a drafted title, never the raw request (#200 carries three
+    commits titled "Work on this ticket <url>", and #198 stayed open, so #201 redid it)."""
+
+    def test_a_linked_issue_in_the_prs_own_repo_is_closed(self):
+        req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
+        self.assertEqual(workspace.closing_line(req, "https://github.com/wonkylabz/otto.git"),
+                         "Closes #198")
+        self.assertEqual(workspace.closing_line(req, "git@github.com:WonkyLabz/Otto.git"),
+                         "Closes #198")
+
+    def test_another_repos_issue_or_a_bare_mention_closes_nothing(self):
+        other = "Port https://github.com/acme/platform/issues/12 here"
+        self.assertIsNone(workspace.closing_line(other, "https://github.com/wonkylabz/otto"))
+        self.assertIsNone(workspace.closing_line("like the one in #480",
+                                                 "https://github.com/wonkylabz/otto"))
+        self.assertIsNone(workspace.closing_line(
+            "https://github.com/wonkylabz/otto/issues/198", None))
+
+    def test_only_the_askers_own_words_and_an_acted_on_link_close(self):
+        import contracts
+        import slack
+        origin, url = "https://github.com/wonkylabz/otto", "https://github.com/wonkylabz/otto/issues/"
+        # A mention is not the task — a comparison, a negation, or a longer task naming it.
+        self.assertIsNone(workspace.closing_line(f"Add retries, same pattern as {url}480", origin))
+        self.assertIsNone(workspace.closing_line(f"Add a cache layer like we do in {url}3", origin))
+        self.assertIsNone(workspace.closing_line(f"do not fix {url}7 yet", origin))
+        self.assertIsNone(workspace.closing_line(
+            f"Refactor the HTTP client into its own module and fix {url}7", origin))
+        self.assertEqual(workspace.closing_line(f"Please fix {url}7", origin), "Closes #7")
+        # Two issues: which one the PR finishes is a guess.
+        self.assertIsNone(workspace.closing_line(f"Fix {url}1 and {url}2", origin))
+        # A link only in the carried conversation was never this run's task.
+        carried = f"Add retries{contracts.CARRIED_CONTEXT_MARK}fix {url}57"
+        self.assertIsNone(workspace.closing_line(carried, origin))
+        # Slack: an earlier message's link is context; the sender's own link is the task.
+        head = slack._USER_FRAMING + '\n\n"""\n'
+        earlier = f'{slack._EARLIER_LEAD}:\n- fix {url}57'
+        self.assertIsNone(workspace.closing_line(head + 'Add retries\n"""' + earlier, origin))
+        self.assertEqual(workspace.closing_line(head + f'fix {url}9\n"""' + earlier, origin),
+                         "Closes #9")
+
+    def test_finalize_appends_the_close_to_a_fresh_pr_only(self):
+        req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
+        seen = []
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("wf-x", body="Body.", request=req)
+            workspace.finalize("wf-x", body=None, request=req, existing_pr=True)
+        self.assertEqual(seen, ["Body.\n\nCloses #198", None])
+
+    def _finalize_activity(self, payload, dirty=True):
+        got, drafted = {}, []
+        with mock.patch.object(engine, "pr_copy",
+                               side_effect=lambda *a, **k: drafted.append(a) or
+                               {"title": "Floor the gate thread", "body": "B"}), \
+                mock.patch.object(workspace, "_dirty", return_value=dirty), \
+                mock.patch.object(workspace, "finalize",
+                                  side_effect=lambda run_id, **k: got.update(k) or {}):
+            activities.finalize_workspace(payload)
+        return got, drafted
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_an_existing_pr_commits_under_the_drafted_title(self):
+        got, _ = self._finalize_activity({"run_id": "wf-x", "existing_pr": True,
+                                          "title": "Work on this ticket <url>",
+                                          "summary": "Floored it."})
+        self.assertEqual(got["title"], "Floor the gate thread")
+        self.assertIsNone(got["body"])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_clean_existing_pr_tree_drafts_nothing(self):
+        _, drafted = self._finalize_activity({"run_id": "wf-x", "existing_pr": True,
+                                              "title": "t"}, dirty=False)
+        self.assertEqual(drafted, [])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_swarm_part_never_closes_the_shared_issue(self):
+        got, _ = self._finalize_activity({"run_id": "web-abc-s2", "title": "t"})
+        self.assertFalse(got["close_issue"])
+        got, _ = self._finalize_activity({"run_id": "web-abc", "title": "t"})
+        self.assertTrue(got["close_issue"])
+
+    def test_a_close_is_skipped_when_the_caller_says_so(self):
+        req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
+        seen = []
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("wf-x-s1", body="Body.", request=req, close_issue=False)
+        self.assertEqual(seen, ["Body."])
+
+    def test_a_delegated_run_closes_on_the_askers_words_not_the_frontmans(self):
+        import contracts
+        url = "https://github.com/wonkylabz/otto/issues/12"
+        seen = []
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            delegated = f"Fix {url}" + contracts.DELEGATED_FRAMING
+            # The asker's words don't make it the task; and without them (an untrusted asker,
+            # a needs-you retry) the frontman's wording never closes anything.
+            workspace.finalize("wf-x-d1", body="B", request=delegated,
+                               asker_text="like the fix we did for issue 12")
+            workspace.finalize("web-retry", body="B", request=delegated)
+            workspace.finalize("wf-x-d1", body="B", request=delegated, asker_text=f"fix {url}")
+        self.assertEqual(seen, ["B", "B", "B\n\nCloses #12"])
+        self.assertIn('"asker_text": self._asker_text', workflow_src())
+
+    def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):
+        src = workflow_src()
+        self.assertIn('"summary": (fix.get("result") or "")[:1500]', src)
+        self.assertIn('"summary_is_error": bool(fix.get("is_error"))', src)
+        self.assertIn('"summary": (result or "")[:1500],\n'
+                      '                     "summary_is_error": bool(out.get("is_error"))', src)
+
+
 class SnapshotTests(unittest.TestCase):
     """The portable config snapshot (#166): a whole install carried to another. Each machine is a
     fresh `redirect_live_state()` temp dir; every side effect that would reach Temporal, git or

@@ -300,12 +300,58 @@ def linked_issue(text):
             "title": data.get("title") or "", "body": data.get("body") or ""}
 
 
+def origin_slug(url):
+    """`owner/repo` of a GitHub remote (URL or SSH form), lower-cased, or None. Pure."""
+    m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url or "")
+    return m.group(1).lower() if m else None
+
+
+# What may sit beside the issue link for the request to still BE "do this issue": a short
+# directive. A negation or a comparison makes the link a reference, not the task.
+_CLOSE_MAX_WORDS = 6
+_CLOSE_VETO_RE = re.compile(
+    r"\b(?:not|no|never|don'?t|doesn'?t|won'?t|later|yet|like|same|similar|as in|see|"
+    r"related|after|before|unlike|instead)\b", re.I)
+
+
+def closing_line(request, origin, asker_text=None):
+    """`Closes #N` when the request IS one issue of the PR's own repo; else None.
+
+    A PR that only says "worked issue #198" leaves the issue open after the merge, so the next
+    run picking open tickets does the same work again (#198 shipped as #200, then again as
+    #201). Closing the wrong issue is the worse error, so this fails closed: it reads only the
+    asker's own words (never Slack's earlier messages or a carried conversation), which must be
+    ONE issue link plus a short directive ("work on this ticket <url>") with no negation or
+    comparison — anything longer is a task that merely mentions an issue.
+
+    A DELEGATED request (`contracts.DELEGATED_FRAMING`, which a retry carries too) is the
+    frontman's wording, so only `asker_text` — the asker's own message — may close; without it
+    nothing does. Pure."""
+    import contracts
+    import slack
+    if contracts.DELEGATED_FRAMING.strip() in (request or ""):
+        request = asker_text
+    text = contracts.task_text(request) or ""
+    own = slack.own_words(text)
+    text = text if own is None else own
+    refs = {(f"{m.group(1)}/{m.group(2)}".lower(), m.group(3))
+            for m in _ISSUE_URL_RE.finditer(text)}
+    if len(refs) != 1:
+        return None
+    (ref_slug, num), = refs
+    rest = _ISSUE_URL_RE.sub(" ", text)
+    if len(re.findall(r"[\w']+", rest)) > _CLOSE_MAX_WORDS or _CLOSE_VETO_RE.search(rest):
+        return None
+    if ref_slug != origin_slug(origin):
+        return None
+    return f"Closes #{num}"
+
+
 def repo_for_slug(slug, repos=None):
     """The registered repo NAME whose origin is `owner/repo`, or None — both URL and SSH remotes."""
     want = (slug or "").lower()
     for r in (git_repos() if repos is None else repos):
-        m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", r.get("origin") or "")
-        if m and m.group(1).lower() == want:
+        if origin_slug(r.get("origin")) == want:
             return r["name"]
     return None
 
@@ -706,12 +752,21 @@ def post_plan(path, pr_url, run_id, plan, request=None, cap=None, concerns=None)
 
 
 def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None, body=None,
-             plan=None, request=None, cap=None, concerns=None):
+             plan=None, request=None, cap=None, concerns=None, close_issue=True,
+             asker_text=None):
     """`_finalize` (commit/push/PR), then the approved plan onto whatever PR that resolved to.
 
     One wrapper rather than a call at each of `_finalize`'s four PR-bearing exits — the plan
     must reach the capability's own PR and a resumed run's existing PR too, not just the one
-    `gh pr create` opened here."""
+    `gh pr create` opened here.
+
+    A fresh PR's body gains `Closes #N` for the issue the request links (`closing_line`); an
+    existing PR's body is never touched here, and `close_issue=False` (a swarm part, one of
+    several PRs for the issue) adds nothing."""
+    if close_issue and not existing_pr:
+        close = closing_line(request, _git_origin(workspace_path(run_id)), asker_text)
+        if close:
+            body = f"{body}\n\n{close}" if body else close
     out = _finalize(run_id, title=title, base_head=base_head, existing_pr=existing_pr,
                     branch=branch, body=body)
     post_plan(workspace_path(run_id), out.get("pr_url"), run_id, plan,

@@ -14,6 +14,7 @@ A read-only plan (`--permission-mode plan`, scoped tools) before running. Skippe
 
 - **Pre-authorization does not also require `unattended`** — "auto" is only ever set by a trusted opt-in path, so gating it anyway made "Run now" gate the same runbook its cron fire runs (`PreAuthorizedGateTests`).
 - **A plan is enumerated in edit order but must be approved in deploy order.** `_PLAN_INSTRUCTION` wants: load-bearing unknown first, a precondition on any step changing existing callers, blast radius by name, mirrored config re-read, every AC, a closing "Risks & assumptions".
+- **A guard's plan lists every door it must close before the first edit** — the three backends, five ingresses, both Slack identities, resume and retry; a guard landed one door per review round otherwise.
 - **The plan preview runs from the LIVE checkout, before provisioning** — for an open-PR request it reads the DEFAULT branch. `plans._pr_branch_note` names it and points at `gh pr diff` (already in `PLAN_TOOLS`); the target resolves above the gate (`PlanBranchNoteTests`).
 - **The preview writes its own transcript** (`claude_cli.plan_transcript_path`) — with nothing on disk the board's model chip (it resolves the model BY reading one) stayed blank (`PlanVisibilityTests`).
 - **`engine.critique_plan`** judges the plan for what a competent plan *hides* (enforcement ahead of its precondition, collateral damage, no-op step, uncovered AC, no rollback). Advisory — every failure path returns `[]`. Told the planner had no live-system access.

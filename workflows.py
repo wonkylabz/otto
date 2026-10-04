@@ -186,6 +186,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # but the web chat. Bound in _bind_composer.
         self._attachments = []
         self._prior_attachments = []
+        # The asker's OWN message (Slack sets it for a trusted asker; a delegated child inherits
+        # it) — the only text a DELEGATED run may close an issue on. Bound in _bind_composer.
+        self._asker_text = None
         # Per-stage wall-clock timing {label: {"start": epoch_ms, "dur": epoch_ms|None}}, keyed on
         # the pipe labels the UI renders (DECOMPOSE/ROUTER/CLARIFY/PLAN/GATE/RUN). Surfaced via
         # status() so a
@@ -217,6 +220,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._effort = config.resolve_effort(params.get("effort"), self._setting("effort"))
         self._attachments = params.get("attachments") or []
         self._prior_attachments = params.get("prior_attachments") or []
+        self._asker_text = params.get("asker_text") or None
 
     async def _gate_wait(self, cond):
         """Wait at the approval gate for `cond`, bounded by the `gate_timeout_h` setting.
@@ -1055,7 +1059,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 pr = await workflow.execute_activity(
                     finalize_workspace,
                     {"run_id": git_run_id, "title": request[:120], "head": ws["head"],
-                     "existing_pr": True, "branch": ws["branch"]},
+                     "existing_pr": True, "branch": ws["branch"],
+                     # A follow-up's words ("yes, go ahead") say nothing about the diff; the
+                     # turn's result drafts its commit message.
+                     "summary": (result or "")[:1500],
+                     "summary_is_error": bool(out.get("is_error"))},
                     start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY)
                 await workflow.execute_activity(

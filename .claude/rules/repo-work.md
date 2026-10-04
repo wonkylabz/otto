@@ -39,6 +39,7 @@ Both loops are ONE parameterised body — `wf_postpr._run_fix_loop` over `_LOOPS
 - **A fix round never runs on the LOCAL backend** (`_FIX_NO_LADDER` → `local_disabled`) — both loops are one-shot, with no rung above them for `LOCAL_FALLBACK` to cover a local death with.
 - **A post-PR fix round checks out the PR's head branch, not `otto/<run_id>`** (`_fix_workspace`) — a run amending an existing PR never pushed its own; a round that can't provision goes inconclusive, not Failed.
 - **The PR's title, body and commit msg describe the CHANGE, never the run** (`_PR_BODY_RULE`; `pr_copy(summary_is_error=)`←the ladder's `is_error`) — an errored `result` is a stderr tail no prefix list catches; rounds APPEND (`PrBodyContractTests`, `PrCopyTests`).
+- **A fresh PR closes the issue its request LINKS; a push to an open PR commits under a drafted title** (`workspace.closing_line`) — left open, the next ticket sweep redoes merged work. A bare `#N` is a mention, never a close (`PrIssueAndCommitCopyTests`).
 
 ## Terminal state / no silent failure
 
