@@ -232,9 +232,13 @@ channel, and neither can the claude.ai Slack connector or any off-the-shelf Slac
 they are all read/post. `slack_mcp.py` is the write half, registered as an ordinary MCP server
 so a capability picks it up like any other tool.
 
-It exposes three tools: `list_channels` (id, name, creation date, archive state — enough to
+It exposes five tools: `list_channels` (id, name, creation date, archive state — enough to
 answer "older than N days" without opening each one), `archive_channel` and
-`unarchive_channel`.
+`unarchive_channel`, plus a read/post pair for a
+cap that keeps its state *in* a channel: `channel_history` (each message with its ts, author and
+reactions — who reacted, so a reaction reads as that person's verdict on that message) and
+`post_message` (one message per call, link previews off, so each post is its own reaction target).
+Those two need `channels:history` and `chat:write`; a bot must be invited to the channel.
 
 ### 1. Add the scope
 
@@ -285,7 +289,7 @@ Give the capability that needs it the server in Admin → per-cap `mcp`, or name
 python3 slack_mcp.py <<< '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Should list the three tools. A call that fails reports Slack's error code **and** what to do
+Should list the five tools. A call that fails reports Slack's error code **and** what to do
 about it — `missing_scope` names the scope to add, rather than sending you to the API docs.
 
 ## Both identities

@@ -8078,9 +8078,77 @@ class SlackAdminMcpTests(unittest.TestCase):
         out = [json.loads(l) for l in buf.getvalue().strip().splitlines()]
         self.assertEqual(out[0]["result"]["serverInfo"]["name"], "slack-admin")
         self.assertEqual({t["name"] for t in out[1]["result"]["tools"]},
-                         {"list_channels", "archive_channel", "unarchive_channel"})
+                         {"list_channels", "archive_channel", "unarchive_channel",
+                          "channel_history", "post_message"})
         self.assertFalse(out[2]["result"]["isError"])
         self.assertIn("error", out[3])
+
+    def test_history_shows_each_messages_reactions_and_who_reacted(self):
+        """A capability that keeps its state in a channel reads a reaction as the human's
+        verdict on THAT message — so the listing must pair each one with its ts, and say who
+        reacted, or the bot's own seed reaction counts as a rating."""
+        self.responses["conversations.history"] = {"ok": True, "messages": [
+            {"ts": "1759550000.000100", "bot_id": "B1", "bot_profile": {"name": "otto"},
+             "text": "*Dark* (2017)", "reactions": [{"name": "+1", "count": 1, "users": ["U9"]}]},
+            {"ts": "1759540000.000100", "user": "U9", "text": "hi"}]}
+        text, err = self.mod.dispatch("channel_history", {"channel": "C0AAA"})
+        self.assertFalse(err, text)
+        self.assertIn("ts=1759550000.000100\t2025-10-04\tbot:otto\treactions=+1x1(U9)\t*Dark* (2017)",
+                      text)
+        self.assertIn("reactions=none\thi", text)
+
+    def test_history_pages_until_the_limit(self):
+        """`conversations.history` caps a page at 200; a channel with a year of posts read one
+        page deep re-suggests whatever fell off it."""
+        pages = iter([{"ok": True, "has_more": True, "messages": [{"ts": "2.0"}] * 2,
+                       "response_metadata": {"next_cursor": "c2"}},
+                      {"ok": True, "has_more": False, "messages": [{"ts": "1.0"}]}])
+        self.responses["conversations.history"] = None
+        orig = self.mod._call
+        self.mod._call = lambda m, p=None, post=False: (
+            self.calls.append((m, dict(p or {}), post)) or next(pages))
+        text, err = self.mod.dispatch("channel_history", {"channel": "C0AAA", "limit": 10})
+        self.mod._call = orig
+        self.assertFalse(err, text)
+        self.assertTrue(text.startswith("3 message(s)"))
+        self.assertEqual(self.calls[1][1].get("cursor"), "c2")
+
+    def test_a_long_message_is_clipped_with_a_marker(self):
+        self.responses["conversations.history"] = {"ok": True, "messages": [
+            {"ts": "1.0", "user": "U9", "text": "x" * 700}]}
+        text, _ = self.mod.dispatch("channel_history", {"channel": "C0AAA"})
+        self.assertIn("…[clipped, 100 more chars]", text)
+
+    def test_posting_is_a_post_with_previews_off(self):
+        """Each suggestion is its own message so it is its own reaction target; an unfurled
+        trailer link would bury the next one."""
+        self.responses["chat.postMessage"] = {"ok": True, "ts": "1759550000.000200"}
+        text, err = self.mod.dispatch("post_message", {"channel": "#inc-1377", "text": "hello"})
+        self.assertFalse(err, text)
+        self.assertIn("ts=1759550000.000200", text)
+        method, params, post = self.calls[-1]
+        self.assertEqual((method, params["channel"], params["unfurl_links"], post),
+                         ("chat.postMessage", "C0AAA", "false", True))
+
+    def test_an_empty_post_is_refused_before_slack(self):
+        text, err = self.mod.dispatch("post_message", {"channel": "C0AAA", "text": "  "})
+        self.assertTrue(err)
+        self.assertEqual(self.calls, [])
+
+    def test_a_name_resolves_without_groups_read(self):
+        """A bot installed for one public channel has no `groups:read`; the private half of
+        the lookup refusing must not make a public name unresolvable."""
+        orig = self.mod._call
+
+        def no_private(method, params=None, post=False):
+            if method == "conversations.list" and "private" in (params or {}).get("types", ""):
+                return {"ok": False, "error": "missing_scope", "needed": "groups:read"}
+            return orig(method, params, post)
+        self.mod._call = no_private
+        self.addCleanup(setattr, self.mod, "_call", orig)
+        self.responses["chat.postMessage"] = {"ok": True, "ts": "1.0"}
+        text, err = self.mod.dispatch("post_message", {"channel": "inc-1377", "text": "hi"})
+        self.assertFalse(err, text)
 
     def test_the_server_imports_nothing_of_ottos(self):
         """It runs with `OTTO_*` stripped from its environment, so an Otto import would reach
@@ -8158,7 +8226,8 @@ class SlackAdminMcpSpawnTests(unittest.TestCase):
         import mcp_client
         s = self._session()
         self.assertEqual({t["name"] for t in s.list_tools()},
-                         {"list_channels", "archive_channel", "unarchive_channel"})
+                         {"list_channels", "archive_channel", "unarchive_channel",
+                          "channel_history", "post_message"})
         out = mcp_client._content_text(s.call("archive_channel", {"channel": "#inc-1377"}))
         self.assertIn("archived", out)
         self.assertIn(("POST", "conversations.archive", "C0AAA", "Bearer xoxp-e2e-canary"),
