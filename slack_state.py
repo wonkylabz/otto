@@ -305,13 +305,25 @@ def watch(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, seen=None, 
     return st
 
 
+def owns_gate(gate_wid, run_id):
+    """Whether the gate armed for `gate_wid` belongs to run `run_id` — that run itself, or a run
+    it spawned. PURE.
+
+    A child's id is always its parent's plus a `-` suffix (a frontman delegation is `<wid>-d1`, a
+    swarm child `<wid>-s<N>`), and that is what makes ownership DERIVABLE: the delivering parent
+    never learns which child parked, nor whether one did. A Slack wid ends in the message ts's
+    fixed fraction, so no sibling run's id can extend another's past that `-`."""
+    return bool(gate_wid and run_id and (gate_wid == run_id or gate_wid.startswith(run_id + "-")))
+
+
 def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, identity=USER,
-                expect=None, notice_ts=None):
+                expect=None, notice_ts=None, owner=None):
     """Mark this conversation as WAITING on an approval gate for run `wid` (or clear it, wid=None).
 
     `expect` makes it compare-and-set: unless the stored gate is still that run's, nothing changes
     and None is returned (the caller skips the write) — a release decided on a stale read must
-    never erase a NEWER run's arming.
+    never erase a NEWER run's arming. `owner` is the same guard for a caller that cannot name the
+    wid: the stored gate must be that run's or one of its children's (`owns_gate`).
 
     Kept next to `pending_at` rather than replacing it: the conversation IS still in flight (its
     run has not delivered), so the one-turn-at-a-time rule must keep holding back ordinary
@@ -326,6 +338,8 @@ def record_gate(st, channel, thread_ts, now, ttl_s, max_threads, wid=None, ident
     # Checked AFTER the prune: a TTL-expired record still holding that gate would otherwise pass,
     # and the clear below would resurrect it as a fresh, cursorless record.
     if expect is not None and (threads.get(key) or {}).get("gate_wid") != expect:
+        return None
+    if owner is not None and not owns_gate((threads.get(key) or {}).get("gate_wid"), owner):
         return None
     rec = dict(threads.get(key) or {})
     rec.update({"channel": channel, "thread_ts": thread_ts, "identity": identity or USER,
