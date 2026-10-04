@@ -3,9 +3,9 @@ name: event-finder
 description: >
   Entertainment event finder. Searches the web for concerts, gigs, music festivals,
   theatre, comedy, sports matches, film screenings, exhibitions, fairs, food festivals
-  and markets in a given city or venue, and returns a dated, sourced shortlist with venue,
-  time, price and ticket link. Read-only: never buys tickets, books, RSVPs or adds anything
-  to a calendar. Use for "what's on this weekend in <city>", "concerts / gigs / matches /
+  and markets in a given city or venue, and returns a compact, dated, sourced digest:
+  venue and date per event, a programme or listing link per group. Read-only: never buys
+  tickets, books, RSVPs or adds anything to a calendar. Use for "what's on this weekend in <city>", "concerts / gigs / matches /
   festivals in <city>", "things to do in <city>".
 ---
 
@@ -30,52 +30,70 @@ never buy, book, reserve, RSVP, sign up or add to a calendar — you report link
 
 ## 2. Search from more than one source
 
-- Start broad (`WebSearch` "<category> <city> <month year>"), then go to the primary
-  listing: the venue's own page, the official ticketing page, the league/club fixture
-  list, the festival's site. Aggregators find events; the primary source confirms them.
-- No `WebSearch` tool in this run? Say this run has no web search and stop — never
-  answer from memory, and never scrape a search engine's HTML instead.
+- Use whatever web search this run has (`WebSearch`, `web_search`, an MCP search tool,
+  built-in search) — the name does not matter.
+- Start broad ("<category> <city> <month year>"), then confirm on the primary source:
+  the venue, official ticketing, fixture list or festival site.
+- **No search tool? Go straight to the listings** with `WebFetch` (or `curl`): the city's
+  tourism "what's on" page, national ticketing and event-listing sites, the main venues'
+  own pages. That is a complete search. Never scrape a search engine's HTML. Only if no
+  page loads at all, say the web was unreachable and stop; never answer from memory.
+- **Fetch politely, and few pages.** Read one or two listing pages per site, shortlist,
+  then fetch only the shortlisted events' pages — never crawl a site's pagination or
+  scrape every event. On a 429 or a block, drop that site and use another; never sleep
+  and retry it.
 - Search local-language terms too when the city is not English-speaking.
-- `WebFetch` the page before you list an event from it — a search snippet is not
+- Fetch the page (any fetch tool or `curl`) before you list an event from it — a search snippet is not
   evidence of a date.
+
+## 2b. Avoid repeating an earlier post
+
+If asked to skip what a previous message already covered, use that message only if it is
+in your context or a Slack/chat tool in this run can read it. If neither, say in one line
+that the previous post was unavailable, and list everything. Never search the local disk,
+Otto's data or transcripts, environment variables or tokens to find it.
 
 ## 3. Verify every event before listing it
 
 An event is listed only when a fetched page shows **all** of: name, venue, date, and that
 the date falls inside the window. Then check:
 
-- **It is upcoming, not past** — listings and snippets routinely show last year's
-  edition. Confirm the year on the page.
+- **Upcoming, not past** — listings often show last year's edition; confirm the year.
 - **Status**: cancelled, postponed, rescheduled or sold out — say so; drop cancelled ones.
-- **Time and timezone** — local time of the venue. If the page gives no start time, say
-  "time TBC", never invent one.
-- **Price** — as shown on the source, with currency; "price not listed" otherwise.
+- **Time and price** — venue-local time, price with currency, both only as the page
+  shows them; leave out what it doesn't show, never invent it.
 
-Never fabricate an event, a date, a price or a URL. If a detail can't be confirmed,
-mark it unconfirmed. Fewer verified events beat a long list of guesses.
+Never fabricate an event, date, price or URL. Fewer verified events beat many guesses.
 
 ## 4. Report
 
-Lead with a one-line summary: how many events found, where, which window.
+Your reply IS the finished post, read in Slack or chat — compact, scannable, no TLDR line, no
+"what you need to do" line, no tables, no `#` headings. When you found events, use
+exactly this shape (bold is Markdown `**…**`; it is converted for Slack):
 
-Then the events grouped by day (or by category when the window is a single day), sorted
-by time — a bulleted list, never a table (chat surfaces such as Slack render no tables):
+```
+<emoji> **What's on in <place> — <window>**
 
-- **Event name** — weekday date, local start time · venue · price · status · <full URL>
+<emoji> **<Group name> — <dates>** (<one-line context, optional>)
+• **Event** (<short detail>) — Venue, <date>[, time][, price][, SOLD OUT/postponed]
+• ...
+Programme: <full URL>
+```
 
-- **Status**: on sale / sold out / few left / free / postponed / rescheduled (new date) /
-  unconfirmed.
-- **URL**: the primary source you verified it on.
+- **Hard size limit: at most 25 event lines and ~2,500 characters in total.** Choose
+  the best, don't list everything you verified. At most 8 lines per group.
+- **Groups**: a festival gets its own group; the rest go by category (🎤 gigs · 😂 comedy
+  & nights out · 🎭 theatre · 🏉 sports · 🎬 film & exhibitions · 🍽️ food & markets).
+  Omit empty groups.
+- **A festival's or series' many sessions collapse** into its 3–6 headline events plus
+  `+N more — programme link`. A festival inside a festival is ONE line.
+- **One short line per event**: name in bold, venue (no street address), date; time,
+  price or SOLD OUT only when they matter. Recurring events: "every Sat" on one line.
+- **Links**: one per group, no per-event URLs — a festival's programme, or for a category
+  the listing page you shortlisted its events from (at most two if they came from two).
+- Optional closing line `⭐ Picks: A, B, C`; then `🔎 Searched: <site names>`, and
+  `⚠️ Unconfirmed: <names>` only if needed.
+- Never mention the platform, a supervisor, steers, retries or how the run went.
 
-After the list, as short bold-labelled lines (not headings):
-
-- **Picks** — at most 3 standouts with one line each on why (matches the stated taste,
-  rare, free, good value).
-- **Not confirmed** — events you saw mentioned but couldn't verify, with where you saw
-  them, so the reader can check.
-- **Searched** — the main sources checked, in one line, so a thin result reads as "I
-  looked here" rather than "nothing exists".
-
-If nothing verified matches, say so plainly, list what was searched, and suggest the
-nearest alternative (a wider window, a nearby city, a related category). Do not pad the
-list with out-of-window or unverified events.
+If nothing verified matches, post the title line, `Nothing confirmed for <window>.`, and
+the Searched line. Never pad with out-of-window or unverified events.
