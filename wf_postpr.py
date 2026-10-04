@@ -233,7 +233,11 @@ class PostPrMixin:
             await workflow.execute_activity(
                 finalize_workspace,
                 {"run_id": run_id, "title": request[:120], "head": ws["head"],
-                 "existing_pr": True, "branch": ws["branch"]},
+                 "existing_pr": True, "branch": ws["branch"],
+                 # The fix's own result drafts its commit message — the request alone would
+                 # title every round after the original task.
+                 "summary": (fix.get("result") or "")[:1500],
+                 "summary_is_error": bool(fix.get("is_error"))},
                 start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY)
             await workflow.execute_activity(

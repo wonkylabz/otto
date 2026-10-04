@@ -22,6 +22,7 @@
 - **A mode cap's prose is a real question's vocabulary**, so it out-ranks `assistant` on the very requests it must not take — retrieval is the only reliable guard, router wording is not (`BrainstormModeTests`).
 - **A MODE cap pins its risk in `_RISK`, never leaves it to `classify`** — `apply_policy` overwrites `cap.risk` on every load, so editing the description alone can flip the mode into needing an approval card (`BrainstormModeTests`).
 - Adding a stock cap: drop `<name>.md` in `capabilities/bundled/` (on) or `capabilities/optional/` (opt-in); risk default in `registry._RISK`.
+- **A stock cap's prose must hold on every backend and every reader** — local has no WebSearch, Codex no WebFetch, Slack renders no tables and `*x*` as italics, an unattended closing question FAILs: name a fallback, never one tool.
 - **A missing tool inside an `agent` cap is a frontmatter problem, not a headless/OAuth one.** A `skill` cap runs as `/<name>` in the top-level session and sees every tool; an `agent` cap is a subagent whose `tools:` line is its *complete* grant.
 - Grep a transcript for a successful `mcp__claude_ai_*` call before believing "connectors don't work headless".
 

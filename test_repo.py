@@ -153,6 +153,57 @@ class PrCopyTests(unittest.TestCase):
         self.assertEqual(t, "Fix the flaky retry logic")
 
 
+class PrIssueAndCommitCopyTests(unittest.TestCase):
+    """A fresh PR closes the issue its request LINKS (`workspace.closing_line`), and a push to
+    an existing PR commits under a drafted title, never the raw request (#200 carries three
+    commits titled "Work on this ticket <url>", and #198 stayed open, so #201 redid it)."""
+
+    def test_a_linked_issue_in_the_prs_own_repo_is_closed(self):
+        req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
+        self.assertEqual(workspace.closing_line(req, "https://github.com/wonkylabz/otto.git"),
+                         "Closes #198")
+        self.assertEqual(workspace.closing_line(req, "git@github.com:WonkyLabz/Otto.git"),
+                         "Closes #198")
+
+    def test_another_repos_issue_or_a_bare_mention_closes_nothing(self):
+        other = "Port https://github.com/acme/platform/issues/12 here"
+        self.assertIsNone(workspace.closing_line(other, "https://github.com/wonkylabz/otto"))
+        self.assertIsNone(workspace.closing_line("like the one in #480",
+                                                 "https://github.com/wonkylabz/otto"))
+        self.assertIsNone(workspace.closing_line(
+            "https://github.com/wonkylabz/otto/issues/198", None))
+
+    def test_finalize_appends_the_close_to_a_fresh_pr_only(self):
+        req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
+        seen = []
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("wf-x", body="Body.", request=req)
+            workspace.finalize("wf-x", body=None, request=req, existing_pr=True)
+        self.assertEqual(seen, ["Body.\n\nCloses #198", None])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_an_existing_pr_commits_under_the_drafted_title(self):
+        got = {}
+        with mock.patch.object(engine, "pr_copy",
+                               return_value={"title": "Floor the gate thread", "body": "B"}), \
+                mock.patch.object(workspace, "finalize",
+                                  side_effect=lambda run_id, **k: got.update(k) or {}):
+            activities.finalize_workspace({"run_id": "wf-x", "existing_pr": True,
+                                           "title": "Work on this ticket <url>",
+                                           "summary": "Floored it."})
+        self.assertEqual(got["title"], "Floor the gate thread")
+        self.assertIsNone(got["body"])
+
+    def test_a_fix_round_drafts_its_commit_from_its_own_result(self):
+        src = workflow_src()
+        self.assertIn('"summary": (fix.get("result") or "")[:1500]', src)
+        self.assertIn('"summary_is_error": bool(fix.get("is_error"))', src)
+
+
 class SnapshotTests(unittest.TestCase):
     """The portable config snapshot (#166): a whole install carried to another. Each machine is a
     fresh `redirect_live_state()` temp dir; every side effect that would reach Temporal, git or

@@ -300,12 +300,31 @@ def linked_issue(text):
             "title": data.get("title") or "", "body": data.get("body") or ""}
 
 
+def origin_slug(url):
+    """`owner/repo` of a GitHub remote (URL or SSH form), lower-cased, or None. Pure."""
+    m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url or "")
+    return m.group(1).lower() if m else None
+
+
+def closing_line(request, origin):
+    """`Closes #N` for the issue the request LINKS, when it lives in the PR's own repo; else None.
+
+    A PR that only says "worked issue #198" leaves the issue open after the merge, so the next
+    run picking open tickets does the same work again (#198 shipped as #200, then again as
+    #201). Only an explicit issue URL counts — a bare `#N` is too often a mere mention ("like
+    #480"), and closing someone's issue on a passing reference is the worse error. Pure."""
+    ref = issue_ref(request)
+    slug = origin_slug(origin)
+    if not ref or not slug or ref[0].lower() != slug:
+        return None
+    return f"Closes #{ref[1]}"
+
+
 def repo_for_slug(slug, repos=None):
     """The registered repo NAME whose origin is `owner/repo`, or None — both URL and SSH remotes."""
     want = (slug or "").lower()
     for r in (git_repos() if repos is None else repos):
-        m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", r.get("origin") or "")
-        if m and m.group(1).lower() == want:
+        if origin_slug(r.get("origin")) == want:
             return r["name"]
     return None
 
@@ -711,7 +730,14 @@ def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None,
 
     One wrapper rather than a call at each of `_finalize`'s four PR-bearing exits — the plan
     must reach the capability's own PR and a resumed run's existing PR too, not just the one
-    `gh pr create` opened here."""
+    `gh pr create` opened here.
+
+    A fresh PR's body gains `Closes #N` for the issue the request links (`closing_line`); an
+    existing PR's body is never touched here."""
+    if not existing_pr:
+        close = closing_line(request, _git_origin(workspace_path(run_id)))
+        if close:
+            body = f"{body}\n\n{close}" if body else close
     out = _finalize(run_id, title=title, base_head=base_head, existing_pr=existing_pr,
                     branch=branch, body=body)
     post_plan(workspace_path(run_id), out.get("pr_url"), run_id, plan,

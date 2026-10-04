@@ -2773,7 +2773,7 @@ class RuleEnforcementTests(unittest.TestCase):
         "ingress.md:First sight of a channel isn't its first message",
         "ingress.md:Per-step caps resolve up front or the plan never starts",
         "ingress.md:The store keeps a cap NAME, never its risk",
-        # --- memory-privacy.md (18) ---
+        # --- memory-privacy.md (17) ---
         "memory-privacy.md:A READ run has no cwd anchor and can pick the wrong sibling clone",
         "memory-privacy.md:A cap that prescribes its own output format outranks _TLDR_SHAPE",
         "memory-privacy.md:A conversational run can choose to say nothing",
@@ -2809,8 +2809,9 @@ class RuleEnforcementTests(unittest.TestCase):
         "repo-work.md:The Reaper is the backstop",
         "repo-work.md:The approved plan reaches the PR as a comment, never a committed file",
         "repo-work.md:The whole ladder is dead code if the chat never recorded repo/git_run_",
-        # --- routing-capabilities.md (12) ---
+        # --- routing-capabilities.md (13) ---
         "routing-capabilities.md:A missing tool inside an agent cap is a frontmatter problem, not a hea",
+        "routing-capabilities.md:A stock cap's prose must hold on every backend and every reader",
         "routing-capabilities.md:A wrong route is usually retrieval, not the model",
         "routing-capabilities.md:Assistant redirect",
         "routing-capabilities.md:Clarify parse biases toward proceeding",
@@ -2822,7 +2823,8 @@ class RuleEnforcementTests(unittest.TestCase):
         "routing-capabilities.md:Rank against the catalogue, never per-cap",
         "routing-capabilities.md:The follow-up classifier is read BOTH ways",
         "routing-capabilities.md:The listing is numbered from 1 and the LAST integer in the reply wins",
-        # --- run-pipeline.md (10) ---
+        # --- run-pipeline.md (11) ---
+        "run-pipeline.md:A guard's plan lists every door it must close before the first edit",
         "run-pipeline.md:\"Request changes\" (revise_plan)",
         "run-pipeline.md:A decline is audited under the run's OWN wid",
         "run-pipeline.md:A plan is enumerated in edit order but must be approved in deploy orde",
@@ -3419,7 +3421,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 89329 -> 89615: the Slack frontman (delegate + relay) replaced the handoff classifier's rule.
     # 90139 -> 90826: three rules from the event-finder runs — a local run's judge grant is
     # the local runtime's, its Bash env is stripped, and who posts a runbook's Slack message.
-    MAX_RULES_BYTES = 90826   # fetched tier — bounded, but looser; it is not always loaded
+    # 90826 -> 91526: three rules from the merged PRs' review rounds — a fresh PR closes its
+    # linked issue, a stock cap holds on every backend and reader, a guard's plan lists every door.
+    MAX_RULES_BYTES = 91526   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
