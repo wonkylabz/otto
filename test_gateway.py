@@ -813,6 +813,11 @@ class LocalRuntimeTests(unittest.TestCase):
         self._stats_path = gateway._STATS_PATH
         gateway._STATS_PATH = os.path.join(self.tmp, "gateway-stats.json")
         self.requests = []          # every body sent to the "model"
+        # These drive the tool LOOP; confinement has its own tests (LocalExecShellConfinementTests).
+        # CI has no usable bwrap, where every run here would otherwise hit the #208 wall.
+        _p = mock.patch.object(local_runtime, "ALLOW_UNGUARDED", True)
+        _p.start()
+        self.addCleanup(_p.stop)
 
     def tearDown(self):
         local_runtime._post, local_runtime.SESSIONS = self._post, self._sessions
@@ -7658,6 +7663,11 @@ class OpenAiParamDialectTests(unittest.TestCase):
         gateway._LEARNED_QUIRKS.clear()
         self.addCleanup(gateway._LEARNED_QUIRKS.clear)
         self.m = {"name": "gpt", "provider": "openai", "base_url": "http://api/v1", "model": "g6"}
+        # These drive the tool LOOP; confinement has its own tests (LocalExecShellConfinementTests).
+        # CI has no usable bwrap, where every run here would otherwise hit the #208 wall.
+        _p = mock.patch.object(local_runtime, "ALLOW_UNGUARDED", True)
+        _p.start()
+        self.addCleanup(_p.stop)
 
     def _400(self, payload):
         import urllib.error
@@ -8749,6 +8759,142 @@ class McpUsageNoteTests(unittest.TestCase):
                                                   "off": {"enabled": False, "notes": "skip"}}})
         exported = {"mcps": {n: {"notes": t} for n, t in policy.mcp_notes().items()}}
         self.assertEqual(exported["mcps"], {"grafana": {"notes": "g-note"}})
+
+
+class LocalExecShellConfinementTests(unittest.TestCase):
+    """Issue #208: #204 stripped Otto's credentials from the execution shell's `env`, but the
+    shell itself was unconfined — `cat .env` or `/proc/<worker>/environ` returned the same
+    tokens. It now runs under bwrap with the read deny-set masked and a private PID namespace,
+    and WALLS where bwrap is unusable, like Codex."""
+
+    MODEL = {"name": "local", "provider": "openai", "base_url": "http://x/v1", "model": "q"}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="otto-208-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for target, val in ((local_runtime, "SESSIONS"), (gateway, "_STATS_PATH")):
+            orig = getattr(target, val)
+            setattr(target, val, os.path.join(self.tmp, val))
+            self.addCleanup(setattr, target, val, orig)
+        self.posts = []
+
+        def fake_post(m, body, timeout):
+            self.posts.append(body)
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+        p = mock.patch.object(local_runtime, "_post", fake_post)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _run(self, tools, sandbox, hatch=False):
+        with mock.patch.object(local_runtime, "sandbox_available", lambda: sandbox), \
+                mock.patch.object(local_runtime, "ALLOW_UNGUARDED", hatch):
+            return local_runtime.run_json("hi", allowed_tools=tools, model_entry=self.MODEL,
+                                          cwd=self.tmp)
+
+    # --- failing closed ---------------------------------------------------------------------
+
+    def test_an_execution_shell_without_bwrap_walls_before_the_model_is_called(self):
+        out = self._run(config.READ_TOOLS, sandbox=False)
+        self.assertTrue(out["is_error"])
+        self.assertEqual(out["wall_reason"], "read_guard_unavailable")
+        self.assertEqual(self.posts, [], "the model was called before the wall")
+        self.assertIn("bubblewrap", out["result"])
+
+    def test_the_wall_names_its_own_remedy_not_the_endpoints(self):
+        msg = error_classifier.wall_message("read_guard_unavailable")
+        self.assertIn("bwrap", msg)
+        self.assertIn("OTTO_LOCAL_ALLOW_UNGUARDED", msg)
+        self.assertNotIn("model endpoint", msg)
+
+    def test_the_hatch_runs_unconfined_and_is_env_only(self):
+        out = self._run(config.READ_TOOLS, sandbox=False, hatch=True)
+        self.assertFalse(out["is_error"])
+        self.assertNotIn("local_allow_unguarded", config._SETTING_SPECS)
+        self.assertIn('os.environ.get("OTTO_LOCAL_ALLOW_UNGUARDED"',
+                      inspect.getsource(local_runtime))
+
+    def test_a_run_with_no_bare_shell_never_walls(self):
+        """Tool-free and plan-pass runs have nothing to confine (the plan pass has its own
+        allowlist fallback), so a host without bwrap must keep serving them."""
+        for tools in ([], ["Read", "Grep"], config.PLAN_TOOLS):
+            self.posts.clear()
+            out = self._run(tools, sandbox=False)
+            self.assertFalse(out.get("wall_reason"), tools)
+            self.assertTrue(self.posts, tools)
+
+    def test_a_bare_grant_runs_its_shell_confined(self):
+        seen = []
+
+        def fake_post(m, body, timeout):
+            self.posts.append(body)
+            if len(self.posts) == 1:
+                return {"choices": [{"message": {"role": "assistant", "content": None,
+                        "tool_calls": [{"id": "c1", "type": "function", "function": {
+                            "name": "Bash", "arguments": json.dumps({"command": "true"})}}]}}],
+                        "usage": {}}
+            return {"choices": [{"message": {"role": "assistant", "content": "done"}}],
+                    "usage": {}}
+        with mock.patch.object(local_runtime, "_post", fake_post), \
+                mock.patch.object(local_runtime, "_t_bash",
+                                  lambda a, c, mode=None: seen.append(mode) or "ok"):
+            self._run(config.READ_TOOLS, sandbox=True)
+        self.assertEqual(seen, ["confined"])
+
+    # --- the confinement itself, against a control --------------------------------------
+
+    def _shell(self, cmd, mode, env=None):
+        """`_t_bash` in a CHILD process, so the canary sits in a real exec-time environ the way
+        `run.sh`'s `.env` export puts it in the worker's."""
+        code = ("import os, sys, local_runtime as lr; print(lr._t_bash({'command': "
+                "sys.argv[1].replace('WORKER', str(os.getpid()))}, sys.argv[2], "
+                "mode=sys.argv[3] or None))")
+        r = subprocess.run([sys.executable, "-c", code, cmd, self.tmp, mode or ""],
+                           capture_output=True, text=True, timeout=60,
+                           cwd=os.path.dirname(os.path.abspath(local_runtime.__file__)),
+                           env={**os.environ, **(env or {})})
+        return r.stdout + r.stderr
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_workers_environ_is_out_of_reach(self):
+        canary = {"OTTO_SLACK_BOT_TOKEN": "xoxb-canary-208"}
+        # The WORKER's pid, never `$PPID`: inside the sandbox that is bwrap, whose env is
+        # already stripped.
+        cmd = "tr '\\0' '\\n' < /proc/WORKER/environ"
+        self.assertIn("xoxb-canary-208", self._shell(cmd, None, canary),
+                      "the control no longer leaks — this test measures nothing")
+        self.assertNotIn("xoxb-canary-208", self._shell(cmd, "confined", canary))
+
+    def test_the_environ_refusal_does_not_rest_on_bwraps_default_mode(self):
+        """The refusal is the user namespace's; a setuid bwrap skips it unless asked."""
+        self.assertIn("--unshare-user", local_runtime._confined_argv("true"))
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_a_background_process_outlives_its_call(self):
+        """A PID namespace killed every `cmd &` when the call returned, so a run starting a
+        server in one Bash call found nothing listening in the next."""
+        pid = os.path.join(self.tmp, "bg.pid")
+        local_runtime._t_bash({"command": f"sleep 30 & echo $! > {pid}"}, self.tmp,
+                              mode="confined")
+        with open(pid) as f:
+            n = int(f.read())
+        os.kill(n, 0)
+        os.kill(n, signal.SIGKILL)
+
+    @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
+    def test_the_read_deny_set_is_masked_and_writes_still_land(self):
+        secret = os.path.join(config.DATA_DIR, "canary-208.json")
+        self.assertTrue(file_safety.is_read_denied(secret, allow_cwd=self.tmp))
+        with open(secret, "w") as f:
+            f.write('{"k": "sk-canary-208"}')
+        self.addCleanup(os.unlink, secret)
+        cmd = f"cat {secret}; echo hi > made.txt"
+        self.assertIn("sk-canary-208", local_runtime._t_bash({"command": cmd}, self.tmp),
+                      "the control no longer reads it — this test measures nothing")
+        out = local_runtime._t_bash({"command": cmd}, self.tmp, mode="confined")
+        self.assertNotIn("sk-canary-208", out)
+        with open(os.path.join(self.tmp, "made.txt")) as f:
+            self.assertEqual(f.read().strip(), "hi", "the execution shell lost its writes")
 
 
 class LocalPlanModeTests(unittest.TestCase):

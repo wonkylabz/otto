@@ -49,6 +49,7 @@ class Reason(str, enum.Enum):
     context_overflow = "context_overflow"    # prompt longer than the window
     unsupported_param = "unsupported_param"  # the body carries a parameter this model refuses
     bad_model = "bad_model"                  # 404 — no such model id, or the wrong base_url path
+    read_guard_unavailable = "read_guard_unavailable"  # no working bwrap to confine the shell
     unknown = "unknown"
 
 
@@ -92,6 +93,11 @@ _MESSAGE = {
     # Both spellings of a 404 point at the model entry, which is the one place either is fixed.
     Reason.bad_model: ("the model endpoint has no such model (HTTP 404) — check the model id "
                        "and the endpoint's base_url in Admin \u2192 Models"),
+    # Not the endpoint at all: the BACKEND refused to hand a run an unconfined shell.
+    Reason.read_guard_unavailable: (
+        "no working `bwrap` to confine the run's shell, so it could read Otto's credentials — "
+        "install bubblewrap and enable unprivileged user namespaces on the worker host, or set "
+        "OTTO_LOCAL_ALLOW_UNGUARDED=1 / OTTO_CODEX_ALLOW_UNGUARDED=1 to accept that exposure"),
     Reason.unknown: "the model endpoint failed (HTTP {code})",
 }
 

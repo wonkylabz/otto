@@ -192,6 +192,34 @@ def _bwrap_argv(command, cwd=None):
     return argv + ["bash", "-lc", command]
 
 
+# --- the EXECUTION shell (issue #208) ------------------------------------------
+# Writable root, but the read deny-set masked and a private PID namespace: `env` was stripped in
+# #204, yet `cat .env` and `/proc/<worker>/environ` still handed a run the same tokens.
+# Env-only for the same reason as `OTTO_CODEX_ALLOW_UNGUARDED`: it decides whether a run can read
+# the plaintext key store, and the settings API is unauthenticated.
+ALLOW_UNGUARDED = os.environ.get("OTTO_LOCAL_ALLOW_UNGUARDED", "") == "1"
+
+UNGUARDED_MESSAGE = (
+    "\u26d4 **Stopped — nothing ran.** The local backend needs a working `bwrap` to confine its "
+    "shell: without it a run can read `.env`, `data/models.json` and the worker's own "
+    "environment, i.e. every credential Otto holds.\n\nInstall `bubblewrap` and enable "
+    "unprivileged user namespaces on the machine running the worker, or choose a different "
+    "execution model. Set `OTTO_LOCAL_ALLOW_UNGUARDED=1` only if that exposure is acceptable "
+    "to you.")
+
+
+def _confined_argv(command, cwd=None):
+    """`--unshare-user` is what refuses `/proc/<worker>/environ` — explicit, since a setuid bwrap
+    skips the userns by default. No PID ns: it killed every background process at the call's end.
+    `/dev` is bound whole, not minimal — this shell does real work."""
+    argv = ["bwrap", "--bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc",
+            "--unshare-user", "--die-with-parent"]
+    argv += _read_deny_mounts(cwd)
+    if cwd:
+        argv += ["--chdir", cwd]
+    return argv + ["bash", "-lc", command]
+
+
 
 
 # Shell composition. Rejected under the ALLOWLIST layer only: without a sandbox the command must
@@ -264,12 +292,15 @@ def _rule_text(rules):
 
 
 def _t_bash(args, cwd, mode=None):
-    """`mode` is None for the unrestricted execution shell, "sandbox" for a bwrap read-only one,
+    """`mode` is "confined" for the execution shell, None only under `OTTO_LOCAL_ALLOW_UNGUARDED`,
+    "sandbox" for a bwrap read-only one,
     "allowlist" for the argv-only fallback (already vetted by `bash_refusal`, so it execs the
     tokens directly — no shell to compose onto)."""
     cmd = args["command"]
     if mode == "sandbox":
         argv, use_shell_cwd = _bwrap_argv(cmd, cwd), False
+    elif mode == "confined":
+        argv, use_shell_cwd = _confined_argv(cmd, cwd), True
     elif mode == "allowlist":
         argv, use_shell_cwd = shlex.split(cmd), True
     else:
@@ -419,6 +450,10 @@ def _offered_tools(allowed_tools, mcp_specs=(), bash_mode=None):
                 schema["description"] + " READ-ONLY PASS: the full shell is available (pipes, "
                 "redirection, chaining) and the network is up, but the filesystem is mounted "
                 "read-only — every write fails, /tmp is a scratch tmpfs. Read whatever you need."))
+        elif n == "Bash" and bash_mode == "confined":
+            schema = dict(schema, description=(
+                schema["description"] + " Sandboxed: Otto's own state and credential stores "
+                "are masked."))
         elif n == "Bash" and bash_mode == "allowlist":
             schema = dict(schema, description=(
                 schema["description"] + " READ-ONLY PASS: only these commands are permitted — "
@@ -434,7 +469,7 @@ def _run_tool(name, args, cwd, offered_names, mcp=None, bash_mode=None, bash_rul
     model gets to read the failure and adapt, mirroring how Claude Code surfaces tool
     errors). A call outside the offered set mutates nothing.
 
-    `bash_mode` is None for the unrestricted execution shell (every normal run — unchanged),
+    `bash_mode` is "confined" for the execution shell (None only under the unguarded hatch),
     "sandbox" when the kernel enforces read-only and NOTHING is parsed, "allowlist" when it
     falls to `bash_refusal`. The check sits HERE rather than in `_t_bash` so a refusal is a tool
     RESULT the model reads and adapts to, and so it sits next to `offered_names`, the other thing
@@ -988,6 +1023,13 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     if not m.get("base_url"):
         return {"result": "(local runtime: model has no base_url)", "is_error": True,
                 "total_cost_usd": 0}
+    # A WALL, not a failure — it fails identically every attempt, so the ladder re-dispatches.
+    if (config.scoped_bash_rules(allowed_tools)[0] and not ALLOW_UNGUARDED
+            and not sandbox_available()):
+        return {"result": UNGUARDED_MESSAGE, "is_error": True, "total_cost_usd": 0,
+                "usage": {}, "session_id": None, "runtime": "local",
+                "wall_reason": "read_guard_unavailable", "wall_detail": UNGUARDED_MESSAGE,
+                "tools_used": [], "tools_failed": []}
 
     # MCP servers for this run (stdio only — see the module docstring). Started BEFORE the
     # history is assembled so a server that fails to launch can be declared in the system
@@ -1041,14 +1083,16 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         [{"type": "text", "text": prompt}] + [p for p, _ in images] if images else prompt)})
 
     # A scoped Bash grant marks this as the READ-ONLY PLAN PASS. Sandbox if the kernel will do
-    # it, else the argv allowlist. A bare "Bash" (every execution grant) stays unrestricted.
+    # it, else the argv allowlist. A bare "Bash" (every execution grant) is "confined" (#208).
     #   KNOWN, and fine only while PLAN_TOOLS is the sole caller: the grant enforced is the plan
     # ruleset (or, sandboxed, a whole shell), NOT the specific rules the allowlist named. A
     # future caller passing only `Bash(gh pr view:*)` would be handed more than it asked for —
     # widen this into a per-caller grant before adding one, rather than after.
     _bare_bash, _scoped = config.scoped_bash_rules(allowed_tools)
     bash_mode, bash_rules = None, None
-    if _scoped and not _bare_bash:
+    if _bare_bash and sandbox_available():
+        bash_mode = "confined"
+    elif _scoped and not _bare_bash:
         bash_mode = "sandbox" if sandbox_available() else "allowlist"
         bash_rules = config.plan_bash_rules(_scoped)
     tools = _offered_tools(allowed_tools, mcp.specs if mcp else (), bash_mode=bash_mode)
