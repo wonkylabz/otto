@@ -748,14 +748,17 @@ def mark_seen(msg):
 
 
 def post_identity():
-    """Who posts a runbook's one-way `slack_post` — the BOT when one is configured, else the owner.
+    """Who posts a runbook's one-way `slack_post` — the BOT when it is switched on, else the owner.
 
     A scheduled digest is the job speaking, not the owner, so the bot is the honest author. And
     `identity_of`'s owner default needs a USER token that a bot-only install never has: the post
     failed `no_token` and the run, which had passed its judge, landed in needs-you. Decided at
     DELIVERY, never stored on the target — a schedule's action args are frozen at creation, so a
-    token added or removed later would otherwise keep the stale pick forever."""
-    return BOT if BOT_TOKEN else USER
+    token added or removed later would otherwise keep the stale pick forever.
+
+    The Admin switch counts, not just the token: an operator who turned the bot off has said
+    it does not speak for this install, even with `OTTO_SLACK_BOT_TOKEN` still exported."""
+    return BOT if bot_enabled() else USER
 
 
 def identity_of(msg):

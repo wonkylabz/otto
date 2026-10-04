@@ -333,21 +333,26 @@ class RunbookSlackDeliveryTests(unittest.TestCase):
             self.skipTest("temporalio not installed")
         import activities
         seen = []
-        orig = (slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN)
+        orig = (slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN, slack.load)
         try:
             slack.post = lambda ch, text, **k: seen.append(k.get("identity")) or True
             slack.was_posted = lambda rid: False
             slack.mark_posted = lambda rid: None
             target = {"kind": "slack_post", "channel": "#events"}
             slack.BOT_TOKEN = "xoxb-test"
-            activities.deliver_result({"reply_to": target, "result": "gigs",
-                                       "run_id": "runbook-rb-1a2b3c4d-0001"})
+            for n, switch in enumerate((True, False)):
+                # ...and the Admin switch counts: a bot turned OFF does not post, token or not.
+                slack.load = lambda s=switch: {"bot_enabled": s}
+                activities.deliver_result({"reply_to": target, "result": "gigs",
+                                           "run_id": f"runbook-rb-1a2b3c4d-000{n}"})
             slack.BOT_TOKEN = ""
+            slack.load = lambda: {"bot_enabled": True}
             activities.deliver_result({"reply_to": target, "result": "gigs",
-                                       "run_id": "runbook-rb-1a2b3c4d-0002"})
-            self.assertEqual(seen, [slack.BOT, slack.USER])
+                                       "run_id": "runbook-rb-1a2b3c4d-0009"})
+            self.assertEqual(seen, [slack.BOT, slack.USER, slack.USER])
         finally:
-            slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN = orig
+            (slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN,
+             slack.load) = orig
 
     def test_a_runbook_with_no_destination_has_no_reply_target(self):
         # The control, and the back-compat case: every runbook stored before this field existed
