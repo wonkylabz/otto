@@ -43,7 +43,7 @@ never buy, book, reserve, RSVP, sign up or add to a calendar — you report link
   scrape every event. On a 429 or a block, drop that site and use another; never sleep
   and retry it.
 - Search local-language terms too when the city is not English-speaking.
-- `WebFetch` the page before you list an event from it — a search snippet is not
+- Fetch the page (any fetch tool or `curl`) before you list an event from it — a search snippet is not
   evidence of a date.
 
 ## 2b. Avoid repeating an earlier post
@@ -67,7 +67,7 @@ Never fabricate an event, date, price or URL. Fewer verified events beat many gu
 
 ## 4. Report
 
-Your reply IS the finished post, read in Slack — compact, scannable, no TLDR line, no
+Your reply IS the finished post, read in Slack or chat — compact, scannable, no TLDR line, no
 "what you need to do" line, no tables, no `#` headings. When you found events, use
 exactly this shape (bold is Markdown `**…**`; it is converted for Slack):
 
