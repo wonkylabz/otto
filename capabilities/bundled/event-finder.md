@@ -89,7 +89,8 @@ Programme: <full URL>
   `+N more — programme link`. A festival inside a festival is ONE line.
 - **One short line per event**: name in bold, venue (no street address), date; time,
   price or SOLD OUT only when they matter. Recurring events: "every Sat" on one line.
-- **Links**: one per group only (its programme or listing page). No per-event URLs.
+- **Links**: one per group, no per-event URLs — a festival's programme, or for a category
+  the listing page you shortlisted its events from (at most two if they came from two).
 - Optional closing line `⭐ Picks: A, B, C`; then `🔎 Searched: <site names>`, and
   `⚠️ Unconfirmed: <names>` only if needed.
 - Never mention the platform, a supervisor, steers, retries or how the run went.
