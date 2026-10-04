@@ -68,12 +68,29 @@ _SECRET_PATTERNS = (
     # the host is deliberate — the reader still learns WHERE, which is the actionable half.
     # The `@` is matched by LOOKAHEAD so it survives the substitution: consuming it rendered
     # `https://[redacted]db.internal`, which reads as though the host itself were scrubbed.
-    re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^\s/:@]+:[^\s/@]+(?=@)"),
+    # Neither half may cross a quote or split an escape pair: on a compact serialized line
+    # (`claude -p` stdout) `{"u":"http://h:1"},"b":"me@x"}` otherwise ate `"},"b":"me` and
+    # the transcript line stopped parsing.
+    # A URL holds no whitespace, so a `\n`/`\t`/`\r` pair here is consumed WHOLE rather than
+    # excluded: excluding it let a plain-text `https://u:p\nss@h` (Slack, audit) through unscrubbed.
+    re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)(?:[^\s/:@\"\\]|\\[^\s\"'])+:"
+               r"(?:[^\s/@\"\\]|\\[^\s\"'])+(?=@)"),
     # Secret-NAMED key/value: "api_key": "…", token=…, password: …. Last, and the only pattern
     # that keeps its group-1 prefix, so the reader still sees WHICH key was scrubbed.
+    # A quote may arrive JSON-escaped (`\"`): transcripts scrub the SERIALIZED line, and a value
+    # free to start on the backslash ate it, leaving a bare `"` — `accesskey=\"4\"` in a fetched
+    # page broke 16 transcript lines while the real `password: \"…\"` it should catch leaked.
+    # A backslash is consumed ONLY as part of `\"` or a whitespace escape (`\n`/`\t`/`\r`) —
+    # a bare optional `\\?` let YAML's `password:\n  x` end the prefix on `\` and emit `\[`.
+    # Inside the value a backslash is consumed only as a WHOLE escape pair (`\\`, `\uXXXX`, a
+    # plain-text `\d`), never `\"` — stopping at every `\` leaked a password's tail after its
+    # first backslash, and splitting a pair is what broke the line. `\n`/`\t`/`\r` are consumed
+    # too, as the URL rule does: one pattern serves plain text and serialized lines alike, and
+    # over-scrubbing a word past a real newline beats leaking a plain-text `password=ab\nope`.
     re.compile(
         r"(?i)((?:" + _SECRET_WORDS + r")"
-        r'["\']?\s*[:=]\s*["\']?)[^\s"\',}]+'
+        r'(?:\\?["\'])?(?:\s|\\[ntr])*[:=](?:\s|\\[ntr])*(?:\\?["\'])?)'
+        r'(?:[^\s"\',}\\]|\\[^\s"\'])+'
     ),
 )
 

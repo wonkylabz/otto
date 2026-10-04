@@ -123,6 +123,34 @@ class RedactTests(unittest.TestCase):
         parsed = _json.loads(line)          # the whole point: still one JSON object per line
         self.assertEqual(parsed["type"], "assistant")
 
+    def test_an_escaped_quote_after_a_secret_name_survives_the_scrub(self):
+        """The k/v rule meets JSON-ESCAPED quotes in a serialized line. Its value once started on
+        the backslash, so `accesskey=\\"4\\"` in a fetched page lost it and the line stopped
+        parsing — while `password: \\"…\\"` in a Bash command was corrupted and NOT scrubbed."""
+        import json as _json
+
+        for text, secret in (('<a href="/#Main" accesskey="4">skip</a>', None),
+                             ('mysql --password="hunter2superlong" -h db', "hunter2superlong"),
+                             ('{"api_key": "sk-ABCDEF0123456789ABCDEF"}', "ABCDEF0123456789"),
+                             ('password:\n  hunter2superlong', "hunter2superlong"),
+                             ('token:\tabc123456789xyz', "abc123456789xyz"),
+                             ('secret=étehunter2long', "hunter2long"),
+                             ('password=hunt\\er2long', "er2long"),
+                             ('password=hunt"er2long', None)):
+            line = claude_cli.transcript_line({"type": "user", "content": text})
+            parsed = _json.loads(line)
+            if secret:
+                self.assertNotIn(secret, line)
+            self.assertEqual(privacy.redact(line), line, f"not idempotent: {text!r}")
+        self.assertEqual(parsed["type"], "user")
+        # Plain text (Slack, audit): a literal `\n` inside a password must not end the scrub.
+        self.assertEqual(privacy.redact(r"password=hunt\ner2long"), "password=[redacted]")
+        self.assertEqual(_json.loads(claude_cli.transcript_line(
+            {"c": 'accesskey="4">'}))["c"], 'accesskey="[redacted]">')
+        # the URL-credential rule must not cross a quote on a COMPACT line (`claude -p` stdout)
+        raw = '{"a":{"u":"http://h:1"},"b":"me@x"}'
+        self.assertEqual(_json.loads(claude_cli.transcript_line(raw)), _json.loads(raw))
+
     def test_the_transcript_line_accepts_an_already_serialized_line(self):
         """The `claude -p` stream loop forwards raw stdout lines, which already end in \n and
         must not gain a second one — a blank line makes every reader's `json.loads` throw."""
