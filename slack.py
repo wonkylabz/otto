@@ -602,7 +602,7 @@ def to_blocks(md):
         return None
 
 
-def post(channel, text, thread_ts=None, blocks=None, identity=USER):
+def post(channel, text, thread_ts=None, blocks=None, identity=USER, errors=None):
     """Post a message (optionally threaded) AS `identity` — the owner (user token) or the bot user
     (bot token). Returns the posted message's ts on success (truthy — the gate notice needs it to
     find replies in its thread), False on failure. Never raises. Records the
@@ -625,6 +625,8 @@ def post(channel, text, thread_ts=None, blocks=None, identity=USER):
         import json as _json
         params["blocks"] = _json.dumps(blocks)
     out = _api("chat.postMessage", identity=identity, **params)
+    if errors is not None and not out.get("ok"):
+        errors.append(out.get("error") or "")   # the caller's fallback keys on WHICH failure
     if out.get("ok") and out.get("ts"):
         _record_posted_ts(out["ts"])
         return out["ts"]
@@ -745,6 +747,20 @@ def mark_seen(msg):
         watch_conversation(msg["channel"], msg["thread_ts"], seen=msg["ts"], identity=identity)
     else:
         record_seen(msg["channel"], msg["ts"], identity)
+
+
+def post_identity():
+    """Who posts a runbook's one-way `slack_post` — the BOT when it is switched on, else the owner.
+
+    A scheduled digest is the job speaking, not the owner, so the bot is the honest author. And
+    `identity_of`'s owner default needs a USER token that a bot-only install never has: the post
+    failed `no_token` and the run, which had passed its judge, landed in needs-you. Decided at
+    DELIVERY, never stored on the target — a schedule's action args are frozen at creation, so a
+    token added or removed later would otherwise keep the stale pick forever.
+
+    The Admin switch counts, not just the token: an operator who turned the bot off has said
+    it does not speak for this install, even with `OTTO_SLACK_BOT_TOKEN` still exported."""
+    return BOT if bot_enabled() else USER
 
 
 def identity_of(msg):
