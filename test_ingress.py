@@ -25,7 +25,6 @@ import unittest.mock
 import urllib.error
 import urllib.parse
 import urllib.request
-import activities
 import config
 import contracts
 import delivery
@@ -2977,6 +2976,7 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertFalse(own(None, "w-1"))
         self.assertFalse(own("w-1", None))
 
+    @unittest.skipUnless(_HAS_TEMPORAL, "needs temporalio")
     def test_deliver_result_names_the_run_that_delivered(self):
         """Without `run_id` a delivery clears no gate at all, so every deliver_result payload must
         carry it — including the swarm merge's."""
