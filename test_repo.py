@@ -185,23 +185,55 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
             workspace.finalize("wf-x", body=None, request=req, existing_pr=True)
         self.assertEqual(seen, ["Body.\n\nCloses #198", None])
 
-    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
-    def test_an_existing_pr_commits_under_the_drafted_title(self):
-        got = {}
+    def _finalize_activity(self, payload, dirty=True):
+        got, drafted = {}, []
         with mock.patch.object(engine, "pr_copy",
-                               return_value={"title": "Floor the gate thread", "body": "B"}), \
+                               side_effect=lambda *a, **k: drafted.append(a) or
+                               {"title": "Floor the gate thread", "body": "B"}), \
+                mock.patch.object(workspace, "_dirty", return_value=dirty), \
                 mock.patch.object(workspace, "finalize",
                                   side_effect=lambda run_id, **k: got.update(k) or {}):
-            activities.finalize_workspace({"run_id": "wf-x", "existing_pr": True,
-                                           "title": "Work on this ticket <url>",
-                                           "summary": "Floored it."})
+            activities.finalize_workspace(payload)
+        return got, drafted
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_an_existing_pr_commits_under_the_drafted_title(self):
+        got, _ = self._finalize_activity({"run_id": "wf-x", "existing_pr": True,
+                                          "title": "Work on this ticket <url>",
+                                          "summary": "Floored it."})
         self.assertEqual(got["title"], "Floor the gate thread")
         self.assertIsNone(got["body"])
 
-    def test_a_fix_round_drafts_its_commit_from_its_own_result(self):
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_clean_existing_pr_tree_drafts_nothing(self):
+        _, drafted = self._finalize_activity({"run_id": "wf-x", "existing_pr": True,
+                                              "title": "t"}, dirty=False)
+        self.assertEqual(drafted, [])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_swarm_part_never_closes_the_shared_issue(self):
+        got, _ = self._finalize_activity({"run_id": "web-abc-s2", "title": "t"})
+        self.assertFalse(got["close_issue"])
+        got, _ = self._finalize_activity({"run_id": "web-abc", "title": "t"})
+        self.assertTrue(got["close_issue"])
+
+    def test_a_close_is_skipped_when_the_caller_says_so(self):
+        req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
+        seen = []
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("wf-x-s1", body="Body.", request=req, close_issue=False)
+        self.assertEqual(seen, ["Body."])
+
+    def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):
         src = workflow_src()
         self.assertIn('"summary": (fix.get("result") or "")[:1500]', src)
         self.assertIn('"summary_is_error": bool(fix.get("is_error"))', src)
+        self.assertIn('"summary": (result or "")[:1500],\n'
+                      '                     "summary_is_error": bool(out.get("is_error"))', src)
 
 
 class SnapshotTests(unittest.TestCase):

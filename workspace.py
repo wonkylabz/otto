@@ -725,7 +725,7 @@ def post_plan(path, pr_url, run_id, plan, request=None, cap=None, concerns=None)
 
 
 def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None, body=None,
-             plan=None, request=None, cap=None, concerns=None):
+             plan=None, request=None, cap=None, concerns=None, close_issue=True):
     """`_finalize` (commit/push/PR), then the approved plan onto whatever PR that resolved to.
 
     One wrapper rather than a call at each of `_finalize`'s four PR-bearing exits — the plan
@@ -733,8 +733,9 @@ def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None,
     `gh pr create` opened here.
 
     A fresh PR's body gains `Closes #N` for the issue the request links (`closing_line`); an
-    existing PR's body is never touched here."""
-    if not existing_pr:
+    existing PR's body is never touched here, and `close_issue=False` (a swarm part, one of
+    several PRs for the issue) adds nothing."""
+    if close_issue and not existing_pr:
         close = closing_line(request, _git_origin(workspace_path(run_id)))
         if close:
             body = f"{body}\n\n{close}" if body else close

@@ -1055,7 +1055,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 pr = await workflow.execute_activity(
                     finalize_workspace,
                     {"run_id": git_run_id, "title": request[:120], "head": ws["head"],
-                     "existing_pr": True, "branch": ws["branch"]},
+                     "existing_pr": True, "branch": ws["branch"],
+                     # A follow-up's words ("yes, go ahead") say nothing about the diff; the
+                     # turn's result drafts its commit message.
+                     "summary": (result or "")[:1500],
+                     "summary_is_error": bool(out.get("is_error"))},
                     start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY)
                 await workflow.execute_activity(

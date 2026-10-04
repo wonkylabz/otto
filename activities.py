@@ -442,15 +442,22 @@ def finalize_workspace(payload: dict) -> dict:
     import workspace
     # An existing PR gets only the drafted TITLE, as its commit message — its body is left
     # alone. Without this a fix round or a resumed follow-up committed the raw request:
-    # #200 carries three commits titled "Work on this ticket <url>".
-    copy = engine.pr_copy(payload.get("title") or "", summary=payload.get("summary"),
-                          summary_is_error=bool(payload.get("summary_is_error")))
-    title = copy["title"]
-    body = None if payload.get("existing_pr") else copy["body"]
+    # #200 carries three commits titled "Work on this ticket <url>". Drafted only when there is
+    # something to commit: a clean tree would pay a model call for a message nobody writes.
+    title, body = payload.get("title"), None
+    existing = bool(payload.get("existing_pr"))
+    if not existing or workspace._dirty(workspace.workspace_path(payload["run_id"])):
+        copy = engine.pr_copy(payload.get("title") or "", summary=payload.get("summary"),
+                              summary_is_error=bool(payload.get("summary_is_error")))
+        title = copy["title"]
+        body = None if existing else copy["body"]
     return workspace.finalize(payload["run_id"], title=title,
                               base_head=payload.get("head"),
                               existing_pr=payload.get("existing_pr", False),
                               branch=payload.get("branch"), body=body,
+                              # A swarm part is ONE of several PRs for the linked issue; merging
+                              # it must not close the issue while its siblings are still open.
+                              close_issue=not _SWARM_CHILD_RE.search(payload["run_id"]),
                               plan=payload.get("plan"), request=payload.get("request"),
                               cap=payload.get("cap"), concerns=payload.get("concerns"))
 
