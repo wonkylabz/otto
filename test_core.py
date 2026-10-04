@@ -3417,7 +3417,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 88934 -> 89329: repo checks before the reviewer (#135). Two rules: it runs sandboxed or
     # not at all, and its shell command never arrives through a snapshot import.
     # 89329 -> 89615: the Slack frontman (delegate + relay) replaced the handoff classifier's rule.
-    MAX_RULES_BYTES = 90139   # fetched tier — bounded, but looser; it is not always loaded
+    # 90139 -> 90826: three rules from the event-finder runs — a local run's judge grant is
+    # the local runtime's, its Bash env is stripped, and who posts a runbook's Slack message.
+    MAX_RULES_BYTES = 90826   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
