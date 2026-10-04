@@ -1,5 +1,10 @@
 """Slack channel administration as an MCP server — the actions no Slack MCP server exposes.
 
+Plus a read/post pair (`channel_history`, `post_message`) for a capability that keeps its
+state IN a channel: each post is one item, a reaction on it is the human's verdict. The
+claude.ai connector can't serve that on the local backend, and Otto's runbook delivery posts
+one message per run, so N items share one reaction target.
+
 Every Slack integration Otto already has is read/post: the claude.ai Slack connector
 (`slack_search_*`, `slack_send_message`), Otto's own listener (`slack.py`, which calls
 `conversations.history|info|list|replies` and nothing else), and every off-the-shelf Slack MCP
@@ -39,7 +44,7 @@ _ERRORS = {
     "missing_scope":
         "the token lacks the scope for this call. Listing needs `channels:read` (+ `groups:read` "
         "for private); archiving needs `channels:write` (+ `groups:write`) on a user token, "
-        "`channels:manage` on a bot. Add it in the Slack app's OAuth & Permissions, reinstall, "
+        "`channels:manage` on a bot; reading needs `channels:history`, posting `chat:write`. Add it in the Slack app's OAuth & Permissions, reinstall, "
         "and replace the token.",
     "not_in_channel":
         "the token's identity is not a member of that channel. A bot must be invited; a user "
@@ -58,6 +63,10 @@ _ERRORS = {
     "not_authed": f"no token reached the server — its def must set {TOKEN_ENV} in `env`.",
     "token_revoked": "the token has been revoked; reinstall the Slack app and replace it.",
 }
+
+# One message line in a history listing. Model-bound, so a long message is clipped WITH a marker
+# — an unmarked cut reads as the whole message.
+_TEXT_CHARS = 600
 
 TOOLS = [
     {"name": "list_channels",
@@ -92,6 +101,32 @@ TOOLS = [
          "properties": {"channel": {"type": "string",
                                     "description": "Channel id (C…) or name, with or without '#'."}},
          "required": ["channel"]}},
+    {"name": "channel_history",
+     "description": ("Read a channel's messages, newest first, each with its ts, author and "
+                     "REACTIONS (emoji name, count, who reacted). Use it to see what was already "
+                     "posted and how people reacted to each message."),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "channel": {"type": "string",
+                         "description": "Channel id (C…) or name, with or without '#'."},
+             "limit": {"type": "integer",
+                       "description": "Maximum messages to return (default 200, max 1000)."},
+             "oldest": {"type": "string",
+                        "description": "Only messages after this Slack ts (optional)."},
+         },
+         "required": ["channel"]}},
+    {"name": "post_message",
+     "description": ("Post one message to a channel and return its ts. Slack mrkdwn: *bold*, "
+                     "_italic_, <url|label>. Link previews are off."),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "channel": {"type": "string",
+                         "description": "Channel id (C…) or name, with or without '#'."},
+             "text": {"type": "string", "description": "The message body."},
+         },
+         "required": ["channel", "text"]}},
 ]
 
 
@@ -173,6 +208,9 @@ def _resolve(ref):
     if ref[:1] in ("C", "G") and ref.isupper() and ref.isalnum():
         return ref, None
     chans, err = _channels(include_archived=True, include_private=True)
+    if err and err.startswith("missing_scope"):
+        # No `groups:read` — the private half of the lookup is what refused, not the name.
+        chans, err = _channels(include_archived=True)
     if err:
         return None, err
     hit = [c for c in chans if c.get("name") == ref]
@@ -211,6 +249,54 @@ def _list(args):
     return "\n".join([head, *lines]), False
 
 
+def _history(args):
+    ref = args.get("channel")
+    cid, err = _resolve(ref)
+    if err:
+        return f"FAILED {ref}: {err}", True
+    limit = max(1, min(int(args.get("limit") or 200), 1000))
+    msgs, cursor = [], ""
+    while len(msgs) < limit:
+        params = {"channel": cid, "limit": min(200, limit - len(msgs))}
+        if args.get("oldest"):
+            params["oldest"] = args["oldest"]
+        if cursor:
+            params["cursor"] = cursor
+        resp = _call("conversations.history", params)
+        if not resp.get("ok"):
+            return f"FAILED {ref} ({cid}): {_explain(resp)}", True
+        msgs += resp.get("messages") or []
+        cursor = ((resp.get("response_metadata") or {}).get("next_cursor") or "").strip()
+        if not cursor or not resp.get("has_more"):
+            break
+    lines = [f"{len(msgs)} message(s) in {ref} ({cid}), newest first"]
+    for m in msgs[:limit]:
+        who = (f"bot:{(m.get('bot_profile') or {}).get('name') or m.get('bot_id')}"
+               if m.get("bot_id") else f"user:{m.get('user', '?')}")
+        reacts = ",".join(f"{r.get('name')}x{r.get('count', 0)}({'|'.join(r.get('users') or [])})"
+                          for r in m.get("reactions") or []) or "none"
+        text = " ".join((m.get("text") or "").split())
+        if len(text) > _TEXT_CHARS:
+            text = text[:_TEXT_CHARS] + f" …[clipped, {len(text) - _TEXT_CHARS} more chars]"
+        day = time.strftime("%Y-%m-%d", time.gmtime(float(m.get("ts") or 0)))
+        lines.append(f"ts={m.get('ts')}\t{day}\t{who}\treactions={reacts}\t{text}")
+    return "\n".join(lines), False
+
+
+def _post(args):
+    ref, text = args.get("channel"), (args.get("text") or "").strip()
+    if not text:
+        return "FAILED: empty message", True
+    cid, err = _resolve(ref)
+    if err:
+        return f"FAILED {ref}: {err}", True
+    resp = _call("chat.postMessage", {"channel": cid, "text": text, "unfurl_links": "false",
+                                      "unfurl_media": "false"}, post=True)
+    if not resp.get("ok"):
+        return f"FAILED {ref} ({cid}): {_explain(resp)}", True
+    return f"OK posted to {ref} ({cid}) ts={resp.get('ts')}", False
+
+
 def dispatch(name, args):
     """One tool call -> (text, is_error). The whole tool surface, so a test can drive it
     without the JSON-RPC frame."""
@@ -221,6 +307,10 @@ def dispatch(name, args):
         return _archive(args, "conversations.archive")
     if name == "unarchive_channel":
         return _archive(args, "conversations.unarchive")
+    if name == "channel_history":
+        return _history(args)
+    if name == "post_message":
+        return _post(args)
     return f"no such tool: {name}", True
 
 
