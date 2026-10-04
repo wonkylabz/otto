@@ -687,7 +687,8 @@ def verify_capability(payload: dict) -> dict:
                          steers=payload.get("steers"),
                          attachments=payload.get("attachments"),
                          # The fast lane's whole grant — the judge must not read the risk floor.
-                         fast_lane=payload.get("fast_lane"))
+                         fast_lane=payload.get("fast_lane"),
+                         backend=payload.get("backend"))
 
 
 # The two post-PR loops are one parameterised body in `wf_postpr._LOOPS`; this is the same seam,

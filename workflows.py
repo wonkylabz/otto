@@ -1622,7 +1622,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                      # Mid-run supervisor corrections this attempt was given: the request the
                      # judge scores against is the AMENDED one. Mirrors engine._ladder_core.
                      "steers": out.get("steers"), "attachments": self._attachments,
-                     "fast_lane": self._fast_lane},
+                     "fast_lane": self._fast_lane,
+                     # Which runtime ran it: the local one has no WebSearch, so the judge's
+                     # grant must not list it. Mirrors engine._ladder_core.
+                     "backend": out.get("backend")},
                     start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],

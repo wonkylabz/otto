@@ -985,6 +985,17 @@ class JudgeToolGrantTests(unittest.TestCase):
         engine.verify("catch me up", self.cap, "A briefing.", tools_used=["Bash"])
         self.assertNotIn("returned nothing usable", self.prompts[0])
 
+    def test_a_local_run_is_not_credited_with_tools_the_local_runtime_lacks(self):
+        # A local run truthfully said "no web search" and the judge, told the claude -p floor,
+        # FAILed it for lying. The grant must be what the runtime that ran it implements.
+        local = judging._grant_list(self.cap, None, backend="local")
+        self.assertNotIn("WebSearch", local)
+        self.assertIn("WebFetch", local)
+        self.assertIn("WebSearch", judging._grant_list(self.cap, None, backend="claude"))
+        # A tool the attempt was SEEN calling is still credited (an MCP search, say).
+        self.assertIn("mcp__brave__search",
+                      judging._grant_list(self.cap, ["mcp__brave__search"], backend="local"))
+
     def test_grant_list_degrades_on_junk(self):
         self.assertEqual(judging._grant_list(self.cap, None), sorted(set(config.READ_TOOLS)))
         self.assertEqual(judging._grant_list(self.cap, [None, ""]),

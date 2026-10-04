@@ -854,7 +854,7 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
                                tools_used=att.get("tools_used"),
                                tools_failed=att.get("tools_failed"),
                                # Mirrored in OttoWorkflow._verify_ladder.
-                               steers=att.get("steers")))
+                               steers=att.get("steers"), backend=att.get("backend")))
         record_attempt(wid, request, cap, result, att["cost"], attempt, verdict,
                        remember=remember and (verdict["passed"] or final),
                        tokens=att.get("tokens"), model=att.get("model"), project=project,
