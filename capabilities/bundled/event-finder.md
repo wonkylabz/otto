@@ -79,16 +79,19 @@ Your reply IS the finished post, read in Slack — compact, scannable, no TLDR l
 Programme: <full URL>
 ```
 
-- **Groups**: a festival with several events gets its own group; the rest go by category
-  (🎤 gigs, comedy & nights out · 🎭 theatre & shows · 🏉 sports · 🎬 film & exhibitions ·
-  🍽️ food & markets). One fitting emoji per group; omit empty groups.
-- **One line per event**, sorted by date: name in bold, then venue and date. Add time,
-  price or status only when known; never write "TBC"/"not listed" filler.
-- **Links**: one per group (the programme or listing page you verified the events on); add
-  a per-event link only when that event came from a different page.
-- **Picks**: optional, one closing line — `⭐ Picks: A, B, C`.
-- **Close** with one line `🔎 Searched: <sites>`, and `⚠️ Unconfirmed: <names>` only when
-  some were seen but not verified.
+- **Hard size limit: at most 25 event lines and ~2,500 characters in total.** Choose
+  the best, don't list everything you verified. At most 8 lines per group.
+- **Groups**: a festival gets its own group; the rest go by category (🎤 gigs · 😂 comedy
+  & nights out · 🎭 theatre · 🏉 sports · 🎬 film & exhibitions · 🍽️ food & markets).
+  Omit empty groups.
+- **A festival's or series' many sessions collapse** into its 3–6 headline events plus
+  `+N more — programme link`. A festival inside a festival is ONE line.
+- **One short line per event**: name in bold, venue (no street address), date; time,
+  price or SOLD OUT only when they matter. Recurring events: "every Sat" on one line.
+- **Links**: one per group only (its programme or listing page). No per-event URLs.
+- Optional closing line `⭐ Picks: A, B, C`; then `🔎 Searched: <site names>`, and
+  `⚠️ Unconfirmed: <names>` only if needed.
+- Never mention the platform, a supervisor, steers, retries or how the run went.
 
 If nothing verified matches, post the title line, `Nothing confirmed for <window>.`, and
 the Searched line. Never pad with out-of-window or unverified events.
