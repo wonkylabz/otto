@@ -394,6 +394,10 @@ def _github_pr(reply_to, result):
     return pr_review.submit_on_completion(reply_to, result)
 
 
+# Slack's refusals that mean "this bot is not in that channel" — the post certainly did not land.
+_BOT_CANNOT_POST = ("not_in_channel", "channel_not_found")
+
+
 def _slack(reply_to, result, run_id=None):
     """Post the run's result as a threaded reply in Slack. Idempotent on `run_id` (Slack messages
     can't carry a hidden marker like the GitHub sink, so we track delivered run ids in state).
@@ -442,12 +446,17 @@ def _slack(reply_to, result, run_id=None):
     raw = result or "(no result)"
     body = slack.to_mrkdwn(raw)
     blocks = slack.to_blocks(raw)
+    errors = []
+    # `errors=` only where the fallback below can read it — a thread reply has no fallback.
+    extra = {"errors": errors} if reply_to.get("kind") == "slack_post" else {}
     ok = slack.post(channel, body, thread_ts=reply_to.get("thread_ts"), blocks=blocks,
-                    identity=identity)
+                    identity=identity, **extra)
     if (not ok and reply_to.get("kind") == "slack_post" and identity == slack.BOT
-            and slack.USER_TOKEN):
+            and errors and errors[0] in _BOT_CANNOT_POST and slack.enabled()):
         # A bot posts only where it has joined, so a runbook pointed at a channel only the
         # owner is in fails `not_in_channel` — a judged-PASS digest must not die on authorship.
+        # ONLY that refusal: a timeout may already have posted, and re-posting it as the owner
+        # puts it in the channel twice. And only with the owner's identity switched on.
         identity = slack.USER
         ok = slack.post(channel, body, blocks=blocks, identity=identity)
     if ok:

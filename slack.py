@@ -602,7 +602,7 @@ def to_blocks(md):
         return None
 
 
-def post(channel, text, thread_ts=None, blocks=None, identity=USER):
+def post(channel, text, thread_ts=None, blocks=None, identity=USER, errors=None):
     """Post a message (optionally threaded) AS `identity` — the owner (user token) or the bot user
     (bot token). Returns the posted message's ts on success (truthy — the gate notice needs it to
     find replies in its thread), False on failure. Never raises. Records the
@@ -625,6 +625,8 @@ def post(channel, text, thread_ts=None, blocks=None, identity=USER):
         import json as _json
         params["blocks"] = _json.dumps(blocks)
     out = _api("chat.postMessage", identity=identity, **params)
+    if errors is not None and not out.get("ok"):
+        errors.append(out.get("error") or "")   # the caller's fallback keys on WHICH failure
     if out.get("ok") and out.get("ts"):
         _record_posted_ts(out["ts"])
         return out["ts"]
