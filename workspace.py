@@ -306,18 +306,33 @@ def origin_slug(url):
     return m.group(1).lower() if m else None
 
 
+# The issue URL must be what the task acts ON: an action verb, then the URL, in one clause.
+_CLOSE_VERB_RE = re.compile(
+    r"\b(?:work(?:ing)? on|fix(?:es)?|implement|resolve[sd]?|close[sd]?|address|tackle|handle|"
+    r"pick up|do)\b[^.,;\n]{0,40}?(" + _ISSUE_URL_RE.pattern + ")", re.I)
+
+
 def closing_line(request, origin):
-    """`Closes #N` for the issue the request LINKS, when it lives in the PR's own repo; else None.
+    """`Closes #N` for the issue the request WORKS, when it lives in the PR's own repo; else None.
 
     A PR that only says "worked issue #198" leaves the issue open after the merge, so the next
     run picking open tickets does the same work again (#198 shipped as #200, then again as
-    #201). Only an explicit issue URL counts — a bare `#N` is too often a mere mention ("like
-    #480"), and closing someone's issue on a passing reference is the worse error. Pure."""
-    ref = issue_ref(request)
-    slug = origin_slug(origin)
-    if not ref or not slug or ref[0].lower() != slug:
+    #201). Closing the wrong issue is the worse error, so this fails closed: it reads only the
+    asker's own words (never Slack's earlier messages or a carried conversation), which must
+    link exactly ONE issue, right after an action verb — "same pattern as <url>" is a mention.
+    A bare `#N` never counts. Pure."""
+    import contracts
+    import slack
+    text = contracts.task_text(request) or ""
+    own = slack.own_words(text)
+    text = text if own is None else own
+    if len({m.group(0) for m in _ISSUE_URL_RE.finditer(text)}) != 1:
         return None
-    return f"Closes #{ref[1]}"
+    m = _CLOSE_VERB_RE.search(text)
+    slug = origin_slug(origin)
+    if not m or not slug or f"{m.group(2)}/{m.group(3)}".lower() != slug:
+        return None
+    return f"Closes #{m.group(4)}"
 
 
 def repo_for_slug(slug, repos=None):

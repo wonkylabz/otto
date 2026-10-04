@@ -173,6 +173,24 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         self.assertIsNone(workspace.closing_line(
             "https://github.com/wonkylabz/otto/issues/198", None))
 
+    def test_only_the_askers_own_words_and_an_acted_on_link_close(self):
+        import contracts
+        import slack
+        origin, url = "https://github.com/wonkylabz/otto", "https://github.com/wonkylabz/otto/issues/"
+        # A mention is not the task.
+        self.assertIsNone(workspace.closing_line(f"Add retries, same pattern as {url}480", origin))
+        # Two issues: which one the PR finishes is a guess.
+        self.assertIsNone(workspace.closing_line(f"Fix {url}1 and {url}2", origin))
+        # A link only in the carried conversation was never this run's task.
+        carried = f"Add retries{contracts.CARRIED_CONTEXT_MARK}fix {url}57"
+        self.assertIsNone(workspace.closing_line(carried, origin))
+        # Slack: an earlier message's link is context; the sender's own link is the task.
+        head = slack._USER_FRAMING + '\n\n"""\n'
+        earlier = f'{slack._EARLIER_LEAD}:\n- fix {url}57'
+        self.assertIsNone(workspace.closing_line(head + 'Add retries\n"""' + earlier, origin))
+        self.assertEqual(workspace.closing_line(head + f'fix {url}9\n"""' + earlier, origin),
+                         "Closes #9")
+
     def test_finalize_appends_the_close_to_a_fresh_pr_only(self):
         req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
         seen = []
