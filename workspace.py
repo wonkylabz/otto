@@ -314,7 +314,7 @@ _CLOSE_VETO_RE = re.compile(
     r"related|after|before|unlike|instead)\b", re.I)
 
 
-def closing_line(request, origin):
+def closing_line(request, origin, asker_text=None):
     """`Closes #N` when the request IS one issue of the PR's own repo; else None.
 
     A PR that only says "worked issue #198" leaves the issue open after the merge, so the next
@@ -322,9 +322,15 @@ def closing_line(request, origin):
     #201). Closing the wrong issue is the worse error, so this fails closed: it reads only the
     asker's own words (never Slack's earlier messages or a carried conversation), which must be
     ONE issue link plus a short directive ("work on this ticket <url>") with no negation or
-    comparison — anything longer is a task that merely mentions an issue. Pure."""
+    comparison — anything longer is a task that merely mentions an issue.
+
+    A DELEGATED request (`contracts.DELEGATED_FRAMING`, which a retry carries too) is the
+    frontman's wording, so only `asker_text` — the asker's own message — may close; without it
+    nothing does. Pure."""
     import contracts
     import slack
+    if contracts.DELEGATED_FRAMING.strip() in (request or ""):
+        request = asker_text
     text = contracts.task_text(request) or ""
     own = slack.own_words(text)
     text = text if own is None else own
@@ -758,7 +764,7 @@ def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None,
     existing PR's body is never touched here, and `close_issue=False` (a swarm part, one of
     several PRs for the issue) adds nothing."""
     if close_issue and not existing_pr:
-        close = closing_line(asker_text or request, _git_origin(workspace_path(run_id)))
+        close = closing_line(request, _git_origin(workspace_path(run_id)), asker_text)
         if close:
             body = f"{body}\n\n{close}" if body else close
     out = _finalize(run_id, title=title, base_head=base_head, existing_pr=existing_pr,

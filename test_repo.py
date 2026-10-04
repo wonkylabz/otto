@@ -252,6 +252,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         self.assertEqual(seen, ["Body."])
 
     def test_a_delegated_run_closes_on_the_askers_words_not_the_frontmans(self):
+        import contracts
         url = "https://github.com/wonkylabz/otto/issues/12"
         seen = []
         with mock.patch.object(workspace, "_git_origin",
@@ -259,9 +260,14 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                 mock.patch.object(workspace, "_finalize",
                                   side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
                 mock.patch.object(workspace, "post_plan"):
-            workspace.finalize("wf-x-d1", body="B", request=f"Fix {url}",
+            delegated = f"Fix {url}" + contracts.DELEGATED_FRAMING
+            # The asker's words don't make it the task; and without them (an untrusted asker,
+            # a needs-you retry) the frontman's wording never closes anything.
+            workspace.finalize("wf-x-d1", body="B", request=delegated,
                                asker_text="like the fix we did for issue 12")
-        self.assertEqual(seen, ["B"])
+            workspace.finalize("web-retry", body="B", request=delegated)
+            workspace.finalize("wf-x-d1", body="B", request=delegated, asker_text=f"fix {url}")
+        self.assertEqual(seen, ["B", "B", "B\n\nCloses #12"])
         self.assertIn('"asker_text": self._asker_text', workflow_src())
 
     def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):
