@@ -354,6 +354,31 @@ class RunbookSlackDeliveryTests(unittest.TestCase):
             (slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN,
              slack.load) = orig
 
+    def test_a_runbook_post_the_bot_cannot_make_falls_back_to_the_owner(self):
+        # Both tokens, bot switched on, channel the bot never joined: not_in_channel must not
+        # send a judged-PASS digest to needs-you when the owner can post it.
+        if not _HAS_TEMPORAL:
+            self.skipTest("temporalio not installed")
+        import activities
+        seen = []
+        orig = (slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN,
+                slack.USER_TOKEN, slack.load)
+        try:
+            slack.post = lambda ch, text, **k: seen.append(k.get("identity")) or (
+                k.get("identity") == slack.USER)
+            slack.was_posted = lambda rid: False
+            slack.mark_posted = lambda rid: None
+            slack.BOT_TOKEN, slack.USER_TOKEN = "xoxb-test", "xoxp-test"
+            slack.load = lambda: {"bot_enabled": True}
+            out = activities.deliver_result({
+                "reply_to": {"kind": "slack_post", "channel": "#private"}, "result": "gigs",
+                "run_id": "runbook-rb-1a2b3c4d-0010"})
+            self.assertEqual(seen, [slack.BOT, slack.USER])
+            self.assertFalse(out.get("failed"), out)
+        finally:
+            (slack.post, slack.was_posted, slack.mark_posted, slack.BOT_TOKEN,
+             slack.USER_TOKEN, slack.load) = orig
+
     def test_a_runbook_with_no_destination_has_no_reply_target(self):
         # The control, and the back-compat case: every runbook stored before this field existed
         # has no `slack` key at all, and must keep working — quietly, into the audit log.

@@ -444,6 +444,12 @@ def _slack(reply_to, result, run_id=None):
     blocks = slack.to_blocks(raw)
     ok = slack.post(channel, body, thread_ts=reply_to.get("thread_ts"), blocks=blocks,
                     identity=identity)
+    if (not ok and reply_to.get("kind") == "slack_post" and identity == slack.BOT
+            and slack.USER_TOKEN):
+        # A bot posts only where it has joined, so a runbook pointed at a channel only the
+        # owner is in fails `not_in_channel` — a judged-PASS digest must not die on authorship.
+        identity = slack.USER
+        ok = slack.post(channel, body, blocks=blocks, identity=identity)
     if ok:
         slack.mark_posted(run_id)
         return f"posted to slack thread ({channel}, as {identity})"
