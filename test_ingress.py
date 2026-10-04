@@ -2947,6 +2947,47 @@ class SlackGateApprovalTests(unittest.TestCase):
         slack.mark_awaiting_gate("D7", None, wid=None, identity="bot", expect="new-run")
         self.assertIsNone(slack.awaiting_gate(slack.conversation_record("D7", identity="bot")))
 
+    def test_a_late_delivery_never_erases_a_newer_runs_gate(self):
+        """Issue #195: a delivery cleared the gate unconditionally, so a backstop delivery for an
+        OLD run erased a NEWER run's arming and the approver's "yes" was read as ordinary text."""
+        slack.mark_awaiting_gate("D8", None, wid="slack-b-D8-2-0", identity="bot")
+        slack.record_conversation_session("D8", None, session="s", identity="bot",
+                                          run_id="slack-b-D8-1-0")
+        self.assertEqual(slack.awaiting_gate(slack.conversation_record("D8", identity="bot")),
+                         "slack-b-D8-2-0")
+        slack.record_conversation_session("D8", None, session="s", identity="bot",
+                                          run_id="slack-b-D8-2-0")
+        self.assertIsNone(slack.awaiting_gate(slack.conversation_record("D8", identity="bot")))
+
+    def test_a_frontman_parent_delivering_clears_its_childs_gate(self):
+        """The gate belongs to the `-d1` child, which never delivers — the parent does, and must
+        resolve it without being told the child's wid (derived: a child extends its parent's)."""
+        slack.mark_awaiting_gate("D6", None, wid="slack-b-D6-1-0-d1", identity="bot")
+        slack.record_conversation_session("D6", None, identity="bot", run_id="slack-b-D6-1-0")
+        self.assertIsNone(slack.awaiting_gate(slack.conversation_record("D6", identity="bot")))
+
+    def test_gate_ownership_is_the_run_or_its_children(self):
+        own = slack_state.owns_gate
+        self.assertTrue(own("w-1", "w-1"))
+        self.assertTrue(own("w-1-d1", "w-1"))
+        self.assertTrue(own("w-1-s2", "w-1"))
+        self.assertFalse(own("w-12", "w-1"), "a longer sibling id is not a child")
+        self.assertFalse(own("w-1", "w-1-d1"), "a child does not own its parent's gate")
+        self.assertFalse(own(None, "w-1"))
+        self.assertFalse(own("w-1", None))
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "needs temporalio")
+    def test_deliver_result_names_the_run_that_delivered(self):
+        """Without `run_id` a delivery clears no gate at all, so every deliver_result payload must
+        carry it — including the swarm merge's."""
+        src = inspect.getsource(activities.deliver_result)
+        self.assertIn('run_id=payload.get("run_id")', src)
+        calls = workflow_src().split("execute_activity(\n")
+        calls = [c for c in calls if c.lstrip().startswith("deliver_result,")]
+        self.assertGreaterEqual(len(calls), 6)
+        for c in calls:
+            self.assertIn('"run_id"', c.split("start_to_close_timeout")[0])
+
     def test_the_poller_actually_delivers_the_decision_past_the_pending_guard(self):
         """The previous test states the rule on the pure helpers; this one runs `_poll_threads`,
         because the guard that matters is in the poller and a rule nothing executes is a comment.

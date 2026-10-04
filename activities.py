@@ -872,7 +872,9 @@ def deliver_result(payload: dict) -> dict:
             last_reply="" if config.is_no_reply(result) else result,
             # The session belongs to the identity that ran it: resuming the bot's session under the
             # owner's token would answer as them, in a thread they were never part of.
-            identity=slack.identity_of(reply_to))
+            identity=slack.identity_of(reply_to),
+            # Which run delivered: only its own gate (or its child's) is resolved by this.
+            run_id=payload.get("run_id"))
     # A failed/partial delivery is reported here (not raised — delivery never fails the run) so the
     # workflow can record a terminal audit row instead of the result silently vanishing.
     failed = ("failed" in status.lower()) or ("could not" in status.lower())

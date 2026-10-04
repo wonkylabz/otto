@@ -109,7 +109,8 @@ class SwarmMixin:
         # Unattended swarms (scheduled/event) have no on-screen audience — deliver + record.
         if params.get("reply_to"):
             await workflow.execute_activity(
-                deliver_result, {"reply_to": params["reply_to"], "result": result, "cap": cap},
+                deliver_result, {"reply_to": params["reply_to"], "result": result, "cap": cap,
+                                 "run_id": workflow.info().workflow_id},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
         await self._record_chat(params, request, record, None, cap)
         # Same opt-in clean-finish push as the single-cap tail — once for the whole swarm, and

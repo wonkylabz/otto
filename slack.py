@@ -953,12 +953,13 @@ GATE_STALE_S = int(os.environ.get("OTTO_SLACK_GATE_STALE_H") or 25) * 3600
 
 
 def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=None,
-                       notice_ts=None):
+                       notice_ts=None, owner=None):
     """Record (or clear, wid=None) that this conversation is waiting on an approval gate.
 
     `expect` makes the write CONDITIONAL on the stored gate still being that run's — a release
     decided on a stale read (a Temporal describe can take seconds) must never erase a NEWER run's
-    arming, e.g. a retry of the very run that was terminated, reaching its own gate meanwhile."""
+    arming, e.g. a retry of the very run that was terminated, reaching its own gate meanwhile.
+    `owner` conditions it on the gate being that run's or one of its children's instead."""
     if not channel:
         return
     now = time.time()
@@ -966,7 +967,7 @@ def mark_awaiting_gate(channel, thread_ts=None, wid=None, identity=USER, expect=
         _STATE,
         lambda st: slack_state.record_gate(st, channel, thread_ts, now, THREAD_TTL_S, MAX_THREADS,
                                            wid=wid, identity=identity, expect=expect,
-                                           notice_ts=notice_ts)
+                                           notice_ts=notice_ts, owner=owner)
         or storage.UNCHANGED,
         slack_state.empty())
 
@@ -991,9 +992,10 @@ def live_gate(rec, now=None):
 
 
 def record_conversation_session(channel, thread_ts=None, session=None, cap=None, last_reply=None,
-                                identity=USER):
+                                identity=USER, run_id=None):
     """Record what the NEXT message in this conversation needs in order to continue it, and clear
-    the in-flight marker (slack_state.record_session). Called after a result is delivered."""
+    the in-flight marker (slack_state.record_session). Called after a result is delivered by
+    `run_id`."""
     if not channel:
         return
     now = time.time()
@@ -1006,7 +1008,11 @@ def record_conversation_session(channel, thread_ts=None, session=None, cap=None,
     # The run has delivered, so whatever gate it was at is resolved. Cleared here rather than on
     # the approve path because EVERY exit resolves it — approved, declined, expired or crashed —
     # and a stale marker would make the next plain "no" read as a verdict on a finished run.
-    mark_awaiting_gate(channel, thread_ts, wid=None, identity=identity)
+    # Only THIS run's gate, or its delegated child's: a late delivery (a backstop for an old run)
+    # cleared a NEWER run's arming, and that approver's "yes" was read as ordinary text. With no
+    # run_id nothing is cleared — `live_gate` releases a dead run's marker on the next poll.
+    if run_id:
+        mark_awaiting_gate(channel, thread_ts, wid=None, identity=identity, owner=run_id)
 
 
 # --- allowlist + request shaping -------------------------------------------
