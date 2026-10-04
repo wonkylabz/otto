@@ -458,6 +458,7 @@ def finalize_workspace(payload: dict) -> dict:
                               # A swarm part is ONE of several PRs for the linked issue; merging
                               # it must not close the issue while its siblings are still open.
                               close_issue=not _SWARM_CHILD_RE.search(payload["run_id"]),
+                              asker_text=payload.get("asker_text"),
                               plan=payload.get("plan"), request=payload.get("request"),
                               cap=payload.get("cap"), concerns=payload.get("concerns"))
 

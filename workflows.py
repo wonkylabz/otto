@@ -186,6 +186,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # but the web chat. Bound in _bind_composer.
         self._attachments = []
         self._prior_attachments = []
+        # The asker's OWN message (Slack sets it; a delegated child inherits it), never the
+        # frontman's rewording — what a fresh PR may close an issue on. Bound in _bind_composer.
+        self._asker_text = None
         # Per-stage wall-clock timing {label: {"start": epoch_ms, "dur": epoch_ms|None}}, keyed on
         # the pipe labels the UI renders (DECOMPOSE/ROUTER/CLARIFY/PLAN/GATE/RUN). Surfaced via
         # status() so a
@@ -217,6 +220,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._effort = config.resolve_effort(params.get("effort"), self._setting("effort"))
         self._attachments = params.get("attachments") or []
         self._prior_attachments = params.get("prior_attachments") or []
+        self._asker_text = params.get("asker_text") or None
 
     async def _gate_wait(self, cond):
         """Wait at the approval gate for `cond`, bounded by the `gate_timeout_h` setting.

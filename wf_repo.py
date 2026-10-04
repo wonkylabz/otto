@@ -162,7 +162,7 @@ class RepoFlowMixin:
              # was approved next to the diff it produced. None for unattended `auto`
              # (no gate, no plan) — post_plan then posts nothing.
              "plan": self._plan, "request": request, "cap": cap["name"],
-             "concerns": self._plan_concerns},
+             "concerns": self._plan_concerns, "asker_text": self._asker_text},
             start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
             retry_policy=_RETRY)
         await workflow.execute_activity(

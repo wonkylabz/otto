@@ -177,8 +177,13 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         import contracts
         import slack
         origin, url = "https://github.com/wonkylabz/otto", "https://github.com/wonkylabz/otto/issues/"
-        # A mention is not the task.
+        # A mention is not the task — a comparison, a negation, or a longer task naming it.
         self.assertIsNone(workspace.closing_line(f"Add retries, same pattern as {url}480", origin))
+        self.assertIsNone(workspace.closing_line(f"Add a cache layer like we do in {url}3", origin))
+        self.assertIsNone(workspace.closing_line(f"do not fix {url}7 yet", origin))
+        self.assertIsNone(workspace.closing_line(
+            f"Refactor the HTTP client into its own module and fix {url}7", origin))
+        self.assertEqual(workspace.closing_line(f"Please fix {url}7", origin), "Closes #7")
         # Two issues: which one the PR finishes is a guess.
         self.assertIsNone(workspace.closing_line(f"Fix {url}1 and {url}2", origin))
         # A link only in the carried conversation was never this run's task.
@@ -245,6 +250,19 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                 mock.patch.object(workspace, "post_plan"):
             workspace.finalize("wf-x-s1", body="Body.", request=req, close_issue=False)
         self.assertEqual(seen, ["Body."])
+
+    def test_a_delegated_run_closes_on_the_askers_words_not_the_frontmans(self):
+        url = "https://github.com/wonkylabz/otto/issues/12"
+        seen = []
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("wf-x-d1", body="B", request=f"Fix {url}",
+                               asker_text="like the fix we did for issue 12")
+        self.assertEqual(seen, ["B"])
+        self.assertIn('"asker_text": self._asker_text', workflow_src())
 
     def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):
         src = workflow_src()
