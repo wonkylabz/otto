@@ -76,6 +76,7 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 - **A runbook's `doc` IS its approved plan** — bound to `self._plan` *before* the gate, so it rides into execution and the judge and replaces the plan-preview pass.
 - **A cron and a required param with no default are mutually exclusive** (`runbooks.normalize`) — an empty substitution turns "decommission {{env}}" into an unscoped instruction. Same reason an unknown placeholder is left verbatim.
 - **The store keeps a cap NAME, never its risk** — resolved via `runbooks.resolve_cap` at fire time, so a reclassified cap gates next run instead of firing forever under a stale `read`.
+- **A runbook's Slack post is the BOT's when switched on, decided at delivery** (`slack.post_identity`) — falls back to the owner only on `not_in_channel` with the owner on; a timeout may have landed, so re-posting doubles it (`RunbookSlackDeliveryTests`).
 - **"Run now" starts a workflow directly, not `ScheduleHandle.trigger()`** — a schedule's action args are frozen at creation, so triggering runs the defaults while the operator watches the form they just filled in.
 - Starting directly loses `ScheduleOverlapPolicy.SKIP`, so `scheduler._in_flight` re-enforces no-stacking. An on-demand runbook has no Schedule object and stays editable with Temporal down.
 
