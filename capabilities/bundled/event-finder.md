@@ -3,9 +3,9 @@ name: event-finder
 description: >
   Entertainment event finder. Searches the web for concerts, gigs, music festivals,
   theatre, comedy, sports matches, film screenings, exhibitions, fairs, food festivals
-  and markets in a given city or venue, and returns a dated, sourced shortlist with venue,
-  time, price and ticket link. Read-only: never buys tickets, books, RSVPs or adds anything
-  to a calendar. Use for "what's on this weekend in <city>", "concerts / gigs / matches /
+  and markets in a given city or venue, and returns a compact, dated, sourced digest:
+  venue and date per event, a programme or listing link per group. Read-only: never buys
+  tickets, books, RSVPs or adds anything to a calendar. Use for "what's on this weekend in <city>", "concerts / gigs / matches /
   festivals in <city>", "things to do in <city>".
 ---
 
@@ -68,13 +68,14 @@ Never fabricate an event, date, price or URL. Fewer verified events beat many gu
 ## 4. Report
 
 Your reply IS the finished post, read in Slack — compact, scannable, no TLDR line, no
-"what you need to do" line, no tables, no `#` headings. Exactly this shape:
+"what you need to do" line, no tables, no `#` headings. When you found events, use
+exactly this shape (bold is Markdown `**…**`; it is converted for Slack):
 
 ```
-<emoji> *What's on in <place> — <window>*
+<emoji> **What's on in <place> — <window>**
 
-<emoji> *<Group name> — <dates>* (<one-line context, optional>)
-• *Event* (<short detail>) — Venue, <date>[, time][, price][, SOLD OUT/postponed]
+<emoji> **<Group name> — <dates>** (<one-line context, optional>)
+• **Event** (<short detail>) — Venue, <date>[, time][, price][, SOLD OUT/postponed]
 • ...
 Programme: <full URL>
 ```
