@@ -279,7 +279,7 @@ def _t_bash(args, cwd, mode=None):
     # said it had timed out. Own process group + `kill_tree`, same as the `claude -p` watchdog.
     proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            start_new_session=True)
+                            start_new_session=True, env=mcp_client.shell_env())
     try:
         stdout, stderr = proc.communicate(timeout=config.LOCAL_TOOL_TIMEOUT_S)
     except subprocess.TimeoutExpired:

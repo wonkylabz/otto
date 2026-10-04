@@ -152,6 +152,17 @@ def claude_env_refs():
     return out
 
 
+def shell_env():
+    """The environment the LOCAL runtime's own `Bash` tool runs with.
+
+    `local_runtime._t_bash` spawned `bash -lc` with no `env=`, so a run's shell inherited the
+    worker's whole environment — `run.sh` exports `.env` into it. A local run asked to "review
+    a previous Slack message" found `OTTO_SLACK_BOT_TOKEN` with `env | grep` and called the
+    Slack API with it. Nothing here needs a `${VAR}` exemption: no def is expanded out of a
+    shell, so this is the bare strip."""
+    return _inherited_env()
+
+
 def claude_env():
     """The environment `claude -p` itself is spawned with (issue #72).
 

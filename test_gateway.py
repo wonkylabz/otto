@@ -4680,6 +4680,17 @@ class McpUserScopeSpawnTests(unittest.TestCase):
             os.environ.clear()
             os.environ.update(keep)
 
+    def test_the_local_runtimes_bash_runs_with_the_narrowed_environment(self):
+        # The local backend's own shell is a third door: a run read OTTO_SLACK_BOT_TOKEN off
+        # `env` and curled Slack with it. Asserted on the real tool, not the helper.
+        leak = {"OTTO_SLACK_BOT_TOKEN": "xoxb-leak", "ANTHROPIC_API_KEY": "sk-ant-leak"}
+        with mock.patch.dict(os.environ, leak):
+            out = local_runtime._t_bash({"command": "env"}, None)
+        text = out if isinstance(out, str) else json.dumps(out)
+        self.assertNotIn("xoxb-leak", text)
+        self.assertNotIn("sk-ant-leak", text)
+        self.assertIn("PATH=", text)
+
     def test_an_endpoint_key_named_in_the_model_store_is_stripped_too(self):
         """The var names are the operator's own, so the denied set cannot be a constant."""
         orig, tmp = gateway._PATH, tempfile.mkdtemp(prefix="otto-mcpenv-")
