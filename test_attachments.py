@@ -301,6 +301,11 @@ class LocalVisionTests(unittest.TestCase):
         import local_runtime
         self.lr = local_runtime
         self.tmp = tempfile.mkdtemp(prefix="otto-vision-")
+        # These drive the tool LOOP; confinement has its own tests (LocalExecShellConfinementTests).
+        # CI has no usable bwrap, where every run here would otherwise hit the #208 wall.
+        _p = mock.patch.object(local_runtime, "ALLOW_UNGUARDED", True)
+        _p.start()
+        self.addCleanup(_p.stop)
         self._saved = (local_runtime._post, local_runtime.SESSIONS, gateway._STATS_PATH)
         local_runtime.SESSIONS = os.path.join(self.tmp, "sessions")
         gateway._STATS_PATH = os.path.join(self.tmp, "gateway-stats.json")
