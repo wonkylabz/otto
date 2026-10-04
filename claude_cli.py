@@ -72,8 +72,9 @@ def transcript_line(event):
     `TRANSCRIPT_TTL_H` window by anything running as this user.
 
     Scrubbing the SERIALIZED line, not the event tree, is deliberate: a secret is as likely to
-    be inside a Bash command string as in a field of its own, and `REDACTED` contains no quote,
-    backslash or newline, so the line still parses (asserted in `TranscriptRedactionTests`).
+    be inside a Bash command string as in a field of its own. The line still parses only because
+    `REDACTED` carries no quote, backslash or newline AND no pattern consumes one — the k/v rule
+    once ate the `\\` of an escaped quote and broke the line (`RedactTests`).
     `privacy.redact` is idempotent, so a line that arrives already scrubbed is unchanged."""
     line = event if isinstance(event, str) else json.dumps(event)
     line = privacy.redact(line)
