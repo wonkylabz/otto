@@ -856,6 +856,13 @@ class JudgeConfirmationTests(unittest.TestCase):
                       "the retry is steered by the FIRST critique, as before")
         self.assertEqual(len(self.calls), 3)
 
+    def test_a_flip_is_traced_under_the_judge_that_flipped(self):
+        self.replies = ["RETRY\nx", "CONTINUE"]
+        with unittest.mock.patch.object(judging, "trace") as tr:
+            judging.confirm_adverse("supervise", "p", lambda r: r.split()[0],
+                                    lambda v: v == "RETRY")
+        self.assertEqual([c.args[0] for c in tr.call_args_list], ["SUPERVISE"])
+
     def test_the_late_contradiction_still_wins(self):
         self.replies = ["FAIL\na", "PASS"]
         self.assertTrue(engine.verify("do it", self.cap, "done")["passed"])
