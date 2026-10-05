@@ -314,7 +314,10 @@ def confirm_adverse(task, prompt, parse, adverse, tries=None):
         gateway.decided(task, f"{_verdict_label(verdict, adverse)} sample {i + 1}/{tries}")
         if not adverse(verdict):
             if i:
-                trace("VERIFY", f"adverse verdict did not reproduce on sample {i + 1} — not acted on")
+                # Tagged by the CALLER: the supervisor shares this, and a [VERIFY] tag on its
+                # flips sent a hunt for verify instability to a run whose verify never flipped.
+                trace(task.upper(), f"adverse verdict did not reproduce on sample {i + 1} — "
+                                    "not acted on")
             return verdict
         first = verdict if first is None else first
     return first
