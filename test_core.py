@@ -3594,3 +3594,68 @@ class FrontmanDelegationParseTests(unittest.TestCase):
         for o in ("declined", "skipped", "gate_timeout", "needs_human", "failed", "weird"):
             self.assertNotEqual(contracts.relay_fallback(o), contracts.relay_fallback("done"))
             self.assertNotIn("It finished", contracts.relay_request("t" * 20, o, "r"))
+
+
+class JudgeStabilityHarnessTests(unittest.TestCase):
+    """Issue #125 Phase 0: the baseline every later verify change is judged against."""
+
+    def test_flip_is_the_minority_share_and_wrong_is_against_expect(self):
+        import regress
+        self.assertEqual(regress.stability_stats([True] * 10, True)["flip"], 0.0)
+        s = regress.stability_stats([True] * 6 + [False] * 4, True)
+        self.assertEqual((s["passes"], s["flip"], s["wrong"]), (6, 0.4, 0.4))
+        self.assertEqual(regress.stability_stats([True] * 6 + [False] * 4, False)["wrong"], 0.6)
+        self.assertEqual(regress.stability_stats([], True)["n"], 0)
+
+    def test_corpus_holds_both_known_good_and_known_bad(self):
+        import regress_cases
+        ids = [f["id"] for f in regress_cases.STABILITY]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(all(isinstance(f["expect"], bool) for f in regress_cases.STABILITY))
+        self.assertEqual({f["expect"] for f in regress_cases.STABILITY}, {True, False})
+
+    def test_raw_mode_pins_one_sample_and_confirmed_does_not(self):
+        import regress
+        seen = []
+        fx = [{"id": "x", "expect": True, "run": lambda: seen.append(
+            config.setting("judge_confirmations")) or {"passed": True}}]
+        with mock.patch.dict(os.environ, {"OTTO_JUDGE_CONFIRMATIONS": "3"}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            regress._stability(fx, 1, confirmed=True)
+            regress._stability(fx, 1, confirmed=False)
+        self.assertEqual(seen, [3, 1])
+
+    def test_judge_pin_is_in_memory_and_rejects_an_unknown_label(self):
+        import gateway
+        import regress
+        cfg = {"pool": [{"name": "a"}, {"name": "b"}], "assign": {"verify": "a"}}
+        with mock.patch.object(gateway, "load", return_value=cfg), \
+                mock.patch.object(gateway, "save") as save:
+            regress._pin_judge("b")
+            self.assertEqual(gateway.load()["assign"]["verify"], "b")
+            self.assertEqual(cfg["assign"]["verify"], "a")
+            save.assert_not_called()
+        with mock.patch.object(gateway, "load", return_value=cfg):
+            regress._pin_judge("zzz")
+            with self.assertRaises(SystemExit):
+                gateway.load()
+
+    def test_a_dated_fixture_stays_as_far_ahead_of_today_as_when_written(self):
+        import datetime
+        import regress_cases
+        ahead = (datetime.date.today() + datetime.timedelta(days=22)).isoformat()
+        self.assertEqual(regress_cases._shifted("expires 2026-09-04.", "2026-08-13"),
+                         f"expires {ahead}.")
+
+    def test_a_sample_served_by_another_model_is_named(self):
+        import gateway
+        import regress
+
+        def fell_back():
+            gateway._LAST["verify"] = {"model": "q → claude (empty reply)", "fell_back": True}
+            return {"passed": True}
+        out = io.StringIO()
+        with mock.patch.object(gateway, "_model_for", return_value={"name": "q"}), \
+                mock.patch.dict(os.environ, {}), contextlib.redirect_stdout(out):
+            regress._stability([{"id": "x", "expect": True, "run": fell_back}], 1, True)
+        self.assertIn("served by ['q → claude (empty reply)']", out.getvalue())
