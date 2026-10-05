@@ -53,6 +53,14 @@ def _fixture(name):
         return f.read()
 
 
+def _shifted(text, written):
+    """Move every ISO date in `text` by (today - `written`). A judge knows today's date, so a
+    report written against an upcoming expiry rots into a correct FAIL once that date passes."""
+    delta = datetime.date.today() - datetime.date.fromisoformat(written)
+    return re.sub(r"\b\d{4}-\d{2}-\d{2}\b",
+                  lambda m: (datetime.date.fromisoformat(m.group()) + delta).isoformat(), text)
+
+
 def _cap(name="sre-minion", risk="write", desc="implements a GitHub issue end to end"):
     c = registry.Capability("agent", name, desc)
     c.risk = risk
@@ -117,7 +125,7 @@ _LONG_RESULT_REQUEST = (
 
 
 def _c_verify_no_phantom_truncation():
-    result = _fixture("result-long-complete-report.md")
+    result = _shifted(_fixture("result-long-complete-report.md"), "2026-08-13")
     assert len(result) > 4000, "fixture shrank — this case needs a result longer than the old clip"
     return engine.verify(_LONG_RESULT_REQUEST, _cap("sre-secretary", "read", "sweeps the fleet"),
                          result)
@@ -1040,6 +1048,34 @@ def _c_planner_keeps_single_repo_whole():
 
 def _k_planner_keeps_single_repo_whole(tasks):
     return not any(t.get("repo") for t in tasks), f"parts: {[t.get('repo') for t in tasks]}"
+
+# =================================================================================================
+# Judge stability (issue #125, Phase 0) — `regress.py --stability`, never part of CASES
+# =================================================================================================
+# A case asserts one verdict; a stability fixture is sampled N times and reports how often the
+# judge DISAGREES WITH ITSELF on an identical input. `expect` is the verdict a careful human gives,
+# so a fixture belongs here only when that verdict is not in doubt — a borderline input measures
+# the fixture, not the judge.
+_PROMISE_NO_WORK = (
+    "I'll sweep every environment for the expiring *.example-internal.test certificate and report "
+    "back which ones need action before it lapses.")
+
+STABILITY = [
+    {"id": "good-long-complete-report", "expect": True, "incident": "audit sweep, 2026-08-13",
+     "what": "a complete 4.4k-char fleet report that answers the question",
+     "run": _c_verify_no_phantom_truncation},
+    {"id": "good-announced-departure", "expect": True, "incident": "the escape hatch",
+     "what": "a plan departure the output flags and justifies",
+     "run": _c_verify_passes_announced_departure},
+    {"id": "bad-silent-departure", "expect": False, "incident": "web-5f9319cd, 2026-08-03",
+     "what": "ships the enforcement the approved plan deferred, without saying so",
+     "run": _c_verify_fails_silent_departure},
+    {"id": "bad-promise-no-work", "expect": False, "incident": "clearly-bad control",
+     "what": "promises the sweep instead of doing it",
+     "run": lambda: engine.verify(_LONG_RESULT_REQUEST,
+                                  _cap("sre-secretary", "read", "sweeps the fleet"),
+                                  _PROMISE_NO_WORK)},
+]
 
 CASES = [
     {"id": "planner-splits-multi-repo", "tier": "cheap", "incident": "web-8a2764b8, 2026-09-24",
