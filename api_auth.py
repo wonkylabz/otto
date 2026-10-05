@@ -4,14 +4,18 @@
 Every run's shell has the network, so without this a run could `curl localhost:<port>` to approve
 its own gate, release the global pause, or read the stores the deny-set masks on disk.
 
-The credential is a per-install token in `data/.api/token` (0600, in a 0700 directory), which `file_safety` denies to
-EVERY run, Otto-cwd included. A client presents it as the `X-Otto-Token` header (scripts) or as a
-cookie (the browser). The browser never sees the token in a URL: `./run.sh login` spends the token
-on `POST /api/login-link` for a single-use code, and `GET /login?code=` swaps that for an HttpOnly
-cookie — so browser history holds only a spent code.
+The credential is a per-install token in `data/.api/token` (0600, in a 0700 directory), which
+`file_safety` denies to EVERY run, Otto-cwd included. Scripts send it as the `X-Otto-Token` header.
+
+A browser never holds the token: it holds a SESSION — a random id whose sha256 is stored in
+`data/.api/sessions.json`, tied to the token that minted it. Cookies are not port-scoped, so every
+other localhost app the browser visits receives this cookie; a session is one revocable browser,
+the token would be the install. Rotating the token ends every session. A browser gets a session
+from a single-use code (`./run.sh login` -> `GET /login?code=`) or by pasting the token once.
 
 Run as a script, this module prints that login link.
 """
+import hashlib
 import hmac
 import json
 import os
@@ -24,6 +28,7 @@ import urllib.error
 import urllib.request
 
 import config
+import storage
 
 HEADER = "X-Otto-Token"
 COOKIE_PREFIX = "otto_token_"
@@ -38,6 +43,7 @@ _NAME = "token"
 _PATH = None            # lazily resolved, like estop._PATH, so the suite can re-point it
 _CACHE = {}             # path -> (mtime_ns, token)
 _CODES = {}             # single-use login code -> expiry (monotonic)
+_SESSIONS = "sessions.json"
 _LOCK = threading.Lock()
 
 
@@ -101,17 +107,23 @@ def cookie_name(port):
     return f"{COOKIE_PREFIX}{port}"
 
 
-def presented(headers, port):
-    """The credential a request carries: the header first, else this instance's cookie."""
-    h = (headers.get(HEADER) or "").strip()
-    if h:
-        return h
+def header_token(headers):
+    return (headers.get(HEADER) or "").strip()
+
+
+def cookie_session(headers, port):
     want = cookie_name(port)
     for part in (headers.get("Cookie") or "").split(";"):
         k, _, v = part.strip().partition("=")
         if k == want:
             return v.strip()
     return ""
+
+
+def authed(headers, port):
+    """A script's header token, or a browser's live session cookie."""
+    h = header_token(headers)
+    return valid(h) if h else valid_session(cookie_session(headers, port))
 
 
 def valid(value):
@@ -134,9 +146,76 @@ def redeem_login_code(code):
     return exp is not None and exp >= time.monotonic()
 
 
-def set_cookie_header(port):
-    return (f"{cookie_name(port)}={token()}; Path=/; HttpOnly; SameSite=Strict; "
-            f"Max-Age={COOKIE_MAX_AGE_S}")
+def _hash(sid):
+    return hashlib.sha256(sid.encode()).hexdigest()
+
+
+def _token_fp():
+    return _hash(token())[:16]
+
+
+def sessions_path():
+    return os.path.join(directory(), _SESSIONS)
+
+
+def _live(rec, now):
+    return rec.get("tok") == _token_fp() and rec.get("created", 0) + COOKIE_MAX_AGE_S > now
+
+
+def new_session(label):
+    """Mint a browser session. Returns the cookie value; only its hash is stored."""
+    sid, now = secrets.token_urlsafe(32), time.time()
+    rec = {"created": now, "label": (label or "")[:120], "tok": _token_fp()}
+
+    def add(d):
+        d = {k: v for k, v in (d or {}).items() if _live(v, now)}   # prune dead ones on write
+        d[_hash(sid)] = rec
+        return d
+    storage.mutate_json(sessions_path(), add, {})
+    return sid
+
+
+def valid_session(sid):
+    if not sid:
+        return False
+    rec = storage.read_json(sessions_path(), {}).get(_hash(sid))
+    return bool(rec) and _live(rec, time.time())
+
+
+def list_sessions(current_sid=""):
+    """Live sessions, newest first, keyed by a short public id (a prefix of the HASH, so the
+    listing never exposes a cookie)."""
+    now, cur = time.time(), _hash(current_sid) if current_sid else ""
+    rows = [{"id": h[:12], "created": r["created"], "label": r.get("label", ""),
+             "current": h == cur}
+            for h, r in storage.read_json(sessions_path(), {}).items() if _live(r, now)]
+    return sorted(rows, key=lambda r: -r["created"])
+
+
+def revoke_session(public_id=None, sid=None):
+    """End one session, by its public id (Admin) or its cookie value (logout). True if found."""
+    target = _hash(sid)[:12] if sid else (public_id or "")
+    if len(target) != 12:
+        return False
+    found = []
+
+    def drop(d):
+        keep = {h: r for h, r in (d or {}).items() if h[:12] != target}
+        found.append(len(keep) != len(d or {}))
+        return keep if found[0] else storage.UNCHANGED
+    storage.mutate_json(sessions_path(), drop, {})
+    return found[0]
+
+
+def set_cookie_header(port, sid, secure=False):
+    """`Secure` when the browser reached us over HTTPS (a TLS tunnel), so the cookie never
+    rides a plaintext hop. Never on plain localhost: the browser would drop it."""
+    return (f"{cookie_name(port)}={sid}; Path=/; HttpOnly; SameSite=Strict; "
+            f"Max-Age={COOKIE_MAX_AGE_S}" + ("; Secure" if secure else ""))
+
+
+def clear_cookie_header(port):
+    return f"{cookie_name(port)}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
 
 
 def login_urls(start=None, span=40, timeout=2):

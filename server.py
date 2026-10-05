@@ -1134,7 +1134,36 @@ class Handler(BaseHTTPRequestHandler):
     def _authed(self):
         """Does this request carry the install's API token (#217)? `_csrf_ok` only stops a
         browser: a run's shell can omit or forge Origin, so every /api/* route needs this too."""
-        return api_auth.valid(api_auth.presented(self.headers, self.server.server_address[1]))
+        return api_auth.authed(self.headers, self.server.server_address[1])
+
+    def _https(self):
+        """Did the browser reach us over TLS? Only via a terminating tunnel/proxy. A spoofed
+        header just makes the cookie stricter, so trusting it costs nothing."""
+        if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https":
+            return True
+        u = urlparse(config.CLICK_URL)
+        return u.scheme == "https" and (self.headers.get("Host") or "").lower() == u.netloc.lower()
+
+    def _start_session(self, code, location=None):
+        """Mint a browser session and answer with its cookie: a 302 home, or `{"ok": true}`."""
+        port = self.server.server_address[1]
+        sid = api_auth.new_session(self.headers.get("User-Agent") or "")
+        self._send_cookie(code, api_auth.set_cookie_header(port, sid, self._https()), location)
+
+    def _send_cookie(self, code, cookie, location=None):
+        data = b"" if location else b'{"ok": true}'
+        try:
+            self.send_response(code)
+            self.send_header("Set-Cookie", cookie)
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionError):
+            pass
 
     def _refuse_unauthed(self):
         self._send(401, json.dumps({"error": "not logged in — run ./run.sh login and open the "
@@ -1148,15 +1177,7 @@ class Handler(BaseHTTPRequestHandler):
         if not api_auth.redeem_login_code(code):
             return self._send(403, b"Login link expired or already used. Run ./run.sh login "
                                    b"again.", "text/plain; charset=utf-8")
-        try:
-            self.send_response(302)
-            self.send_header("Set-Cookie", api_auth.set_cookie_header(self.server.server_address[1]))
-            self.send_header("Location", "/")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-        except (BrokenPipeError, ConnectionError):
-            pass
+        self._start_session(302, "/")
 
     def _post_login(self, body):
         """POST /login {"token": ...} — the login screen's paste path, for a browser that can't
@@ -1164,17 +1185,19 @@ class Handler(BaseHTTPRequestHandler):
         if not api_auth.valid(str(body.get("token") or "").strip()):
             time.sleep(0.5)                 # a guess costs time; 256 bits make guessing moot anyway
             return self._send(401, json.dumps({"error": "that is not this install's token"}))
-        try:
-            data = b'{"ok": true}'
-            self.send_response(200)
-            self.send_header("Set-Cookie", api_auth.set_cookie_header(self.server.server_address[1]))
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-        except (BrokenPipeError, ConnectionError):
-            pass
+        self._start_session(200)
+
+    def _post_logout(self, body):
+        """POST /api/logout — end THIS browser's session (the cookie it sent)."""
+        port = self.server.server_address[1]
+        api_auth.revoke_session(sid=api_auth.cookie_session(self.headers, port))
+        self._send_cookie(200, api_auth.clear_cookie_header(port))
+
+    def _post_sessions_revoke(self, body):
+        """POST /api/sessions/revoke {"id"} — end another browser's session (a lost phone)."""
+        if not api_auth.revoke_session(public_id=str(body.get("id") or "")):
+            return self._send(404, json.dumps({"error": "no such session"}))
+        self._send(200, json.dumps({"ok": True}))
 
     def _static(self, path):
         """Serve web/css/*.css and web/js/*.js — the UI's own assets, nothing else.
@@ -1284,6 +1307,9 @@ class Handler(BaseHTTPRequestHandler):
             self._static(self.path)
         elif self.path.startswith("/api/attachments/"):
             self._get_attachment(self.path[len("/api/attachments/"):].split("?", 1)[0])
+        elif self.path == "/api/sessions":
+            self._send(200, json.dumps({"sessions": api_auth.list_sessions(
+                api_auth.cookie_session(self.headers, self.server.server_address[1]))}))
         elif self.path == "/api/health":
             # `mcp.unhealthy` and `models.broken` both read CACHED health (no slow re-poll, no
             # probe) so any tab can feed the Admin-tab warning badge cheaply on its poll.
@@ -2745,6 +2771,8 @@ class Handler(BaseHTTPRequestHandler):
 _POST_ROUTES = {
     "/login": Handler._post_login,
     "/api/login-link": Handler._post_login_link,
+    "/api/logout": Handler._post_logout,
+    "/api/sessions/revoke": Handler._post_sessions_revoke,
     "/api/behaviors/add": Handler._post_behaviors_add,
     "/api/behaviors/delete": Handler._post_behaviors_delete,
     "/api/behaviors/suggest": Handler._post_behaviors_suggest,

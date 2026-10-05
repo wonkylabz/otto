@@ -17,8 +17,10 @@ not bugs — but you should know about all of them before you start it.
 ### The web API has one credential, and it is yours
 
 `server.py` binds `localhost`, and every `/api/*` route needs the per-install token in
-`data/.api/token` (`api_auth.py`, #217) — as an `X-Otto-Token` header, or as the HttpOnly cookie
-`./run.sh login` (or pasting the token into the login screen) sets in your browser. There are no users and no roles: **holding the token is
+`data/.api/token` (`api_auth.py`, #217) — as an `X-Otto-Token` header, or, for a browser, as a revocable
+session cookie (HttpOnly, SameSite=Strict, `Secure` over HTTPS) that `./run.sh login` or the login
+screen mints. The cookie never holds the token itself, so another localhost app that receives it
+(cookies are not port-scoped) gets one session you can revoke in Admin → Browser sessions. There are no users and no roles: **holding the token is
 holding your full authority** — start runs, approve write gates, release the pause, read every
 transcript. The token file and your browser profiles are masked by the kernel (`bwrap`) around every run, which is
 what stops a run's own shell from approving its own gate. **Without a usable `bwrap`, a

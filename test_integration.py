@@ -404,6 +404,49 @@ class ApiTokenAuthTests(unittest.TestCase):
         self.assertIn('if(res.status===401 && String(a[0]).includes("/api/")) showLoggedOut();', src)
         self.assertIn('postJSON("/login", {token: val("loginToken")})', src)
 
+    def _session(self, extra=None):
+        import api_auth
+        st, headers, _ = self._req("/login", "POST", {"token": api_auth.token()}, extra)
+        self.assertEqual(st, 200)
+        return dict(headers)["Set-Cookie"]
+
+    def test_the_cookie_is_a_session_never_the_token(self):
+        # Cookies aren't port-scoped: every other localhost app the browser visits receives it.
+        import api_auth
+        cookie = self._session()
+        sid = cookie.split(";", 1)[0].split("=", 1)[1]
+        self.assertNotEqual(sid, api_auth.token())
+        with open(api_auth.sessions_path()) as f:
+            self.assertNotIn(sid, f.read())                 # only its hash is stored
+        raw = "otto_token_%d=%s" % (self.port, api_auth.token())
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": raw})[0], 401)
+
+    def test_logout_and_revoke_end_one_session(self):
+        a = self._session().split(";", 1)[0]
+        b = self._session().split(";", 1)[0]
+        listed = json.loads(self._req("/api/sessions", headers={"Cookie": a})[2])["sessions"]
+        self.assertEqual(sum(r["current"] for r in listed), 1)
+        self.assertNotIn(b.split("=", 1)[1], json.dumps(listed))   # never exposes a cookie
+        other = next(r["id"] for r in listed if not r["current"])
+        self.assertEqual(self._req("/api/sessions/revoke", "POST", {"id": other},
+                                   {"Cookie": a})[0], 200)
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": b})[0], 401)
+        st, headers, _ = self._req("/api/logout", "POST", {}, {"Cookie": a})
+        self.assertIn("Max-Age=0", dict(headers)["Set-Cookie"])
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": a})[0], 401)
+
+    def test_rotating_the_token_ends_every_session(self):
+        import api_auth
+        a = self._session().split(";", 1)[0]
+        os.unlink(api_auth.path())
+        self.addCleanup(test_support._authenticate_http_clients)
+        api_auth.token()
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": a})[0], 401)
+
+    def test_the_cookie_is_secure_only_over_https(self):
+        self.assertNotIn("Secure", self._session())
+        self.assertIn("; Secure", self._session({"X-Forwarded-Proto": "https"}))
+
     def test_a_tunnel_gets_its_own_login_link(self):
         with mock.patch.dict(os.environ, {"OTTO_CLICK_URL": "https://otto.example.ts.net"}), \
                 mock.patch.object(config, "CLICK_URL", "https://otto.example.ts.net"):

@@ -22,7 +22,7 @@ function showLoggedOut(){
   el.innerHTML=`<div class="modalBox loginBox">
     <div class="modalHead"><div class="modalTitle"><b>Log in to Otto</b></div></div>
     <div class="modalBody">
-      <p>In a terminal in Otto's folder, run <code>./run.sh login</code> and open the link it prints.</p>
+      <p style="margin:0 0 14px">In a terminal in Otto's folder, run <code>./run.sh login</code> and open the link it prints.</p>
       <form class="aform" id="loginForm" autocomplete="on">
         <label for="loginToken">Or paste the token from <code>data/.api/token</code></label>
         <input type="password" id="loginToken" name="password" autocomplete="current-password" required>
