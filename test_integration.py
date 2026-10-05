@@ -386,6 +386,24 @@ class ApiTokenAuthTests(unittest.TestCase):
         import claude_cli
         self.assertIn("file_safety.claude_argv(cmd)", inspect.getsource(claude_cli.run_json))
 
+    def test_the_login_screen_trades_a_pasted_token_for_the_cookie(self):
+        import api_auth
+        self.assertEqual(self._req("/login", "POST", {"token": "wrong"})[0], 401)
+        st, headers, _ = self._req("/login", "POST", {"token": api_auth.token()})
+        self.assertEqual(st, 200)
+        cookie = dict(headers)["Set-Cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertEqual(self._req("/api/settings",
+                                   headers={"Cookie": cookie.split(";", 1)[0]})[0], 200)
+        # A cross-site page can't paste for you: the origin check still runs first.
+        self.assertEqual(self._req("/login", "POST", {"token": api_auth.token()},
+                                   {"Origin": "https://evil.example"})[0], 403)
+
+    def test_a_401_raises_the_login_screen(self):
+        src = test_support.ui_src()
+        self.assertIn('if(res.status===401 && String(a[0]).includes("/api/")) showLoggedOut();', src)
+        self.assertIn('postJSON("/login", {token: val("loginToken")})', src)
+
     def test_a_tunnel_gets_its_own_login_link(self):
         with mock.patch.dict(os.environ, {"OTTO_CLICK_URL": "https://otto.example.ts.net"}), \
                 mock.patch.object(config, "CLICK_URL", "https://otto.example.ts.net"):

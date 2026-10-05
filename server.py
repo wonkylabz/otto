@@ -1158,6 +1158,24 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionError):
             pass
 
+    def _post_login(self, body):
+        """POST /login {"token": ...} — the login screen's paste path, for a browser that can't
+        open the `./run.sh login` link (a phone over a tunnel). Same cookie, same token check."""
+        if not api_auth.valid(str(body.get("token") or "").strip()):
+            time.sleep(0.5)                 # a guess costs time; 256 bits make guessing moot anyway
+            return self._send(401, json.dumps({"error": "that is not this install's token"}))
+        try:
+            data = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Set-Cookie", api_auth.set_cookie_header(self.server.server_address[1]))
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionError):
+            pass
+
     def _static(self, path):
         """Serve web/css/*.css and web/js/*.js — the UI's own assets, nothing else.
 
@@ -1685,7 +1703,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, json.dumps({"error": "cross-site request refused"})); return
         # The two routes with their own credential: the webhook HMAC, and the single-use
         # action token a notification button carries (it comes from a phone, with no cookie).
-        if not (self.path.startswith(("/api/events/", "/api/gate/")) or self._authed()):
+        # `/login` is how a logged-out browser gets in; it checks the pasted token itself.
+        if not (self.path.startswith(("/api/events/", "/api/gate/")) or self.path == "/login"
+                or self._authed()):
             return self._refuse_unauthed()
         try:
             if self.path.startswith("/api/events/"):
@@ -2723,6 +2743,7 @@ class Handler(BaseHTTPRequestHandler):
 # the chain was 193 branches in one function, and a route's position in it was load-
 # bearing (an exact match had to precede every prefix match). Exact wins, then prefix.
 _POST_ROUTES = {
+    "/login": Handler._post_login,
     "/api/login-link": Handler._post_login_link,
     "/api/behaviors/add": Handler._post_behaviors_add,
     "/api/behaviors/delete": Handler._post_behaviors_delete,

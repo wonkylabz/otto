@@ -85,7 +85,8 @@ Run:
 ```
 
 Then log your browser in: `./run.sh login` prints a single-use link (default port 8765) — open
-it once and the browser keeps a cookie for a year. Runs go through real Temporal
+it once and the browser keeps a cookie for a year. A browser that can't open it (a phone over a
+tunnel) can paste `data/.api/token` into the login screen instead. Runs go through real Temporal
 workflows — durable and replayable, with approval + clarification as real Temporal
 **signals**. Watch them live in the Temporal UI at http://localhost:8233.
 

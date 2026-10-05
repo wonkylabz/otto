@@ -18,7 +18,7 @@ not bugs — but you should know about all of them before you start it.
 
 `server.py` binds `localhost`, and every `/api/*` route needs the per-install token in
 `data/.api/token` (`api_auth.py`, #217) — as an `X-Otto-Token` header, or as the HttpOnly cookie
-`./run.sh login` sets in your browser. There are no users and no roles: **holding the token is
+`./run.sh login` (or pasting the token into the login screen) sets in your browser. There are no users and no roles: **holding the token is
 holding your full authority** — start runs, approve write gates, release the pause, read every
 transcript. The token file and your browser profiles are masked by the kernel (`bwrap`) around every run, which is
 what stops a run's own shell from approving its own gate. **Without a usable `bwrap`, a
