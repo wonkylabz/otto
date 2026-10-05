@@ -3606,15 +3606,29 @@ class JudgeStabilityHarnessTests(unittest.TestCase):
         self.assertEqual((s["passes"], s["flip"], s["wrong"]), (6, 0.4, 0.4))
         self.assertEqual(regress.stability_stats([True] * 6 + [False] * 4, False)["wrong"], 0.6)
         self.assertEqual(regress.stability_stats([], True)["n"], 0)
+        edge = regress.stability_stats([True] * 7 + [False] * 3, None)
+        self.assertEqual((edge["flip"], edge["wrong"]), (0.3, None))
 
     def test_corpus_holds_both_known_good_and_known_bad(self):
         import regress_cases
         ids = [f["id"] for f in regress_cases.STABILITY]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertTrue(all(isinstance(f["expect"], bool) for f in regress_cases.STABILITY))
+        self.assertTrue(all(f["expect"] in (True, False, None) for f in regress_cases.STABILITY))
         for judge in ("verify", "supervise"):
-            self.assertEqual({f["expect"] for f in regress_cases.STABILITY
-                              if f["judge"] == judge}, {True, False}, judge)
+            self.assertLessEqual({True, False}, {f["expect"] for f in regress_cases.STABILITY
+                                                 if f["judge"] == judge}, judge)
+
+    def test_a_borderline_run_prints_flip_without_a_wrong_rate(self):
+        import gateway
+        import regress
+        fx = [{"id": "e", "expect": None, "run": lambda: {"passed": True}}]
+        out = io.StringIO()
+        with mock.patch.object(gateway, "_model_for", return_value={"name": "q"}), \
+                mock.patch.dict(os.environ, {}), contextlib.redirect_stdout(out):
+            regress._stability(fx, 2, True)
+        self.assertIn("expect=edge", out.getvalue())
+        self.assertIn("borderline", out.getvalue())
+        self.assertNotIn("mean wrong", out.getvalue())
 
     def test_a_supervise_fixture_is_judged_by_the_supervisor_tier(self):
         import gateway
