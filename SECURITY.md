@@ -82,7 +82,11 @@ to act with your access.
   cannot prove the exact bytes the model saw, and retrying a run whose request held a pasted
   secret re-runs it with `[REDACTED]` in its place.
 - Chat history, memory and knowledge in `data/otto.db` are still stored in the clear. All of
-  `data/` is read-denied to runs, but it is plaintext on disk.
+  `data/` is read-denied to runs, but on `claude -p` that deny matches command text (see above),
+  so it stops an accidental read, not a determined one.
+- The API token (`data/.api/token`) and the browser session hashes beside it are the one thing
+  in `data/` the kernel hides from every run. Delete the token to rotate it: every browser is
+  logged out and every script needs the new value.
 
 ### ntfy push
 
@@ -93,6 +97,6 @@ your notifications, and gate-approval action buttons ride on it (single-use per-
 
 ### Stopping everything
 
-`data/ESTOP` (or `POST /api/estop`, or the header control in the UI) blocks every ingress
+`data/ESTOP` (or `POST /api/estop` with the token, or the header control in the UI) blocks every ingress
 from starting new work. It does **not** kill in-flight runs — nothing re-checks it
 mid-activity.

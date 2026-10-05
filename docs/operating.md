@@ -14,7 +14,8 @@ session and no convention judge pays for it.
   path) and never overwrite a set value (`test_core.SetupWizardTests`).
 - **After any rename or directory move, re-run `systemd/install.sh` (or `launchd/install.sh`)**
   — `config.DATA_DIR` freezes to the import-time cwd, so a stale service silently reads a
-  phantom empty `data/` at the old path. Diagnose by comparing `curl localhost:$PORT/api/chats`
+  phantom empty `data/` at the old path. Diagnose by comparing
+  `curl -H "X-Otto-Token: $(cat data/.api/token)" localhost:$PORT/api/chats`
   against `sqlite3 data/otto.db "SELECT COUNT(*) FROM chats"`.
 
 - **Adding a hosted/OpenAI endpoint**: see **`docs/openai-models.md`** — which models can be an
@@ -31,6 +32,9 @@ session and no convention judge pays for it.
 - **Background service** (`systemd/`, `launchd/`): per-**user** unit, never root — `claude -p`
   runs as the user. Their PATH excludes `~/.local/bin` where `claude` lives, so the unit must
   set `PATH`; Linux needs `loginctl enable-linger`, macOS a login session.
+- **Log in**: every `/api/*` route needs the install token (`data/.api/token`, #217). A browser
+  runs `./run.sh login` once and opens the link, or pastes the token into the login screen;
+  scripts send `X-Otto-Token`. Delete the token to rotate it, which logs out every browser.
 - **Temporal**: `server.py` is just a client; `worker.py` must run or workflows don't progress.
 - **Workflow retention is 24h out of the box, and it is what the Swarm board's Finished column
   is made of.** `temporal server start-dev` registers the `default` namespace with a 24-hour

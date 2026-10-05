@@ -14,6 +14,11 @@ your choice, which is how `.github/workflows/test.yml` caches it across jobs ins
 all six re-download it (that fetch was most of the "failed connecting to test server" flake
 `_time_skipping_env` retries around).
 
+**An HTTP test is authenticated for you — through `urllib` only.** Every `/api/*` route needs
+the install token (#217); `test_support.redirect_live_state` installs a process-wide `urllib`
+opener carrying the temp install's `X-Otto-Token`. `http.client`, `curl` or a fresh
+`build_opener()` sends none and gets a 401 — which is how `ApiTokenAuthTests` tests the refusal.
+
 ## Lint
 
 `ruff check` (pyflakes rules only, configured in `pyproject.toml`) and `shellcheck` over the

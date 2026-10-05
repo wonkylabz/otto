@@ -11,6 +11,21 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Security
+
+- **The API now requires a login.** Every `/api/*` route needs this install's token, so a run's
+  own shell can no longer approve its own gate, release the pause or read your stores over
+  `localhost` (#217, #3). **After upgrading, restart Otto, then run `./run.sh login` and open the
+  link** (or paste `data/.api/token` into the login screen). Each browser gets a session you can
+  revoke in Admin → Browser sessions. **Scripts calling the API must send
+  `X-Otto-Token: $(cat data/.api/token)`**, and a JSON body must be sent as
+  `Content-Type: application/json` or it is refused with 415. Webhooks and ntfy gate buttons
+  are unchanged.
+- **`claude -p` runs now start under `bwrap`**, which hides the token from them. Install
+  bubblewrap if `python3 doctor.py` warns `api token mask`; without it a run can still read the
+  token.
+- `/api/wf/signal` only accepts `approve`, `clarify` and `revise_plan`; anything else is a 400.
+
 ### Changed
 
 - **The models list can be dragged into order.** Each row has a grip on the right; drag it to
