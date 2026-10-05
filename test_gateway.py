@@ -7321,6 +7321,21 @@ def _raise_no_net():
     raise OSError("the suite must not reach the network")
 
 
+class TempHomeCleanupTests(unittest.TestCase):
+    """Every setUpModule (and some tests) makes an `otto-home-*` dir; never removed, 90 piled up."""
+
+    def test_the_temp_home_is_gone_when_the_process_exits(self):
+        out = subprocess.run(
+            [sys.executable, "-c", "import test_support; print(test_support.redirect_live_state())"],
+            cwd=os.path.dirname(os.path.abspath(__file__)), capture_output=True, text=True,
+            stdin=subprocess.DEVNULL, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr[-500:])
+        root = out.stdout.strip().splitlines()[-1]
+        self.assertTrue(os.path.basename(os.path.dirname(root)).startswith("otto-home-"), root)
+        self.assertFalse(os.path.exists(os.path.dirname(root)),
+                         "redirect_live_state's temp home outlived the process")
+
+
 class LiveStoreIsolationTests(unittest.TestCase):
     """No test may write to the developer's real data/.
 

@@ -7507,7 +7507,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # own `mcptools.js` to stay off this file; the bytes are the one button that opens it.
     # -> 125486 for Admin -> Browser sessions (#217). Same split: the section, its table and the
     # revoke/logout handlers live in `sessions.js`; the bytes are the two hooks that place it.
-    ASSET_MAX = 125486
+    # -> 125631 for the `judge_tools` knob (#228): a runtime setting must carry a label and a
+    # group (`RuntimeSettingsUiCoverageTests`), and the bytes are that one help line.
+    ASSET_MAX = 125631
 
     def _assets(self):
         out = {}
