@@ -37,6 +37,13 @@ if [ ! -x "$PY" ]; then
   exit 1
 fi
 
+# `./run.sh login` — print a single-use browser login link for the running Otto (#217). The API
+# needs the install's token; the link swaps a one-time code for the cookie, so the token itself
+# never reaches a URL or browser history.
+if [ "${1:-}" = "login" ]; then
+  exec "$PY" api_auth.py
+fi
+
 pids=()
 cleanup(){ for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT

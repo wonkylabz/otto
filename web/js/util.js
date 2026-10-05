@@ -5,6 +5,27 @@
    safe by coincidence rather than by rule — one single-quoted attribute would have broken out. */
 function esc(s){ return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+/* Every /api/* call needs the login cookie (#217). One interceptor rather than ~50 call sites:
+   a 401 means the same thing wherever it lands, so it paints one bar instead of each view's
+   error. Built here, not in index.html, so a logged-in page carries nothing extra. */
+const _rawFetch=window.fetch.bind(window);
+window.fetch=async (...a)=>{
+  const res=await _rawFetch(...a);
+  if(res.status===401) showLoggedOut();
+  else if(res.ok && String(a[0]).includes("/api/")) document.body.classList.remove("loggedout");
+  return res;
+};
+function showLoggedOut(){
+  if(!document.getElementById("loginbar")){
+    const el=document.createElement("div");
+    el.className="estopbar loginbar"; el.id="loginbar"; el.setAttribute("role","alert");
+    el.innerHTML="<b>NOT LOGGED IN</b><span>In a terminal in Otto's folder, run "
+      +"<code>./run.sh login</code> and open the link it prints.</span>";
+    document.body.insertBefore(el, document.body.firstChild);
+  }
+  document.body.classList.add("loggedout");
+}
+
 function val(id){ return document.getElementById(id).value.trim(); }
 
 /* Find one element by a data-* VALUE, comparing the attribute rather than building a selector.

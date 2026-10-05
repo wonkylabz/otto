@@ -45,6 +45,7 @@
   body.paused .estopbar { display: flex; }
   .estopbar b { font-weight: 700; letter-spacing: .02em; }
   .estopbar .estopwhy { color: var(--text-2); }
+  body.loggedout .loginbar { display: flex; }
 
   .tabs { display: flex; gap: 4px; margin-left: 18px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .tabs::-webkit-scrollbar { display: none; }

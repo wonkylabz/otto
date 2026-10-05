@@ -24,6 +24,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+import api_auth
 import attachments
 import board
 import chats
@@ -1090,8 +1091,8 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or "{}")
 
     def _csrf_ok(self):
-        """Is this POST allowed to mutate state? The API is unauthenticated by design (bound to
-        127.0.0.1, single user), so without this ANY page the user visits can drive a write run,
+        """Is this POST allowed to mutate state? This is the BROWSER half of the guard (the API
+        token, `_authed`, is the other): without it ANY page the user visits can drive a write run,
         approve its own gate, or rewrite policy: a cross-origin `fetch` with a text/plain body is
         a "simple request", so it needs no preflight and the attacker never has to read the reply.
         The port is guessable (_bind walks PORT..PORT+40).
@@ -1117,6 +1118,33 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return False
         return u.hostname in _LOCAL_HOSTS and port == self.server.server_address[1]
+
+    def _authed(self):
+        """Does this request carry the install's API token (#217)? `_csrf_ok` only stops a
+        browser: a run's shell can omit or forge Origin, so every /api/* route needs this too."""
+        return api_auth.valid(api_auth.presented(self.headers, self.server.server_address[1]))
+
+    def _refuse_unauthed(self):
+        self._send(401, json.dumps({"error": "not logged in — run ./run.sh login and open the "
+                                             "link it prints", "login": True}))
+
+    def _login(self):
+        """GET /login?code=<single-use code> — swap a code minted by `./run.sh login` for the
+        HttpOnly cookie. The token itself never rides a URL, so browser history keeps only a
+        spent code."""
+        code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
+        if not api_auth.redeem_login_code(code):
+            return self._send(403, b"Login link expired or already used. Run ./run.sh login "
+                                   b"again.", "text/plain; charset=utf-8")
+        try:
+            self.send_response(302)
+            self.send_header("Set-Cookie", api_auth.set_cookie_header(self.server.server_address[1]))
+            self.send_header("Location", "/")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionError):
+            pass
 
     def _static(self, path):
         """Serve web/css/*.css and web/js/*.js — the UI's own assets, nothing else.
@@ -1215,6 +1243,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, json.dumps({"error": str(e)}))
 
     def _dispatch_get(self):
+        if self.path.startswith("/api/") and not self._authed():
+            return self._refuse_unauthed()
+        if self.path.startswith("/login?") or self.path == "/login":
+            return self._login()
         if self.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "web", "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
@@ -1639,6 +1671,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._csrf_ok():
             self._send(403, json.dumps({"error": "cross-site request refused"})); return
+        # The two routes with their own credential: the webhook HMAC, and the single-use
+        # action token a notification button carries (it comes from a phone, with no cookie).
+        if not (self.path.startswith(("/api/events/", "/api/gate/")) or self._authed()):
+            return self._refuse_unauthed()
         try:
             if self.path.startswith("/api/events/"):
                 return self._handle_event()        # reads the raw body itself (signature check)
@@ -2556,14 +2592,24 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/runbooks/*"""
         self._runbooks(self.path.rsplit("/", 1)[-1], body)
 
+    def _post_login_link(self, body):
+        """POST /api/login-link — a single-use browser login link, for `./run.sh login`. A cookie
+        belongs to the HOST it was set on, so a browser reaching Otto via OTTO_CLICK_URL (a tunnel)
+        gets its own link; either one spends the same code."""
+        code = api_auth.mint_login_code()
+        urls = [f"http://localhost:{self.server.server_address[1]}/login?code={code}"]
+        if os.environ.get("OTTO_CLICK_URL"):
+            urls.append(f"{config.CLICK_URL.rstrip('/')}/login?code={code}")
+        self._send(200, json.dumps({"url": urls[0], "urls": urls,
+                                    "ttl_s": api_auth.LOGIN_CODE_TTL_S}))
+
     def _post_prefix_gate(self, body):
         """POST /api/gate/<token> — approve or deny a parked run from a notification action
         button. `{"approve": bool}`.
 
-        The token IS the authorization, and it is the only endpoint here that has one: everything
-        else is protected by binding to 127.0.0.1 plus the Origin check, neither of which a phone
-        on the far side of a tunnel can satisfy. So the grant is deliberately the narrowest thing
-        that still works — one run, one use, expiring with the gate (delivery.mint_action_token) —
+        The token IS the authorization: everything else needs the install's API token (cookie or
+        header, api_auth), which a phone on the far side of a tunnel does not hold. So the grant
+        is deliberately the narrowest thing that still works — one run, one use, expiring with the gate (delivery.mint_action_token) —
         and the run id is never in the URL, so a leaked topic cannot be replayed against any other
         run or any other endpoint. Unknown/expired/spent token: 403 and nothing happens."""
         token = self.path.rsplit("/", 1)[-1]
@@ -2658,6 +2704,7 @@ class Handler(BaseHTTPRequestHandler):
 # the chain was 193 branches in one function, and a route's position in it was load-
 # bearing (an exact match had to precede every prefix match). Exact wins, then prefix.
 _POST_ROUTES = {
+    "/api/login-link": Handler._post_login_link,
     "/api/behaviors/add": Handler._post_behaviors_add,
     "/api/behaviors/delete": Handler._post_behaviors_delete,
     "/api/behaviors/suggest": Handler._post_behaviors_suggest,
@@ -2760,7 +2807,9 @@ def main():
     httpd, port = _bind(PORT)
     if port != PORT:
         print(f"port {PORT} was busy — using {port} instead")
+    api_auth.token()     # exists before any run starts, so the sandboxes can mask it
     print(f"Otto web ingress  ->  http://localhost:{port}   (Ctrl-C to stop)", flush=True)
+    print("Log a browser in with: ./run.sh login", flush=True)
     print(f"Discovered {len(CAPS)} capabilities "
           f"({sum(c.risk=='read' for c in CAPS)} read / {sum(c.risk=='write' for c in CAPS)} write)", flush=True)
     # Align Temporal with data/schedules.json: fix drifted timezones, GC orphaned

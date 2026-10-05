@@ -92,8 +92,8 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 
 ## Cross-ingress
 
-- **Every mutating POST is origin-checked** (`server.Handler._csrf_ok`) — the API is unauthenticated by design, so without it any page the user visits can start a pinned WRITE run or approve its own gate cross-site (`test_integration.CsrfOriginGuardTests`).
-- Absent `Origin` = allowed (curl/tests/webhooks); `/api/events/` is exempt (its HMAC is its auth); escape hatch `OTTO_ALLOWED_ORIGINS`.
+- **Every `/api/*` route needs the install token** (`api_auth`, header or cookie) — a run's shell omits or FORGES `Origin`, so `_csrf_ok` alone let it release the pause. Only `/api/events/` and `/api/gate/` carry their own credential (`ApiTokenAuthTests`).
+- Mutating POSTs are also origin-checked (`_csrf_ok`), behind the SameSite cookie; absent `Origin` = allowed.
 - **A web route that starts a run is gated in `_wf_start`, not by path** (`server.Paused` -> 409) — the dispatcher's allowlist named submit/continue only, so `/api/needs-you/retry` started a run under the stop, pre-authorized, and dismissed its own card (`EstopWebStartTests`).
 - **An identity lookup caches only a RESOLVED answer and rate-limits the failure** (`slack.whoami`, `pr_review.viewer`) — caching the miss goes deaf until a restart, retrying it costs 15-30s a panel load, and the window stays under the poll interval (`PrReviewViewerCacheTests`).
 - **A SKIP schedule bounds its execution** (`config.POLL_TIMEOUT_FACTOR`) — a workflow task failing forever never closes the run, so `ScheduleOverlapPolicy.SKIP` skips every later fire and the ingress goes deaf until a hand terminate (`PollScheduleExecutionTimeoutTests`).

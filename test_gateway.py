@@ -5052,6 +5052,8 @@ class ClaudeSteerTests(unittest.TestCase):
         self.steer_written.set()                     # no steer to wait for
         self.cli.run_json("do the thing")
         cmd = self.popen_cmds[0]
+        if cmd[0] == "bwrap":                       # the #217 credential mask, then the call
+            cmd = cmd[cmd.index("--") + 1:]
         self.assertEqual(cmd[:3], ["claude", "-p", "do the thing"],
                          "the prompt stays on argv when nothing can steer")
         self.assertNotIn("--input-format", cmd)
