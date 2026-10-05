@@ -15,6 +15,7 @@ import tempfile
 import threading
 import unittest
 from unittest import mock
+import api_auth
 import chats
 import config
 import conventions
@@ -582,7 +583,8 @@ class SnapshotStoreClassificationTests(unittest.TestCase):
         import snapshot
         names = {os.path.basename(rel) for _, _, rel in test_support._DATA_STORES}
         names |= {os.path.basename(p) for p in (config._settings_path(), runbooks.store_path(),
-                                                runbooks.order_path(), estop.path())}
+                                                runbooks.order_path(), estop.path(),
+                                                api_auth.directory())}
         self.assertEqual([], sorted(names - set(snapshot.EXPORTED) - snapshot.RUNTIME),
                          "classify each new store in snapshot.EXPORTED or snapshot.RUNTIME")
         self.assertEqual(set(), set(snapshot.EXPORTED) & snapshot.RUNTIME)

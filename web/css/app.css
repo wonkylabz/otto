@@ -45,6 +45,9 @@
   body.paused .estopbar { display: flex; }
   .estopbar b { font-weight: 700; letter-spacing: .02em; }
   .estopbar .estopwhy { color: var(--text-2); }
+  .loginOverlay { z-index: 400; }
+  .loginBox { max-width: 460px; }
+  .loginErr { color: var(--danger-deep); font-size: 12.5px; min-height: 1em; }
 
   .tabs { display: flex; gap: 4px; margin-left: 18px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .tabs::-webkit-scrollbar { display: none; }
@@ -196,7 +199,7 @@
   /* Config forms in a modal: the modal already supplies the surface, border and padding, so the
      .aform chrome would double up. Slightly wider than a read-only modal for the two-column rows. */
   .formModalBox { max-width: 760px; }
-  .formModalBox .aform { background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
+  .formModalBox .aform, .loginBox .aform { background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
   .formModalBox .factions { position: sticky; bottom: 0; background: var(--surface); padding-top: 12px;
     margin-top: 2px; border-top: 1px solid var(--line); }
   /* run-detail debug drawer (#96) */
@@ -1469,6 +1472,7 @@
   .projtable .c-ns .srctag { white-space: normal; }
   .projtable .c-conv { width: 160px; }
   .projtable .c-act { width: 48px; }
+  .sesstable .c-when, .sesstable .c-act { width: 120px; }
   .projtable td { vertical-align: top; }
   /* Conventions cell: rule count opens the list, state pill says whether the judge is seeing it. */
   .convcell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }

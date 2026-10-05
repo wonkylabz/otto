@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import tempfile
+import urllib.request
 import chats
 import config
 import engine
@@ -25,6 +26,7 @@ import storage
 # in _DATA_STORES/_LAZY_STORES has to be IMPORTED somewhere first — these are that import, and
 # they read as dead to a linter. Drop one and the redirect KeyErrors, or worse, the store it
 # names stays pointed at the developer's real data/.
+import api_auth
 import board  # noqa: F401
 import claude_cli  # noqa: F401
 import codex_cli  # noqa: F401
@@ -97,6 +99,7 @@ _DATA_STORES = (
 # path into it. Kept beside the table above so the two are read together.
 _LAZY_STORES = (
     ("config", "_SETTINGS_PATH", None),   # settings.json — None means "fall through to DATA_DIR"
+    ("api_auth", "_PATH", None),          # .api/token, the API credential (#217)
     ("estop", "_PATH", None),             # the ESTOP sentinel
     ("runbooks", "_STORE", None),         # runbooks.json, via runbooks.store_path()
     ("runbooks", "_ORDER_STORE", None),   # runbook-order.json, via runbooks.order_path()
@@ -152,7 +155,17 @@ def redirect_live_state():
     # constant above does not move them. All six stores in otto.db resolve through one of these.
     engine._DB = chats._DB = knowledge._DB = config.DB_PATH
     _pin_cloud_model_discovery()
+    _authenticate_http_clients()
     return root
+
+
+def _authenticate_http_clients():
+    """Every `/api/*` route needs the install's token (#217). The suite's ~30 HTTP tests drive
+    the API as the operator, so the process-wide urllib opener carries the (temp) token for
+    them; `ApiTokenAuthTests` builds a bare opener to test the refusal."""
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("X-Otto-Token", api_auth.token())]
+    urllib.request.install_opener(opener)
 
 
 def _pin_cloud_model_discovery():

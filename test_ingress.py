@@ -7505,7 +7505,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # rebuild is held to dragend rather than fired under the drag (`ModelOrderTests`).
     # -> 125451 for the MCP row's "safe N" button (issue #193). The tag editor itself lives in its
     # own `mcptools.js` to stay off this file; the bytes are the one button that opens it.
-    ASSET_MAX = 125451
+    # -> 125486 for Admin -> Browser sessions (#217). Same split: the section, its table and the
+    # revoke/logout handlers live in `sessions.js`; the bytes are the two hooks that place it.
+    ASSET_MAX = 125486
 
     def _assets(self):
         out = {}

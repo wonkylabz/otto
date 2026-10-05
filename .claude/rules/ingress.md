@@ -56,7 +56,7 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 
 - **A pending review request is a STATE, not an event** — the search lists only PRs still awaiting you, so in/out transitions are the whole machine; a failed search returns None, never `[]`, or one bad poll re-reviews the queue (`PrReviewStateMachineTests`).
 - **The review is submitted as a REVIEW, never an issue comment** (`pr_review.post_review`) — submitting is what clears the pending request, the loop's only reset; a comment leaves it pending forever and no re-request is ever seen (`PrReviewPostingTests`).
-- **Nothing published ever comes from the client** — `/api/pr-review/post` accepts a KEY and nothing else; the API is unauthenticated, so a body or an approve flag off the request would let any page write to a colleague's PR as the operator (`PrReviewWiringTests`).
+- **Nothing published ever comes from the client** — `/api/pr-review/post` accepts a KEY and nothing else; a body or an approve flag off the request would let any caller write to a colleague's PR as the operator (`PrReviewWiringTests`).
 - **An approval is decided from the cap's verdict LINE, and fails closed** (`verdict_of`) — it is published in the operator's name and unblocks a merge, so a substring match approves on "I would approve this once the leak is fixed" (`PrReviewPostingTests`).
 - **The click and the unattended sweep share `publish`** — a manual post that comments while `auto_post` approves is a divergence nobody notices until it has approved something (`PrReviewPublishTests`).
 - **A report's lead line is DECLARED, never asked for** (`report_prefix` → `contracts.lead_with`) — a prompt asking for a heading is a request a local model drops, and the chat copy and the returned result are written from DIFFERENT places (`PrReviewWiringTests`).
@@ -92,8 +92,8 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 
 ## Cross-ingress
 
-- **Every mutating POST is origin-checked** (`server.Handler._csrf_ok`) — the API is unauthenticated by design, so without it any page the user visits can start a pinned WRITE run or approve its own gate cross-site (`test_integration.CsrfOriginGuardTests`).
-- Absent `Origin` = allowed (curl/tests/webhooks); `/api/events/` is exempt (its HMAC is its auth); escape hatch `OTTO_ALLOWED_ORIGINS`.
+- **Every `/api/*` route needs the install token** (`api_auth`: header, or a SESSION cookie) — a run's shell omits or FORGES `Origin`, so `_csrf_ok` alone let it release the pause. Only `/api/events/` and `/api/gate/` carry their own credential (`ApiTokenAuthTests`).
+- Mutating POSTs are also origin-checked (`_csrf_ok`), behind the SameSite cookie; absent `Origin` = allowed.
 - **A web route that starts a run is gated in `_wf_start`, not by path** (`server.Paused` -> 409) — the dispatcher's allowlist named submit/continue only, so `/api/needs-you/retry` started a run under the stop, pre-authorized, and dismissed its own card (`EstopWebStartTests`).
 - **An identity lookup caches only a RESOLVED answer and rate-limits the failure** (`slack.whoami`, `pr_review.viewer`) — caching the miss goes deaf until a restart, retrying it costs 15-30s a panel load, and the window stays under the poll interval (`PrReviewViewerCacheTests`).
 - **A SKIP schedule bounds its execution** (`config.POLL_TIMEOUT_FACTOR`) — a workflow task failing forever never closes the run, so `ScheduleOverlapPolicy.SKIP` skips every later fire and the ingress goes deaf until a hand terminate (`PollScheduleExecutionTimeoutTests`).
@@ -102,7 +102,7 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 
 `attachments.py` — raw-body upload to `data/uploads/<id>/`, TTL-swept; a submit names ids.
 
-- **A submit names attachment IDS, never paths** (`server._attachments_param`) — the API is unauthenticated, so a client path would hand a run any file; a retry re-resolves ids too (`AttachmentHttpTests`).
+- **A submit names attachment IDS, never paths** (`server._attachments_param`) — the client never names a path, or a caller could hand a run any file; a retry re-resolves ids too (`AttachmentHttpTests`).
 - **Only a raster image is served inline** (`server._get_attachment`) — SVG/HTML run script on the API's own origin, so anything else downloads as `octet-stream` (`AttachmentHttpTests`).
 
 ## Adding an ingress

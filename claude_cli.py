@@ -405,7 +405,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     if streaming_in:
         # The read loop ends on the first `result`, before a background task can report back.
         env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    proc = subprocess.Popen(file_safety.claude_argv(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             cwd=cwd, start_new_session=True, env=env,
                             **({"stdin": subprocess.PIPE} if streaming_in else {}))
     send_lock = threading.Lock()

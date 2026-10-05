@@ -22,10 +22,10 @@ next attempt, and on the final attempt escalates to the strongest model before g
 a blown budget or a stuck run lands on the **Needs-you** board rather than vanishing.
 
 > [!WARNING]
-> **Otto runs as you, and its web UI has no authentication.** It executes an LLM's decisions
-> on your machine with your Claude subscription, your `~/.claude` config and your tools —
-> and `server.py` has no login, no token and no session. Anything that can reach the port
-> can start a run and approve its own write gate. It is built for one operator on their own
+> **Otto runs as you, and its API has exactly one credential.** It executes an LLM's decisions
+> on your machine with your Claude subscription, your `~/.claude` config and your tools.
+> The API needs a per-install token, but there are no users or roles: anything holding that
+> token can start a run and approve its own write gate. It is built for one operator on their own
 > workstation: keep it on `localhost`, don't reverse-proxy it, don't run it on a shared box.
 > [SECURITY.md](SECURITY.md) has the full threat model. Read it before you start.
 
@@ -84,7 +84,9 @@ Run:
 ./run.sh        # starts the Temporal dev server + worker + web UI
 ```
 
-Open the URL it prints (default http://localhost:8765). Runs go through real Temporal
+Then log your browser in: `./run.sh login` prints a single-use link (default port 8765) — open
+it once and the browser keeps a cookie for a year. A browser that can't open it (a phone over a
+tunnel) can paste `data/.api/token` into the login screen instead. Runs go through real Temporal
 workflows — durable and replayable, with approval + clarification as real Temporal
 **signals**. Watch them live in the Temporal UI at http://localhost:8233.
 
@@ -265,8 +267,8 @@ OTTO_SECRET_COMMAND='pass show otto/{name}'     # or: op read, bw get, keepassxc
 ```
 
 Resolution is env → helper → unset, so a value in `.env` still wins. This one is env-only and
-never settable from the UI: the web API is unauthenticated by design, and an arbitrary command
-writable over HTTP would be an arbitrary command an attacker can write. `python3 doctor.py`
+never settable from the UI: the web API has one all-powerful credential, and an arbitrary
+command writable over HTTP would turn that token into code execution. `python3 doctor.py`
 reports whether the helper actually resolves anything — every way it can fail reads as "unset".
 
 ## Documentation

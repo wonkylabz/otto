@@ -56,6 +56,7 @@ import os
 import shutil
 import subprocess
 
+import api_auth
 import config
 
 # Extra paths from the operator, `os.pathsep`-separated. Additive only — there is deliberately
@@ -177,6 +178,9 @@ def denied_globs(allow_cwd=None):
         # ... and chat attachments (#161): only the server writes them, and a run rewriting one
         # changes what a LATER turn of that chat reads as the user's own file.
         os.path.join(config.DATA_DIR, "uploads", "**"),
+        # ... and the API token (#217): the server re-reads it when it changes, so a run that
+        # rewrites it has chosen the token, and with it every route the API serves.
+        os.path.join(api_auth.directory(), "**"),
         # DELIBERATELY absent: data/workspaces/**. Every repo-mode clone lives there, so denying
         # DATA_DIR wholesale silently blocks the entire repo-mode feature — the thing most write
         # runs exist to do. Guarded by test_core.FileSafetyTests.
@@ -269,6 +273,26 @@ def _secret_store_globs():
         # (`mcp_client.resolved_def`), so the family is a credential store, not Otto state.
         # The glob must name the dot: `data/*.json` never matches a dotfile, so no bwrap mount.
         os.path.join(config.DATA_DIR, ".mcp-*.json"),
+        *_api_credential_globs(),
+    ]
+
+
+def _api_credential_globs():
+    """The API token (#217) — holding it IS the operator's authority over every route, gate
+    approval and the global pause included — and the browser profiles its login cookie lands in.
+    Its own list because `claude_argv` masks exactly these: the rest of the secret set includes
+    files the `claude` process itself must read."""
+    home = _home()
+    return [
+        os.path.join(api_auth.directory(), "**"),
+        os.path.join(home, ".mozilla", "**"),
+        os.path.join(home, ".config", "google-chrome", "**"),
+        os.path.join(home, ".config", "chromium", "**"),
+        os.path.join(home, ".config", "BraveSoftware", "**"),
+        os.path.join(home, "snap", "firefox", "**"),
+        os.path.join(home, "Library", "Application Support", "Google", "Chrome", "**"),
+        os.path.join(home, "Library", "Application Support", "Firefox", "**"),
+        os.path.join(home, "Library", "Cookies", "**"),
     ]
 
 
@@ -345,15 +369,9 @@ _SANDBOX = None
 _SANDBOX_PROBE = "/var/tmp/.otto-sandbox-probe"
 
 
-def read_deny_mounts(cwd=None):
-    """bwrap mounts that make the READ deny-set unreadable inside the sandbox.
-
-    Without these a sandbox is a WRITE guard only, and "read-only" reads as safe when it is not.
-    A directory glob is masked with an empty tmpfs; a file is bound over /dev/null.
-    A run entitled to Otto's state (cwd IS Otto's checkout) still gets the credential-store
-    mounts — `read_denied_globs` drops only Otto's state for it."""
+def _mask_mounts(patterns):
     mounts = []
-    for pattern in read_denied_globs(allow_cwd=cwd):
+    for pattern in patterns:
         targets = [pattern[:-3]] if pattern.endswith("/**") else sorted(globmod.glob(pattern))
         for path in targets:
             if os.path.isdir(path):
@@ -361,6 +379,32 @@ def read_deny_mounts(cwd=None):
             elif os.path.isfile(path):
                 mounts += ["--ro-bind", "/dev/null", path]
     return mounts
+
+
+def claude_argv(cmd):
+    """`cmd` (a `claude` invocation) with the API credentials masked by the KERNEL (#217).
+
+    `claude -p`'s `permissions.deny` matches command TEXT: measured, `cat <token>` was refused
+    while `python3 -c "open(<token>)"` printed it (2/2). Otherwise transparent — every other path
+    is bound read-write, so auth, MCP, the network and the cwd behave as before. Without a
+    usable bwrap the run proceeds unmasked: walling every Claude run is not an option."""
+    if not sandbox_available():
+        return cmd
+    api_auth.token()        # mask an EXISTING file: one created after the mount would be readable
+    return ["bwrap", "--dev-bind", "/", "/", "--die-with-parent",
+            *_mask_mounts([*dict.fromkeys(s for g in _api_credential_globs()
+                                          for s in _both_spellings(g))]),
+            "--", *cmd]
+
+
+def read_deny_mounts(cwd=None):
+    """bwrap mounts that make the READ deny-set unreadable inside the sandbox.
+
+    Without these a sandbox is a WRITE guard only, and "read-only" reads as safe when it is not.
+    A directory glob is masked with an empty tmpfs; a file is bound over /dev/null.
+    A run entitled to Otto's state (cwd IS Otto's checkout) still gets the credential-store
+    mounts — `read_denied_globs` drops only Otto's state for it."""
+    return _mask_mounts(read_denied_globs(allow_cwd=cwd))
 
 
 def _probe_argv(command):

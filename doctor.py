@@ -245,6 +245,18 @@ def check_codex(gateway):
     return _check("codex backend", "ok", f"{names} via {said}, read guard: bwrap")
 
 
+def check_api_token_mask():
+    """The API token (#217) is only out of a `claude -p` run's reach under a kernel mask:
+    `permissions.deny` matches command text, so `python3 -c open()` reads it. Without bwrap
+    every run proceeds unmasked — said here, since nothing at run time does."""
+    if file_safety.sandbox_available():
+        return _check("api token mask", "ok", "bwrap masks the API token in every claude run")
+    return _check("api token mask", "warn",
+                  "no usable bwrap — a claude run can read data/.api/token and drive the API "
+                  "as you, gate approvals included",
+                  "Install bubblewrap and enable unprivileged user namespaces.")
+
+
 def check_exec_tool_calls(gateway):
     """A LOCAL execution model must accept tool calls or the local agent runtime can never run
     — every execution silently re-dispatches to Claude (`local_incapable`), which reads as
@@ -387,6 +399,7 @@ def run_checks(caps=None):
         check_models(gateway),
         check_exec_tool_calls(gateway),
         check_codex(gateway),
+        check_api_token_mask(),
         check_local_fallback(gateway),
         check_secret_provider(),
         check_socket_mode(),

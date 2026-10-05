@@ -5,6 +5,42 @@
    safe by coincidence rather than by rule — one single-quoted attribute would have broken out. */
 function esc(s){ return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+/* Every /api/* call needs the login cookie (#217). One interceptor rather than ~50 call sites:
+   a 401 means the same thing wherever it lands, and logged out every tab is dead, so it raises
+   one full-page login screen instead of each view's error. Not dismissible: nothing behind it works. */
+const _rawFetch=window.fetch.bind(window);
+window.fetch=async (...a)=>{
+  const res=await _rawFetch(...a);
+  if(res.status===401 && String(a[0]).includes("/api/")) showLoggedOut();
+  return res;
+};
+function showLoggedOut(){
+  if(document.getElementById("loginOverlay")) return;
+  const el=document.createElement("div");
+  el.className="modalOverlay loginOverlay"; el.id="loginOverlay";
+  el.setAttribute("role","dialog"); el.setAttribute("aria-modal","true");
+  el.innerHTML=`<div class="modalBox loginBox">
+    <div class="modalHead"><div class="modalTitle"><b>Log in to Otto</b></div></div>
+    <div class="modalBody">
+      <p style="margin:0 0 14px">In a terminal in Otto's folder, run <code>./run.sh login</code> and open the link it prints.</p>
+      <form class="aform" id="loginForm" autocomplete="on">
+        <label for="loginToken">Or paste the token from <code>data/.api/token</code></label>
+        <input type="password" id="loginToken" name="password" autocomplete="current-password" required>
+        <div class="loginErr" id="loginErr" role="alert"></div>
+        <button type="submit" class="btn approve">Log in</button>
+      </form>
+    </div></div>`;
+  document.body.appendChild(el);
+  document.getElementById("loginForm").addEventListener("submit", async e=>{
+    e.preventDefault();
+    const err=document.getElementById("loginErr");
+    err.textContent="";
+    try { await postJSON("/login", {token: val("loginToken")}); location.reload(); }
+    catch(x){ err.textContent=x.message; }
+  });
+  document.getElementById("loginToken").focus();
+}
+
 function val(id){ return document.getElementById(id).value.trim(); }
 
 /* Find one element by a data-* VALUE, comparing the attribute rather than building a selector.

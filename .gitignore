@@ -25,6 +25,7 @@ data/*.lock
 data/memory
 data/transcripts
 data/.mcp-active.json
+data/.api
 data/tickets
 !data/.gitkeep
 data/codex-home

@@ -245,6 +245,244 @@ class CsrfOriginGuardTests(unittest.TestCase):
         self.assertEqual(self._status(headers={"Origin": "http://localhost:9998"}), 403)
 
 
+class ApiTokenAuthTests(unittest.TestCase):
+    """#217: a run's shell can reach the API over loopback and omit or forge `Origin`, so
+    `_csrf_ok` alone let it release the global pause, approve its own gate or read the stores
+    the deny-set masks. Every /api/* route now needs the install's token. Driven with a BARE
+    opener: the suite's installed one carries the token for every other HTTP test."""
+
+    @classmethod
+    def setUpClass(cls):
+        import server
+        cls.server = server
+        cls.httpd = ThreadingTCPServer(("127.0.0.1", 0), server.Handler)
+        cls.httpd.daemon_threads = True
+        cls.port = cls.httpd.server_address[1]
+        cls.base = "http://127.0.0.1:%d" % cls.port
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.thread.join(timeout=5)
+        cls.httpd.server_close()
+
+    def _req(self, path, method="GET", body=None, headers=None):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        data = None if body is None else json.dumps(body).encode()
+        h = {"Content-Type": "application/json"} if data is not None else {}
+        conn.request(method, path, body=data, headers={**h, **(headers or {})})
+        r = conn.getresponse()
+        out = (r.status, r.getheaders(), r.read())
+        conn.close()
+        return out
+
+    def _tok(self):
+        import api_auth
+        return {"X-Otto-Token": api_auth.token()}
+
+    def test_an_api_read_needs_the_token(self):
+        self.assertEqual(self._req("/api/settings")[0], 401)
+        self.assertEqual(self._req("/api/settings", headers={"X-Otto-Token": "wrong"})[0], 401)
+        self.assertEqual(self._req("/api/settings", headers=self._tok())[0], 200)
+
+    def test_a_shell_cannot_release_the_pause_even_forging_origin(self):
+        import estop
+        estop.engage("operator pause")
+        self.addCleanup(estop.release)
+        for hdr in ({}, {"Origin": "http://localhost:%d" % self.port}):
+            self.assertEqual(self._req("/api/estop", "POST", {"engaged": False}, hdr)[0], 401)
+            self.assertTrue(estop.status()["engaged"])
+        self.assertEqual(self._req("/api/estop", "POST", {"engaged": False}, self._tok())[0], 200)
+        self.assertFalse(estop.status()["engaged"])
+
+    def test_the_routes_with_their_own_credential_are_exempt(self):
+        # The gate button's single-use token is its auth: it reaches its own check (403), not ours.
+        self.assertEqual(self._req("/api/gate/not-a-token", "POST", {"approve": True})[0], 403)
+        self.assertNotEqual(self._req("/api/events/itest", "POST", {})[0], 401)
+
+    def test_the_page_and_its_assets_load_logged_out(self):
+        # Nothing secret is in them, and the page is what tells you to log in.
+        self.assertEqual(self._req("/")[0], 200)
+        self.assertEqual(self._req("/js/util.js")[0], 200)
+
+    def test_a_login_link_sets_an_httponly_cookie_once(self):
+        self.assertEqual(self._req("/api/login-link", "POST", {})[0], 401)
+        st, _, body = self._req("/api/login-link", "POST", {}, self._tok())
+        self.assertEqual(st, 200)
+        url = json.loads(body)["url"]
+        import api_auth
+        self.assertNotIn(api_auth.token(), url)          # history keeps only the spent code
+        path = url.split(str(self.port), 1)[1]
+        st, headers, _ = self._req(path)
+        self.assertEqual(st, 302)
+        cookie = dict(headers)["Set-Cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        pair = cookie.split(";", 1)[0]
+        self.assertTrue(pair.startswith("otto_token_%d=" % self.port))
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": pair})[0], 200)
+        # Another instance's cookie (a different port) is not this one's credential.
+        other = pair.replace(str(self.port), str(self.port + 1), 1)
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": other})[0], 401)
+        self.assertEqual(self._req(path)[0], 403)        # single use
+
+    def test_the_token_file_is_private_and_denied_to_every_run(self):
+        import api_auth
+        import file_safety
+        api_auth.token()
+        self.assertEqual(os.stat(api_auth.path()).st_mode & 0o777, 0o600)
+        otto_cwd = os.path.dirname(config.DATA_DIR)
+        self.assertTrue(file_safety.is_read_denied(api_auth.path(), allow_cwd=otto_cwd))
+        self.assertTrue(file_safety.is_denied(api_auth.path()))
+
+    def test_a_claude_run_cannot_read_the_token_by_any_route(self):
+        # `permissions.deny` matches command TEXT: `python3 -c open(...)` read the token through
+        # it (measured 2/2). The kernel mask in `claude_argv` is what holds; prove it on the
+        # very argv prefix, with python standing in for the run's shell.
+        import api_auth
+        import file_safety
+        if not file_safety.sandbox_available():
+            self.skipTest("no usable bwrap")
+        import subprocess
+        tok = api_auth.token()
+        read = ["python3", "-c", f"print(open({api_auth.path()!r}).read())"]
+        wrapped = file_safety.claude_argv(read)
+        self.assertEqual(wrapped[-len(read):], read)
+        out = subprocess.run(wrapped, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertNotIn(tok, out.stdout)
+        control = subprocess.run(read, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertIn(tok, control.stdout)
+
+    def test_a_token_rotated_mid_run_stays_masked(self):
+        # A mask over a bare FILE covers only the dentry it was mounted on: a token re-created
+        # after the sandbox started was readable. The directory mask is what holds.
+        import api_auth
+        import file_safety
+        if not file_safety.sandbox_available():
+            self.skipTest("no usable bwrap")
+        import subprocess
+        api_auth.token()
+        proc = subprocess.Popen(file_safety.claude_argv(
+            ["bash", "-c", f"sleep 1.5; cat {api_auth.path()} 2>&1"]),
+            stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        time.sleep(0.5)
+        os.unlink(api_auth.path())
+        self.addCleanup(test_support._authenticate_http_clients)
+        new = api_auth.token()
+        out, _ = proc.communicate(timeout=30)
+        self.assertNotIn(new, out)
+
+    def test_the_token_directory_is_private_and_its_temp_name_unpredictable(self):
+        import api_auth
+        api_auth.token()
+        self.assertEqual(os.stat(api_auth.directory()).st_mode & 0o777, 0o700)
+        self.assertIn("mkstemp", inspect.getsource(api_auth._create))
+        self.assertNotIn("getpid", inspect.getsource(api_auth._create))
+
+    def test_claude_runs_through_the_mask(self):
+        import claude_cli
+        self.assertIn("file_safety.claude_argv(cmd)", inspect.getsource(claude_cli.run_json))
+
+    def test_the_login_screen_trades_a_pasted_token_for_the_cookie(self):
+        import api_auth
+        self.assertEqual(self._req("/login", "POST", {"token": "wrong"})[0], 401)
+        st, headers, _ = self._req("/login", "POST", {"token": api_auth.token()})
+        self.assertEqual(st, 200)
+        cookie = dict(headers)["Set-Cookie"]
+        self.assertIn("HttpOnly", cookie)
+        self.assertEqual(self._req("/api/settings",
+                                   headers={"Cookie": cookie.split(";", 1)[0]})[0], 200)
+        # A cross-site page can't paste for you: the origin check still runs first.
+        self.assertEqual(self._req("/login", "POST", {"token": api_auth.token()},
+                                   {"Origin": "https://evil.example"})[0], 403)
+
+    def test_a_401_raises_the_login_screen(self):
+        src = test_support.ui_src()
+        self.assertIn('if(res.status===401 && String(a[0]).includes("/api/")) showLoggedOut();', src)
+        self.assertIn('postJSON("/login", {token: val("loginToken")})', src)
+
+    def _session(self, extra=None):
+        import api_auth
+        st, headers, _ = self._req("/login", "POST", {"token": api_auth.token()}, extra)
+        self.assertEqual(st, 200)
+        return dict(headers)["Set-Cookie"]
+
+    def test_the_cookie_is_a_session_never_the_token(self):
+        # Cookies aren't port-scoped: every other localhost app the browser visits receives it.
+        import api_auth
+        cookie = self._session()
+        sid = cookie.split(";", 1)[0].split("=", 1)[1]
+        self.assertNotEqual(sid, api_auth.token())
+        with open(api_auth.sessions_path()) as f:
+            self.assertNotIn(sid, f.read())                 # only its hash is stored
+        raw = "otto_token_%d=%s" % (self.port, api_auth.token())
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": raw})[0], 401)
+
+    def test_logout_and_revoke_end_one_session(self):
+        a = self._session().split(";", 1)[0]
+        b = self._session().split(";", 1)[0]
+        listed = json.loads(self._req("/api/sessions", headers={"Cookie": a})[2])["sessions"]
+        self.assertEqual(sum(r["current"] for r in listed), 1)
+        self.assertNotIn(b.split("=", 1)[1], json.dumps(listed))   # never exposes a cookie
+        other = next(r["id"] for r in listed if not r["current"])
+        self.assertEqual(self._req("/api/sessions/revoke", "POST", {"id": other},
+                                   {"Cookie": a})[0], 200)
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": b})[0], 401)
+        st, headers, _ = self._req("/api/logout", "POST", {}, {"Cookie": a})
+        self.assertIn("Max-Age=0", dict(headers)["Set-Cookie"])
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": a})[0], 401)
+
+    def test_rotating_the_token_ends_every_session(self):
+        import api_auth
+        a = self._session().split(";", 1)[0]
+        os.unlink(api_auth.path())
+        self.addCleanup(test_support._authenticate_http_clients)
+        api_auth.token()
+        self.assertEqual(self._req("/api/settings", headers={"Cookie": a})[0], 401)
+
+    def test_the_cookie_is_secure_only_over_https(self):
+        self.assertNotIn("Secure", self._session())
+        self.assertIn("; Secure", self._session({"X-Forwarded-Proto": "https"}))
+
+    def test_a_tunnel_gets_its_own_login_link(self):
+        with mock.patch.dict(os.environ, {"OTTO_CLICK_URL": "https://otto.example.ts.net"}), \
+                mock.patch.object(config, "CLICK_URL", "https://otto.example.ts.net"):
+            st, _, body = self._req("/api/login-link", "POST", {}, self._tok())
+        urls = json.loads(body)["urls"]
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(urls[1].startswith("https://otto.example.ts.net/login?code="))
+        self.assertEqual(urls[0].split("code=")[1], urls[1].split("code=")[1])
+
+    def test_a_json_route_refuses_a_body_not_labelled_json(self):
+        # #3: text/plain is the cross-site "simple request" body, sent with no preflight.
+        st = self._req("/api/settings", "POST", {}, {**self._tok(), "Content-Type": "text/plain"})[0]
+        self.assertEqual(st, 415)
+        st = self._req("/api/settings", "POST", {},
+                       {**self._tok(), "Content-Type": "application/json; charset=utf-8"})[0]
+        self.assertEqual(st, 200)
+
+    def test_a_signal_outside_the_allowlist_is_a_400_not_a_clarification(self):
+        for body in ({"id": "web-x", "signal": "detonate", "value": "y"}, {"signal": "approve"},
+                     {"id": "web-x"}):
+            self.assertEqual(self._req("/api/wf/signal", "POST", body, self._tok())[0], 400, body)
+
+    def test_run_ids_are_a_full_uuid(self):
+        src = inspect.getsource(self.server)
+        self.assertNotIn("uuid4().hex[:", src)
+
+    def test_deleting_the_token_rotates_it(self):
+        import api_auth
+        old = api_auth.token()
+        os.unlink(api_auth.path())
+        self.addCleanup(test_support._authenticate_http_clients)
+        new = api_auth.token()
+        self.assertNotEqual(old, new)
+        self.assertEqual(self._req("/api/settings", headers={"X-Otto-Token": old})[0], 401)
+
+
 class _FakeClaude:
     """Stand-in for engine._claude — records calls, returns canned JSON (no subprocess)."""
 

@@ -1299,6 +1299,7 @@ function renderAdmin(data, models, el, settings){
       </div>
       </div>
     </div>
+${sessionsSection()}
     <div class="asection coll collapsed" data-sect="tools"><h3><span class="secttoggle" title="collapse / expand">
         <span class="gcaret">&#9662;</span>Base tool allowlists</span></h3>
       <div class="asection-body">
@@ -1312,6 +1313,7 @@ function renderAdmin(data, models, el, settings){
         </tbody></table>
       </div>
     </div>`;
+  wireSessions(el);
   el.querySelectorAll(".themecard").forEach(c=>c.addEventListener("click",()=>pickTheme(c.dataset.theme)));
   el.querySelectorAll(".riskpill").forEach(p=>p.addEventListener("click",()=>{
     const n=p.dataset.cap, nx=POLICY_STATE.capabilities[n].risk==="read"?"write":"read";
