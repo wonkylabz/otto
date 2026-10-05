@@ -3612,7 +3612,29 @@ class JudgeStabilityHarnessTests(unittest.TestCase):
         ids = [f["id"] for f in regress_cases.STABILITY]
         self.assertEqual(len(ids), len(set(ids)))
         self.assertTrue(all(isinstance(f["expect"], bool) for f in regress_cases.STABILITY))
-        self.assertEqual({f["expect"] for f in regress_cases.STABILITY}, {True, False})
+        for judge in ("verify", "supervise"):
+            self.assertEqual({f["expect"] for f in regress_cases.STABILITY
+                              if f["judge"] == judge}, {True, False}, judge)
+
+    def test_a_supervise_fixture_is_judged_by_the_supervisor_tier(self):
+        import gateway
+        import regress_cases
+        fx = next(f for f in regress_cases.STABILITY if f["judge"] == "supervise")
+        tasks = []
+        with mock.patch.object(gateway, "complete",
+                               side_effect=lambda t, p: tasks.append(t) or "CONTINUE"):
+            self.assertTrue(fx["run"]()["passed"])
+        self.assertEqual(tasks, ["supervise"])
+
+    def test_the_judge_pin_covers_every_tier_sampled(self):
+        import gateway
+        import regress
+        cfg = {"pool": [{"name": "a"}, {"name": "b"}],
+               "assign": {"verify": "a", "supervise": "a", "plan": "a"}}
+        with mock.patch.object(gateway, "load", return_value=cfg):
+            regress._pin_judge("b", ["verify", "supervise"])
+            self.assertEqual(gateway.load()["assign"],
+                             {"verify": "b", "supervise": "b", "plan": "a"})
 
     def test_raw_mode_pins_one_sample_and_confirmed_does_not(self):
         import regress

@@ -35,9 +35,11 @@ The corpus is the other half.
 - `python3 regress.py` — cheap tier, ~2min
 - `--tier all` — real `claude -p`, ~10min
 - `--only <prefix>`, `-n <N>` — narrow a run
-- `--stability [-n N] [--confirmed]` — the verify judge's flip rate per known-good/known-bad
-  fixture (`regress_cases.STABILITY`, 10 raw samples by default). **Run it before and after any
-  change to `judging.verify`** and compare the per-fixture flip, not one verdict (issue #125).
+- `--stability [-n N] [--confirmed] [--judge <label>]` — the `verify` and `supervise` judges'
+  flip rate per known-good/known-bad fixture (`regress_cases.STABILITY`, 10 raw samples by
+  default). **Run it before and after changing either judge's prompt** and compare the
+  per-fixture flip, not one verdict (issue #125). A local judge at `temperature: 0` never flips:
+  pin a Claude one with `--judge`.
 
 **Run it before and after editing any prompt.** Fixtures are committed, never sourced from
 `data/`.

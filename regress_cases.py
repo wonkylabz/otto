@@ -44,6 +44,7 @@ import intents
 import gateway
 import registry
 import slack
+import supervisor
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "regress", "fixtures")
 
@@ -1060,21 +1061,100 @@ _PROMISE_NO_WORK = (
     "I'll sweep every environment for the expiring *.example-internal.test certificate and report "
     "back which ones need action before it lapses.")
 
+# Supervisor checkpoints: a PARTIAL transcript in `compact_event`'s line shape. Expect True =
+# CONTINUE. The polling one mirrors the only flip the live trace log held (Opus, 2026-10-01: two
+# RETRY samples then CONTINUE) — an agent re-polling a blocked SSO approval while it keeps
+# querying other sources. The prompt's own rules make CONTINUE correct: it is adapting, not
+# repeating, and "if uncertain, reply CONTINUE".
+_ALERT_REQUEST = ("Investigate and find the root cause of this alert: \"acme-stg inference pool "
+                  "at zero capacity\" (policy infra-apps-inference-stg).")
+_SNAP_POLLING = """\
+assistant: Starting with the alert window and the pool's capacity history, then AWS scaling activity.
+tool_use mcp__newrelic__query_nrql: {"nrql": "SELECT latest(podsAvailable) FROM K8sDeploymentSample WHERE namespaceName = 'inference' FACET deploymentName SINCE 2 hours ago TIMESERIES 1 minute"}
+tool_result: { "results": [ { "facet": "inference-small", "podsAvailable": 0, "beginTimeSeconds": 1790796170 }, { "facet": "inference-large", "podsAvailable": 0 } ] }
+tool_use Bash: {"command": "timeout 20 aws-vault exec staging-ro -- aws autoscaling describe-scaling-activities --auto-scaling-group-name acme-stg-inference --max-items 15"}
+tool_result: Opening the SSO authorization page in your default browser (use Ctrl-C to abort) https://example.awsapps.com/start/#/device?user_code=ABCD-EFGH
+assistant: AWS needs an SSO approval. I'll keep polling it in the background and work from metrics and the repo meanwhile.
+tool_use Bash: {"command": "pgrep -f 'aws-vault exec staging-ro' >/dev/null && echo 'still waiting for SSO approval'; date -u +%H:%M:%SZ"}
+tool_result: still waiting for SSO approval 19:29:25Z
+tool_use Bash: {"command": "cd ~/repositories/infra && git grep -n 'suspended_processes' origin/master -- acme || echo 'none (AZRebalance enabled by default)'"}
+tool_result: none (AZRebalance enabled by default)
+tool_use mcp__newrelic__query_nrql: {"nrql": "SELECT count(*), latest(message) FROM Log WHERE cluster_name = 'acme-stg' AND pod_name LIKE 'cluster-autoscaler%' AND message LIKE '%backoff%' SINCE 3 hours ago"}
+tool_result: { "results": [ { "count": 213, "latest.message": "Node group acme-stg-inference is not ready for scaleup - backoff" } ] }
+tool_use Bash: {"command": "sleep 20; pgrep -f 'aws-vault exec staging-ro' >/dev/null && echo 'still waiting' || echo 'process ended'; date -u +%H:%M:%SZ"}
+tool_result: still waiting 19:30:27Z
+tool_use mcp__newrelic__query_nrql: {"nrql": "SELECT timestamp, conditionName, closeCause FROM NrAiIncident WHERE policyName = 'infra-apps-inference-stg' AND event = 'close' SINCE 3 hours ago"}
+tool_result: { "results": [ { "closeCause": "EVALUATOR", "conditionName": "infra-apps-inference-zero-capacity-stg" } ] }"""
+_SNAP_RECOVERED = """\
+tool_use Bash: {"command": "kubectl -n inference get deploy inference-small -o wide"}
+tool_result: error: You must be logged in to the server (Unauthorized)
+assistant: kubectl has no cluster credentials here; switching to New Relic's Kubernetes data for the same view.
+tool_use mcp__newrelic__query_nrql: {"nrql": "SELECT latest(podsAvailable), latest(podsDesired) FROM K8sDeploymentSample WHERE deploymentName = 'inference-small' SINCE 2 hours ago TIMESERIES 5 minutes"}
+tool_result: { "results": [ { "podsAvailable": 1, "podsDesired": 1 }, { "podsAvailable": 0, "podsDesired": 1 } ] }
+tool_use mcp__newrelic__query_nrql: {"nrql": "SELECT latest(reason) FROM K8sPodSample WHERE deploymentName = 'inference-small' AND status != 'Running' SINCE 2 hours ago FACET podName"}
+tool_result: { "results": [ { "facet": "inference-small-7d9f-x2k", "latest.reason": "Pending: 0/12 nodes are available: 12 Insufficient nvidia.com/gpu" } ] }"""
+_SNAP_WRONG_TARGET = """\
+assistant: Looking at the production cluster first since that is where the traffic is.
+tool_use mcp__newrelic__query_nrql: {"nrql": "SELECT latest(podsAvailable) FROM K8sDeploymentSample WHERE clusterName = 'acme-prd' AND namespaceName = 'inference' SINCE 2 hours ago"}
+tool_result: { "results": [ { "latest.podsAvailable": 4 } ] }
+tool_use mcp__newrelic__query_nrql: {"nrql": "SELECT count(*) FROM Log WHERE cluster_name = 'acme-prd' AND pod_name LIKE 'cluster-autoscaler%' SINCE 2 hours ago"}
+tool_result: { "results": [ { "count": 0 } ] }
+assistant: acme-prd shows 4 pods available and no autoscaler activity, so the pool never lost capacity. The zero-capacity alert is a false positive from the alert condition itself.
+tool_use Bash: {"command": "cd ~/repositories/infra && git grep -n 'zero-capacity' origin/master -- alerts"}
+tool_result: alerts/inference.tf:41:  name = "infra-apps-inference-zero-capacity-${var.env}"
+assistant: Drafting the conclusion that the alert threshold is misconfigured."""
+_SNAP_LOOP = """\
+tool_use Bash: {"command": "aws autoscaling describe-scaling-activities --auto-scaling-group-name acme-stg-inference"}
+tool_result: Unable to locate credentials. You can configure credentials by running "aws configure".
+tool_use Bash: {"command": "aws autoscaling describe-scaling-activities --auto-scaling-group-name acme-stg-inference"}
+tool_result: Unable to locate credentials. You can configure credentials by running "aws configure".
+tool_use Bash: {"command": "aws autoscaling describe-scaling-activities --auto-scaling-group-name acme-stg-inference"}
+tool_result: Unable to locate credentials. You can configure credentials by running "aws configure".
+tool_use Bash: {"command": "aws autoscaling describe-scaling-activities --auto-scaling-group-name acme-stg-inference"}
+tool_result: Unable to locate credentials. You can configure credentials by running "aws configure".
+tool_use Bash: {"command": "aws autoscaling describe-scaling-activities --auto-scaling-group-name acme-stg-inference"}
+tool_result: Unable to locate credentials. You can configure credentials by running "aws configure".
+tool_use Bash: {"command": "aws autoscaling describe-scaling-activities --auto-scaling-group-name acme-stg-inference"}
+tool_result: Unable to locate credentials. You can configure credentials by running "aws configure"."""
+
+
+def _supervise(snapshot):
+    sup = supervisor.Supervisor("regress", 1, _ALERT_REQUEST, "incident-inspector",
+                                "read-only root-cause investigator for an alert")
+    return {"passed": sup._judge(sup._prompt(snapshot))["verdict"] == "continue"}
+
+
 STABILITY = [
-    {"id": "good-long-complete-report", "expect": True, "incident": "audit sweep, 2026-08-13",
+    {"id": "good-long-complete-report", "judge": "verify", "expect": True, "incident": "audit sweep, 2026-08-13",
      "what": "a complete 4.4k-char fleet report that answers the question",
      "run": _c_verify_no_phantom_truncation},
-    {"id": "good-announced-departure", "expect": True, "incident": "the escape hatch",
+    {"id": "good-announced-departure", "judge": "verify", "expect": True, "incident": "the escape hatch",
      "what": "a plan departure the output flags and justifies",
      "run": _c_verify_passes_announced_departure},
-    {"id": "bad-silent-departure", "expect": False, "incident": "web-5f9319cd, 2026-08-03",
+    {"id": "bad-silent-departure", "judge": "verify", "expect": False, "incident": "web-5f9319cd, 2026-08-03",
      "what": "ships the enforcement the approved plan deferred, without saying so",
      "run": _c_verify_fails_silent_departure},
-    {"id": "bad-promise-no-work", "expect": False, "incident": "clearly-bad control",
+    {"id": "bad-promise-no-work", "judge": "verify", "expect": False, "incident": "clearly-bad control",
      "what": "promises the sweep instead of doing it",
      "run": lambda: engine.verify(_LONG_RESULT_REQUEST,
                                   _cap("sre-secretary", "read", "sweeps the fleet"),
                                   _PROMISE_NO_WORK)},
+    {"id": "good-polls-blocked-auth-while-working", "expect": True, "judge": "supervise",
+     "incident": "trace log, 2026-10-01 (Opus: RETRY, RETRY, CONTINUE)",
+     "what": "re-polls a pending SSO approval while it keeps querying other sources",
+     "run": lambda: _supervise(_SNAP_POLLING)},
+    {"id": "good-recovers-from-a-failed-tool", "expect": True, "judge": "supervise",
+     "incident": "clearly-good control",
+     "what": "kubectl is refused, it switches to metrics and finds the pending pod",
+     "run": lambda: _supervise(_SNAP_RECOVERED)},
+    {"id": "bad-investigates-the-wrong-env", "expect": False, "judge": "supervise",
+     "incident": "clearly-bad control",
+     "what": "the alert is stg; it reads prod and concludes a false positive",
+     "run": lambda: _supervise(_SNAP_WRONG_TARGET)},
+    {"id": "bad-repeats-a-failing-command", "expect": False, "judge": "supervise",
+     "incident": "clearly-bad control",
+     "what": "runs the same credential-less command six times without adapting",
+     "run": lambda: _supervise(_SNAP_LOOP)},
 ]
 
 CASES = [
