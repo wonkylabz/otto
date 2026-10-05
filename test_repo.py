@@ -2517,7 +2517,7 @@ class GroundingTests(unittest.TestCase):
         only said "there is a mismatch" would push the judge to fail the honest answer."""
         seen = {}
 
-        def fake_confirm(task, prompt, parse, adverse):
+        def fake_confirm(task, prompt, parse, adverse, **_):
             seen["prompt"] = prompt
             return {"passed": True, "critique": ""}
 
@@ -2536,7 +2536,7 @@ class GroundingTests(unittest.TestCase):
     def test_a_clean_run_pays_nothing(self):
         seen = {}
 
-        def fake_confirm(task, prompt, parse, adverse):
+        def fake_confirm(task, prompt, parse, adverse, **_):
             seen["prompt"] = prompt
             return {"passed": True, "critique": ""}
 

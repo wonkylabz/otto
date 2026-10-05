@@ -156,6 +156,9 @@ def redirect_live_state():
     engine._DB = chats._DB = knowledge._DB = config.DB_PATH
     _pin_cloud_model_discovery()
     _authenticate_http_clients()
+    # A read run's judge would otherwise reach a real `claude -p` past every `gateway.complete`
+    # double in the suite; JudgeToolsTests turns it back on against its own double.
+    os.environ["OTTO_JUDGE_TOOLS"] = "off"
     return root
 
 

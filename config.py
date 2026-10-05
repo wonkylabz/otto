@@ -419,6 +419,12 @@ PLAN_COMMENT = os.environ.get("OTTO_PLAN_COMMENT", "1") not in ("0", "false", "n
 # for 2.20 judge calls per verdict instead of 1.00. A PASS still returns on the first sample, so a
 # run the judge likes costs one call. 1 restores the old single-sample behaviour.
 JUDGE_CONFIRMATIONS = int(os.environ.get("OTTO_JUDGE_CONFIRMATIONS", "3"))
+# The verify judge of a READ run may check the output's factual claims with these tools
+# (judging.verify). Tool-free, it wrote a Grep call instead of a verdict and parsed as FAIL.
+JUDGE_TOOLS_MODE = os.environ.get("OTTO_JUDGE_TOOLS", "on").strip().lower()
+JUDGE_TOOLS = ["Read", "Grep", "Glob"]
+# Per judge call, per backend: 3 samples x (local + Claude fallback) must fit _JUDGE_CEILING.
+JUDGE_TOOL_TIMEOUT_S = float(os.environ.get("OTTO_JUDGE_TOOL_TIMEOUT_S", "90"))
 # Router #1 samples for a WRITE pick (1 = off). A write route arms the approval gate and the
 # Opus plan preview, so an unstable sample there costs money and a human decision; a read pick
 # is ungated and stays at one call. See routing._confirm_route.
@@ -575,6 +581,7 @@ _SETTING_SPECS = {
     "memory_gc_batch_size": ("OTTO_MEMORY_GC_BATCH_SIZE", "int", "MEMORY_GC_BATCH_SIZE"),
     "memory_gc_max_verify": ("OTTO_MEMORY_GC_MAX_VERIFY", "int", "MEMORY_GC_MAX_VERIFY"),
     "judge_confirmations": ("OTTO_JUDGE_CONFIRMATIONS", "int", "JUDGE_CONFIRMATIONS"),
+    "judge_tools":         ("OTTO_JUDGE_TOOLS", "choice:on,off", "JUDGE_TOOLS_MODE"),
     "route_confirmations": ("OTTO_ROUTE_CONFIRMATIONS", "int", "ROUTE_CONFIRMATIONS"),
     "max_harness_retries": ("OTTO_MAX_HARNESS_RETRIES", "int", "MAX_HARNESS_RETRIES"),
     "max_supervisor_kills": ("OTTO_MAX_SUPERVISOR_KILLS", "int", "MAX_SUPERVISOR_KILLS"),
