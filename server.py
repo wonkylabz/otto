@@ -2028,6 +2028,9 @@ class Handler(BaseHTTPRequestHandler):
         # take the lane again only if its own asker could: the flag is the ORIGIN's, never new.
         if origin.get("trusted_asker"):
             params["trusted_asker"] = True
+        # The quoted post stays DATA on retry (#223), or the connector guard reads it as the ask.
+        if origin.get("external_text"):
+            params["external_text"] = origin["external_text"]
         new_id = "web-" + uuid.uuid4().hex
         # Record the retry into a Chat thread so its result lands in a conversation, not
         # just on the board: an interactive run records CLIENT-side, so retrying it from
