@@ -252,7 +252,7 @@ def check_api_token_mask():
     if file_safety.sandbox_available():
         return _check("api token mask", "ok", "bwrap masks the API token in every claude run")
     return _check("api token mask", "warn",
-                  "no usable bwrap — a claude run can read data/.api-token and drive the API "
+                  "no usable bwrap — a claude run can read data/.api/token and drive the API "
                   "as you, gate approvals included",
                   "Install bubblewrap and enable unprivileged user namespaces.")
 

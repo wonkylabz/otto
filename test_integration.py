@@ -356,6 +356,32 @@ class ApiTokenAuthTests(unittest.TestCase):
         control = subprocess.run(read, capture_output=True, text=True, stdin=subprocess.DEVNULL)
         self.assertIn(tok, control.stdout)
 
+    def test_a_token_rotated_mid_run_stays_masked(self):
+        # A mask over a bare FILE covers only the dentry it was mounted on: a token re-created
+        # after the sandbox started was readable. The directory mask is what holds.
+        import api_auth
+        import file_safety
+        if not file_safety.sandbox_available():
+            self.skipTest("no usable bwrap")
+        import subprocess
+        api_auth.token()
+        proc = subprocess.Popen(file_safety.claude_argv(
+            ["bash", "-c", f"sleep 1.5; cat {api_auth.path()} 2>&1"]),
+            stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        time.sleep(0.5)
+        os.unlink(api_auth.path())
+        self.addCleanup(test_support._authenticate_http_clients)
+        new = api_auth.token()
+        out, _ = proc.communicate(timeout=30)
+        self.assertNotIn(new, out)
+
+    def test_the_token_directory_is_private_and_its_temp_name_unpredictable(self):
+        import api_auth
+        api_auth.token()
+        self.assertEqual(os.stat(api_auth.directory()).st_mode & 0o777, 0o700)
+        self.assertIn("mkstemp", inspect.getsource(api_auth._create))
+        self.assertNotIn("getpid", inspect.getsource(api_auth._create))
+
     def test_claude_runs_through_the_mask(self):
         import claude_cli
         self.assertIn("file_safety.claude_argv(cmd)", inspect.getsource(claude_cli.run_json))
@@ -368,6 +394,23 @@ class ApiTokenAuthTests(unittest.TestCase):
         self.assertEqual(len(urls), 2)
         self.assertTrue(urls[1].startswith("https://otto.example.ts.net/login?code="))
         self.assertEqual(urls[0].split("code=")[1], urls[1].split("code=")[1])
+
+    def test_a_json_route_refuses_a_body_not_labelled_json(self):
+        # #3: text/plain is the cross-site "simple request" body, sent with no preflight.
+        st = self._req("/api/settings", "POST", {}, {**self._tok(), "Content-Type": "text/plain"})[0]
+        self.assertEqual(st, 415)
+        st = self._req("/api/settings", "POST", {},
+                       {**self._tok(), "Content-Type": "application/json; charset=utf-8"})[0]
+        self.assertEqual(st, 200)
+
+    def test_a_signal_outside_the_allowlist_is_a_400_not_a_clarification(self):
+        for body in ({"id": "web-x", "signal": "detonate", "value": "y"}, {"signal": "approve"},
+                     {"id": "web-x"}):
+            self.assertEqual(self._req("/api/wf/signal", "POST", body, self._tok())[0], 400, body)
+
+    def test_run_ids_are_a_full_uuid(self):
+        src = inspect.getsource(self.server)
+        self.assertNotIn("uuid4().hex[:", src)
 
     def test_deleting_the_token_rotates_it(self):
         import api_auth

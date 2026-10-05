@@ -4,7 +4,7 @@
 Every run's shell has the network, so without this a run could `curl localhost:<port>` to approve
 its own gate, release the global pause, or read the stores the deny-set masks on disk.
 
-The credential is a per-install token in `data/.api-token` (0600), which `file_safety` denies to
+The credential is a per-install token in `data/.api/token` (0600, in a 0700 directory), which `file_safety` denies to
 EVERY run, Otto-cwd included. A client presents it as the `X-Otto-Token` header (scripts) or as a
 cookie (the browser). The browser never sees the token in a URL: `./run.sh login` spends the token
 on `POST /api/login-link` for a single-use code, and `GET /login?code=` swaps that for an HttpOnly
@@ -17,6 +17,7 @@ import json
 import os
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -29,7 +30,11 @@ COOKIE_PREFIX = "otto_token_"
 LOGIN_CODE_TTL_S = 300
 COOKIE_MAX_AGE_S = 365 * 24 * 3600
 
-_NAME = ".api-token"
+# A DIRECTORY, not a bare file: the sandboxes mask the whole directory, so a token re-created
+# mid-run (a rotation) lands somewhere a running sandbox still cannot see. A mask over a bare
+# file covers only the dentry it was mounted on.
+_DIR = ".api"
+_NAME = "token"
 _PATH = None            # lazily resolved, like estop._PATH, so the suite can re-point it
 _CACHE = {}             # path -> (mtime_ns, token)
 _CODES = {}             # single-use login code -> expiry (monotonic)
@@ -37,7 +42,11 @@ _LOCK = threading.Lock()
 
 
 def path():
-    return _PATH or os.path.join(config.DATA_DIR, _NAME)
+    return _PATH or os.path.join(config.DATA_DIR, _DIR, _NAME)
+
+
+def directory():
+    return os.path.dirname(path())
 
 
 def _read(p):
@@ -49,10 +58,12 @@ def _read(p):
 
 
 def _create(p):
-    os.makedirs(os.path.dirname(p), exist_ok=True)
+    d = os.path.dirname(p)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
     tok = secrets.token_urlsafe(32)
-    tmp = f"{p}.{os.getpid()}.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # mkstemp: a random name opened O_EXCL, so a planted symlink can't redirect the write.
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".token-")
     with os.fdopen(fd, "w") as f:
         f.write(tok + "\n")
     try:

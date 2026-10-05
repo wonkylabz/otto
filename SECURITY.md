@@ -17,12 +17,15 @@ not bugs — but you should know about all of them before you start it.
 ### The web API has one credential, and it is yours
 
 `server.py` binds `localhost`, and every `/api/*` route needs the per-install token in
-`data/.api-token` (`api_auth.py`, #217) — as an `X-Otto-Token` header, or as the HttpOnly cookie
+`data/.api/token` (`api_auth.py`, #217) — as an `X-Otto-Token` header, or as the HttpOnly cookie
 `./run.sh login` sets in your browser. There are no users and no roles: **holding the token is
 holding your full authority** — start runs, approve write gates, release the pause, read every
 transcript. The token file and your browser profiles are masked by the kernel (`bwrap`) around every run, which is
 what stops a run's own shell from approving its own gate. **Without a usable `bwrap`, a
-`claude -p` run can still read the token** (see below).
+`claude -p` run can still read the token** (see below). The mask is a mount namespace, not a
+different user: a run that hands work to a same-user process OUTSIDE it — `systemd-run --user`,
+a running tmux session, `docker` if you are in that group — reads the token (measured with
+`systemd-run`). It stops a run that reaches for the file, not one engineering an escape.
 
 Two routes carry their own credential instead: webhooks (`/api/events/`, HMAC) and the ntfy gate
 buttons (`/api/gate/<token>`, single-use). Mutating requests are also `Origin`-checked

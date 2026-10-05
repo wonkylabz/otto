@@ -584,7 +584,7 @@ class SnapshotStoreClassificationTests(unittest.TestCase):
         names = {os.path.basename(rel) for _, _, rel in test_support._DATA_STORES}
         names |= {os.path.basename(p) for p in (config._settings_path(), runbooks.store_path(),
                                                 runbooks.order_path(), estop.path(),
-                                                api_auth.path())}
+                                                api_auth.directory())}
         self.assertEqual([], sorted(names - set(snapshot.EXPORTED) - snapshot.RUNTIME),
                          "classify each new store in snapshot.EXPORTED or snapshot.RUNTIME")
         self.assertEqual(set(), set(snapshot.EXPORTED) & snapshot.RUNTIME)

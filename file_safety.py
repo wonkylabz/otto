@@ -180,7 +180,7 @@ def denied_globs(allow_cwd=None):
         os.path.join(config.DATA_DIR, "uploads", "**"),
         # ... and the API token (#217): the server re-reads it when it changes, so a run that
         # rewrites it has chosen the token, and with it every route the API serves.
-        api_auth.path(),
+        os.path.join(api_auth.directory(), "**"),
         # DELIBERATELY absent: data/workspaces/**. Every repo-mode clone lives there, so denying
         # DATA_DIR wholesale silently blocks the entire repo-mode feature — the thing most write
         # runs exist to do. Guarded by test_core.FileSafetyTests.
@@ -284,7 +284,7 @@ def _api_credential_globs():
     files the `claude` process itself must read."""
     home = _home()
     return [
-        api_auth.path(),
+        os.path.join(api_auth.directory(), "**"),
         os.path.join(home, ".mozilla", "**"),
         os.path.join(home, ".config", "google-chrome", "**"),
         os.path.join(home, ".config", "chromium", "**"),

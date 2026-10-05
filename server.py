@@ -77,6 +77,10 @@ _START_TIME = time.time()
 
 class PayloadTooLarge(Exception):
     """A POST body exceeded _MAX_BODY — surfaced as HTTP 413 instead of an unbounded read."""
+
+
+class UnsupportedMediaType(Exception):
+    """A JSON route got a body not labelled application/json — HTTP 415."""
 PAUSED_MSG = "Otto is paused — release the stop to start new work"
 TASK_QUEUE = tc.TASK_QUEUE
 TEMPORAL_UI = os.environ.get("TEMPORAL_UI_ADDR", "http://localhost:8233")
@@ -538,6 +542,9 @@ def _run_model(wid):
                 meta.get("fallback_from"), meta.get("fallback_reason"))
     except (OSError, ValueError):
         return None, None, None, None
+
+
+_SIGNALS = frozenset({"approve", "revise_plan", "clarify"})
 
 
 async def _wf_signal(wid, sig, value):
@@ -1088,6 +1095,11 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0) or 0)
         if n > _MAX_BODY:
             raise PayloadTooLarge()
+        # A body must SAY it is JSON (#3): a text/plain one is what a cross-site "simple
+        # request" sends without a preflight. An empty body has nothing to mislabel.
+        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if n and ctype != "application/json":
+            raise UnsupportedMediaType()
         return json.loads(self.rfile.read(n) or "{}")
 
     def _csrf_ok(self):
@@ -1659,7 +1671,7 @@ class Handler(BaseHTTPRequestHandler):
                 if c is None:
                     self._send(400, json.dumps({"error": f"rule pins unknown capability '{norm['cap']}'"})); return
                 cap = {"name": c.name, "kind": c.kind, "risk": c.risk}
-            wid = "evt-" + uuid.uuid4().hex[:8]
+            wid = "evt-" + uuid.uuid4().hex
             tc.run(_wf_start(wid, {"request": norm["request"], "cap": cap, "unattended": True,
                                    "approval": norm["approval"], "reply_to": norm.get("reply_to")}))
             committed = True
@@ -1708,6 +1720,8 @@ class Handler(BaseHTTPRequestHandler):
             return handler(self, body)
         except PayloadTooLarge:
             self._send(413, json.dumps({"error": "payload too large"}))
+        except UnsupportedMediaType:
+            self._send(415, json.dumps({"error": "Content-Type must be application/json"}))
         except Paused:
             self._send(409, json.dumps({"error": PAUSED_MSG, "paused": True}))
         except Exception as e:  # noqa: BLE001 - return the error to the UI
@@ -1790,7 +1804,7 @@ class Handler(BaseHTTPRequestHandler):
         # follow-up — the workflow ignores it under repo-mode).
         if body.get("plan_mode"):
             params["plan_mode"] = True
-        wid = "web-" + uuid.uuid4().hex[:8]
+        wid = "web-" + uuid.uuid4().hex
         tc.run(_wf_start(wid, params))
         self._send(200, json.dumps({"id": wid}))
 
@@ -1882,13 +1896,18 @@ class Handler(BaseHTTPRequestHandler):
             # the workflow, and the client body isn't trusted input.
             branch = (body.get("git_branch") or "").strip()
             params["git_branch"] = branch if workspace.valid_branch(branch) else None
-        wid = "web-" + uuid.uuid4().hex[:8]
+        wid = "web-" + uuid.uuid4().hex
         tc.run(_wf_start(wid, params))
         self._send(200, json.dumps({"id": wid}))
 
     def _post_wf_signal(self, body):
-        """POST /api/wf/signal"""
-        tc.run(_wf_signal(body["id"], body["signal"], body.get("value")))
+        """POST /api/wf/signal. An allowlist (#3): `_wf_signal` maps anything it doesn't know to
+        a clarification, so an unchecked name silently became an answer to a question."""
+        wid, sig = (body.get("id") or "").strip(), body.get("signal")
+        if not wid or sig not in _SIGNALS:
+            self._send(400, json.dumps({"error": f"need 'id' and a 'signal' in {sorted(_SIGNALS)}"}))
+            return
+        tc.run(_wf_signal(wid, sig, body.get("value")))
         self._send(200, json.dumps({"ok": True}))
 
     def _post_wf_terminate(self, body):
@@ -1963,7 +1982,7 @@ class Handler(BaseHTTPRequestHandler):
         # take the lane again only if its own asker could: the flag is the ORIGIN's, never new.
         if origin.get("trusted_asker"):
             params["trusted_asker"] = True
-        new_id = "web-" + uuid.uuid4().hex[:8]
+        new_id = "web-" + uuid.uuid4().hex
         # Record the retry into a Chat thread so its result lands in a conversation, not
         # just on the board: an interactive run records CLIENT-side, so retrying it from
         # the board previously left the result board-only. Three tiers, most precise
