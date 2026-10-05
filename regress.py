@@ -59,8 +59,8 @@ def stability_stats(verdicts, expect):
             "wrong": (n - passes if expect else passes) / n}
 
 
-def _pin_judge(label):
-    """Serve the `verify` tier from pool entry `label` for this process only — never saved. A
+def _pin_judge(label, tiers=("verify",)):
+    """Serve each judge tier from pool entry `label` for this process only — never saved. A
     local judge runs at temperature 0, so measuring it says nothing about the `claude -p` one."""
     import gateway
     load = gateway.load
@@ -69,45 +69,50 @@ def _pin_judge(label):
         cfg = load(*a, **k)
         if label not in [m["name"] for m in cfg.get("pool") or []]:
             raise SystemExit(f"--judge {label!r} is not a pool label")
-        return {**cfg, "assign": {**cfg.get("assign", {}), "verify": label}}
+        return {**cfg, "assign": {**cfg.get("assign", {}), **{t: label for t in tiers}}}
     gateway.load = pinned
 
 
 def _stability(fixtures, repeats, confirmed, judge=None):
-    """Sample each fixture `repeats` times. Raw judge unless `confirmed`: `confirm_adverse` hides
-    the flip it exists to absorb, so the baseline measures what it is absorbing."""
+    """Sample each fixture `repeats` times on its own judge tier (`verify` or `supervise`). Raw
+    unless `confirmed`: `confirm_adverse` hides the flip it exists to absorb, so the baseline
+    measures what it is absorbing. Expect True = the judge should let the run through."""
     import gateway
     if not confirmed:
         os.environ["OTTO_JUDGE_CONFIRMATIONS"] = "1"
+    tiers = sorted({f.get("judge", "verify") for f in fixtures})
     if judge:
-        _pin_judge(judge)
-    served = gateway._model_for("verify")
+        _pin_judge(judge, tiers)
+    served = {t: gateway._model_for(t)["name"] for t in tiers}
     print(f"sampling {len(fixtures)} fixture(s) x{repeats}, "
           f"{'confirmed (production)' if confirmed else 'raw single-sample'} verdicts, "
-          f"judge {served['name']} ({served.get('provider')})")
+          f"judges {served}")
     rows = []
     for f in fixtures:
+        tier = f.get("judge", "verify")
         verdicts, models = [], set()
         for _ in range(repeats):
-            gateway._LAST.pop("verify", None)
+            gateway._LAST.pop(tier, None)
             try:
                 verdicts.append(bool(f["run"]()["passed"]))
             except Exception as e:  # noqa: BLE001 - one bad sample must not abort the baseline
                 print(f"      sample raised {type(e).__name__}: {e}")
-            models.add((gateway._LAST.get("verify") or {}).get("model", "(no judge call)"))
+            models.add((gateway._LAST.get(tier) or {}).get("model", "(no judge call)"))
         s = stability_stats(verdicts, f["expect"])
-        rows.append((f, s))
+        rows.append((tier, f, s))
         # A local judge falls back to Claude silently; name what ACTUALLY judged.
-        served_by = "" if models == {served["name"]} else f"  served by {sorted(models)}"
-        print(f"  {f['id']:28} expect={'PASS' if f['expect'] else 'FAIL'}  "
+        served_by = "" if models == {served[tier]} else f"  served by {sorted(models)}"
+        print(f"  {tier:9} {f['id']:38} expect={'PASS' if f['expect'] else 'FAIL'}  "
               f"pass {s['passes']}/{s['n']}  flip {s['flip']:.0%}  wrong {s['wrong']:.0%}"
               f"{served_by}")
     print("\n" + "=" * 78)
-    for label, want in (("known-good (false FAIL)", True), ("known-bad (false PASS)", False)):
-        group = [s for f, s in rows if f["expect"] is want and s["n"]]
-        if group:
-            print(f"  {label:26} mean flip {sum(s['flip'] for s in group) / len(group):.0%}  "
-                  f"mean wrong {sum(s['wrong'] for s in group) / len(group):.0%}")
+    for tier in tiers:
+        for label, want in (("known-good (false FAIL)", True), ("known-bad (false PASS)", False)):
+            group = [s for t, f, s in rows if t == tier and f["expect"] is want and s["n"]]
+            if group:
+                print(f"  {tier:9} {label:24} mean flip "
+                      f"{sum(s['flip'] for s in group) / len(group):.0%}  mean wrong "
+                      f"{sum(s['wrong'] for s in group) / len(group):.0%}")
     return 0
 
 
@@ -127,7 +132,7 @@ def main():
     ap.add_argument("--confirmed", action="store_true",
                     help="with --stability: measure the production verdict, confirmations on")
     ap.add_argument("--judge", default="",
-                    help="with --stability: serve the verify tier from this pool label")
+                    help="with --stability: serve every judge tier sampled from this pool label")
     args = ap.parse_args()
 
     if args.stability:
