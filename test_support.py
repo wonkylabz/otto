@@ -8,9 +8,11 @@ layer they cover, mirroring `.claude/rules/*.md`; everything they SHARE lives he
 re-points each live-state alias at a temp dir. Splitting the suite without carrying it into
 all of them would have put the phantom-row bug (`LiveStoreIsolationTests`) straight back.
 """
+import atexit
 import contextlib
 import os
 import re
+import shutil
 import sys
 import tempfile
 import urllib.request
@@ -141,7 +143,10 @@ def redirect_live_state():
     (`<checkout>/data`) keeps `_otto_root()` a private directory nothing else can collide with.
 
     Returns the temp directory, for a test that wants to inspect what was written."""
-    root = os.path.join(tempfile.mkdtemp(prefix="otto-home-"), "data")
+    home = tempfile.mkdtemp(prefix="otto-home-")
+    # Removed when the process exits: every module and some tests make one, and 90 piled up in /tmp.
+    atexit.register(shutil.rmtree, home, ignore_errors=True)
+    root = os.path.join(home, "data")
     os.makedirs(root, exist_ok=True)
     # config.DATA_DIR itself, because not every path is a module constant: the per-run MCP config
     # (`engine._mcp_config_path`, `activities`' `.mcp-active.json`) and file_safety's deny globs
