@@ -281,7 +281,7 @@ def _verdict_label(verdict, adverse):
     return "ADVERSE" if adverse(verdict) else "PASS"
 
 
-def confirm_adverse(task, prompt, parse, adverse, tries=None):
+def confirm_adverse(task, prompt, parse, adverse, tries=None, call=None):
     """Sample a judge until its ADVERSE verdict is contradicted, or `tries` samples agree on it.
     Returns the parsed verdict. Shared by `verify` (FAIL) and `supervisor` (RETRY).
 
@@ -310,7 +310,7 @@ def confirm_adverse(task, prompt, parse, adverse, tries=None):
         tries = 1
     first = None
     for i in range(tries):
-        verdict = parse(gateway.complete(task, prompt))
+        verdict = parse(call() if call else gateway.complete(task, prompt))
         gateway.decided(task, f"{_verdict_label(verdict, adverse)} sample {i + 1}/{tries}")
         if not adverse(verdict):
             if i:
@@ -322,6 +322,15 @@ def confirm_adverse(task, prompt, parse, adverse, tries=None):
         first = verdict if first is None else first
     return first
 
+
+_JUDGE_TOOLS_RULE = (
+    "You may use Read, Grep and Glob to check the output's factual claims — counts, names, what a "
+    "file contains or whether something exists — against the files they are about. Check only "
+    "what decides the verdict, then stop. A claim the files contradict is a FAIL. Your FINAL "
+    "message must start with PASS or FAIL on its own first line.\n")
+_JUDGE_NO_TOOLS_RULE = (
+    "You have NO tools in this judgement: you cannot read files or run commands, so never write a "
+    "tool call. Judge from the request and the output shown.\n")
 
 _JUDGE_REASONING_RULE = (
     "A finished RESULT is required, not the model's thinking. If the output is largely internal "
@@ -554,6 +563,11 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
             "requested change without mentioning the discrepancy. Say in the critique that the "
             "work looks aimed at the wrong branch or revision, and that the next attempt should "
             "report this rather than pick a substitute target.\n")
+    # A READ run's claims are about files as they are on disk, so the judge can check them. Not a
+    # write run's: its edits live in a clone this judge cannot see, so the live tree would refute them.
+    check = (config.setting("judge_tools") == "on" and not local and fast_lane is None
+             and getattr(cap, "risk", "write") == "read")
+    tool_rule = (_JUDGE_TOOLS_RULE if check else _JUDGE_NO_TOOLS_RULE)
     rbody, rnote = _eng()._clipped(result or "", _VERIFY_RESULT_CHARS)
     prompt = (
         "You are a strict quality reviewer for an automation platform. A capability was run "
@@ -574,11 +588,30 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
         + plan_rule
         + steer_rule
         + ground_rule
+        + tool_rule
         + "Reply with PASS or FAIL on the first line. If FAIL, add a second line with a short, "
         "specific critique of what is missing or wrong so the next attempt can fix it.")
+    call = None
+    if check:
+        dead = []
+
+        def call():
+            # Sticky: once the tool judge has failed, the remaining samples skip it, which is
+            # what keeps the chain inside _JUDGE_CEILING.
+            if not dead:
+                try:
+                    return gateway.complete_tools("verify", prompt, tools=config.JUDGE_TOOLS,
+                                                  cwd=project)
+                except gateway.LocalFallbackDisabled:
+                    raise
+                except Exception as e:  # noqa: BLE001 - a dead tool judge degrades to text
+                    dead.append(e)
+                    trace("VERIFY", f"tool judge failed ({str(e)[:120]}); judging from the text")
+            return gateway.complete("verify", prompt.replace(tool_rule, _JUDGE_NO_TOOLS_RULE))
     # A FAIL costs a retry — and on a write cap, the retry is what widens blast radius — so it has
     # to reproduce before it is acted on. A PASS returns on the first sample.
-    verdict = confirm_adverse("verify", prompt, _parse_verdict, lambda v: not v["passed"])
+    verdict = confirm_adverse("verify", prompt, _parse_verdict, lambda v: not v["passed"],
+                              call=call)
     # Who reached this verdict. Only a "judge" verdict is evidence about the CAPABILITY — see
     # `error_verdict` for the two impostors that used to be counted as one.
     verdict["source"] = "judge"

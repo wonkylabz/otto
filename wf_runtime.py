@@ -59,8 +59,9 @@ _EXEC_CEILING = timedelta(minutes=40)
 # chain 3x (spend) and finally filed the run `workflow_error`. A literal, like _EXEC_CEILING:
 # activity options are replayed, so deriving one from the environment makes a worker with a
 # different env replay differently. Kept in step with the three settings by
-# `ExecutionHeartbeatTests` (issue #35).
-_JUDGE_CEILING = timedelta(minutes=10)
+# `ExecutionHeartbeatTests` (issue #35). 15min since a read run's judge may use tools
+# (JUDGE_TOOL_TIMEOUT_S per backend).
+_JUDGE_CEILING = timedelta(minutes=15)
 
 # The PLAN-PREVIEW ceiling. `plans.plan_preview` runs a 900s agentic pass; a LOCAL preview that
 # walls late re-previews on Claude for another 900s, and `critique_plan` adds a tier call after

@@ -1376,6 +1376,59 @@ def _complete(task, prompt, acc):
         return _claude_tier(task, prompt, _default_claude())
 
 
+def complete_tools(task, prompt, *, tools, cwd=None):
+    """`complete`, but the model may READ with `tools` before it answers — the verify judge
+    checking a claim against the files it is about. Same tier model, Claude fallback and ledger."""
+    return _ledgered(task, lambda acc: _complete_tools(task, prompt, tools, cwd, acc))
+
+
+def _complete_tools(task, prompt, tools, cwd, acc):
+    m = _model_for(task)
+    timeout = config.JUDGE_TOOL_TIMEOUT_S
+    if is_local(m) and _local_down_until.get(m["name"], 0) <= time.time():
+        import local_runtime  # imports gateway at module load
+        acc["local"] = m["name"]
+        trace("GATEWAY", f"{task} (tools) -> {m['name']}")
+        try:
+            out = local_runtime.run_json(prompt, allowed_tools=tools, model_entry=m, cwd=cwd,
+                                         timeout=timeout)
+            text = "" if out.get("is_error") else (out.get("result") or "")
+            if text.strip():
+                _LAST[task] = {"model": m["name"], "fell_back": False}
+                _bump(task, fell_back=False, health=(m["name"], True))
+                return text
+            reason = f"no usable answer: {str(out.get('result'))[:120]}"
+        except LocalFallbackDisabled:
+            raise
+        except Exception as e:  # noqa: BLE001 - any failure -> the Claude fallback below
+            reason = str(e)[:200]
+        if not config.local_fallback_allowed(task):
+            _strict_stop(task, m, reason)
+        trace("GATEWAY", f"{task} (tools): {m['name']} failed ({reason}); falling back to Claude")
+        _LAST[task] = {"model": m["name"] + " → claude (fallback)", "fell_back": True}
+        _bump(task, fell_back=True)
+        model = _default_claude()
+    else:
+        model = m["model"] if is_claude(m) else _default_claude()
+        _LAST[task] = {"model": model, "fell_back": not is_claude(m)}
+    out = claude_cli.run_json(prompt, allowed_tools=tools, model=model, timeout=timeout, cwd=cwd,
+                              disallowed_tools=[t for t in config.ALL_BUILTIN_TOOLS
+                                                if t not in tools],
+                              setting_sources="", strict_mcp=True)
+    if out.get("is_error"):
+        raise RuntimeError(f"claude tier call failed: {str(out.get('result'))[:120]}")
+    cost = out.get("total_cost_usd", 0) or 0
+    if cost:
+        _bump_cost(task, cost)
+    u = out.get("usage") or {}
+    acc["cost"] += cost
+    acc["tokens"] += sum(u.get(k, 0) or 0 for k in ("input_tokens", "output_tokens",
+                                                    "cache_read_input_tokens",
+                                                    "cache_creation_input_tokens"))
+    acc["model"] = model
+    return out.get("result", "") or ""
+
+
 def plan_complete(prompt):
     """The STRONG planner call for plan-then-execute mode (engine.plan_steps). Pinned to the
     strongest Claude in the pool regardless of the 'plan' tier's configured model: that tier is

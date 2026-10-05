@@ -904,6 +904,73 @@ class JudgeConfirmationTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
 
+class JudgeToolsTests(unittest.TestCase):
+    """A tool-free judge asked about a read run's repo-grounded claims wrote a Grep call instead of
+    a verdict: 0/5 PASS on a fully correct answer, every reply parsed as FAIL. Told it had no
+    tools, it passed a 0%-correct answer 5/5. So a READ run's judge gets read-only tools."""
+
+    def setUp(self):
+        os.environ["OTTO_JUDGE_TOOLS"] = "on"
+        self.addCleanup(os.environ.__setitem__, "OTTO_JUDGE_TOOLS", "off")
+        self.text, self.tools = [], []
+        for name, fake in (("complete", lambda task, prompt: (self.text.append(prompt), "PASS")[1]),
+                           ("complete_tools", self._tools_judge)):
+            patcher = unittest.mock.patch.object(gateway, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.reply = "PASS"
+        self.cap = registry.Capability("custom", "assistant", "general read-only Q&A")
+        self.cap.risk = "read"
+
+    def _tools_judge(self, task, prompt, *, tools, cwd=None):
+        self.tools.append((prompt, tools, cwd))
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+    def test_a_read_run_is_judged_with_read_only_tools(self):
+        engine.verify("count the defs in slack.py", self.cap, "slack.py: 27",
+                      project="/repo", backend="local")
+        self.assertEqual(len(self.tools), 1, "a read run's judge must be able to check its claims")
+        prompt, tools, cwd = self.tools[0]
+        self.assertEqual(tools, ["Read", "Grep", "Glob"])
+        self.assertEqual(cwd, "/repo")
+        self.assertIn("You may use Read, Grep and Glob", prompt)
+        self.assertEqual(self.text, [])
+
+    def test_a_write_run_is_never_judged_with_tools(self):
+        # Its edits live in a clone the judge cannot see; the live tree would refute them.
+        self.cap.risk = "write"
+        engine.verify("add a flag", self.cap, "Added --dry-run.")
+        self.assertEqual(self.tools, [])
+        self.assertIn("never write a tool call", self.text[0])
+
+    def test_a_tool_free_or_fast_lane_attempt_gets_the_text_judge(self):
+        engine.verify("q", self.cap, "a", local=True)
+        engine.verify("q", self.cap, "a", fast_lane=["mcp__x__y"])
+        self.assertEqual(self.tools, [])
+        self.assertEqual(len(self.text), 2)
+
+    def test_a_dead_tool_judge_degrades_to_text_and_stays_degraded(self):
+        self.reply = RuntimeError("tool call could not be parsed")
+        self.text_replies = iter(["FAIL\nmissing", "FAIL\nmissing", "FAIL\nmissing"])
+        with unittest.mock.patch.object(gateway, "complete",
+                               lambda task, prompt: (self.text.append(prompt),
+                                                     next(self.text_replies))[1]), \
+                unittest.mock.patch.dict(os.environ, {"OTTO_JUDGE_CONFIRMATIONS": "3"}):
+            v = engine.verify("q", self.cap, "a")
+        self.assertFalse(v["passed"])
+        self.assertEqual(len(self.tools), 1, "a failed tool judge must not be retried per sample")
+        self.assertEqual(len(self.text), 3)
+        self.assertNotIn("You may use Read", self.text[0])
+        self.assertIn("never write a tool call", self.text[0])
+
+    def test_the_switch_turns_it_off(self):
+        os.environ["OTTO_JUDGE_TOOLS"] = "off"
+        engine.verify("q", self.cap, "a")
+        self.assertEqual(self.tools, [])
+
+
 class JudgeToolGrantTests(unittest.TestCase):
     """The judge sees no transcript, so `verify` names the tool grant to stop it inferring "no
     tool access". It named `config.READ_TOOLS` as if that were the whole set — but it is only the
@@ -3639,7 +3706,11 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         # bounded by LOCAL_TIMEOUT_S + CLAUDE_TIER_TIMEOUT_S, and `verify` derives the repo
         # conventions digest on a cache miss. The ceiling has to cover all of it, or the judge
         # is killed after the attempt it was judging already ran.
-        worst = config.JUDGE_CONFIRMATIONS * (config.LOCAL_TIMEOUT_S + config.CLAUDE_TIER_TIMEOUT_S)
+        # A read run's tool judge costs JUDGE_TOOL_TIMEOUT_S per backend; once it fails, the
+        # first sample also pays the text judge and the rest go text-only (sticky).
+        text = config.LOCAL_TIMEOUT_S + config.CLAUDE_TIER_TIMEOUT_S
+        tools = 2 * config.JUDGE_TOOL_TIMEOUT_S
+        worst = tools + text + (config.JUDGE_CONFIRMATIONS - 1) * max(text, tools)
         ceiling = workflows._JUDGE_CEILING.total_seconds()
         self.assertGreaterEqual(
             ceiling, worst,
