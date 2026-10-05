@@ -1054,9 +1054,9 @@ def _k_planner_keeps_single_repo_whole(tasks):
 # Judge stability (issue #125, Phase 0) — `regress.py --stability`, never part of CASES
 # =================================================================================================
 # A case asserts one verdict; a stability fixture is sampled N times and reports how often the
-# judge DISAGREES WITH ITSELF on an identical input. `expect` is the verdict a careful human gives,
-# so a fixture belongs here only when that verdict is not in doubt — a borderline input measures
-# the fixture, not the judge.
+# judge DISAGREES WITH ITSELF on an identical input. `expect` is the verdict a careful human gives;
+# None marks a deliberately BORDERLINE input, reported for flip only — its "wrong" rate would
+# measure the fixture, not the judge.
 _PROMISE_NO_WORK = (
     "I'll sweep every environment for the expiring *.example-internal.test certificate and report "
     "back which ones need action before it lapses.")
@@ -1125,8 +1125,19 @@ def _supervise(snapshot):
 
 
 STABILITY = [
-    {"id": "good-long-complete-report", "judge": "verify", "expect": True, "incident": "audit sweep, 2026-08-13",
-     "what": "a complete 4.4k-char fleet report that answers the question",
+    {"id": "good-long-verified-report", "judge": "verify", "expect": True,
+     "incident": "audit sweep, 2026-08-13 (prod-a row verified)",
+     "what": "a complete fleet report where every environment's status is shown",
+     "run": lambda: engine.verify(
+         _LONG_RESULT_REQUEST, _cap("sre-secretary", "read", "sweeps the fleet"),
+         _shifted(_fixture("result-long-complete-report-verified.md"), "2026-08-13"))},
+    # BORDERLINE (expect None — flip only): prod-a is cleared without its load-balancer cert being
+    # read, and the TLDR contradicts the body. Opus FAILed it 6/20 and 7/20, every time for that
+    # gap; the verified twin above passes 20/20. Writing the ACs into the request did not settle it
+    # (4/20), so this measures the severity coin, not a re-invented rubric (issue #125).
+    {"id": "borderline-unverified-prod-row", "judge": "verify", "expect": None,
+     "incident": "audit sweep, 2026-08-13",
+     "what": "the same report with prod-a dismissed unchecked",
      "run": _c_verify_no_phantom_truncation},
     {"id": "good-announced-departure", "judge": "verify", "expect": True, "incident": "the escape hatch",
      "what": "a plan departure the output flags and justifies",

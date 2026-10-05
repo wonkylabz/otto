@@ -50,13 +50,14 @@ def _run_one(case, repeats):
 
 def stability_stats(verdicts, expect):
     """Pure rollup of N verdicts on ONE input. `flip` is the minority share: 0 = the judge always
-    agrees with itself, 0.5 = a coin. `wrong` is the share disagreeing with `expect`."""
+    agrees with itself, 0.5 = a coin. `wrong` is the share disagreeing with `expect`, None for a
+    borderline input (`expect` None)."""
     n = len(verdicts)
     passes = sum(bool(v) for v in verdicts)
     if not n:
-        return {"n": 0, "passes": 0, "flip": 0.0, "wrong": 0.0}
+        return {"n": 0, "passes": 0, "flip": 0.0, "wrong": None if expect is None else 0.0}
     return {"n": n, "passes": passes, "flip": min(passes, n - passes) / n,
-            "wrong": (n - passes if expect else passes) / n}
+            "wrong": None if expect is None else (n - passes if expect else passes) / n}
 
 
 def _pin_judge(label, tiers=("verify",)):
@@ -102,17 +103,20 @@ def _stability(fixtures, repeats, confirmed, judge=None):
         rows.append((tier, f, s))
         # A local judge falls back to Claude silently; name what ACTUALLY judged.
         served_by = "" if models == {served[tier]} else f"  served by {sorted(models)}"
-        print(f"  {tier:9} {f['id']:38} expect={'PASS' if f['expect'] else 'FAIL'}  "
-              f"pass {s['passes']}/{s['n']}  flip {s['flip']:.0%}  wrong {s['wrong']:.0%}"
-              f"{served_by}")
+        want = {True: "PASS", False: "FAIL", None: "edge"}[f["expect"]]
+        wrong = "  -  " if s["wrong"] is None else f"{s['wrong']:.0%}"
+        print(f"  {tier:9} {f['id']:38} expect={want}  pass {s['passes']}/{s['n']}  "
+              f"flip {s['flip']:.0%}  wrong {wrong}{served_by}")
     print("\n" + "=" * 78)
     for tier in tiers:
-        for label, want in (("known-good (false FAIL)", True), ("known-bad (false PASS)", False)):
+        for label, want in (("known-good (false FAIL)", True), ("known-bad (false PASS)", False),
+                            ("borderline", None)):
             group = [s for t, f, s in rows if t == tier and f["expect"] is want and s["n"]]
             if group:
+                wrong = ("" if want is None else
+                         f"  mean wrong {sum(s['wrong'] for s in group) / len(group):.0%}")
                 print(f"  {tier:9} {label:24} mean flip "
-                      f"{sum(s['flip'] for s in group) / len(group):.0%}  mean wrong "
-                      f"{sum(s['wrong'] for s in group) / len(group):.0%}")
+                      f"{sum(s['flip'] for s in group) / len(group):.0%}{wrong}")
     return 0
 
 

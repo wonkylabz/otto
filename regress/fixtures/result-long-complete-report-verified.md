@@ -1,4 +1,4 @@
-**TLDR** — All six environments were swept for the expiring `*.example-internal.test` certificate; four renew automatically, one needs a manual rotation before 2026-09-04, and one turned out not to use the cert at all. No production impact expected.
+**TLDR** — All six environments were swept for the expiring `*.example-internal.test` certificate; four renew automatically through cert-manager, one needs a manual rotation before 2026-09-04, and `prod-a` serves it from a provider-issued load-balancer certificate that renews on its own. No production impact expected.
 
 ## What was checked
 
@@ -10,8 +10,8 @@ Every cluster in the fleet was queried for Secrets of type `kubernetes.io/tls` w
 | dev-a | us-east-1 | cert-manager (ACME) | 2026-11-02 | none — auto-renews at 30 days |
 | stg | ap-southeast-2 | cert-manager (ACME) | 2026-10-28 | none — auto-renews at 30 days |
 | ent-b | eu-west-1 | manual import | **2026-09-04** | **rotate — see below** |
-| prod-b | eu-west-1 | cert-manager (ACME) | 2026-11-14 | none — auto-renews at 30 days |
-| prod-a | us-east-1 | n/a | n/a | none — terminates TLS at the load balancer, no in-cluster cert |
+| prod-b | eu-west-1 | cert-manager (ACME) | 2026-11-04 | none — auto-renews at 30 days |
+| prod-a | us-east-1 | load balancer (provider-issued) | 2027-03-19 | none — provider-managed, auto-renews |
 
 ## The one that needs a human
 
@@ -28,12 +28,12 @@ Recommendation is option 1, scheduled in the next maintenance window rather than
 
 ## Things worth noting that were not asked about
 
-- The `prod-a` result is not a gap. That environment terminates TLS at the load balancer with a certificate managed by the cloud provider, so the absence of an in-cluster Secret is the expected shape, not a missing one. It is called out here only because a naive sweep of in-cluster Secrets reports it as "no certificate found", which reads alarmingly in a table.
+- `prod-a` has no in-cluster Secret because TLS terminates at the load balancer, so its listener certificate was read from the provider's API instead: SAN `*.example-internal.test`, expires 2027-03-19, issued by the provider's own CA rather than imported, so it renews automatically and needs no action. It is called out here only because a naive sweep of in-cluster Secrets reports it as "no certificate found", which reads alarmingly in a table.
 - Three of the auto-renewing environments share a single ACME account. That is fine operationally, but it does mean the rate limit is shared across them, so a mass re-issue triggered by, say, a bulk Secret deletion would be throttled fleet-wide rather than per-environment.
 - The standing inventory document lists five environments. There are six. `dev-a` is missing from it, which is the same omission that made last quarter's audit come out one row short.
 
 ## Verification
 
-Each row in the table above was read directly from the live cluster rather than from configuration in the repository, because the repository describes intent and the question asked was about actual expiry. The expiry dates come from decoding the leaf certificate in each Secret; the issuer attribution comes from the annotations on the Secret and the presence or absence of a corresponding Certificate resource. Where the two disagreed — they did not, in any environment — the certificate itself would have been treated as authoritative.
+Each row in the table above was read directly from the live cluster rather than from configuration in the repository, because the repository describes intent and the question asked was about actual expiry. The expiry dates come from decoding the leaf certificate in each Secret — or, for `prod-a`, the certificate attached to the load balancer's HTTPS listener; the issuer attribution comes from the annotations on the Secret and the presence or absence of a corresponding Certificate resource. Where the two disagreed — they did not, in any environment — the certificate itself would have been treated as authoritative.
 
 **What you need to do** — Decide between migrating `ent-b` to cert-manager (recommended) or re-importing by hand, and schedule it before 2026-09-04.
