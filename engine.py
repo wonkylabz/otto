@@ -174,7 +174,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 repo=None, audience=None, approved_plan=None, grounding=None,
                 memory_enabled=True,
                 model_override=None, discussion=False, supervise_enforce=True, effort=None,
-                attachments=None, frontman=False, fast_lane=None):
+                attachments=None, frontman=False, fast_lane=None, external_text=None):
     """One execution attempt via `claude -p`. Builds the invocation (folding in the
     previous critique on a retry) and picks the model (escalated on the final attempt).
     Returns the raw result + metadata; verification and auditing are separate steps so the
@@ -256,7 +256,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     connector_blockers, stdio_blockers = [], []
     if (use_local or use_codex) and not resume_session:
         connector_blockers = mcp_client.unservable(cap)
-        connector_blockers += [n for n in mcp_client.connectors_named(request)
+        connector_blockers += [n for n in mcp_client.connectors_named(request,
+                                                                       exclude=external_text)
                                if n not in connector_blockers]
         # The CODEX backend serves no MCP at all yet — not because it cannot (an
         # `mcp_tool_call` completes under the sandbox) but because the only channel for a
