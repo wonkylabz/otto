@@ -433,7 +433,7 @@ _CONNECTOR_WORDS = {
 }
 
 
-def connectors_named(request, pol=None):
+def connectors_named(request, pol=None, exclude=()):
     """Connectors the REQUEST names, which the local backend therefore cannot serve.
 
     `unservable` asks the capability, and a capability that declares nothing answers nothing —
@@ -446,8 +446,14 @@ def connectors_named(request, pol=None):
 
     Matched on whole words against the connector's own name and `_CONNECTOR_WORDS`. Biased to
     FIRE: a false positive runs on Claude (the work lands, a little dearer), a false negative
-    is the run above."""
-    text = (request or "").lower()
+    is the run above.
+
+    `exclude` is external DATA quoted into the request (a Slack trigger's post, #223): it names
+    whatever it names, so it is cut out before matching rather than read as the operator asking."""
+    text = request or ""
+    for x in sorted((x for x in exclude or () if x), key=len, reverse=True):
+        text = text.replace(x, " ")
+    text = text.lower()
     if not text:
         return []
     out = []

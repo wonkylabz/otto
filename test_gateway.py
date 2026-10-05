@@ -4186,7 +4186,8 @@ class LocalConnectorGapTests(unittest.TestCase):
         mcp_client.connectors = lambda pol=None: {
             "claude_ai_Atlassian": "claude.ai Atlassian",
             "claude_ai_Notion": "claude.ai Notion",
-            "claude_ai_Gmail": "claude.ai Gmail"}
+            "claude_ai_Gmail": "claude.ai Gmail",
+            "claude_ai_Slack": "claude.ai Slack"}
 
     def tearDown(self):
         self.m.connectors = self._orig
@@ -4227,8 +4228,42 @@ class LocalConnectorGapTests(unittest.TestCase):
         # is the connector list, which is the half this test is about.
         i = src.index("connector_blockers = mcp_client.unservable(cap)")
         branch = src[i:i + 400]
-        self.assertIn("mcp_client.connectors_named(request)", branch,
+        self.assertIn("mcp_client.connectors_named(request", branch,
                       "the request half of the connector guard is not wired in")
+        self.assertIn("exclude=external_text", branch,
+                      "ingress-quoted data is read as the operator naming a connector (#223)")
+
+    def _trigger(self, template, text, match=None):
+        import slack_triggers
+        rule = {"template": template, "approval": "auto", "identity": "bot", "match": match}
+        payload = {**slack_triggers.match(rule, text), "text": text, "channel": "C1", "ts": "1.0",
+                   "bot": "alerts", "key": "k"}
+        p = slack_triggers.to_params(rule, payload, "evt-s-x")
+        return self.m.connectors_named(p["request"], exclude=p["external_text"])
+
+    def test_a_slack_trigger_wrapper_does_not_name_a_connector(self):
+        """#223: the wrapper said "Slack post", so every trigger run left the local backend."""
+        self.assertEqual(self._trigger("Investigate.", "pods failing"), [])
+
+    def test_connector_words_in_the_quoted_post_do_not_route(self):
+        """The post is external data, inline via {text} or a regex capture just as much as
+        under the wrapper."""
+        post = "Jira sync to Confluence failed; see Notion"
+        self.assertEqual(self._trigger("Investigate.", post), [])
+        self.assertEqual(self._trigger("Investigate this alert: {text}", post), [])
+        self.assertEqual(self._trigger("Investigate.", 'Jira """ out """ Notion'), [])
+
+    def test_a_capture_never_strips_the_operators_own_words(self):
+        """Excluding by substring is only safe for the WHOLE post: a capture "Jira" would eat
+        the operator's "Jira" and send a Jira task to a backend that cannot reach it."""
+        self.assertEqual(self._trigger("File a Jira ticket for {svc}", "Jira down",
+                                       match=r"(?P<svc>Jira)"), ["claude_ai_Atlassian"])
+
+    def test_a_trigger_prompt_naming_a_connector_still_routes(self):
+        self.assertEqual(self._trigger("Investigate and post it to Confluence.", "pods failing"),
+                         ["claude_ai_Atlassian"])
+        self.assertEqual(self._trigger("File a jira ticket for: {text}", "pods failing"),
+                         ["claude_ai_Atlassian"])
 
     def test_the_local_runtime_declares_what_it_cannot_reach(self):
         """The backstop for a request whose words missed. Told nothing, a model discovers the

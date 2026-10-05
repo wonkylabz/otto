@@ -618,7 +618,8 @@ def run_capability(payload: dict) -> dict:
             effort=payload.get("effort"),
             discussion=discussion, fast_lane=fast_lane,
             supervise_enforce=payload.get("supervise_enforce", True),
-            attachments=atts, frontman=bool(payload.get("frontman")))
+            attachments=atts, frontman=bool(payload.get("frontman")),
+            external_text=payload.get("external_text"))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "session_id": att.get("session_id"), "attempt": att["attempt"],

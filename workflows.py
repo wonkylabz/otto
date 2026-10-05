@@ -189,6 +189,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # The asker's OWN message (Slack sets it for a trusted asker; a delegated child inherits
         # it) — the only text a DELEGATED run may close an issue on. Bound in _bind_composer.
         self._asker_text = None
+        # Ingress-quoted external data (a Slack trigger's post, #223) — kept out of the connector
+        # guard, which must read only what the operator asked. Bound in _bind_composer.
+        self._external_text = None
         # Per-stage wall-clock timing {label: {"start": epoch_ms, "dur": epoch_ms|None}}, keyed on
         # the pipe labels the UI renders (DECOMPOSE/ROUTER/CLARIFY/PLAN/GATE/RUN). Surfaced via
         # status() so a
@@ -221,6 +224,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._attachments = params.get("attachments") or []
         self._prior_attachments = params.get("prior_attachments") or []
         self._asker_text = params.get("asker_text") or None
+        self._external_text = params.get("external_text") or None
 
     async def _gate_wait(self, cond):
         """Wait at the approval gate for `cond`, bounded by the `gate_timeout_h` setting.
@@ -1550,7 +1554,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                      "fast_lane": self._fast_lane,
                      # Arm the supervisor's kill switch only while a rung remains for its
                      # critique to steer and the run has kills left to spend (ladder.plan_attempt).
-                     "supervise_enforce": nxt.supervise_enforce, "frontman": self._frontman},
+                     "supervise_enforce": nxt.supervise_enforce, "frontman": self._frontman,
+                     "external_text": self._external_text},
                     start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY_EXEC)
             except exceptions.ActivityError:
