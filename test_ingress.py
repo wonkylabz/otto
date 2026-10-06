@@ -8746,6 +8746,19 @@ class UpdaterTests(unittest.TestCase):
             f.write("can't open file 'updater.py'\n")
         self.assertIn("can't open file", self.u._job_log("launchd:com.otto.update.1"))
 
+    def test_summary_names_the_job_so_a_watcher_can_tell_old_from_new(self):
+        storage.write_json(self.u.path(), {"job": {"state": "done", "unit": "systemd:otto-update-9"}})
+        self.assertEqual(self.u.summary()["job_id"], "systemd:otto-update-9")
+
+    def test_a_dropped_update_request_is_watched_not_reported(self):
+        """The restart can kill the server before it answers the POST that started it."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "js", "update.js")).read()
+        click = src[src.index('postJSON("/api/update"'):src.index("function watchUpdate")]
+        self.assertIn("if(e.status)", click)
+        self.assertIn("go.disabled=false", click)
+        watch = src[src.index("function watchUpdate"):]
+        self.assertIn("u.job_id!==prevJob", watch)
+
     def test_service_unit_reads_the_cgroup(self):
         p = os.path.join(self.tmp, "cg")
         with open(p, "w") as f:

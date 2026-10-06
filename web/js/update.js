@@ -35,25 +35,31 @@ async function showUpdateForm(){
   document.getElementById("up-go").addEventListener("click", async ()=>{
     const go=document.getElementById("up-go"); go.disabled=true; go.textContent="starting…";
     try{ await postJSON("/api/update",{}); }
-    catch(e){ document.getElementById("up-err").textContent=e.message; go.textContent="Update & restart"; return; }
+    catch(e){
+      // Only a status is a refusal. A dropped connection is the restart this click started
+      // beating the response, so watch for the outcome instead of reporting a failure.
+      if(e.status){ document.getElementById("up-err").textContent=e.message;
+                    go.disabled=false; go.textContent="Update & restart"; return; }
+    }
     closeFormModal();
-    watchUpdate(st.revision);
+    watchUpdate(st.revision, (st.last&&st.last.unit)||"");
   });
 }
 
-function watchUpdate(from){
+function watchUpdate(from, prevJob){
   toast("Updating Otto — the page reconnects when it's back.","ok");
   const started=Date.now();
   UPDATE_WATCH=poll(async ()=>{
     let h;
     try{ h=await (await fetch("/api/health")).json(); }catch(e){ return false; }   // down mid-restart
     applyUpdate(h.update);
-    const done=h.update && h.update.job && h.update.job!=="running";
+    if(h.revision && h.revision!==from){ UPDATE_WATCH(); UPDATE_WATCH=null; location.reload(); return; }
+    // An outcome counts only from THIS update's job, never the last one's "done".
+    const u=h.update||{}, done=u.job && u.job!=="running" && u.job_id && u.job_id!==prevJob;
     if(!done && Date.now()-started<300000) return;
     UPDATE_WATCH(); UPDATE_WATCH=null;
     applyUpdate(h.update);
-    if(h.revision && h.revision!==from) location.reload();
-    else toast(`Update ${(h.update&&h.update.job)||"timed out"} — still on ${from}. Open Update for details.`);
+    toast(`Update ${done?u.job:"timed out"} — still on ${from}. Open Update for details.`);
   }, 4000, 8000);
 }
 
