@@ -54,9 +54,15 @@ _READ_HINTS = ("status", "overview", "report", "list", "review", "investigate",
                "summary", "summarize", "check", "audit", "find", "read-only", "inspect")
 
 
-def classify(name, description):
+# A `tools:` grant naming a file-writer IS write intent, whatever the description says.
+_WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def classify(name, description, tools=()):
     if name in _RISK:
         return _RISK[name]
+    if any(t.split("(", 1)[0] in _WRITE_TOOLS for t in tools or ()):
+        return "write"
     text = (name + " " + description).lower()
     if any(h in text for h in _WRITE_HINTS):
         return "write"
@@ -74,7 +80,7 @@ class Capability:
         self.enabled = True                            # toggled by admin policy
         self.source = "builtin"                        # default for discovered ~/.claude caps; else "otto" | "project" | "stock"
         self.prompt = None                             # set for custom (kind="custom") caps
-        self.plugin = None                             # set for plugin-bundled skills
+        self.plugin = None                             # set for plugin-bundled skills/agents
         self.invoke_name = name                        # bare name used in the actual invocation
         self.cwd = None                                # run `claude -p` from here (project caps)
         self.mcp_config = None                         # repo `.mcp.json` to merge in (project caps)
@@ -177,7 +183,7 @@ def apply_policy(caps, pol):
     ov = (pol or {}).get("capabilities", {})
     for c in caps:
         o = ov.get(c.name, {})
-        c.risk = o.get("risk", classify(c.name, c.description))
+        c.risk = o.get("risk", classify(c.name, c.description, c.declared_tools))
         # Optional-tier stock caps are an opt-in catalog: default OFF until enabled in Admin.
         c.enabled = o.get("enabled", getattr(c, "tier", None) != "optional")
         c.tool_free = bool(o.get("tool_free", False)) and c.risk == "read"
@@ -208,6 +214,12 @@ def _declared_tools(fm):
     return [t.strip() for t in re.split(r"[,\s]+", raw) if t.strip()]
 
 
+def _grant(cap, fm):
+    """Record a cap's frontmatter `tools:` grant and re-classify its risk against it."""
+    cap.declared_tools = _declared_tools(fm)
+    cap.risk = classify(cap.name, cap.description, cap.declared_tools)
+
+
 def _user_plugin_installs():
     """(manifest key, plugin, installPath) per USER-scoped install in `installed_plugins.json`.
 
@@ -216,13 +228,17 @@ def _user_plugin_installs():
     a provisioned clone), so `/<plugin>:<skill>` there is an unknown command. Offering one to
     the router is strictly a trap — measured: a Slack run routed to a project-scoped plugin
     skill and burned all three attempts plus a final Opus escalation on `Unknown command`.
-    A plugin installed at BOTH scopes still surfaces via its user-scope entry."""
+    A plugin installed at BOTH scopes still surfaces via its user-scope entry. A plugin switched
+    off in `enabledPlugins` is skipped: Claude Code registers none of its skills, agents or MCP."""
     try:
         with open(PLUGINS_FILE) as f:
             manifest = json.load(f)
     except (OSError, ValueError):
         return
+    disabled = _plugin_disabled()
     for key, installs in (manifest.get("plugins") or {}).items():
+        if key in disabled:
+            continue
         plugin = key.split("@", 1)[0]
         seen = set()
         for inst in installs or []:
@@ -242,6 +258,16 @@ def plugin_skills():
     Yields (name, description, plugin, path)."""
     for _key, plugin, base in _user_plugin_installs():
         for path in sorted(glob.glob(os.path.join(base, "skills", "**", "SKILL.md"), recursive=True)):
+            fm = _frontmatter(path)
+            if fm.get("name"):
+                yield f"{plugin}:{fm['name']}", fm.get("description", ""), plugin, path
+
+
+def plugin_agents():
+    """Subagents bundled in USER-scoped plugins (`agents/*.md`), namespaced `<plugin>:<agent>` —
+    the subagent type Claude Code registers them under. Yields (name, description, plugin, path)."""
+    for _key, plugin, base in _user_plugin_installs():
+        for path in sorted(glob.glob(os.path.join(base, "agents", "*.md"))):
             fm = _frontmatter(path)
             if fm.get("name"):
                 yield f"{plugin}:{fm['name']}", fm.get("description", ""), plugin, path
@@ -298,11 +324,8 @@ def plugin_mcp_servers():
     `mcp__plugin_…` declaration and the local Pool's tool ids agree; `cli_name` is the
     `plugin:<plugin>:<server>` spelling `claude mcp list` reports health under.
     `${CLAUDE_PLUGIN_ROOT}` is substituted here — no process env ever holds it."""
-    disabled = _plugin_disabled()
     out = {}
     for key, plugin, base in _user_plugin_installs():
-        if key in disabled:
-            continue
         for servers in _plugin_mcp_maps(base):
             for server, d in (servers or {}).items():
                 if isinstance(d, dict):
@@ -570,21 +593,24 @@ def load():
         if fm.get("name"):
             cap = Capability("agent", fm["name"], fm.get("description", ""))
             cap.path = path
-            cap.declared_tools = _declared_tools(fm)
+            _grant(cap, fm)
             caps.append(cap)
     for path in sorted(glob.glob(os.path.join(SKILLS_DIR, "*", "SKILL.md"))):
         fm = _frontmatter(path)
         if fm.get("name"):
             cap = Capability("skill", fm["name"], fm.get("description", ""))
             cap.path = path
-            cap.declared_tools = _declared_tools(fm)
+            _grant(cap, fm)
             caps.append(cap)
-    # Skills bundled in installed plugins (namespaced plugin:skill).
-    for name, desc, plugin, path in plugin_skills():
-        cap = Capability("skill", name, desc)
-        cap.plugin = plugin
-        cap.path = path
-        caps.append(cap)
+    # Skills and agents bundled in installed plugins (namespaced plugin:name).
+    for kind, found in (("skill", plugin_skills()), ("agent", plugin_agents())):
+        for name, desc, plugin, path in found:
+            cap = Capability(kind, name, desc)
+            cap.plugin = plugin
+            cap.path = path
+            if kind == "agent":
+                _grant(cap, _frontmatter(path))
+            caps.append(cap)
     # Project-scoped caps from external repos' `.claude/` (run with the repo as cwd).
     for kind, name, invoke, desc, cwd, mcp, path in project_skills():
         cap = Capability(kind, name, desc)

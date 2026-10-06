@@ -1153,7 +1153,7 @@ function renderAdmin(data, models, el, settings){
     return `<span class="gon">${onCount(list)}/${list.length} on</span>`+
            `<button class="linkbtn capbulk" data-bulk="${esc(key)}" data-bkind="${kind}">${allOn?'disable all':'enable all'}</button>`;
   };
-  const CATS=[['agent','Agents'],['skill','Skills'],['plugin','Plugin skills'],['custom','Custom']];
+  const CATS=[['agent','Agents'],['skill','Skills'],['plugin','Plugins'],['custom','Custom']];
   const capListHtml=CATS.map(([key,label])=>{
     const list=data.capabilities.filter(c=>catOf(c)===key);
     if(!list.length) return "";
@@ -1161,7 +1161,7 @@ function renderAdmin(data, models, el, settings){
     const collapsed='collapsed';
     let body;
     if(key==='plugin'){
-      // Sub-group plugin skills by their plugin so a whole noisy plugin folds in one click.
+      // Sub-group plugin caps by their plugin so a whole noisy plugin folds in one click.
       const byPlugin={};
       list.forEach(c=>{ (byPlugin[c.plugin]=byPlugin[c.plugin]||[]).push(c); });
       // Header once for the whole category — repeating it per plugin would out-shout the rows.

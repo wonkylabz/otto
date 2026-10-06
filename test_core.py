@@ -1511,6 +1511,39 @@ class PluginSkillTests(unittest.TestCase):
         c = registry.Capability("skill", "myplugin:foo", "d")
         self.assertEqual(engine._invocation(c, "go"), "/myplugin:foo go")
 
+    def test_discovers_plugin_agents_as_namespaced_agent_caps(self):
+        path = self._manifest()
+        with open(path) as f:
+            inst = json.load(f)["plugins"]["myplugin@mp"][0]["installPath"]
+        os.makedirs(os.path.join(inst, "agents"))
+        with open(os.path.join(inst, "agents", "inspector.md"), "w") as f:
+            f.write("---\nname: inspector\ndescription: finds causes\ntools: Bash, mcp__nr__*\n---\nbody")
+        registry.PLUGINS_FILE = path
+        self.assertEqual([n for n, _, _, _ in registry.plugin_agents()], ["myplugin:inspector"])
+        cap = next(c for c in registry.load() if c.name == "myplugin:inspector")
+        self.assertEqual((cap.kind, cap.plugin), ("agent", "myplugin"))
+        self.assertIn("mcp__nr__*", cap.declared_tools)
+        self.assertIn("Use the myplugin:inspector subagent", engine._invocation(cap, "go"))
+
+    def test_a_write_tool_grant_classifies_write_despite_read_prose(self):
+        self.assertEqual(registry.classify("x", "read-only status report", ["Bash", "Read"]), "read")
+        self.assertEqual(registry.classify("x", "read-only status report", ["Bash", "Edit"]), "write")
+        self.assertEqual(registry.classify("x", "read-only status report", ["Write(/tmp/**)"]), "write")
+        c = registry.Capability("agent", "x", "read-only status report")
+        c.declared_tools = ["Edit"]
+        self.assertEqual(registry.apply_policy([c], {})[0].risk, "write")
+
+    def test_a_disabled_plugin_contributes_nothing(self):
+        orig = registry.PLUGIN_SETTINGS_FILE
+        self.addCleanup(setattr, registry, "PLUGIN_SETTINGS_FILE", orig)
+        registry.PLUGINS_FILE = self._manifest()
+        settings = os.path.join(tempfile.mkdtemp(prefix="otto-settings-"), "settings.json")
+        with open(settings, "w") as f:
+            json.dump({"enabledPlugins": {"myplugin@mp": False}}, f)
+        registry.PLUGIN_SETTINGS_FILE = settings
+        self.assertEqual(list(registry.plugin_skills()), [])
+        self.assertEqual(list(registry.plugin_agents()), [])
+
 
 class ConfigTests(unittest.TestCase):
     def test_write_is_superset_of_read(self):
