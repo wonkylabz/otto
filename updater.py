@@ -235,7 +235,17 @@ def apply(old_sha, port, unit, root=None, restart=None, wait=None, busy=None, pi
         restart()
         return "rolled_back" if wait(old_sha) else "failed"
 
-    _merge(job={**(_read().get("job") or {}), "pid": os.getpid()})    # launch() waits on this
+    gave_up = []
+
+    def check_in(d):
+        job = d.get("job") or {}
+        if job and job.get("state") != "running":
+            gave_up.append(1)       # launch() already reported us dead — don't act behind it
+            return d
+        return {**d, "job": {**job, "pid": os.getpid()}}
+    storage.mutate_json(path(), check_in, {})
+    if gave_up:
+        return "aborted"
     we_paused = not estop.engaged()
     if we_paused:
         estop.engage("updating Otto")

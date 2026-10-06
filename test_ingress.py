@@ -8613,6 +8613,14 @@ class UpdaterTests(unittest.TestCase):
                          (True, ""))
         self.assertEqual(self.u._read()["job"]["state"], "aborted")
 
+    def test_a_late_apply_does_nothing_once_launch_gave_up(self):
+        storage.write_json(self.u.path(), {"job": {"state": "failed", "error": "never started"}})
+        old, restarts = self._head(), []
+        state = self.u.apply(old, 0, "otto.service", root=self.work, busy=lambda: 0,
+                             restart=lambda: restarts.append(1), wait=lambda sha: True)
+        self.assertEqual((state, self._head(), restarts), ("aborted", old, []))
+        self.assertFalse(estop.engaged())
+
     def test_an_unanswerable_unit_check_reads_as_running(self):
         job = {"state": "running", "started_at": time.time(), "pid": 1, "unit": "otto-update-1"}
         storage.write_json(self.u.path(), {"job": job})
