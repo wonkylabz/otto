@@ -64,6 +64,7 @@ function bindConv(el){
 async function loadAdmin(){
   adminLoaded=true;
   const el=document.getElementById("adminview");
+  const view=capViewState(el);
   el.innerHTML=`<div class="pageSpin"><span class="spin"></span></div>`;
   let data, models, health, stats, settings, conv;
   try { [data, models, health, stats, settings, conv]=await Promise.all([
@@ -87,6 +88,7 @@ async function loadAdmin(){
   applyCaps(data.capabilities);   // keep the "/" popup + counts in sync with admin edits
   SECRETS=(settings&&settings.secrets)||null;
   renderAdmin(data, models, el, (settings&&settings.settings)||{});
+  restoreCapView(el, view);
   refreshMcpHealth(data.mcps);
 }
 

@@ -5046,6 +5046,19 @@ class AddControlModalTests(unittest.TestCase):
                          f"silently wins: {dupes}")
 
 
+class AdminCapViewStateTests(unittest.TestCase):
+    """Every Admin save calls loadAdmin(), which rebuilds the panel. The capability list's search,
+    open groups and scroll must be captured BEFORE the spinner wipes them and re-applied AFTER
+    renderAdmin, or editing a cap's MCP access collapses the list and drops the filter."""
+
+    def test_load_admin_carries_the_cap_view_across_a_rerender(self):
+        src = ui_src()
+        body = src[src.index("async function loadAdmin(){"):]
+        body = body[:body.index("\n}\n")]
+        self.assertLess(body.index("capViewState(el)"), body.index("pageSpin"))
+        self.assertLess(body.index("renderAdmin(data"), body.index("restoreCapView(el, view)"))
+
+
 class SubsectionIndentTests(unittest.TestCase):
     """A section nested inside another (Slack -> Auto-answer, GitHub -> Board queue) has to LOOK
     nested. Quieter type alone doesn't say it: on the Events tab the inner heading sits directly
@@ -7509,7 +7522,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # revoke/logout handlers live in `sessions.js`; the bytes are the two hooks that place it.
     # -> 125631 for the `judge_tools` knob (#228): a runtime setting must carry a label and a
     # group (`RuntimeSettingsUiCoverageTests`), and the bytes are that one help line.
-    ASSET_MAX = 125631
+    # -> 125682 for keeping the cap list's search/open groups across a save's re-render. Same
+    # split: the capture/restore live in `capview.js`; the bytes are the two calls in loadAdmin.
+    ASSET_MAX = 125682
 
     def _assets(self):
         out = {}
