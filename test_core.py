@@ -1525,6 +1525,25 @@ class PluginSkillTests(unittest.TestCase):
         self.assertIn("mcp__nr__*", cap.declared_tools)
         self.assertIn("Use the myplugin:inspector subagent", engine._invocation(cap, "go"))
 
+    def test_a_write_tool_grant_classifies_write_despite_read_prose(self):
+        self.assertEqual(registry.classify("x", "read-only status report", ["Bash", "Read"]), "read")
+        self.assertEqual(registry.classify("x", "read-only status report", ["Bash", "Edit"]), "write")
+        self.assertEqual(registry.classify("x", "read-only status report", ["Write(/tmp/**)"]), "write")
+        c = registry.Capability("agent", "x", "read-only status report")
+        c.declared_tools = ["Edit"]
+        self.assertEqual(registry.apply_policy([c], {})[0].risk, "write")
+
+    def test_a_disabled_plugin_contributes_nothing(self):
+        orig = registry.PLUGIN_SETTINGS_FILE
+        self.addCleanup(setattr, registry, "PLUGIN_SETTINGS_FILE", orig)
+        registry.PLUGINS_FILE = self._manifest()
+        settings = os.path.join(tempfile.mkdtemp(prefix="otto-settings-"), "settings.json")
+        with open(settings, "w") as f:
+            json.dump({"enabledPlugins": {"myplugin@mp": False}}, f)
+        registry.PLUGIN_SETTINGS_FILE = settings
+        self.assertEqual(list(registry.plugin_skills()), [])
+        self.assertEqual(list(registry.plugin_agents()), [])
+
 
 class ConfigTests(unittest.TestCase):
     def test_write_is_superset_of_read(self):
