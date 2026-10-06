@@ -73,6 +73,11 @@ def summary():
             "job": (d.get("job") or {}).get("state", "")}
 
 
+def _job_running(job):
+    # Past the worst case (pip + two health waits) it is a dead updater, not a slow one.
+    return job.get("state") == "running" and time.time() - job.get("started_at", 0) < 1800
+
+
 def changed_files(root=None):
     _, out, _ = _git("diff", "--name-only", f"HEAD...{REMOTE}/{BRANCH}", root=root)
     return [f for f in out.splitlines() if f]
@@ -84,8 +89,7 @@ def blockers(runs, root=None, unit=None):
     if not (unit if unit is not None else service_unit()):
         out.append("Otto isn't running as a systemd service — update it by hand.")
         return out
-    job = _read().get("job") or {}
-    if job.get("state") == "running" and time.time() - job.get("started_at", 0) < 900:
+    if _job_running(_read().get("job") or {}):
         out.append("An update is already running.")
     _, branch, _ = _git("rev-parse", "--abbrev-ref", "HEAD", root=root)
     if branch != BRANCH:
@@ -111,7 +115,17 @@ def blockers(runs, root=None, unit=None):
 def launch(port, unit, root=None):
     """Start `apply` in its own transient unit. Returns (ok, error)."""
     head = _git("rev-parse", "HEAD", root=root)[1]
-    _merge(job={"state": "running", "from": head[:7], "started_at": time.time(), "log": []})
+    claimed = []
+
+    def claim(d):
+        if _job_running(d.get("job") or {}):
+            return d
+        claimed.append(1)
+        return {**d, "job": {"state": "running", "from": head[:7], "started_at": time.time(),
+                             "log": []}}
+    storage.mutate_json(path(), claim, {})
+    if not claimed:
+        return False, "An update is already running."
     argv = ["systemd-run", "--user", "--collect", f"--unit=otto-update-{int(time.time())}",
             f"--working-directory={root or _ROOT}", sys.executable,
             os.path.join(root or _ROOT, "updater.py"), "apply", head, str(port), unit]
@@ -142,31 +156,62 @@ def _wait_for(port, sha, deadline_s):
     return False
 
 
-def apply(old_sha, port, unit, root=None, restart=None, wait=None):
-    """Runs OUTSIDE the service. pull → pip → restart → confirm, else roll back."""
+def _in_flight(port):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/needs-you",
+                                 headers={api_auth.HEADER: api_auth.token()})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        d = json.load(r)
+    if not d.get("temporal") or d.get("error"):
+        raise RuntimeError("can't confirm nothing is running")
+    return len((d.get("buckets") or {}).get("in_flight", []))
+
+
+class _Abort(Exception):
+    """Refused before anything changed."""
+
+
+def apply(old_sha, port, unit, root=None, restart=None, wait=None, busy=None, pip=None):
+    """Runs OUTSIDE the service. pause → pull → pip → restart → confirm, else roll back."""
     root = root or _ROOT
     restart = restart or (lambda: subprocess.run(["systemctl", "--user", "restart", unit],
                                                   check=True, timeout=60))
     wait = wait or (lambda sha: _wait_for(port, sha, HEALTH_WAIT_S))
+    busy = busy or (lambda: _in_flight(port))
+    pip = pip or (lambda: _pip(root))
     log = []
 
     def step(msg):
         log.append(msg)
         _merge(job={**(_read().get("job") or {}), "log": log[-20:]})
 
+    def rollback():
+        _git("reset", "--hard", old_sha, root=root)
+        if reqs:
+            pip()
+        restart()
+        return "rolled_back" if wait(old_sha) else "failed"
+
     we_paused = not estop.engaged()
     if we_paused:
         estop.engage("updating Otto")
-    state, err, new = "failed", "", old_sha
+    state, err, new, reqs = "failed", "", old_sha, False
     try:
+        # Re-checked under the pause: a run started after the server's preflight would lose
+        # its attempt to the restart.
+        try:
+            n = busy()
+        except Exception as e:  # noqa: BLE001
+            raise _Abort(str(e)) from e
+        if n:
+            raise _Abort(f"{n} run(s) started in flight — try again when they finish")
         reqs = "requirements.txt" in changed_files(root)
         code, _, e = _git("merge", "--ff-only", f"{REMOTE}/{BRANCH}", root=root)
         if code:
-            raise RuntimeError(f"fast-forward failed: {e[-200:]}")
+            raise _Abort(f"fast-forward failed: {e[-200:]}")
         new = _git("rev-parse", "HEAD", root=root)[1]
         step(f"pulled {old_sha[:7]} → {new[:7]}")
         if reqs:
-            _pip(root)
+            pip()
             step("installed requirements.txt")
         restart()
         step("restarted")
@@ -174,13 +219,19 @@ def apply(old_sha, port, unit, root=None, restart=None, wait=None):
             state = "done"
         else:
             step("new build never came up — rolling back")
-            _git("reset", "--hard", old_sha, root=root)
-            if reqs:
-                _pip(root)
-            restart()
-            state = "rolled_back" if wait(old_sha) else "failed"
+            state = rollback()
+    except _Abort as e:
+        state, err = "aborted", str(e)[-300:]
     except Exception as e:  # noqa: BLE001 - recorded, never raised: nobody is listening
         err = str(e)[-300:]
+        # Never leave the tree on new code under an old process: the worker re-imports
+        # workflow code per task, so it would run new workflows against old activities.
+        if _git("rev-parse", "HEAD", root=root)[1] != old_sha:
+            step(f"{err} — rolling back")
+            try:
+                state = rollback()
+            except Exception as e2:  # noqa: BLE001
+                err = f"{err}; rollback: {e2}"[-300:]
     finally:
         if state == "failed":
             estop.engage(f"update failed — {err or 'open Update for details'}")

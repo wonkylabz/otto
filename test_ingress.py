@@ -8515,7 +8515,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_apply_fast_forwards_restarts_and_releases_its_pause(self):
         old, restarts = self._head(), []
-        state = self.u.apply(old, 0, "otto.service", root=self.work,
+        state = self.u.apply(old, 0, "otto.service", root=self.work, busy=lambda: 0,
                              restart=lambda: restarts.append(1), wait=lambda sha: True)
         self.assertEqual(state, "done")
         self.assertNotEqual(self._head(), old)
@@ -8525,7 +8525,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_apply_rolls_back_when_the_new_build_never_reports(self):
         old, restarts = self._head(), []
-        state = self.u.apply(old, 0, "otto.service", root=self.work,
+        state = self.u.apply(old, 0, "otto.service", root=self.work, busy=lambda: 0,
                              restart=lambda: restarts.append(1), wait=lambda sha: sha == old)
         self.assertEqual(state, "rolled_back")
         self.assertEqual(self._head(), old)
@@ -8533,16 +8533,50 @@ class UpdaterTests(unittest.TestCase):
         self.assertFalse(estop.engaged())
 
     def test_a_failed_update_leaves_otto_paused(self):
-        state = self.u.apply(self._head(), 0, "otto.service", root=self.work,
+        state = self.u.apply(self._head(), 0, "otto.service", root=self.work, busy=lambda: 0,
                              restart=lambda: None, wait=lambda sha: False)
         self.assertEqual(state, "failed")
         self.assertIn("update failed", estop.state()["reason"])
 
     def test_an_operator_pause_survives_the_update(self):
         estop.engage("mine")
-        self.u.apply(self._head(), 0, "otto.service", root=self.work,
+        self.u.apply(self._head(), 0, "otto.service", root=self.work, busy=lambda: 0,
                      restart=lambda: None, wait=lambda sha: True)
         self.assertTrue(estop.engaged())
+
+    def test_a_run_started_after_preflight_aborts_before_touching_the_tree(self):
+        old, restarts = self._head(), []
+        state = self.u.apply(old, 0, "otto.service", root=self.work, busy=lambda: 1,
+                             restart=lambda: restarts.append(1), wait=lambda sha: True)
+        self.assertEqual((state, self._head(), restarts), ("aborted", old, []))
+        self.assertFalse(estop.engaged())
+
+    def test_an_unconfirmable_run_list_aborts(self):
+        def boom():
+            raise RuntimeError("temporal down")
+        state = self.u.apply(self._head(), 0, "otto.service", root=self.work, busy=boom,
+                             restart=lambda: None, wait=lambda sha: True)
+        self.assertEqual(state, "aborted")
+
+    def test_a_crash_after_the_pull_resets_the_tree(self):
+        self._commit(self.other, "requirements.txt", "x")
+        self._git(self.other, "push", "-q", "origin", "main")
+        self.u.fetch(root=self.work)
+        old, calls = self._head(), []
+
+        def pip():
+            calls.append(self._head())
+            if len(calls) == 1:
+                raise RuntimeError("pip broke")
+        state = self.u.apply(old, 0, "otto.service", root=self.work, busy=lambda: 0, pip=pip,
+                             restart=lambda: None, wait=lambda sha: sha == old)
+        self.assertEqual(state, "rolled_back")
+        self.assertEqual(self._head(), old)
+
+    def test_a_second_launch_cannot_claim_a_running_job(self):
+        storage.write_json(self.u.path(), {"job": {"state": "running", "started_at": time.time()}})
+        self.assertEqual(self.u.launch(0, "otto.service", root=self.work),
+                         (False, "An update is already running."))
 
     def test_service_unit_reads_the_cgroup(self):
         p = os.path.join(self.tmp, "cg")

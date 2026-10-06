@@ -44,17 +44,17 @@ async function showUpdateForm(){
 function watchUpdate(from){
   toast("Updating Otto — the page reconnects when it's back.","ok");
   const started=Date.now();
-  UPDATE_WATCH=setInterval(async ()=>{
-    let h=null;
-    try{ h=await (await fetch("/api/health")).json(); }catch(e){ return; }   // down mid-restart
+  UPDATE_WATCH=poll(async ()=>{
+    let h;
+    try{ h=await (await fetch("/api/health")).json(); }catch(e){ return false; }   // down mid-restart
     applyUpdate(h.update);
     const done=h.update && h.update.job && h.update.job!=="running";
     if(!done && Date.now()-started<300000) return;
-    clearInterval(UPDATE_WATCH); UPDATE_WATCH=null;
+    UPDATE_WATCH(); UPDATE_WATCH=null;
     applyUpdate(h.update);
     if(h.revision && h.revision!==from) location.reload();
     else toast(`Update ${(h.update&&h.update.job)||"timed out"} — still on ${from}. Open Update for details.`);
-  }, 4000);
+  }, 4000, 8000);
 }
 
 document.getElementById("update").addEventListener("click", showUpdateForm);
