@@ -70,13 +70,23 @@ def fetch(root=None):
 def summary():
     """Cheap (one file read) — rides `/api/health`."""
     d = _read()
-    return {"supported": bool(service_unit()), "behind": d.get("behind", 0),
-            "job": (d.get("job") or {}).get("state", "")}
+    job = d.get("job") or {}
+    state = job.get("state", "")
+    if state == "running" and not _job_running(job):
+        state = "failed"
+    return {"supported": bool(service_unit()), "behind": d.get("behind", 0), "job": state}
 
 
 def _job_running(job):
+    """A "running" job whose unit is gone died without recording it — it isn't running."""
+    if job.get("state") != "running":
+        return False
+    if not job.get("pid"):
+        return time.time() - job.get("started_at", 0) < 60      # apply never checked in
+    if job.get("unit") and not _unit_active(job["unit"]):
+        return False
     # Past the worst case (pip + two health waits) it is a dead updater, not a slow one.
-    return job.get("state") == "running" and time.time() - job.get("started_at", 0) < 1800
+    return time.time() - job.get("started_at", 0) < 1800
 
 
 def changed_files(root=None):
@@ -113,28 +123,61 @@ def blockers(runs, root=None, unit=None):
     return out
 
 
-def launch(port, unit, root=None):
-    """Start `apply` in its own transient unit. Returns (ok, error)."""
+def _unit_active(unit):
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
+                              timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return True     # unknown = still running; this rides every /api/health poll
+
+
+def _unit_log(unit):
+    r = subprocess.run(["journalctl", "--user", "-u", unit, "-n", "5", "-o", "cat", "--no-pager"],
+                       capture_output=True, text=True, timeout=10)
+    return r.stdout.strip()[-300:]
+
+
+def _spawn(argv):
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    return r.returncode, r.stderr[-300:]
+
+
+def launch(port, unit, root=None, spawn=None, ack_s=15):
+    """Start `apply` in its own transient unit and wait for it to check in. Returns (ok, error).
+    systemd-run succeeds as soon as the unit exists, so its exit code says nothing about
+    whether `apply` ever ran."""
+    root = root or _ROOT
     head = _git("rev-parse", "HEAD", root=root)[1]
+    seen = _read().get("job") or {}
+    stale = not _job_running(seen)
     claimed = []
 
     def claim(d):
-        if _job_running(d.get("job") or {}):
+        job = d.get("job") or {}
+        if job.get("state") == "running" and not (stale and job.get("started_at") == seen.get("started_at")):
             return d
         claimed.append(1)
         return {**d, "job": {"state": "running", "from": head[:7], "started_at": time.time(),
-                             "log": []}}
+                             "unit": name, "log": []}}
+    name = f"otto-update-{int(time.time())}"
     storage.mutate_json(path(), claim, {})
     if not claimed:
         return False, ALREADY_RUNNING
-    argv = ["systemd-run", "--user", "--collect", f"--unit=otto-update-{int(time.time())}",
-            f"--working-directory={root or _ROOT}", sys.executable,
-            os.path.join(root or _ROOT, "updater.py"), "apply", head, str(port), unit]
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
-    if r.returncode:
-        _merge(job={"state": "failed", "from": head[:7], "error": r.stderr[-300:]})
-        return False, r.stderr[-300:]
-    return True, ""
+    code, err = (spawn or _spawn)([
+        "systemd-run", "--user", "--collect", f"--unit={name}", f"--working-directory={root}",
+        sys.executable, os.path.join(root, "updater.py"), "apply", head, str(port), unit])
+    end = time.time() + ack_s
+    while not code and time.time() < end:
+        job = _read().get("job") or {}
+        if job.get("pid") or job.get("state") != "running":     # checked in, or already done
+            return True, ""
+        time.sleep(0.5)
+    err = err if code else f"the updater never started: {_unit_log(name) or 'no output'}"
+    failed = {"state": "failed", "from": head[:7], "error": err, "finished_at": time.time()}
+    # Conditional: an apply that finished in the gap has written its own, truer outcome.
+    storage.mutate_json(path(), lambda d: {**d, "job": failed}
+                        if (d.get("job") or {}).get("state") == "running" else d, {})
+    return False, err
 
 
 def _health_revision(port):
@@ -192,6 +235,17 @@ def apply(old_sha, port, unit, root=None, restart=None, wait=None, busy=None, pi
         restart()
         return "rolled_back" if wait(old_sha) else "failed"
 
+    gave_up = []
+
+    def check_in(d):
+        job = d.get("job") or {}
+        if job and job.get("state") != "running":
+            gave_up.append(1)       # launch() already reported us dead — don't act behind it
+            return d
+        return {**d, "job": {**job, "pid": os.getpid()}}
+    storage.mutate_json(path(), check_in, {})
+    if gave_up:
+        return "aborted"
     we_paused = not estop.engaged()
     if we_paused:
         estop.engage("updating Otto")
