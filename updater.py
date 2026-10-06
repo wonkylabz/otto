@@ -20,6 +20,7 @@ import storage
 REMOTE, BRANCH = "origin", "main"
 FETCH_EVERY_S = 900
 HEALTH_WAIT_S = 180
+ALREADY_RUNNING = "An update is already running."
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _WF_FILES = re.compile(r"^(workflows|wf_[a-z_]+)\.py$")
 _PATH = None    # tests re-point this
@@ -90,7 +91,7 @@ def blockers(runs, root=None, unit=None):
         out.append("Otto isn't running as a systemd service — update it by hand.")
         return out
     if _job_running(_read().get("job") or {}):
-        out.append("An update is already running.")
+        out.append(ALREADY_RUNNING)
     _, branch, _ = _git("rev-parse", "--abbrev-ref", "HEAD", root=root)
     if branch != BRANCH:
         out.append(f"The checkout is on '{branch}', not '{BRANCH}'.")
@@ -125,7 +126,7 @@ def launch(port, unit, root=None):
                              "log": []}}
     storage.mutate_json(path(), claim, {})
     if not claimed:
-        return False, "An update is already running."
+        return False, ALREADY_RUNNING
     argv = ["systemd-run", "--user", "--collect", f"--unit=otto-update-{int(time.time())}",
             f"--working-directory={root or _ROOT}", sys.executable,
             os.path.join(root or _ROOT, "updater.py"), "apply", head, str(port), unit]

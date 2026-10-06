@@ -2603,7 +2603,8 @@ class Handler(BaseHTTPRequestHandler):
         if not st["behind"]:
             self._send(409, json.dumps({"error": "Already up to date.", **st})); return
         ok, err = updater.launch(self.server.server_address[1], updater.service_unit())
-        self._send(200 if ok else 500, json.dumps({"started": ok, "error": err}))
+        code = 200 if ok else 409 if err == updater.ALREADY_RUNNING else 500
+        self._send(code, json.dumps({"started": ok, "error": err}))
 
     def _post_update_check(self, body):
         """POST /api/update/check — fetch now instead of waiting for the background tick."""
