@@ -141,7 +141,8 @@ def summary():
     state = job.get("state", "")
     if state == "running" and not _job_running(job):
         state = "failed"
-    return {"supported": bool(service()), "behind": d.get("behind", 0), "job": state}
+    return {"supported": bool(service()), "behind": d.get("behind", 0), "job": state,
+            "job_id": job.get("unit", "")}
 
 
 def _job_running(job):
