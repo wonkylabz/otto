@@ -2602,7 +2602,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(409, json.dumps({"error": st["blockers"][0], **st})); return
         if not st["behind"]:
             self._send(409, json.dumps({"error": "Already up to date.", **st})); return
-        ok, err = updater.launch(self.server.server_address[1], updater.service_unit())
+        ok, err = updater.launch(self.server.server_address[1], updater.service())
         code = 200 if ok else 409 if err == updater.ALREADY_RUNNING else 500
         self._send(code, json.dumps({"started": ok, "error": err}))
 
