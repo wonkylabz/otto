@@ -29,6 +29,7 @@ import config
 import contracts
 import delivery
 import engine
+import estop
 import events
 import gateway
 import policy
@@ -8432,3 +8433,127 @@ class SlackTriggerTests(unittest.TestCase):
         """Rules re-normalize on every poll; a random id re-fired every incident each poll."""
         storage.write_json(self.st._RULES, [{"channels": ["C1"], "bots": ["b"], "template": "x"}])
         self.assertEqual(self.st.load_rules()[0]["id"], self.st.load_rules()[0]["id"])
+
+
+class UpdaterTests(unittest.TestCase):
+    """The header Update button: preflight blockers, and `apply`'s pull → restart → confirm,
+    rolling back to the old sha when the new build never reports in."""
+
+    def setUp(self):
+        import updater
+        self.u = updater
+        self.tmp = tempfile.mkdtemp(prefix="otto-upd-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.origin = os.path.join(self.tmp, "origin.git")
+        self.work = os.path.join(self.tmp, "work")
+        self.other = os.path.join(self.tmp, "other")
+        g = self._git
+        g(self.tmp, "init", "--bare", "-b", "main", self.origin)
+        g(self.tmp, "clone", "-q", self.origin, self.work)
+        self._commit(self.work, "a.py", "1")
+        g(self.work, "push", "-q", "origin", "main")
+        g(self.tmp, "clone", "-q", self.origin, self.other)
+        self._commit(self.other, "b.py", "2")
+        g(self.other, "push", "-q", "origin", "main")
+        self.u.fetch(root=self.work)
+        if estop.engaged():
+            estop.release()
+        self.addCleanup(lambda: estop.engaged() and estop.release())
+
+    def _git(self, cwd, *a):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        return subprocess.run(["git", *a], cwd=cwd, env=env, check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    def _commit(self, repo, name, body):
+        with open(os.path.join(repo, name), "w") as f:
+            f.write(body)
+        self._git(repo, "add", name)
+        self._git(repo, "commit", "-qm", f"add {name}")
+
+    def _head(self):
+        return self._git(self.work, "rev-parse", "HEAD")
+
+    def test_fetch_counts_commits_behind(self):
+        d = self.u._read()
+        self.assertEqual(d["behind"], 1)
+        self.assertEqual(d["commits"][0]["title"], "add b.py")
+
+    def test_clean_main_has_no_blockers(self):
+        self.assertEqual(self.u.blockers({}, root=self.work, unit="otto.service"), [])
+
+    def test_no_service_blocks(self):
+        self.assertIn("systemd", self.u.blockers({}, root=self.work, unit="")[0])
+
+    def test_each_unsafe_state_blocks(self):
+        with open(os.path.join(self.work, "a.py"), "w") as f:
+            f.write("dirty")
+        self.assertTrue(any("uncommitted" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+        self._git(self.work, "checkout", "-q", "--", "a.py")
+        self.assertTrue(any("in flight" in b for b in
+                            self.u.blockers({"in_flight": [{}]}, root=self.work, unit="x")))
+        self._git(self.work, "checkout", "-qb", "feat")
+        self.assertTrue(any("not 'main'" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+        self._git(self.work, "checkout", "-q", "main")
+        self._commit(self.work, "c.py", "3")
+        self.assertTrue(any("fast-forward" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+
+    def test_parked_runs_block_only_when_workflow_code_changes(self):
+        parked = {"awaiting_approval": [{}]}
+        self.assertEqual(self.u.blockers(parked, root=self.work, unit="x"), [])
+        self._commit(self.other, "wf_repo.py", "x")
+        self._git(self.other, "push", "-q", "origin", "main")
+        self.u.fetch(root=self.work)
+        self.assertTrue(any("parked" in b for b in self.u.blockers(parked, root=self.work, unit="x")))
+
+    def test_install_sh_change_blocks(self):
+        self._commit(self.other, "install.sh", "x")
+        self._git(self.other, "push", "-q", "origin", "main")
+        self.u.fetch(root=self.work)
+        self.assertTrue(any("install.sh" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+
+    def test_apply_fast_forwards_restarts_and_releases_its_pause(self):
+        old, restarts = self._head(), []
+        state = self.u.apply(old, 0, "otto.service", root=self.work,
+                             restart=lambda: restarts.append(1), wait=lambda sha: True)
+        self.assertEqual(state, "done")
+        self.assertNotEqual(self._head(), old)
+        self.assertEqual(len(restarts), 1)
+        self.assertFalse(estop.engaged())
+        self.assertEqual(self.u._read()["behind"], 0)
+
+    def test_apply_rolls_back_when_the_new_build_never_reports(self):
+        old, restarts = self._head(), []
+        state = self.u.apply(old, 0, "otto.service", root=self.work,
+                             restart=lambda: restarts.append(1), wait=lambda sha: sha == old)
+        self.assertEqual(state, "rolled_back")
+        self.assertEqual(self._head(), old)
+        self.assertEqual(len(restarts), 2)
+        self.assertFalse(estop.engaged())
+
+    def test_a_failed_update_leaves_otto_paused(self):
+        state = self.u.apply(self._head(), 0, "otto.service", root=self.work,
+                             restart=lambda: None, wait=lambda sha: False)
+        self.assertEqual(state, "failed")
+        self.assertIn("update failed", estop.state()["reason"])
+
+    def test_an_operator_pause_survives_the_update(self):
+        estop.engage("mine")
+        self.u.apply(self._head(), 0, "otto.service", root=self.work,
+                     restart=lambda: None, wait=lambda sha: True)
+        self.assertTrue(estop.engaged())
+
+    def test_service_unit_reads_the_cgroup(self):
+        p = os.path.join(self.tmp, "cg")
+        with open(p, "w") as f:
+            f.write("0::/user.slice/user-1000.slice/user@1000.service/app.slice/otto.service\n")
+        self.assertEqual(self.u.service_unit(p), "otto.service")
+        with open(p, "w") as f:
+            f.write("0::/user.slice/user-1000.slice/user@1000.service/app.slice/vte-spawn-x.scope\n")
+        self.assertEqual(self.u.service_unit(p), "")
+
+    def test_post_update_takes_nothing_from_the_body(self):
+        src = inspect.getsource(server.Handler._post_update)
+        self.assertNotIn("body.get", src)
+        self.assertNotIn("body[", src)

@@ -58,6 +58,20 @@ session and no convention judge pays for it.
   rather than at the 40min `_EXEC_CEILING`. It is still a lost attempt, so restart when
   `temporal workflow list --query "ExecutionStatus='Running'"` is empty.
 
+## Updating from the UI
+
+The header **Update · N** button (`updater.py`, systemd only) fast-forwards to `origin/main`
+and restarts the service. The server fetches every 15min.
+
+- **It refuses rather than guesses**: not on `main`, a dirty tree, no fast-forward, an
+  `install.sh` change, a run in flight, or a gate-parked run when workflow code changed (it
+  would replay new code).
+- **The work runs in its own `systemd-run --user` unit**, outside the service's cgroup, so it
+  survives the restart it triggers. It pauses Otto meanwhile and confirms the new revision on
+  `/api/health`; if that never comes back it resets to the old sha and restarts again.
+- **A failed update leaves Otto PAUSED** with the reason in the header. State and the step log
+  are in `data/update-state.json`.
+
 ## Stopping work
 
 - **Global pause**: `data/ESTOP` (`estop.py`, `POST /api/estop`) stops every ingress starting

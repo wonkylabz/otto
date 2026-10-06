@@ -985,6 +985,7 @@ async function refreshHealth(){
     const h=await (await fetch("/api/health")).json();
     TEMPORAL = !!(h.temporal && h.connected);
     applyEstop(h.estop);      // rides the same payload — no extra request per turn
+    applyUpdate(h.update);
     applyVersion(h);          // likewise: a restart onto a new build repaints on the next turn
   } catch(e){ TEMPORAL=false; }
   if(TEMPORAL && !was) loadRepos();    // late upgrade: the repo picker was skipped at load
