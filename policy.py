@@ -621,6 +621,11 @@ def all_mcps(pol, allow_refresh=False, force=False):
              "env_keys": mcp_env_keys(d),
              "health": health.get(n), "notes": note(n), "safe": safe(n)}
             for n, d in mcp_defs().items()]
+    import registry             # noqa: PLC0415 — keep policy's import graph leaf-light
+    # Keyed by tool namespace (what grants and the local Pool use); health by the CLI's spelling.
+    out += [{"name": n, "display": cli, "enabled": ov.get(n, {}).get("enabled", True),
+             "source": "plugin", "health": health.get(cli), "notes": note(n), "safe": safe(n)}
+            for n, (cli, _d) in registry.plugin_mcp_servers().items()]
     out += [{"name": c["name"], "display": c.get("display", c["name"]),
              "enabled": ov.get(c["name"], {}).get("enabled", True), "source": "connector",
              "health": health.get(c["name"]), "notes": note(c["name"]), "safe": safe(c["name"])}
@@ -647,7 +652,8 @@ def reconnect_mcp(name, pol):
     row = next((m for m in all_mcps(pol) if m["name"] == name), None)
     if not row:
         return {"ok": False, "error": "unknown MCP server"}
-    cli_name = row.get("display", row["name"]) if row.get("source") == "connector" else row["name"]
+    cli_name = (row.get("display", row["name"]) if row.get("source") in ("connector", "plugin")
+                else row["name"])
     try:
         import claude_cli       # noqa: PLC0415 — deferred, see `_run_mcp_list`
         subprocess.Popen(["claude", "mcp", "login", cli_name],

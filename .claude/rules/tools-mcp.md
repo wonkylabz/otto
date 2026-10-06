@@ -5,7 +5,7 @@
 `mcp_client.py` — stdio JSON-RPC only, stdlib.
 
 - **Registering a server and RUNNING it are two acts** (`policy.add_mcp_def`; `McpActivationTests`) — a stored `command`+`args` is spawned as the operator, so the gate is on the DEF and BOTH doors read it (`active_mcp_config`, `mcp_client.servable`). Audited with the argv.
-- **`~/.claude.json`'s defs spawn UNGATED, by decision; the FILE is write-denied instead** (`file_safety`) — `claude -p` spawns them anyway, so a local gate leaves a server inert on one backend and live on the other; a RUN appending one was the risk (`McpUserScopeSpawnTests`).
+- **`~/.claude.json`'s defs spawn UNGATED, by decision; the FILE is write-denied instead** — `claude -p` spawns them anyway, so a local gate leaves one backend inert; a RUN appending one was the risk — plugins too, as `plugin_<p>_<s>` (`PluginMcpDiscoveryTests`).
 - **Every `claude` subprocess gets `claude_cli.child_env()`, not `os.environ`** — the CLI spawns MCP servers itself, so what it inherits third-party code does too. Only `~/.claude.json`'s `${VAR}` is exempt (`ClaudeCliEnvStripTests`).
 - **A def's credential is RESOLVED into `data/.mcp-*.json` (0600, read-denied family), never `${VAR}`** — the env is the only other lane and the run's own Bash inherits it, so wiring ONE server published that token to every run (`McpConfigResolutionTests`).
 - **A spawned server inherits the operator's env MINUS Otto's credentials** (`mcp_client._inherited_env`) — `run.sh` exports `.env` into the worker, so third-party code got the Slack tokens and `OTTO_SECRET_COMMAND`, the key to every other secret (`McpUserScopeSpawnTests`).

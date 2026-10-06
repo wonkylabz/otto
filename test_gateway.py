@@ -4675,6 +4675,94 @@ class McpConfigResolutionTests(unittest.TestCase):
         self.assertEqual(oct(os.stat(path).st_mode & 0o077), oct(0))
 
 
+class PluginMcpDiscoveryTests(unittest.TestCase):
+    """A plugin's bundled MCP servers are spawned by `claude -p`, so the LOCAL backend must
+    see them too, under the name Claude Code's tools carry (`mcp__plugin_<plugin>_<server>__…`)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._saved = (registry.PLUGINS_FILE, registry.PLUGIN_SETTINGS_FILE, mcp_client._user_mcp_raw)
+        registry.PLUGINS_FILE = os.path.join(self.tmp, "installed_plugins.json")
+        registry.PLUGIN_SETTINGS_FILE = os.path.join(self.tmp, "settings.json")
+        mcp_client._user_mcp_raw = lambda: {}
+
+    def tearDown(self):
+        registry.PLUGINS_FILE, registry.PLUGIN_SETTINGS_FILE, mcp_client._user_mcp_raw = self._saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _install(self, key, scope="user", mcp=None, manifest=None):
+        base = os.path.join(self.tmp, key.split("@")[0])
+        os.makedirs(os.path.join(base, ".claude-plugin"), exist_ok=True)
+        if mcp is not None:
+            with open(os.path.join(base, ".mcp.json"), "w") as f:
+                json.dump({"mcpServers": mcp}, f)
+        if manifest is not None:
+            with open(os.path.join(base, ".claude-plugin", "plugin.json"), "w") as f:
+                json.dump(manifest, f)
+        try:
+            with open(registry.PLUGINS_FILE) as f:
+                data = json.load(f)
+        except OSError:
+            data = {"version": 2, "plugins": {}}
+        data["plugins"][key] = [{"scope": scope, "installPath": base}]
+        with open(registry.PLUGINS_FILE, "w") as f:
+            json.dump(data, f)
+        return base
+
+    def test_a_user_plugin_server_is_servable_under_its_tool_namespace(self):
+        base = self._install("kit@m", mcp={"vanta": {
+            "command": "uvx", "args": ["--env-file", "${CLAUDE_PLUGIN_ROOT}/.env"]}})
+        got = mcp_client.servable({})
+        self.assertIn("plugin_kit_vanta", got)
+        self.assertEqual(got["plugin_kit_vanta"]["args"], ["--env-file", f"{base}/.env"])
+        # The tool ids the Pool offers match what a cap's `tools:` line declares.
+        cap = registry.Capability("agent", "x", "d")
+        cap.declared_tools = ["mcp__plugin_kit_vanta__*"]
+        self.assertEqual(mcp_client.declared_servers(cap), ["plugin_kit_vanta"])
+
+    def test_plugin_json_inline_map_wins_over_dot_mcp_json(self):
+        self._install("kit@m", mcp={"stale": {"command": "a"}},
+                      manifest={"mcpServers": {"fresh": {"command": "b"}}})
+        self.assertEqual(sorted(mcp_client.servable({})), ["plugin_kit_fresh"])
+
+    def test_project_scoped_disabled_and_remote_plugins_are_not_servable(self):
+        self._install("proj@m", scope="project", mcp={"s": {"command": "a"}})
+        self._install("off@m", mcp={"s": {"command": "a"}})
+        self._install("web@m", mcp={"s": {"type": "http", "url": "https://x/mcp"}})
+        with open(registry.PLUGIN_SETTINGS_FILE, "w") as f:
+            json.dump({"enabledPlugins": {"off@m": False}}, f)
+        self.assertEqual(mcp_client.servable({}), {})
+
+    def test_admin_lists_it_and_its_toggle_switches_it_off(self):
+        self._install("kit@m", mcp={"vanta": {"command": "a"}})
+        rows = [m for m in policy.all_mcps({}) if m["source"] == "plugin"]
+        self.assertEqual([(m["name"], m["display"]) for m in rows],
+                         [("plugin_kit_vanta", "plugin:kit:vanta")])
+        self.assertEqual(mcp_client.servable({"mcps": {"plugin_kit_vanta": {"enabled": False}}}), {})
+
+    def test_a_plugin_def_cannot_name_or_expand_an_otto_secret(self):
+        """Its PUBLISHER wrote it: neither the bare-name secret lookup nor `${VAR}` may reach
+        Otto's credentials, which `claude -p` never hands it either."""
+        self._install("kit@m", mcp={"s": {"command": "true", "args": ["${OTTO_SLACK_BOT_TOKEN}"],
+                                          "env": {"A": "OTTO_SLACK_BOT_TOKEN", "B": "${HOME}"}}})
+        keep = dict(os.environ)
+        try:
+            os.environ.update({"OTTO_SLACK_BOT_TOKEN": "xoxb-CANARY", "HOME": "/h"})
+            spec = mcp_client.servable({})["plugin_kit_s"]
+            env = mcp_client.env_for(spec)
+            self.assertEqual((env["A"], env["B"]), ("OTTO_SLACK_BOT_TOKEN", "/h"))
+            self.assertNotIn("xoxb-CANARY", mcp_client._publisher_expand(spec["args"][0]))
+            self.assertNotIn("xoxb-CANARY", json.dumps(env))
+        finally:
+            os.environ.clear()
+            os.environ.update(keep)
+
+    def test_the_plugin_installs_are_write_denied(self):
+        self.assertTrue(file_safety.is_denied(os.path.expanduser(
+            "~/.claude/plugins/cache/m/kit/1.0.0/.mcp.json")),
+            "a run could edit a plugin's mcpServers def that the next run executes")
+
+
 class McpUserScopeSpawnTests(unittest.TestCase):
     """The activation gate (issue #4) closed ONE of the two files whose `mcpServers` map is
     spawned as the operator. `~/.claude.json` is the other, and it was writable by any run
