@@ -19,7 +19,7 @@ import estop
 import storage
 
 REMOTE, BRANCH = "origin", "main"
-FETCH_EVERY_S = 900
+FETCH_EVERY_S = 300
 HEALTH_WAIT_S = 180
 ALREADY_RUNNING = "An update is already running."
 _ROOT = os.path.dirname(os.path.abspath(__file__))

@@ -62,7 +62,7 @@ session and no convention judge pays for it.
 
 The header **Update · N** button (`updater.py`) fast-forwards to `origin/main` and restarts the
 service — the systemd user unit on Linux, the `com.otto` LaunchAgent on macOS. A manual
-`./run.sh` has no manager to restart it, so the button stays hidden. The server fetches every 15min.
+`./run.sh` has no manager to restart it, so the button stays hidden. The server fetches every 5min.
 
 - **It refuses rather than guesses**: not on `main`, a dirty tree, no fast-forward, an
   `install.sh` change, a run in flight, or a gate-parked run when workflow code changed (it
