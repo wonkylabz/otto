@@ -221,8 +221,9 @@ async function getJSON(path){
 const POLL_SKIP = Symbol("poll-skip");
 function poll(fn, ms, cap){
   const ceiling=cap||60000;
-  let delay=ms, timer=null, running=false;
-  const arm=()=>{ clearTimeout(timer); timer=setTimeout(tick, delay); };
+  let delay=ms, timer=null, running=false, stopped=false;
+  // `stopped`: a disposer called from INSIDE `fn` would otherwise be undone by the re-arm below.
+  const arm=()=>{ clearTimeout(timer); if(!stopped) timer=setTimeout(tick, delay); };
   async function tick(){
     // Disarmed FIRST, not just re-armed at the end: `fn` is awaited, so a tick fired by the
     // visibility handler leaves the scheduled one live across that await — and a slow fetch
@@ -247,5 +248,5 @@ function poll(fn, ms, cap){
   arm();
   // A disposer that left the listener attached would not be one: the next tab return calls
   // `tick`, which re-arms, and the poller is alive again.
-  return ()=>{ clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); };
+  return ()=>{ stopped=true; clearTimeout(timer); document.removeEventListener("visibilitychange", onVis); };
 }

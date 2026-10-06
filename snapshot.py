@@ -48,7 +48,7 @@ RUNTIME = frozenset({
     "otto.db", "conventions.json", "notify-state.json", "event-replay.json",
     "gateway-stats.json", "mcp-tools.json", "mcp-connectors-cache.json", "pr-review-state.json",
     "slack-state.json", "slack-triggers-state.json", "schedules.json", "dismissed.json",
-    "retries.json", "ESTOP", "transcripts", "codex-home", "local-sessions", "repos", "logs",
+    "retries.json", "update-state.json", "ESTOP", "transcripts", "codex-home", "local-sessions", "repos", "logs",
     "workspaces", "uploads", ".api",
 })
 

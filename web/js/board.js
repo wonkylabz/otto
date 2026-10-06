@@ -33,6 +33,7 @@ async function pollAdminBadge(){
     // Same tick keeps the pause current, so a pause engaged from the CLI, another tab, or a
     // `touch data/ESTOP` shows up here within 15s without this page owning a poller.
     applyEstop(d.estop);
+    applyUpdate(d.update);
   }catch(e){ return false; }   // `poll` backs off — a badge is not worth a toast
 }
 poll(pollAdminBadge, 15000);

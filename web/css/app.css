@@ -34,6 +34,7 @@
   .estop.on { color: var(--on-accent); background: var(--danger); border-color: var(--danger-deep); }
   .estop.on:hover { color: var(--on-accent); background: var(--danger-deep); }
   .estop.on .estopdot { background: var(--on-accent); animation: estopPulse 1.6s ease-in-out infinite; }
+  .updbtn { color: var(--accent); border-color: var(--accent); }
   .estop[disabled] { opacity: .55; cursor: progress; }
   @keyframes estopPulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
   @media (prefers-reduced-motion: reduce) { .estop.on .estopdot { animation: none; } }

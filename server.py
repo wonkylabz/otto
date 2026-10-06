@@ -19,6 +19,7 @@ import json
 import os
 import re
 import socketserver
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
@@ -53,6 +54,7 @@ import slack_triggers
 import snapshot
 import storage
 import supervisor
+import updater
 import workspace
 
 # Temporal is REQUIRED to serve (main() refuses to start without it — issue #278). The import
@@ -910,6 +912,28 @@ def _classify(row):
     return None
 
 
+def _update_status():
+    """The update modal's view: what's pending and why it can't run yet. Shells out to git and
+    reads Temporal, so only the modal asks for it, never a panel load."""
+    try:
+        runs = tc.run(_needs_you()).get("buckets", {}) if TEMPORAL_OK else {}
+    except Exception:  # noqa: BLE001
+        runs = {}
+    d = updater._read()
+    return {**updater.summary(), "commits": d.get("commits", []), "fetched_at": d.get("fetched_at"),
+            "fetch_error": d.get("fetch_error", ""), "last": d.get("job") or {},
+            "revision": config.revision(), "blockers": updater.blockers(runs)}
+
+
+def _update_fetch_loop():
+    while True:
+        try:
+            updater.fetch()
+        except Exception as e:  # noqa: BLE001 - next tick retries
+            print(f"update fetch failed: {e}", flush=True)
+        time.sleep(updater.FETCH_EVERY_S)
+
+
 async def _needs_you(limit=40):
     """One aggregated view for hands-off operation: what needs a human, what's stuck/failed, and
     what's in flight — plus a health strip (Temporal, board poll, reaper). Read-only, best-effort."""
@@ -1334,6 +1358,7 @@ class Handler(BaseHTTPRequestHandler):
                                         # 15s badge tick AND before every turn (refreshHealth), so
                                         # the pause reaches the header with no extra request.
                                         "estop": estop.status(),
+                                        "update": updater.summary(),
                                         "uptime_s": int(time.time() - _START_TIME)}))
         elif self.path == "/api/doctor":
             # Environment doctor (portability): which features are silently degraded on THIS
@@ -1497,6 +1522,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({"temporal": True, "buckets": {}, "counts": {},
                                             "health": {"temporal": True}, "error": str(e)[:200]})); return
             self._send(200, json.dumps({"temporal": True, **data}))
+        elif self.path == "/api/update":
+            self._send(200, json.dumps(_update_status()))
         elif self.path == "/api/estop":
             # Global pause state. Cheap (one os.stat) — safe for the header to poll.
             self._send(200, json.dumps(estop.status()))
@@ -2568,6 +2595,22 @@ class Handler(BaseHTTPRequestHandler):
         knowledge.clear()
         self._send(200, json.dumps({"ok": True}))
 
+    def _post_update(self, body):
+        """POST /api/update — takes no input: what is pulled is always origin/main."""
+        st = _update_status()
+        if st["blockers"]:
+            self._send(409, json.dumps({"error": st["blockers"][0], **st})); return
+        if not st["behind"]:
+            self._send(409, json.dumps({"error": "Already up to date.", **st})); return
+        ok, err = updater.launch(self.server.server_address[1], updater.service_unit())
+        code = 200 if ok else 409 if err == updater.ALREADY_RUNNING else 500
+        self._send(code, json.dumps({"started": ok, "error": err}))
+
+    def _post_update_check(self, body):
+        """POST /api/update/check — fetch now instead of waiting for the background tick."""
+        updater.fetch()
+        self._send(200, json.dumps(_update_status()))
+
     def _post_knowledge_settings(self, body):
         """POST /api/knowledge/settings"""
         self._send(200, json.dumps({"ok": True, "settings": knowledge.set_settings(
@@ -2800,6 +2843,8 @@ _POST_ROUTES = {
     "/api/knowledge/preview": Handler._post_knowledge_preview,
     "/api/knowledge/reembed": Handler._post_knowledge_reembed,
     "/api/knowledge/settings": Handler._post_knowledge_settings,
+    "/api/update": Handler._post_update,
+    "/api/update/check": Handler._post_update_check,
     "/api/mcp/activate": Handler._post_mcp_activate,
     "/api/mcp/add": Handler._post_mcp_add,
     "/api/mcp/note": Handler._post_mcp_note,
@@ -2901,6 +2946,7 @@ def main():
     print(f"Slack socket: {slack_socket.reconcile()}", flush=True)
     # PR-review poll schedule — same out-of-"otto-*"-namespace reasoning.
     print(f"PR reviews: {pr_review.reconcile_schedule()}", flush=True)
+    threading.Thread(target=_update_fetch_loop, name="update-fetch", daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
