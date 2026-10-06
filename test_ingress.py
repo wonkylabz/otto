@@ -5068,6 +5068,17 @@ class HiddenAttributeTests(unittest.TestCase):
         self.assertRegex(ui_src(), r"\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}")
 
 
+class ChatListRecoveryTests(unittest.TestCase):
+    """A restart painted "Couldn't load your chats" and it stayed after the server came back:
+    the unchanged-list guard matched the old signature, so the recovered list never re-rendered."""
+
+    def test_the_error_path_forgets_the_render_signature(self):
+        src = ui_src()
+        body = src[src.index("async function loadChatList(){"):]
+        catch = body[body.index("catch(e){"):body.index("return false;")]
+        self.assertIn("delete el.dataset.sig", catch)
+
+
 class SubsectionIndentTests(unittest.TestCase):
     """A section nested inside another (Slack -> Auto-answer, GitHub -> Board queue) has to LOOK
     nested. Quieter type alone doesn't say it: on the Events tab the inner heading sits directly

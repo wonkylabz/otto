@@ -482,7 +482,11 @@ async function loadChatList(){
   // A failed read used to paint an EMPTY chat list, which reads as "my chats are gone".
   let data;
   try { data=await getJSON("/api/chats"); }
-  catch(e){ el.innerHTML=`<p class="err">Couldn't load your chats (${esc(e.message)}).</p>`; return false; }
+  catch(e){
+    // The error replaces the list, so the "unchanged" guard below must not match it on recovery.
+    delete el.dataset.sig;
+    el.innerHTML=`<p class="err">Couldn't load your chats (${esc(e.message)}).</p>`; return false;
+  }
   const items=data.chats||[];
   const present=new Set(items.map(c=>c.id));
   const running=new Set(items.filter(c=>c.run_id).map(c=>c.id));
