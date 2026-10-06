@@ -1,4 +1,6 @@
   * { box-sizing: border-box; }
+  /* Any class setting `display` would otherwise override `hidden` (author beats UA styles). */
+  [hidden] { display: none !important; }
   body { margin: 0; height: 100vh; overflow: hidden; background: var(--ground); color: var(--text);
     font-family: var(--sans); font-size: 15px; line-height: 1.55; display: flex; flex-direction: column; }
   /* shared form controls; later per-context rules override layout only */
@@ -464,10 +466,8 @@
   .optpanel { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md);
     padding: 11px 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 10px; }
   .optbar { font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 7px; }
-  /* A class that sets its own `display` always beats the UA stylesheet's `[hidden]{display:none}`
-     (author styles outrank user-agent styles regardless of selector specificity) — so a `display`-
-     setting class must pair with its own [hidden] override, same as .adminview/.modalOverlay/.notif
-     elsewhere on this page, or the element ignores `hidden` entirely and always renders. */
+  /* A class that sets its own `display` beats the UA's `[hidden]{display:none}` — the global
+     `[hidden]` rule at the top of this file is what makes `hidden` mean hidden everywhere. */
   .optbar[hidden] { display: none; }
   .optrow { display: flex; align-items: center; gap: 14px; row-gap: 6px; flex-wrap: wrap; }
   .optlabel { color: var(--dim); font-size: 12px; font-weight: 500; flex: none; width: 112px; }
