@@ -19,6 +19,7 @@ AGENTS_DIR = os.path.expanduser("~/.claude/agents")
 SKILLS_DIR = os.path.expanduser("~/.claude/skills")
 STOCK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capabilities")  # bundled with Otto
 PLUGINS_FILE = os.path.expanduser("~/.claude/plugins/installed_plugins.json")
+PLUGIN_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")   # `enabledPlugins`
 CUSTOM_FILE = os.path.join(config.DATA_DIR, "capabilities.json")
 PROJECTS_FILE = os.path.join(config.DATA_DIR, "projects.json")   # external repos to import .claude/ from
 
@@ -207,12 +208,15 @@ def _declared_tools(fm):
     return [t.strip() for t in re.split(r"[,\s]+", raw) if t.strip()]
 
 
-def plugin_skills():
-    """Skills bundled in installed Claude Code plugins, USER-scoped installs only. Reads the
-    authoritative install manifest (`installed_plugins.json` → a versioned `installPath` per
-    plugin), globs each plugin's `skills/` recursively (some plugins nest skills in sub-dirs),
-    and namespaces each as `<plugin>:<skill>` — the form Claude Code uses to invoke them.
-    Yields (name, description, plugin, path)."""
+def _user_plugin_installs():
+    """(manifest key, plugin, installPath) per USER-scoped install in `installed_plugins.json`.
+
+    PROJECT-scoped installs are skipped: a plugin installed for one repo is only loaded by
+    `claude -p` when it runs from THAT repo, and Otto's execution cwd is its own directory (or
+    a provisioned clone), so `/<plugin>:<skill>` there is an unknown command. Offering one to
+    the router is strictly a trap — measured: a Slack run routed to a project-scoped plugin
+    skill and burned all three attempts plus a final Opus escalation on `Unknown command`.
+    A plugin installed at BOTH scopes still surfaces via its user-scope entry."""
     try:
         with open(PLUGINS_FILE) as f:
             manifest = json.load(f)
@@ -221,12 +225,6 @@ def plugin_skills():
     for key, installs in (manifest.get("plugins") or {}).items():
         plugin = key.split("@", 1)[0]
         seen = set()
-        # PROJECT-scoped installs are skipped: a plugin installed for one repo is only loaded by
-        # `claude -p` when it runs from THAT repo, and Otto's execution cwd is its own directory (or
-        # a provisioned clone), so `/<plugin>:<skill>` there is an unknown command. Offering one to
-        # the router is strictly a trap — measured: a Slack run routed to a project-scoped plugin
-        # skill and burned all three attempts plus a final Opus escalation on `Unknown command`.
-        # A plugin installed at BOTH scopes still surfaces via its user-scope entry.
         for inst in installs or []:
             if (inst.get("scope") or "user") != "user":
                 continue
@@ -234,10 +232,83 @@ def plugin_skills():
             if not base or base in seen:
                 continue
             seen.add(base)
-            for path in sorted(glob.glob(os.path.join(base, "skills", "**", "SKILL.md"), recursive=True)):
-                fm = _frontmatter(path)
-                if fm.get("name"):
-                    yield f"{plugin}:{fm['name']}", fm.get("description", ""), plugin, path
+            yield key, plugin, base
+
+
+def plugin_skills():
+    """Skills bundled in installed Claude Code plugins, USER-scoped installs only. Globs each
+    plugin's `skills/` recursively (some plugins nest skills in sub-dirs), and namespaces each
+    as `<plugin>:<skill>` — the form Claude Code uses to invoke them.
+    Yields (name, description, plugin, path)."""
+    for _key, plugin, base in _user_plugin_installs():
+        for path in sorted(glob.glob(os.path.join(base, "skills", "**", "SKILL.md"), recursive=True)):
+            fm = _frontmatter(path)
+            if fm.get("name"):
+                yield f"{plugin}:{fm['name']}", fm.get("description", ""), plugin, path
+
+
+def _plugin_disabled():
+    """Manifest keys switched off in `~/.claude/settings.json`'s `enabledPlugins` — absent
+    means enabled, as Claude Code reads it."""
+    try:
+        with open(PLUGIN_SETTINGS_FILE) as f:
+            enabled = json.load(f).get("enabledPlugins") or {}
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return {k for k, v in enabled.items() if v is False}
+
+
+def _plugin_root(value, base):
+    if isinstance(value, dict):
+        return {k: _plugin_root(v, base) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plugin_root(v, base) for v in value]
+    if isinstance(value, str):
+        return value.replace("${CLAUDE_PLUGIN_ROOT}", base)
+    return value
+
+
+def _plugin_mcp_maps(base):
+    """The `mcpServers` maps one plugin declares: `plugin.json`'s `mcpServers` (a path, a
+    list of paths, or an inline map), else the root `.mcp.json`."""
+    try:
+        with open(os.path.join(base, ".claude-plugin", "plugin.json")) as f:
+            decl = json.load(f).get("mcpServers")
+    except (OSError, ValueError, AttributeError):
+        decl = None
+    if isinstance(decl, dict):
+        return [decl.get("mcpServers", decl)]
+    paths = [decl] if isinstance(decl, str) else decl if isinstance(decl, list) else [".mcp.json"]
+    out = []
+    for p in paths:
+        try:
+            with open(os.path.join(base, str(p))) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            out.append(data.get("mcpServers", data))
+    return out
+
+
+def plugin_mcp_servers():
+    """MCP servers bundled in enabled, user-scoped plugins: `{name: (cli_name, def)}`.
+
+    `name` is Claude Code's tool namespace (`plugin_<plugin>_<server>`), so a cap's
+    `mcp__plugin_…` declaration and the local Pool's tool ids agree; `cli_name` is the
+    `plugin:<plugin>:<server>` spelling `claude mcp list` reports health under.
+    `${CLAUDE_PLUGIN_ROOT}` is substituted here — no process env ever holds it."""
+    disabled = _plugin_disabled()
+    out = {}
+    for key, plugin, base in _user_plugin_installs():
+        if key in disabled:
+            continue
+        for servers in _plugin_mcp_maps(base):
+            for server, d in (servers or {}).items():
+                if isinstance(d, dict):
+                    out[f"plugin_{plugin}_{server}"] = (f"plugin:{plugin}:{server}",
+                                                        _plugin_root(d, base))
+    return out
 
 
 def _project_entries():

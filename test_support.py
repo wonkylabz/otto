@@ -159,6 +159,9 @@ def redirect_live_state():
     # The three DB aliases are copies of config.DB_PATH taken at import, so re-pointing the
     # constant above does not move them. All six stores in otto.db resolve through one of these.
     engine._DB = chats._DB = knowledge._DB = config.DB_PATH
+    # The operator's real plugin installs would otherwise join `mcp_client.servable()`.
+    registry.PLUGINS_FILE = os.path.join(home, "installed_plugins.json")
+    registry.PLUGIN_SETTINGS_FILE = os.path.join(home, "claude-settings.json")
     _pin_cloud_model_discovery()
     _authenticate_http_clients()
     # A read run's judge would otherwise reach a real `claude -p` past every `gateway.complete`

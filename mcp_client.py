@@ -57,6 +57,7 @@ import claude_cli
 import config
 import lexicon
 import policy
+import registry
 import storage
 
 # Claude Code's naming, so an inlined SKILL.md that says `mcp__newrelic__query_nrql` still
@@ -245,6 +246,9 @@ def env_for(spec):
 
     The operator's own environment is inherited MINUS Otto's credentials (`_inherited_env`) —
     a stdio server is third-party code we spawn, and it needed no secret of ours to run."""
+    if spec.get("_plugin"):     # never a secret NAME: `{"X": "OTTO_SLACK_BOT_TOKEN"}` is literal
+        return {**_inherited_env(), **{str(k): _publisher_expand(v)
+                                       for k, v in (spec.get("env") or {}).items()}}
     return {**_inherited_env(), **resolve_env_map(spec.get("env"))}
 
 
@@ -270,8 +274,20 @@ def _user_servers():
     backend regardless of what Otto thinks — so requiring activation here would only make a
     server inert on ONE backend while the other ran it, closing nothing. What made this file a
     self-escalation was that a RUN could append to it, which is now a write deny in
-    `file_safety.denied_globs`. Trust the operator's file, keep runs out of it."""
-    return {n: d for n, d in _user_mcp_raw().items() if _is_stdio(d)}
+    `file_safety.denied_globs`. Trust the operator's file, keep runs out of it.
+
+    Servers bundled in the operator's enabled plugins join on the same terms (`claude plugin
+    install` is the same act, and `claude -p` spawns them too); `~/.claude/plugins` is
+    write-denied for the same reason. The operator's own file wins a name clash."""
+    plugins = {n: {**d, "_plugin": True} for n, (_cli, d) in registry.plugin_mcp_servers().items()}
+    return {n: d for n, d in {**plugins, **_user_mcp_raw()}.items() if _is_stdio(d)}
+
+
+def _publisher_expand(v):
+    """`${VAR}` in a PLUGIN def, expanded only from the stripped env (unknown -> ""). Its
+    publisher wrote it, not the operator — the full env would hand it Otto's secrets."""
+    env = _inherited_env()
+    return _ENV_REF_RE.sub(lambda m: env.get(m.group(1) or m.group(2), ""), str(v))
 
 
 def _user_mcp_raw():
@@ -662,8 +678,8 @@ class Session:
     # -- transport --
     def start(self):
         env = env_for(self.spec)
-        cmd = [str(_expand(self.spec["command"]))] + [str(_expand(a))
-                                                      for a in (self.spec.get("args") or [])]
+        exp = _publisher_expand if self.spec.get("_plugin") else (lambda v: str(_expand(v)))
+        cmd = [exp(self.spec["command"])] + [exp(a) for a in (self.spec.get("args") or [])]
         self.proc = subprocess.Popen(
             cmd, env=env, cwd=self.spec.get("cwd") or None,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

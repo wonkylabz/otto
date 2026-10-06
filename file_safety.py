@@ -152,6 +152,9 @@ def denied_globs(allow_cwd=None):
         # material (`_secret_store_globs`); a read deny is a separate rule and does not cover
         # the write.
         os.path.join(home, ".claude.json"),
+        # ... and the plugin installs, whose bundled MCP defs both backends spawn the same way
+        # (`registry.plugin_mcp_servers`): editing a plugin's `.mcp.json` is the same escalation.
+        os.path.join(home, ".claude", "plugins", "**"),
         # Otto's own secrets (OTTO_SLACK_USER_TOKEN, the event HMAC) ...
         os.path.join(root, ".env"),
         # ... its audit trail, which is immutable by design and the only durable record that a
