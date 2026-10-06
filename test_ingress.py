@@ -8590,6 +8590,36 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(self.u.launch(0, "otto.service", root=self.work),
                          (False, "An update is already running."))
 
+    def test_an_updater_that_never_starts_is_reported_not_left_running(self):
+        with unittest.mock.patch.object(self.u, "_unit_log", return_value="can't open file"):
+            ok, err = self.u.launch(0, "otto.service", root=self.work,
+                                    spawn=lambda argv: (0, ""), ack_s=1)
+        self.assertFalse(ok)
+        self.assertIn("never started", err)
+        self.assertEqual(self.u.summary()["job"], "failed")
+
+    def test_launch_returns_once_apply_checks_in(self):
+        def spawn(argv):
+            self.u._merge(job={**self.u._read()["job"], "pid": 123})
+            return 0, ""
+        self.assertEqual(self.u.launch(0, "otto.service", root=self.work, spawn=spawn), (True, ""))
+
+    def test_a_running_job_whose_unit_died_is_not_running(self):
+        job = {"state": "running", "started_at": time.time(), "pid": 1, "unit": "otto-update-1"}
+        storage.write_json(self.u.path(), {"job": job})
+        with unittest.mock.patch.object(self.u, "_unit_active", return_value=False):
+            self.assertEqual(self.u.summary()["job"], "failed")
+            self.assertEqual(self.u.launch(0, "x", root=self.work, spawn=lambda a: (1, "boom"))[1],
+                             "boom")
+        with unittest.mock.patch.object(self.u, "_unit_active", return_value=True):
+            storage.write_json(self.u.path(), {"job": job})
+            self.assertEqual(self.u.summary()["job"], "running")
+
+    def test_a_job_that_never_checked_in_expires_in_a_minute(self):
+        storage.write_json(self.u.path(), {"job": {"state": "running",
+                                                   "started_at": time.time() - 61}})
+        self.assertEqual(self.u.summary()["job"], "failed")
+
     def test_service_unit_reads_the_cgroup(self):
         p = os.path.join(self.tmp, "cg")
         with open(p, "w") as f:
