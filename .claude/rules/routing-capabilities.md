@@ -14,7 +14,7 @@
 
 ## Capabilities
 
-`registry.py` — discovers `~/.claude` agents/skills, plugin skills (`<plugin>:<skill>`), stock caps (`capabilities/bundled/*.md` on, `capabilities/optional/*.md` opt-in). User caps win over stock.
+`registry.py` — discovers `~/.claude` agents/skills, plugin skills+agents (`<plugin>:<name>`), stock caps (`capabilities/bundled/*.md` on, `capabilities/optional/*.md` opt-in). User caps win over stock.
 
 - **Only user-scoped plugin installs are discovered** — a `scope:"project"` plugin skill has no cwd Otto can invoke it from, so offering it guarantees `Unknown command` after burning the ladder. Project *caps* (`registry.project_skills`) are the analogue — they carry `cap.cwd`.
 - **Project capabilities** — agents/skills in another repo's `.claude/`, namespaced `<repo>:<name>` but invoked bare. Registered in `data/projects.json`; each carries `cap.cwd`+`cap.mcp_config`.

@@ -74,7 +74,7 @@ class Capability:
         self.enabled = True                            # toggled by admin policy
         self.source = "builtin"                        # default for discovered ~/.claude caps; else "otto" | "project" | "stock"
         self.prompt = None                             # set for custom (kind="custom") caps
-        self.plugin = None                             # set for plugin-bundled skills
+        self.plugin = None                             # set for plugin-bundled skills/agents
         self.invoke_name = name                        # bare name used in the actual invocation
         self.cwd = None                                # run `claude -p` from here (project caps)
         self.mcp_config = None                         # repo `.mcp.json` to merge in (project caps)
@@ -242,6 +242,16 @@ def plugin_skills():
     Yields (name, description, plugin, path)."""
     for _key, plugin, base in _user_plugin_installs():
         for path in sorted(glob.glob(os.path.join(base, "skills", "**", "SKILL.md"), recursive=True)):
+            fm = _frontmatter(path)
+            if fm.get("name"):
+                yield f"{plugin}:{fm['name']}", fm.get("description", ""), plugin, path
+
+
+def plugin_agents():
+    """Subagents bundled in USER-scoped plugins (`agents/*.md`), namespaced `<plugin>:<agent>` —
+    the subagent type Claude Code registers them under. Yields (name, description, plugin, path)."""
+    for _key, plugin, base in _user_plugin_installs():
+        for path in sorted(glob.glob(os.path.join(base, "agents", "*.md"))):
             fm = _frontmatter(path)
             if fm.get("name"):
                 yield f"{plugin}:{fm['name']}", fm.get("description", ""), plugin, path
@@ -579,12 +589,15 @@ def load():
             cap.path = path
             cap.declared_tools = _declared_tools(fm)
             caps.append(cap)
-    # Skills bundled in installed plugins (namespaced plugin:skill).
-    for name, desc, plugin, path in plugin_skills():
-        cap = Capability("skill", name, desc)
-        cap.plugin = plugin
-        cap.path = path
-        caps.append(cap)
+    # Skills and agents bundled in installed plugins (namespaced plugin:name).
+    for kind, found in (("skill", plugin_skills()), ("agent", plugin_agents())):
+        for name, desc, plugin, path in found:
+            cap = Capability(kind, name, desc)
+            cap.plugin = plugin
+            cap.path = path
+            if kind == "agent":
+                cap.declared_tools = _declared_tools(_frontmatter(path))
+            caps.append(cap)
     # Project-scoped caps from external repos' `.claude/` (run with the repo as cwd).
     for kind, name, invoke, desc, cwd, mcp, path in project_skills():
         cap = Capability(kind, name, desc)
