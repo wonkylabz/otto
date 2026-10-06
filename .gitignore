@@ -22,6 +22,7 @@ data/audit.log.*
 data/audit-content.log.*
 data/*.db*
 data/*.lock
+data/update-job.plist
 data/memory
 data/transcripts
 data/.mcp-active.json

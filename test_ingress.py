@@ -8513,37 +8513,37 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(d["commits"][0]["title"], "add b.py")
 
     def test_clean_main_has_no_blockers(self):
-        self.assertEqual(self.u.blockers({}, root=self.work, unit="otto.service"), [])
+        self.assertEqual(self.u.blockers({}, root=self.work, svc="otto.service"), [])
 
     def test_no_service_blocks(self):
-        self.assertIn("systemd", self.u.blockers({}, root=self.work, unit="")[0])
+        self.assertIn("systemd", self.u.blockers({}, root=self.work, svc="")[0])
 
     def test_each_unsafe_state_blocks(self):
         with open(os.path.join(self.work, "a.py"), "w") as f:
             f.write("dirty")
-        self.assertTrue(any("uncommitted" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+        self.assertTrue(any("uncommitted" in b for b in self.u.blockers({}, root=self.work, svc="x")))
         self._git(self.work, "checkout", "-q", "--", "a.py")
         self.assertTrue(any("in flight" in b for b in
-                            self.u.blockers({"in_flight": [{}]}, root=self.work, unit="x")))
+                            self.u.blockers({"in_flight": [{}]}, root=self.work, svc="x")))
         self._git(self.work, "checkout", "-qb", "feat")
-        self.assertTrue(any("not 'main'" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+        self.assertTrue(any("not 'main'" in b for b in self.u.blockers({}, root=self.work, svc="x")))
         self._git(self.work, "checkout", "-q", "main")
         self._commit(self.work, "c.py", "3")
-        self.assertTrue(any("fast-forward" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+        self.assertTrue(any("fast-forward" in b for b in self.u.blockers({}, root=self.work, svc="x")))
 
     def test_parked_runs_block_only_when_workflow_code_changes(self):
         parked = {"awaiting_approval": [{}]}
-        self.assertEqual(self.u.blockers(parked, root=self.work, unit="x"), [])
+        self.assertEqual(self.u.blockers(parked, root=self.work, svc="x"), [])
         self._commit(self.other, "wf_repo.py", "x")
         self._git(self.other, "push", "-q", "origin", "main")
         self.u.fetch(root=self.work)
-        self.assertTrue(any("parked" in b for b in self.u.blockers(parked, root=self.work, unit="x")))
+        self.assertTrue(any("parked" in b for b in self.u.blockers(parked, root=self.work, svc="x")))
 
     def test_install_sh_change_blocks(self):
         self._commit(self.other, "install.sh", "x")
         self._git(self.other, "push", "-q", "origin", "main")
         self.u.fetch(root=self.work)
-        self.assertTrue(any("install.sh" in b for b in self.u.blockers({}, root=self.work, unit="x")))
+        self.assertTrue(any("install.sh" in b for b in self.u.blockers({}, root=self.work, svc="x")))
 
     def test_apply_fast_forwards_restarts_and_releases_its_pause(self):
         old, restarts = self._head(), []
@@ -8611,7 +8611,7 @@ class UpdaterTests(unittest.TestCase):
                          (False, "An update is already running."))
 
     def test_an_updater_that_never_starts_is_reported_not_left_running(self):
-        with unittest.mock.patch.object(self.u, "_unit_log", return_value="can't open file"):
+        with unittest.mock.patch.object(self.u, "_job_log", return_value="can't open file"):
             ok, err = self.u.launch(0, "otto.service", root=self.work,
                                     spawn=lambda argv: (0, ""), ack_s=1)
         self.assertFalse(ok)
@@ -8649,11 +8649,11 @@ class UpdaterTests(unittest.TestCase):
     def test_a_running_job_whose_unit_died_is_not_running(self):
         job = {"state": "running", "started_at": time.time(), "pid": 1, "unit": "otto-update-1"}
         storage.write_json(self.u.path(), {"job": job})
-        with unittest.mock.patch.object(self.u, "_unit_active", return_value=False):
+        with unittest.mock.patch.object(self.u, "_job_alive", return_value=False):
             self.assertEqual(self.u.summary()["job"], "failed")
             self.assertEqual(self.u.launch(0, "x", root=self.work, spawn=lambda a: (1, "boom"))[1],
                              "boom")
-        with unittest.mock.patch.object(self.u, "_unit_active", return_value=True):
+        with unittest.mock.patch.object(self.u, "_job_alive", return_value=True):
             storage.write_json(self.u.path(), {"job": job})
             self.assertEqual(self.u.summary()["job"], "running")
 
@@ -8662,14 +8662,98 @@ class UpdaterTests(unittest.TestCase):
                                                    "started_at": time.time() - 61}})
         self.assertEqual(self.u.summary()["job"], "failed")
 
+    def test_launchd_job_must_be_our_ancestor(self):
+        out = "gui/501/com.otto = {\n\tstate = running\n\tpid = 4242\n}"
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, out)):
+            job = self.u._launchd_job
+            self.assertEqual(job({"XPC_SERVICE_NAME": "com.otto"}, lambda: {4242, 1}), "com.otto")
+            self.assertEqual(job({"XPC_SERVICE_NAME": "com.otto"}, lambda: {77}), "")
+            for label in ("", "0", "application.com.apple.Terminal.1A2B"):
+                self.assertEqual(job({"XPC_SERVICE_NAME": label}, lambda: {4242}), "")
+        with unittest.mock.patch.object(self.u, "_launchctl", side_effect=FileNotFoundError):
+            self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "com.otto"}, lambda: {4242}), "")
+
+    def test_service_keeps_a_hit_and_retries_a_miss_after_its_ttl(self):
+        self.addCleanup(self.u._SERVICE.update, found="", miss_at=0.0)
+        self.u._SERVICE.update(found="", miss_at=0.0)
+        calls = []
+        answers = iter(["", "com.otto"])
+
+        def probe():
+            calls.append(1)
+            return next(answers)
+        with unittest.mock.patch.object(self.u.sys, "platform", "darwin"), \
+                unittest.mock.patch.object(self.u, "_launchd_job", side_effect=probe):
+            self.assertEqual(self.u.service(), "")
+            self.assertEqual(self.u.service(), "")          # miss cached: no second probe
+            self.assertEqual(len(calls), 1)
+            self.u._SERVICE["miss_at"] -= self.u._MISS_TTL_S + 1
+            self.assertEqual(self.u.service(), "launchd:com.otto")
+            self.assertEqual(self.u.service(), "launchd:com.otto")
+            self.assertEqual(len(calls), 2)
+
+    def test_the_job_id_survives_every_terminal_write(self):
+        storage.write_json(self.u.path(), {"job": {"state": "running", "unit": "launchd:com.otto.update.5",
+                                                   "started_at": time.time()}})
+        self.u.apply(self._head(), 0, "launchd:com.otto", root=self.work, busy=lambda: 0,
+                     restart=lambda: None, wait=lambda sha: True)
+        self.assertEqual(self.u._read()["job"]["unit"], "launchd:com.otto.update.5")
+        storage.write_json(self.u.path(), {})
+        with unittest.mock.patch.object(self.u, "_job_log", return_value=""):
+            self.u.launch(0, "launchd:com.otto", root=self.work, spawn=lambda a: (0, ""), ack_s=0)
+        self.assertTrue(self.u._read()["job"]["unit"].startswith("launchd:com.otto.update."))
+
+    def test_restart_uses_the_services_own_manager(self):
+        uid = os.getuid()
+        self.assertEqual(self.u._restart_argv("launchd:com.otto"),
+                         ["launchctl", "kickstart", "-k", f"gui/{uid}/com.otto"])
+        self.assertEqual(self.u._restart_argv("systemd:otto.service"),
+                         ["systemctl", "--user", "restart", "otto.service"])
+        self.assertEqual(self.u._split("otto-update-1"), ("systemd", "otto-update-1"))
+
+    def test_launchd_launch_bootstraps_a_one_shot_agent(self):
+        import plistlib
+        storage.write_json(self.u.path(), {"job": {"state": "done", "unit": "launchd:com.otto.update.1"}})
+        calls = []
+
+        def spawn(argv):
+            calls.append(argv)
+            if argv[1] == "bootstrap":
+                self.u._merge(job={**self.u._read()["job"], "pid": 9})
+            return 0, ""
+        self.assertEqual(self.u.launch(0, "launchd:com.otto", root=self.work, spawn=spawn), (True, ""))
+        uid = os.getuid()
+        self.assertEqual(calls[0], ["launchctl", "bootout", f"gui/{uid}/com.otto.update.1"])
+        self.assertEqual(calls[1][:3], ["launchctl", "bootstrap", f"gui/{uid}"])
+        with open(calls[1][3], "rb") as f:
+            plist = plistlib.load(f)
+        self.assertNotIn("KeepAlive", plist)
+        self.assertTrue(plist["Label"].startswith("com.otto.update."))
+        self.assertEqual(plist["ProgramArguments"][-1], "launchd:com.otto")
+        self.assertEqual(self.u._read()["job"]["unit"], "launchd:" + plist["Label"])
+
+    def test_launchd_job_liveness_and_log(self):
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, "\tstate = running\n")):
+            self.assertTrue(self.u._job_alive("launchd:com.otto.update.1"))
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, "\tstate = not running\n")):
+            self.assertFalse(self.u._job_alive("launchd:com.otto.update.1"))
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(113, "")):
+            self.assertFalse(self.u._job_alive("launchd:com.otto.update.1"))
+        with unittest.mock.patch.object(self.u, "_launchctl", side_effect=OSError):
+            self.assertTrue(self.u._job_alive("launchd:com.otto.update.1"))
+        os.makedirs(os.path.dirname(self.u._launchd_log()), exist_ok=True)
+        with open(self.u._launchd_log(), "w") as f:
+            f.write("can't open file 'updater.py'\n")
+        self.assertIn("can't open file", self.u._job_log("launchd:com.otto.update.1"))
+
     def test_service_unit_reads_the_cgroup(self):
         p = os.path.join(self.tmp, "cg")
         with open(p, "w") as f:
             f.write("0::/user.slice/user-1000.slice/user@1000.service/app.slice/otto.service\n")
-        self.assertEqual(self.u.service_unit(p), "otto.service")
+        self.assertEqual(self.u._systemd_unit(p), "otto.service")
         with open(p, "w") as f:
             f.write("0::/user.slice/user-1000.slice/user@1000.service/app.slice/vte-spawn-x.scope\n")
-        self.assertEqual(self.u.service_unit(p), "")
+        self.assertEqual(self.u._systemd_unit(p), "")
 
     def test_post_update_takes_nothing_from_the_body(self):
         src = inspect.getsource(server.Handler._post_update)

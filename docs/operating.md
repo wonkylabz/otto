@@ -60,15 +60,19 @@ session and no convention judge pays for it.
 
 ## Updating from the UI
 
-The header **Update · N** button (`updater.py`, systemd only) fast-forwards to `origin/main`
-and restarts the service. The server fetches every 15min.
+The header **Update · N** button (`updater.py`) fast-forwards to `origin/main` and restarts the
+service — the systemd user unit on Linux, the `com.otto` LaunchAgent on macOS. A manual
+`./run.sh` has no manager to restart it, so the button stays hidden. The server fetches every 15min.
 
 - **It refuses rather than guesses**: not on `main`, a dirty tree, no fast-forward, an
   `install.sh` change, a run in flight, or a gate-parked run when workflow code changed (it
   would replay new code).
-- **The work runs in its own `systemd-run --user` unit**, outside the service's cgroup, so it
+- **The work runs as its own service-manager job** — a `systemd-run --user` unit, or a one-shot
+  LaunchAgent (`com.otto.update.<ts>`, no KeepAlive, log in `data/logs/updater.log`) — so it
   survives the restart it triggers. It pauses Otto meanwhile and confirms the new revision on
   `/api/health`; if that never comes back it resets to the old sha and restarts again.
+- **macOS detection needs the job's pid among our ancestors** — `XPC_SERVICE_NAME` alone is
+  also set in a Terminal shell, which would make a manual `./run.sh` look like the service.
 - **A failed update leaves Otto PAUSED** with the reason in the header. State and the step log
   are in `data/update-state.json`.
 
