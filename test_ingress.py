@@ -5877,6 +5877,18 @@ class PollerBackoffTests(unittest.TestCase):
                          "a setInterval with no clearInterval owner came back — route it "
                          "through `poll` (issue #49)")
 
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_disposer_called_inside_fn_stops_the_poller(self):
+        """`tick` re-arms after `fn` returns, so a stop from inside `fn` used to be undone."""
+        js = (self._poll() + """
+const document={hidden:false, addEventListener(){}, removeEventListener(){}};
+const POLL_SKIP=Symbol(); let calls=0, stop;
+stop=poll(async()=>{ calls++; stop(); }, 5);
+setTimeout(()=>{ console.log(calls); process.exit(0); }, 100);
+""")
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=20)
+        self.assertEqual(out.stdout.strip(), "1", out.stderr)
+
     def test_poll_skips_a_hidden_tab_and_ticks_on_return(self):
         """Pausing alone is not the fix: a tab that resumes on the next scheduled tick shows
         stale data for up to a full period at the exact moment someone is looking at it."""
