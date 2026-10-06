@@ -8454,6 +8454,7 @@ class UpdaterTests(unittest.TestCase):
     def setUp(self):
         import updater
         self.u = updater
+        storage.write_json(updater.path(), {})
         self.tmp = tempfile.mkdtemp(prefix="otto-upd-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.origin = os.path.join(self.tmp, "origin.git")
@@ -8603,6 +8604,20 @@ class UpdaterTests(unittest.TestCase):
             self.u._merge(job={**self.u._read()["job"], "pid": 123})
             return 0, ""
         self.assertEqual(self.u.launch(0, "otto.service", root=self.work, spawn=spawn), (True, ""))
+
+    def test_an_apply_that_finishes_before_the_ack_poll_keeps_its_outcome(self):
+        def spawn(argv):
+            self.u._merge(job={"state": "aborted", "error": "ff failed"})   # no pid: final write
+            return 0, ""
+        self.assertEqual(self.u.launch(0, "otto.service", root=self.work, spawn=spawn, ack_s=1),
+                         (True, ""))
+        self.assertEqual(self.u._read()["job"]["state"], "aborted")
+
+    def test_an_unanswerable_unit_check_reads_as_running(self):
+        job = {"state": "running", "started_at": time.time(), "pid": 1, "unit": "otto-update-1"}
+        storage.write_json(self.u.path(), {"job": job})
+        with unittest.mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
+            self.assertEqual(self.u.summary()["job"], "running")
 
     def test_a_running_job_whose_unit_died_is_not_running(self):
         job = {"state": "running", "started_at": time.time(), "pid": 1, "unit": "otto-update-1"}

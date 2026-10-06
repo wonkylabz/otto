@@ -124,8 +124,11 @@ def blockers(runs, root=None, unit=None):
 
 
 def _unit_active(unit):
-    return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
-                          timeout=10).returncode == 0
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
+                              timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return True     # unknown = still running; this rides every /api/health poll
 
 
 def _unit_log(unit):
@@ -165,11 +168,15 @@ def launch(port, unit, root=None, spawn=None, ack_s=15):
         sys.executable, os.path.join(root, "updater.py"), "apply", head, str(port), unit])
     end = time.time() + ack_s
     while not code and time.time() < end:
-        if (_read().get("job") or {}).get("pid"):
+        job = _read().get("job") or {}
+        if job.get("pid") or job.get("state") != "running":     # checked in, or already done
             return True, ""
         time.sleep(0.5)
     err = err if code else f"the updater never started: {_unit_log(name) or 'no output'}"
-    _merge(job={"state": "failed", "from": head[:7], "error": err, "finished_at": time.time()})
+    failed = {"state": "failed", "from": head[:7], "error": err, "finished_at": time.time()}
+    # Conditional: an apply that finished in the gap has written its own, truer outcome.
+    storage.mutate_json(path(), lambda d: {**d, "job": failed}
+                        if (d.get("job") or {}).get("state") == "running" else d, {})
     return False, err
 
 
