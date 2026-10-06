@@ -8662,15 +8662,35 @@ class UpdaterTests(unittest.TestCase):
         with unittest.mock.patch.object(self.u, "_launchctl", side_effect=FileNotFoundError):
             self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "com.otto"}, lambda: {4242}), "")
 
-    def test_service_caches_only_a_resolved_answer(self):
-        self.addCleanup(self.u._SERVICE.clear)
-        self.u._SERVICE.clear()
+    def test_service_keeps_a_hit_and_retries_a_miss_after_its_ttl(self):
+        self.addCleanup(self.u._SERVICE.update, found="", miss_at=0.0)
+        self.u._SERVICE.update(found="", miss_at=0.0)
+        calls = []
         answers = iter(["", "com.otto"])
+
+        def probe():
+            calls.append(1)
+            return next(answers)
         with unittest.mock.patch.object(self.u.sys, "platform", "darwin"), \
-                unittest.mock.patch.object(self.u, "_launchd_job", side_effect=lambda: next(answers)):
+                unittest.mock.patch.object(self.u, "_launchd_job", side_effect=probe):
             self.assertEqual(self.u.service(), "")
+            self.assertEqual(self.u.service(), "")          # miss cached: no second probe
+            self.assertEqual(len(calls), 1)
+            self.u._SERVICE["miss_at"] -= self.u._MISS_TTL_S + 1
             self.assertEqual(self.u.service(), "launchd:com.otto")
             self.assertEqual(self.u.service(), "launchd:com.otto")
+            self.assertEqual(len(calls), 2)
+
+    def test_the_job_id_survives_every_terminal_write(self):
+        storage.write_json(self.u.path(), {"job": {"state": "running", "unit": "launchd:com.otto.update.5",
+                                                   "started_at": time.time()}})
+        self.u.apply(self._head(), 0, "launchd:com.otto", root=self.work, busy=lambda: 0,
+                     restart=lambda: None, wait=lambda sha: True)
+        self.assertEqual(self.u._read()["job"]["unit"], "launchd:com.otto.update.5")
+        storage.write_json(self.u.path(), {})
+        with unittest.mock.patch.object(self.u, "_job_log", return_value=""):
+            self.u.launch(0, "launchd:com.otto", root=self.work, spawn=lambda a: (0, ""), ack_s=0)
+        self.assertTrue(self.u._read()["job"]["unit"].startswith("launchd:com.otto.update."))
 
     def test_restart_uses_the_services_own_manager(self):
         uid = os.getuid()

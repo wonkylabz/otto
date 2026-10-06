@@ -25,7 +25,8 @@ ALREADY_RUNNING = "An update is already running."
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _WF_FILES = re.compile(r"^(workflows|wf_[a-z_]+)\.py$")
 _PATH = None    # tests re-point this
-_SERVICE = []   # the resolved "kind:name", cached once found
+_SERVICE = {"found": "", "miss_at": 0.0}
+_MISS_TTL_S = 300
 
 
 def path():
@@ -101,18 +102,18 @@ def _launchd_job(env=None, ancestors=_ancestors):
 
 def service():
     """"systemd:<unit>" / "launchd:<label>" serving this process, or "" (a manual `./run.sh`).
-    Only a resolved answer is cached: a transient launchctl failure must not latch "unsupported"."""
-    if not _SERVICE:
-        if sys.platform == "darwin":
-            label = _launchd_job()
-            found = f"launchd:{label}" if label else ""
-        else:
-            unit = _systemd_unit()
-            found = f"systemd:{unit}" if unit else ""
-        if not found:
-            return ""
-        _SERVICE.append(found)
-    return _SERVICE[0]
+    A hit is kept for good; a miss only for _MISS_TTL_S — a transient launchctl failure must not
+    latch "unsupported", and re-probing on every health poll costs up to 33 subprocesses."""
+    if _SERVICE["found"] or time.time() - _SERVICE["miss_at"] < _MISS_TTL_S:
+        return _SERVICE["found"]
+    if sys.platform == "darwin":
+        label = _launchd_job()
+        found = f"launchd:{label}" if label else ""
+    else:
+        unit = _systemd_unit()
+        found = f"systemd:{unit}" if unit else ""
+    _SERVICE.update(found=found, miss_at=0.0 if found else time.time())
+    return found
 
 
 def _restart_argv(svc):
@@ -281,7 +282,8 @@ def launch(port, svc, root=None, spawn=None, ack_s=15):
             return True, ""
         time.sleep(0.5)
     err = err if code else f"the updater never started: {_job_log(job_name) or 'no output'}"
-    failed = {"state": "failed", "from": head[:7], "error": err, "finished_at": time.time()}
+    failed = {"state": "failed", "from": head[:7], "error": err, "finished_at": time.time(),
+              "unit": job_name}     # kept so the next launch can boot a launchd job out
     # Conditional: an apply that finished in the gap has written its own, truer outcome.
     storage.mutate_json(path(), lambda d: {**d, "job": failed}
                         if (d.get("job") or {}).get("state") == "running" else d, {})
@@ -400,7 +402,8 @@ def apply(old_sha, port, svc, root=None, restart=None, wait=None, busy=None, pip
         elif we_paused:
             estop.release()
         _merge(job={"state": state, "from": old_sha[:7], "to": new[:7], "error": err,
-                    "finished_at": time.time(), "log": log[-20:]}, behind=0 if state == "done"
+                    "finished_at": time.time(), "log": log[-20:],
+                    "unit": (_read().get("job") or {}).get("unit", "")}, behind=0 if state == "done"
                else _read().get("behind", 0))
     return state
 
