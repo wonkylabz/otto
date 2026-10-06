@@ -21,7 +21,7 @@ async function showUpdateForm(){
   const commits=(st.commits||[]).map(x=>`<li><code>${esc(x.sha)}</code> ${esc(x.title)}</li>`).join("");
   const blocks=(st.blockers||[]).map(b=>`<li>${esc(b)}</li>`).join("");
   const last=st.last&&st.last.state&&st.last.state!=="running"
-    ? `<label>Last update: ${esc(st.last.state)} ${esc(st.last.from||"")} → ${esc(st.last.to||"")}${st.last.error?" — "+esc(st.last.error):""}</label>` : "";
+    ? `<label>Last update: ${esc(st.last.state)} ${esc(st.last.from||"")}${st.last.to?" → "+esc(st.last.to):""}${st.last.error?" — "+esc(st.last.error):""}</label>` : "";
   c.innerHTML=`<div class="aform">
     <label>Running <code>${esc(st.revision)}</code> &middot; ${st.behind} commit${st.behind===1?"":"s"} behind</label>
     ${commits?`<ul>${commits}</ul>`:""}

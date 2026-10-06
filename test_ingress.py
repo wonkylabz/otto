@@ -5060,6 +5060,14 @@ class AdminCapViewStateTests(unittest.TestCase):
         self.assertLess(body.index("renderAdmin(data"), body.index("restoreCapView(el, view)"))
 
 
+class HiddenAttributeTests(unittest.TestCase):
+    """Four elements rendered while `hidden`: a class setting `display` beats the UA rule, so
+    the Update button showed "Update · 0" forever. One global rule closes the whole class."""
+
+    def test_hidden_always_wins_over_a_display_class(self):
+        self.assertRegex(ui_src(), r"\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}")
+
+
 class SubsectionIndentTests(unittest.TestCase):
     """A section nested inside another (Slack -> Auto-answer, GitHub -> Board queue) has to LOOK
     nested. Quieter type alone doesn't say it: on the Events tab the inner heading sits directly
