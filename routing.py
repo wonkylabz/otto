@@ -134,7 +134,10 @@ def _confirm_route(chosen, sample):
     return best
 
 
-def route(request, caps, project_root=None):
+def route(request, caps, project_root=None, *, single=False):
+    """Router #1. `single=True` is for a caller holding its own default (the assistant
+    redirect): ONE sample, no write confirmation, and None — never the keyword fallback — when
+    the reply is unusable, so the caller's default stands rather than a keyword-overlap guess."""
     caps = [c for c in caps if getattr(c, "enabled", True)]
     caps = _repo_eligible(caps, project_root)   # repo-scoped project caps need matching repo ctx
     if not caps:
@@ -150,6 +153,15 @@ def route(request, caps, project_root=None):
         f"{i}. [{c.kind}]{' [generic]' if getattr(c, 'source', None) == 'stock' else ''} "
         f"{c.name}: {c.description[:ROUTE_DESC_CHARS]}{'…' if len(c.description) > ROUTE_DESC_CHARS else ''}"
         for i, c in enumerate(shortlist, 1))
+    # Name only the fallbacks actually listed: told to use a disabled 'doer', the model has
+    # no such option and a non-code task drifts to a topic match or the keyword guess.
+    names = {c.name for c in shortlist}
+    if config.DOER_CAP in names:
+        fallback = ("'worker' when the deliverable is a change to code, config or a software "
+                    "repository; 'doer' for every other task (email, calendar, docs, messages, "
+                    "planning, errands)")
+    else:
+        fallback = "the general 'worker'"
     prompt = (
         "You are a strict router for an SRE automation platform. Pick the SINGLE best "
         "capability for the user's request.\n"
@@ -187,9 +199,9 @@ def route(request, caps, project_root=None):
         "ticket and do it' asks for the CHANGE, not for ticket management. Route those to a "
         "capability that implements code/config changes (or the 'worker' fallback below).\n"
         "FALLBACK: if the request IS task-shaped — a concrete change or deliverable to produce — "
-        "but NO capability specifically performs that action, route to the general 'worker' "
-        "capability (a generic implementer), NOT to a specialized capability that merely matches "
-        "the topic, and NOT to 'assistant' (which only answers, never acts).\n"
+        "but NO capability specifically performs that action, route to a general fallback, NOT "
+        "to a specialized capability that merely matches the topic, and NOT to 'assistant' "
+        f"(which only answers, never acts): {fallback}.\n"
         "TIE-BREAK: a capability marked [generic] is one of Otto's own bundled stand-ins. When a "
         "non-generic capability performs the same action, prefer it — it is the user's own "
         "purpose-built one and knows their systems.\n"
@@ -213,6 +225,8 @@ def route(request, caps, project_root=None):
         return None
 
     chosen = sample()
+    if single:
+        return chosen
     if chosen is None:
         best = max(shortlist, key=lambda c: score[c.name])
         trace("ROUTER", f"no listed option chosen -> fallback keyword score [{best.kind}] {best.name}")

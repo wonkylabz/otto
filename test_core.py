@@ -198,22 +198,64 @@ class AssistantWriteRedirectTests(unittest.TestCase):
     not just bump risk — the assistant's prompt forbids acting, so a gated assistant run would
     still refuse the task (the fresh-install 'asked for permission conversationally' failure)."""
 
-    def _caps(self, worker_enabled=True):
-        a, w = registry._general_assistant(), registry._general_worker()
-        w.enabled = worker_enabled
-        return a, w, [a, w]
+    def _caps(self, worker_enabled=True, doer_enabled=True):
+        a, w, d = (registry._general_assistant(), registry._general_worker(),
+                   registry._general_doer())
+        w.enabled, d.enabled = worker_enabled, doer_enabled
+        return a, w, [a, w, d]
 
-    def test_assistant_redirects_to_enabled_worker(self):
+    def setUp(self):
+        self.routed = []
+        self._route = engine.route
+        self.pick = config.DOER_CAP
+        def fake_route(request, caps, project_root=None, single=False):
+            self.assertTrue(single)     # one sample, no keyword fallback (see the next test)
+            self.routed.append((request, [c.name for c in caps]))
+            return next((c for c in caps if c.name == self.pick), None)
+        engine.route = fake_route
+
+    def tearDown(self):
+        engine.route = self._route
+
+    def test_the_router_picks_between_the_two_fallbacks(self):
+        # A keyword guess missed "issue 641" and "fix auth.py" a review round at a time; the
+        # router's FALLBACK clause is where the split is written down and regress-tested.
         a, w, caps = self._caps()
-        self.assertIs(engine.assistant_write_redirect(a, caps), w)
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), caps[2])
+        self.assertEqual(self.routed, [("email my landlord", ["worker", "doer"])])
+        self.pick = config.WORKER_CAP
+        self.assertIs(engine.assistant_write_redirect(a, caps, "work on issue 641"), w)
+
+    def test_a_repo_name_alone_does_not_make_it_code_work(self):
+        # "email the team the otto release notes" names a repo and is not a code change.
+        a, _, caps = self._caps()
+        req = "email the team the otto release notes"
+        self.assertIs(engine.assistant_write_redirect(a, caps, req), caps[2])
+        self.assertEqual(self.routed, [(req, ["worker", "doer"])])
+
+    def test_a_router_that_answers_nothing_keeps_the_worker(self):
+        a, w, caps = self._caps()
+        self.pick = None
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), w)
+        def boom(*a_, **k):
+            raise RuntimeError("endpoint down")
+        engine.route = boom
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), w)
+
+    def test_the_other_fallback_stands_in_when_one_is_disabled(self):
+        a, w, caps = self._caps(doer_enabled=False)
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), w)
+        a, _, caps = self._caps(worker_enabled=False)
+        self.assertIs(engine.assistant_write_redirect(a, caps, "fix #12"), caps[2])
+        self.assertEqual(self.routed, [])
 
     def test_non_assistant_read_cap_keeps_plain_risk_bump(self):
         _, _, caps = self._caps()
         cli = registry.Capability("skill", "ci-cli", "reads builds")
         self.assertIsNone(engine.assistant_write_redirect(cli, caps))
 
-    def test_no_redirect_when_worker_disabled_or_missing(self):
-        a, _, caps = self._caps(worker_enabled=False)
+    def test_no_redirect_when_both_fallbacks_disabled_or_missing(self):
+        a, _, caps = self._caps(worker_enabled=False, doer_enabled=False)
         self.assertIsNone(engine.assistant_write_redirect(a, caps))
         self.assertIsNone(engine.assistant_write_redirect(a, [a]))
         self.assertIsNone(engine.assistant_write_redirect(None, caps))

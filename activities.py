@@ -383,13 +383,13 @@ def classify_request(payload: dict) -> dict:
     """Re-assess a freshly-routed request for write intent, so a write-intent request that
     Router #1 misrouted to a read-classified capability still hits the approval gate. When the
     misroute landed on the general ASSISTANT (which only answers — a risk bump would gate a run
-    that then refuses the task), also return the general worker as a `redirect` candidate; the
+    that then refuses the task), also return the general worker or doer as a `redirect`; the
     workflow applies it only for a routed (non-pinned) cap."""
     cap = _cap(payload["name"])
     write = engine.request_write_intent(payload["request"], cap)
     out = {"write": write}
     if write and cap is not None:
-        swap = engine.assistant_write_redirect(cap, _capabilities())
+        swap = engine.assistant_write_redirect(cap, _capabilities(), payload["request"])
         if swap is not None:
             out["redirect"] = {"kind": swap.kind, "name": swap.name, "risk": swap.risk}
     return out

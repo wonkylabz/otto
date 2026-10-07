@@ -4,11 +4,12 @@
 
 `engine.route`, keyword-shortlisted (`ROUTE_SHORTLIST`), routed on primary verb not topic. The direct path never auto-routes to project caps.
 
-**General assistant** = built-in read-only Q&A cap (always shortlisted); **general worker** = built-in write cap for task-shaped requests with no specialized agent. Both pinnable (`/assistant`, `/worker`).
+**assistant** = built-in read-only Q&A (always shortlisted); **worker** = write cap for SOFTWARE tasks with no specialized agent; **doer** = its non-code sibling. All pinnable (`/assistant`, `/worker`, `/doer`).
 
-- **A wrong route is usually retrieval, not the model** — the shortlist is a top-N cut over every discovered cap, and one the router never sees can't be chosen. Diagnose with `registry.rank()` before touching the prompt, which is already several exceptions deep.
+- **A wrong route is usually retrieval, not the model** — the shortlist is a top-N cut, and a cap the router never sees can't be chosen. Diagnose with `registry.rank()` before touching the prompt.
 - **Retrieval ranks the TASK, never the conversation carried behind it** (`contracts.task_text`) — `rank` is IDF over the whole string, so a 9 kB carry chose the shortlist, the cap the task named was never listed, and the router could not pick it (`CarriedContextRoutingTests`).
 - **Rank against the catalogue, never per-cap** (`registry.rank`): IDF + length normalization: a flat count can't tell a discriminating word from a ubiquitous one, and rewards long descriptions. The shortlist is always FILLED and tie-broken by name, so routing is reproducible.
+- **A judgement between caps is Router #1's, never a keyword test** (`route(single=True)`) — a code-vs-not regex misses both ways; the FALLBACK clause is the one regress-tested copy (`AssistantWriteRedirectTests`).
 - **A WRITE pick is re-sampled; the majority stands** (`routing._confirm_route`, `route_confirmations`=3) — one sample is a coin flip, and only a write route arms the gate and preview. A lone read sample must not win, or a real task lands on assistant (`RouteConfirmationTests`).
 - **The listing is numbered from 1 and the LAST integer in the reply wins** — a reasoning preamble naming other options poisons a first-integer parse. Stock bundled caps are marked `[generic]` so a user's own cap wins ties.
 
@@ -19,12 +20,12 @@
 - **Only user-scoped plugin installs are discovered** — a `scope:"project"` plugin skill has no cwd Otto can invoke it from, so offering it guarantees `Unknown command` after burning the ladder. Project *caps* (`registry.project_skills`) are the analogue — they carry `cap.cwd`.
 - **Project capabilities** — agents/skills in another repo's `.claude/`, namespaced `<repo>:<name>` but invoked bare. Registered in `data/projects.json`; each carries `cap.cwd`+`cap.mcp_config`.
 - **A `route_hidden` cap is never a Router #1 candidate** (`routing._shortlist`, BOTH paths) — `brainstorm` skips the verify ladder, so a route landing there drops a real task's only quality check. Pin-only (`BrainstormModeTests`).
-- **A mode cap's prose is a real question's vocabulary**, so it out-ranks `assistant` on the very requests it must not take — retrieval is the only reliable guard, router wording is not (`BrainstormModeTests`).
+- **A mode cap's prose is a real question's vocabulary**, so it out-ranks `assistant` on the requests it must not take — retrieval is the guard, not router wording (`BrainstormModeTests`).
 - **A MODE cap pins its risk in `_RISK`, never leaves it to `classify`** — `apply_policy` overwrites `cap.risk` on every load, so editing the description alone can flip the mode into needing an approval card (`BrainstormModeTests`).
-- Adding a stock cap: drop `<name>.md` in `capabilities/bundled/` (on) or `capabilities/optional/` (opt-in); risk default in `registry._RISK`.
+- Adding a stock cap: `<name>.md` in `capabilities/bundled/` (on) or `optional/` (opt-in); risk in `registry._RISK`.
 - **A stock cap's prose must hold on every backend and every reader** — local has no WebSearch, Codex no WebFetch, Slack renders no tables and `*x*` as italics, an unattended closing question FAILs: name a fallback, never one tool.
 - **A missing tool inside an `agent` cap is a frontmatter problem, not a headless/OAuth one.** A `skill` cap runs as `/<name>` in the top-level session and sees every tool; an `agent` cap is a subagent whose `tools:` line is its *complete* grant.
-- Grep a transcript for a successful `mcp__claude_ai_*` call before believing "connectors don't work headless".
+- Grep a transcript for a successful `mcp__claude_ai_*` call before calling connectors broken headless.
 
 ## Risk model
 
@@ -42,7 +43,7 @@ Each capability is `read` or `write` (`registry._RISK` + keyword heuristic); unk
 
 **Slash commands** — `/<cap> [args]` pins a capability, skipping Router #1, resolved from the trusted registry not the client. A bare pinned cap with no args is a valid run, synthesized as `Run the <name> <kind>.`
 
-**Conversation continuity** — `claude -p --resume <session_id>` for follow-ups: raw message, no re-routing, handoff-or-resume decided in `/api/continue`.
+**Conversation continuity** — `claude -p --resume <session_id>`: raw message, no re-routing; `/api/continue` decides handoff or resume.
 
 The write gate still applies. A resumed session is bound to one capability's risk for life, so an escalating follow-up re-classifies via `classify_followup` and can bump read→write.
 

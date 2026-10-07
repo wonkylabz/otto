@@ -3902,6 +3902,17 @@ class FastLaneWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.audited and all(a == self.SAFE for a in self.audited),
                         "a fast-lane attempt was audited without its grant")
 
+    async def test_the_doer_takes_the_lane_too(self):
+        # "Turn on the light" is a non-code task, so it now routes to the doer, not the worker —
+        # a worker-only lane would gate exactly the requests the lane exists for.
+        doer = registry.Capability("builtin", config.DOER_CAP, "does things")
+        doer.risk = "write"
+        self.activities._caps = self.activities._caps + [doer]
+        await self._drive(trusted=True, params={
+            "cap": {"name": config.DOER_CAP, "kind": "builtin", "risk": "write"}})
+        self.assertEqual(self.previews, [], "a fast-lane doer run paid for a plan preview")
+        self.assertEqual(self.grants, [self.SAFE])
+
     async def test_a_gated_verdict_takes_the_normal_path(self):
         self.verdict = {"fast": False}
         await self._drive(trusted=True, approve=True)
@@ -7860,9 +7871,12 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "run_attempt", "verify", "record_attempt",
                        "record_skip", "plan_preview", "critique_plan", "summarize_plan",
-                       "candidate_repo", "followup_write_intent")}
+                       "candidate_repo", "followup_write_intent", "distil_memory")}
         self._orig_caps = activities._caps
         activities._caps = [front, writer]
+        # Memory distillation is a real model call — 5-22s against the live endpoint, racing the
+        # ~10s wall-clock gate poll below, so the suite went red on the endpoint's latency.
+        engine.distil_memory = lambda *a, **k: None
         engine.plan = lambda request, caps, project_root=None: writer
         engine.decompose = lambda request, caps, project_root=None: []
         engine.plan_preview = lambda *a, **k: {"plan": "1. bump it", "cost": 0, "tokens": None}

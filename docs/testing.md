@@ -14,6 +14,12 @@ your choice, which is how `.github/workflows/test.yml` caches it across jobs ins
 all six re-download it (that fetch was most of the "failed connecting to test server" flake
 `_time_skipping_env` retries around).
 
+**That holds only while every model-calling step is stubbed.** A Temporal test registers real
+activities, and any it doesn't stub (`distil_memory` was one) calls the operator's live model —
+tokens spent, and a red/green that tracks the endpoint's latency against the test's wall-clock
+waits. Stub every model-calling activity a test registers, not just the ones it asserts on
+(`WorkflowFrontmanDelegationTests`); a test whose time swings between runs is the tell.
+
 **An HTTP test is authenticated for you — through `urllib` only.** Every `/api/*` route needs
 the install token (#217); `test_support.redirect_live_state` installs a process-wide `urllib`
 opener carrying the temp install's `X-Otto-Token`. `http.client`, `curl` or a fresh

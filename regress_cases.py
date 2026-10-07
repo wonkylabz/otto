@@ -634,6 +634,15 @@ _ROUTE_MISROUTES = [
     ("route-action-over-topic", "the turn service keeps dropping sessions in prod-b and istio is "
      "throwing 503s. create a ticket on the board so we can track it", "github-issue",
      "heavy background context does not pull the route off the request's actual verb"),
+    # Two write fallbacks: `worker` is a SOFTWARE worker (repo-mode, a no-PR warning), so a
+    # life/admin task landing there was framed as a code change. Built-ins only, so these hold
+    # on any catalogue. One case each way — an always-'doer' router would pass the first alone.
+    ("route-nondev-task-to-doer", "email my landlord asking when the boiler repair is "
+     "scheduled and put the answer on my calendar", "doer",
+     "a task with a deliverable that is not a code change lands on the general doer"),
+    ("route-code-task-to-worker", "add a --dry-run flag to the cleanup script in the otto repo "
+     "and cover it with a test", "worker",
+     "a code change with no specialized cap still lands on the software worker"),
 ]
 
 

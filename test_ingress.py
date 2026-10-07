@@ -657,6 +657,18 @@ class RouteTests(unittest.TestCase):
         best = engine.route("review a failing ci build", self._caps())
         self.assertEqual(best.name, "tc-build-status")
 
+    def test_a_single_sample_route_never_guesses_from_keywords(self):
+        # The assistant redirect holds its own default (the worker): an unusable reply must
+        # leave it standing, not swap in a keyword-overlap pick, and a write pick is NOT
+        # re-sampled — it runs inside a 180s classify activity beside another model call.
+        w, d = registry._general_worker(), registry._general_doer()
+        self._stub("no idea")
+        self.assertIsNone(engine.route("fix the flaky retry logic", [w, d], single=True))
+        self.prompts.clear()
+        self._stub("2")
+        self.assertIs(engine.route("email my landlord", [w, d], single=True), d)
+        self.assertEqual(len(self.prompts), 1)
+
     def test_shortlists_and_keeps_relevant(self):
         self._stub("1")
         caps = self._caps()
@@ -799,10 +811,33 @@ class RouteTests(unittest.TestCase):
     def test_registry_ships_the_general_fallback_pair(self):
         caps = registry.load()
         g = {c.name: c for c in caps if getattr(c, "general", False)}
-        self.assertEqual(set(g), {registry.ASSISTANT_NAME, registry.WORKER_NAME})
-        a, w = g[registry.ASSISTANT_NAME], g[registry.WORKER_NAME]
+        self.assertEqual(set(g), {registry.ASSISTANT_NAME, registry.WORKER_NAME,
+                                  registry.DOER_NAME})
+        a, w, d = g[registry.ASSISTANT_NAME], g[registry.WORKER_NAME], g[registry.DOER_NAME]
         self.assertEqual((a.risk, a.kind), ("read", "custom"))
         self.assertEqual((w.risk, w.kind), ("write", "custom"))   # writes gate — never auto-runs
+        self.assertEqual((d.risk, d.kind), ("write", "custom"))
+
+    def test_doer_is_the_non_code_write_fallback(self):
+        # The worker is a SOFTWARE worker — pipeline code keys repo-mode and a no-PR warning on
+        # its name — so a non-code task needs a fallback that is not framed as a code change,
+        # and the router must be told which of the two to pick.
+        d = registry._general_doer()
+        self.assertNotIn("development worker", d.prompt)
+        self.assertIn("not a software", d.prompt)
+        # It can't see whether repo-mode engaged, so it must not narrate the git outcome.
+        self.assertNotIn("nothing was committed", d.prompt)
+        self.assertIn("never run git yourself", d.prompt)
+        self.assertNotEqual(d.name, config.WORKER_CAP)
+        self._stub("0")
+        both = self._caps() + [registry._general_worker(), d]
+        engine.route("email my landlord about the boiler", both)
+        self.assertIn("'doer' for every other task", self.prompts[0])
+        self.prompts.clear()
+        d.enabled = False                                                 # doer disabled
+        engine.route("email my landlord about the boiler", both)
+        self.assertNotIn("'doer'", self.prompts[0])
+        self.assertIn("the general 'worker'", self.prompts[0])
 
     def test_worker_prompt_covers_pick_a_ticket_yourself(self):
         # "Pick a good candidate to work on" — once routed/redirected here, the worker must do

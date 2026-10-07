@@ -376,13 +376,14 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         `trusted_asker` is set by an ingress, never by a client: the web composer (the operator at
         their own keyboard) and Slack's owner or `bot_approvers`. The classifier only picks the
         lane; what stands behind a wrong pick is the grant (engine.run_attempt). The general worker
-        only — any other cap is a prompt (or a subagent) the grant was not chosen for. Never a
+        and doer only — any other cap is a prompt (or a subagent) the grant was not chosen for. Never a
         resume, a sub-task or repo-mode. Only where a gate would otherwise RUN — interactive, or
         unattended "ask": "auto" already skips it with the FULL toolset the human pre-authorized,
         and unattended "skip" means writes never run here at all. Never with attachments: the grant
         holds no Read to open them. Behind `patched` like every new command."""
         if not (params.get("trusted_asker") and not resume and not subtask and not repo
-                and cap["risk"] == "write" and cap["name"] == config.WORKER_CAP
+                and cap["risk"] == "write"
+                and cap["name"] in (config.WORKER_CAP, config.DOER_CAP)
                 and (approval == "ask" if unattended else approval != "auto")
                 and not self._attachments and workflow.patched("fast-lane")):
             return False
@@ -830,7 +831,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                     and not _is_brainstorm(cap)):
                 intent = await workflow.execute_activity(
                     classify_request, {"request": request, "name": cap["name"]},
-                    start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                    # 180s like route_request: an assistant redirect adds a router call
+                    # to the write-intent one (a timeout is not replayed — no patch needed).
+                    start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
                 if intent.get("write"):
                     if intent.get("redirect") and not pinned:
                         # The general assistant only ANSWERS (its prompt forbids acting), so a

@@ -263,20 +263,32 @@ def fast_lane_intent(request, tools):
     return fast
 
 
-def assistant_write_redirect(cap, caps):
+def assistant_write_redirect(cap, caps, request=""):
     """When the write-intent guard trips on the general ASSISTANT, bumping its risk isn't
     enough: the assistant's prompt forbids any action, so the gated run would still refuse the
     task (observed on a fresh install — "work on this issue" routed to the assistant, which then
-    asked for permission conversationally instead of hitting Otto's gate). A task-shaped
-    request belongs on the general WORKER, which implements and rides repo-mode + the review
-    loop. Returns the enabled worker cap to swap in, or None (any other cap keeps the plain
-    risk bump; a pinned /assistant is the caller's responsibility to respect)."""
+    asked for permission conversationally instead of hitting Otto's gate). Returns the enabled
+    general cap to swap in, or None (any other cap keeps the plain risk bump; a pinned
+    /assistant is the caller's responsibility to respect).
+
+    WORKER or DOER? Router #1 picks between the two — its FALLBACK clause is the one place that
+    split is written down and regress-tested. Keyword guesses here failed both ways: "issue 641"
+    and "fix auth.py" read as non-code, and a repo name in "email the team the otto release
+    notes" as code. A router that answers nothing keeps main's behaviour: the worker."""
     if cap is None or cap.name != registry.ASSISTANT_NAME:
         return None
-    for c in caps:
-        if c.name == config.WORKER_CAP and c.enabled:
-            return c
-    return None
+    enabled = {c.name: c for c in caps if c.enabled}
+    worker, doer = enabled.get(config.WORKER_CAP), enabled.get(config.DOER_CAP)
+    if not (worker and doer):
+        return worker or doer
+    try:
+        # One sample: this runs inside classify_request beside the write-intent call, and both
+        # candidates are write, so route()'s default would confirm with 3 router calls.
+        pick = _eng().route(request or "", [worker, doer], single=True)
+    except Exception as e:  # noqa: BLE001 - a failed pick keeps the pre-doer behaviour
+        trace("ROUTER", f"worker/doer pick failed, keeping worker: {e}")
+        pick = None
+    return doer if pick is doer else worker
 
 
 # UNDERSCORE COUNTS AS A WORD CHARACTER HERE. Without it `platform_stop_weights_agent` — a
