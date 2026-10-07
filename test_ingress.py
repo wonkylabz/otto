@@ -830,8 +830,14 @@ class RouteTests(unittest.TestCase):
         self.assertIn("never run git yourself", d.prompt)
         self.assertNotEqual(d.name, config.WORKER_CAP)
         self._stub("0")
-        engine.route("email my landlord about the boiler", self._caps())
+        both = self._caps() + [registry._general_worker(), d]
+        engine.route("email my landlord about the boiler", both)
         self.assertIn("'doer' for every other task", self.prompts[0])
+        self.prompts.clear()
+        d.enabled = False                                                 # doer disabled
+        engine.route("email my landlord about the boiler", both)
+        self.assertNotIn("'doer'", self.prompts[0])
+        self.assertIn("the general 'worker'", self.prompts[0])
 
     def test_worker_prompt_covers_pick_a_ticket_yourself(self):
         # "Pick a good candidate to work on" — once routed/redirected here, the worker must do

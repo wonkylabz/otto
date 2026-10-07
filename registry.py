@@ -725,8 +725,7 @@ def _general_worker():
         "following that repo's own conventions and running its tests. Route here for a "
         "code/repo ACTION request (\"fix…\", \"add…\", \"implement…\", \"change…\", "
         "\"update…\") when NO specialized capability performs that action. The write-capable "
-        "fallback for SOFTWARE tasks; anything that is not a change to a codebase belongs on "
-        "'doer'.")
+        "fallback for SOFTWARE tasks only — never for a task that does not change a codebase.")
     cap.risk = "write"
     cap.source = "stock"                                # ships WITH Otto → grouped under "Stock"
     cap.general = True
