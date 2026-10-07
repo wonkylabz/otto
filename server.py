@@ -919,11 +919,13 @@ def _update_status():
     except Exception:  # noqa: BLE001
         runs = {}
     d = updater._read()
-    # The raw count, not summary()'s head-guarded one: it was just fetched against HEAD itself —
-    # unless that fetch FAILED, when the cached count/commits may be from another head entirely.
-    fresh = not d.get("fetch_error")
-    return {**updater.summary(), **({"behind": d.get("behind", 0)} if fresh else {}),
-            "commits": d.get("commits", []) if fresh else [],
+    # Guarded by the checkout's HEAD on disk, not summary()'s running revision: that is what an
+    # update fast-forwards. A count cached against any other head (a failed fetch, a manual pull,
+    # GET/POST /api/update with no fetch of their own) says nothing about this one.
+    disk = updater._git("rev-parse", "HEAD")[1]
+    behind = updater._behind(d, disk)
+    return {**updater.summary(), "behind": behind,
+            "commits": d.get("commits", []) if behind else [],
             "fetched_at": d.get("fetched_at"),
             "fetch_error": d.get("fetch_error", ""), "last": d.get("job") or {},
             "revision": config.revision(), "blockers": updater.blockers(runs)}

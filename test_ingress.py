@@ -8726,6 +8726,11 @@ class UpdaterTests(unittest.TestCase):
         other = "PID\tStatus\tLabel\n4242\t0\thomebrew.mxcl.ttyd\n"
         with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, other)):
             self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "0"}, lambda: {4242}), "")
+        # Another agent's label in the env (a web terminal) is never the job to kickstart.
+        mine = "gui/501/homebrew.mxcl.ttyd = {\n\tstate = running\n\tpid = 4242\n}"
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, mine)):
+            self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "homebrew.mxcl.ttyd"},
+                                                 lambda: {4242}), "")
 
     def test_service_keeps_a_hit_and_retries_a_miss_after_its_ttl(self):
         self.addCleanup(self.u._SERVICE.update, found="", miss_at=0.0)
