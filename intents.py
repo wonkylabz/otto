@@ -263,19 +263,32 @@ def fast_lane_intent(request, tools):
     return fast
 
 
-def assistant_write_redirect(cap, caps):
+# A GitHub issue/PR reference — a URL, or a bare `#123`. Either is code work for the redirect.
+_CODE_REF = re.compile(r"github\.com/|(?<![\w&])#\d+\b")
+
+
+def assistant_write_redirect(cap, caps, request="", repo_names=()):
     """When the write-intent guard trips on the general ASSISTANT, bumping its risk isn't
     enough: the assistant's prompt forbids any action, so the gated run would still refuse the
     task (observed on a fresh install — "work on this issue" routed to the assistant, which then
-    asked for permission conversationally instead of hitting Otto's gate). A task-shaped
-    request belongs on the general WORKER, which implements and rides repo-mode + the review
-    loop. Returns the enabled worker cap to swap in, or None (any other cap keeps the plain
-    risk bump; a pinned /assistant is the caller's responsibility to respect)."""
+    asked for permission conversationally instead of hitting Otto's gate). Returns the enabled
+    general cap to swap in, or None (any other cap keeps the plain risk bump; a pinned
+    /assistant is the caller's responsibility to respect).
+
+    WHICH one is decided without a model call: a request naming a registered repo or a GitHub
+    issue/PR is code work and belongs on the WORKER (repo-mode + the review loop); anything else
+    goes to the DOER, or the worker would frame "email my landlord" as a code change and end on
+    a no-PR warning. The other one stands in when the preferred one is disabled."""
     if cap is None or cap.name != registry.ASSISTANT_NAME:
         return None
-    for c in caps:
-        if c.name == config.WORKER_CAP and c.enabled:
-            return c
+    code = bool(_CODE_REF.search(request or "")
+                or _eng().candidate_repo(request or "", list(repo_names)))
+    order = ((config.WORKER_CAP, config.DOER_CAP) if code
+             else (config.DOER_CAP, config.WORKER_CAP))
+    enabled = {c.name: c for c in caps if c.enabled}
+    for name in order:
+        if name in enabled:
+            return enabled[name]
     return None
 
 

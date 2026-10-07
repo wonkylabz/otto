@@ -775,7 +775,7 @@ def _general_worker():
     return cap
 
 
-DOER_NAME = "doer"
+DOER_NAME = config.DOER_CAP
 
 
 def _general_doer():

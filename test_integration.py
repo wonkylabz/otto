@@ -3902,6 +3902,17 @@ class FastLaneWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.audited and all(a == self.SAFE for a in self.audited),
                         "a fast-lane attempt was audited without its grant")
 
+    async def test_the_doer_takes_the_lane_too(self):
+        # "Turn on the light" is a non-code task, so it now routes to the doer, not the worker —
+        # a worker-only lane would gate exactly the requests the lane exists for.
+        doer = registry.Capability("builtin", config.DOER_CAP, "does things")
+        doer.risk = "write"
+        self.activities._caps = self.activities._caps + [doer]
+        await self._drive(trusted=True, params={
+            "cap": {"name": config.DOER_CAP, "kind": "builtin", "risk": "write"}})
+        self.assertEqual(self.previews, [], "a fast-lane doer run paid for a plan preview")
+        self.assertEqual(self.grants, [self.SAFE])
+
     async def test_a_gated_verdict_takes_the_normal_path(self):
         self.verdict = {"fast": False}
         await self._drive(trusted=True, approve=True)

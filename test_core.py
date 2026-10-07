@@ -198,22 +198,38 @@ class AssistantWriteRedirectTests(unittest.TestCase):
     not just bump risk — the assistant's prompt forbids acting, so a gated assistant run would
     still refuse the task (the fresh-install 'asked for permission conversationally' failure)."""
 
-    def _caps(self, worker_enabled=True):
-        a, w = registry._general_assistant(), registry._general_worker()
-        w.enabled = worker_enabled
-        return a, w, [a, w]
+    def _caps(self, worker_enabled=True, doer_enabled=True):
+        a, w, d = (registry._general_assistant(), registry._general_worker(),
+                   registry._general_doer())
+        w.enabled, d.enabled = worker_enabled, doer_enabled
+        return a, w, [a, w, d]
 
-    def test_assistant_redirects_to_enabled_worker(self):
+    def test_code_work_redirects_to_the_worker(self):
         a, w, caps = self._caps()
-        self.assertIs(engine.assistant_write_redirect(a, caps), w)
+        for req in ("work on this issue https://github.com/o/r/issues/12",
+                    "fix #12 please", "add a flag to the cleanup script in otto"):
+            self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), w, req)
+
+    def test_non_code_work_redirects_to_the_doer(self):
+        # The worker would frame it as a code change and end on a no-PR warning.
+        a, _, caps = self._caps()
+        d = caps[2]
+        for req in ("email my landlord about the boiler", "add the dentist appointment to my calendar"):
+            self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), d, req)
+
+    def test_the_other_fallback_stands_in_when_one_is_disabled(self):
+        a, w, caps = self._caps(doer_enabled=False)
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), w)
+        a, _, caps = self._caps(worker_enabled=False)
+        self.assertIs(engine.assistant_write_redirect(a, caps, "fix #12"), caps[2])
 
     def test_non_assistant_read_cap_keeps_plain_risk_bump(self):
         _, _, caps = self._caps()
         cli = registry.Capability("skill", "ci-cli", "reads builds")
         self.assertIsNone(engine.assistant_write_redirect(cli, caps))
 
-    def test_no_redirect_when_worker_disabled_or_missing(self):
-        a, _, caps = self._caps(worker_enabled=False)
+    def test_no_redirect_when_both_fallbacks_disabled_or_missing(self):
+        a, _, caps = self._caps(worker_enabled=False, doer_enabled=False)
         self.assertIsNone(engine.assistant_write_redirect(a, caps))
         self.assertIsNone(engine.assistant_write_redirect(a, [a]))
         self.assertIsNone(engine.assistant_write_redirect(None, caps))

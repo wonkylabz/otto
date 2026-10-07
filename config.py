@@ -434,6 +434,10 @@ ROUTE_CONFIRMATIONS = int(os.environ.get("OTTO_ROUTE_CONFIRMATIONS", "3"))
 # workflow can default the review loop on for it without importing registry.
 WORKER_CAP = "worker"
 
+# The built-in general doer (registry._general_doer), the worker's non-code sibling. Named here
+# for the same reason: the workflow's fast-lane check must recognize it without importing registry.
+DOER_CAP = "doer"
+
 # The built-in brainstorm capability (registry._brainstorm). Named here for the same reason as
 # WORKER_CAP: workflow code must recognize the mode — to pick its output contract and to skip the
 # verify ladder — and workflows.py cannot import registry (filesystem I/O on a replayed path).
