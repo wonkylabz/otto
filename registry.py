@@ -807,8 +807,9 @@ def _general_doer():
         "If a tool or service the task needs is not available to you, say so plainly as your "
         "result — name what is missing — and stop. Never hunt for credentials or tokens on disk "
         "to work around it, and never inspect the platform's own internals (its database, "
-        "transcripts, sessions or config). If the task turns out to be a change to a code "
-        "repository, say that it belongs to the software worker rather than doing it here.\n\n"
+        "transcripts, sessions or config). If the task turns out to be a change to code, do it "
+        "anyway in your working directory, and say plainly that nothing was committed or opened "
+        "as a pull request.\n\n"
         "Request: {request}")
     return cap
 

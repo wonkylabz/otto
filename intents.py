@@ -263,8 +263,8 @@ def fast_lane_intent(request, tools):
     return fast
 
 
-# A GitHub issue/PR reference — a URL, or a bare `#123`. Either is code work for the redirect.
-_CODE_REF = re.compile(r"github\.com/|(?<![\w&])#\d+\b")
+# A GitHub issue/PR reference — a URL, `owner/repo#123`, or a bare `#123`. Either is code work for the redirect.
+_CODE_REF = re.compile(r"github\.com/|[\w.-]+/[\w.-]+#\d+\b|(?<![\w&])#\d+\b")
 
 
 def assistant_write_redirect(cap, caps, request="", repo_names=()):
@@ -281,8 +281,10 @@ def assistant_write_redirect(cap, caps, request="", repo_names=()):
     a no-PR warning. The other one stands in when the preferred one is disabled."""
     if cap is None or cap.name != registry.ASSISTANT_NAME:
         return None
+    # ANY named repo, not `candidate_repo`'s unambiguous one: "port the fix from otto to
+    # otto-web" names two, which is ambiguous for cloning but plainly code work.
     code = bool(_CODE_REF.search(request or "")
-                or _eng().candidate_repo(request or "", list(repo_names)))
+                or named_repos(task_text(request or "").lower(), list(repo_names)))
     order = ((config.WORKER_CAP, config.DOER_CAP) if code
              else (config.DOER_CAP, config.WORKER_CAP))
     enabled = {c.name: c for c in caps if c.enabled}

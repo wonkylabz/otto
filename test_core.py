@@ -207,8 +207,11 @@ class AssistantWriteRedirectTests(unittest.TestCase):
     def test_code_work_redirects_to_the_worker(self):
         a, w, caps = self._caps()
         for req in ("work on this issue https://github.com/o/r/issues/12",
-                    "fix #12 please", "add a flag to the cleanup script in otto"):
-            self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), w, req)
+                    "fix #12 please", "fix wonkylabz/otto#12",
+                    "add a flag to the cleanup script in otto",
+                    "port the retry fix from otto to otto-web"):
+            self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto", "otto-web"]),
+                          w, req)
 
     def test_non_code_work_redirects_to_the_doer(self):
         # The worker would frame it as a code change and end on a no-PR warning.
