@@ -799,10 +799,24 @@ class RouteTests(unittest.TestCase):
     def test_registry_ships_the_general_fallback_pair(self):
         caps = registry.load()
         g = {c.name: c for c in caps if getattr(c, "general", False)}
-        self.assertEqual(set(g), {registry.ASSISTANT_NAME, registry.WORKER_NAME})
-        a, w = g[registry.ASSISTANT_NAME], g[registry.WORKER_NAME]
+        self.assertEqual(set(g), {registry.ASSISTANT_NAME, registry.WORKER_NAME,
+                                  registry.DOER_NAME})
+        a, w, d = g[registry.ASSISTANT_NAME], g[registry.WORKER_NAME], g[registry.DOER_NAME]
         self.assertEqual((a.risk, a.kind), ("read", "custom"))
         self.assertEqual((w.risk, w.kind), ("write", "custom"))   # writes gate — never auto-runs
+        self.assertEqual((d.risk, d.kind), ("write", "custom"))
+
+    def test_doer_is_the_non_code_write_fallback(self):
+        # The worker is a SOFTWARE worker — pipeline code keys repo-mode and a no-PR warning on
+        # its name — so a non-code task needs a fallback that is not framed as a code change,
+        # and the router must be told which of the two to pick.
+        d = registry._general_doer()
+        self.assertNotIn("development worker", d.prompt)
+        self.assertIn("not a software", d.prompt)
+        self.assertNotEqual(d.name, config.WORKER_CAP)
+        self._stub("0")
+        engine.route("email my landlord about the boiler", self._caps())
+        self.assertIn("'doer' for every other task", self.prompts[0])
 
     def test_worker_prompt_covers_pick_a_ticket_yourself(self):
         # "Pick a good candidate to work on" — once routed/redirected here, the worker must do

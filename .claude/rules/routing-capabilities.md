@@ -4,7 +4,7 @@
 
 `engine.route`, keyword-shortlisted (`ROUTE_SHORTLIST`), routed on primary verb not topic. The direct path never auto-routes to project caps.
 
-**General assistant** = built-in read-only Q&A cap (always shortlisted); **general worker** = built-in write cap for task-shaped requests with no specialized agent. Both pinnable (`/assistant`, `/worker`).
+**General assistant** = built-in read-only Q&A cap (always shortlisted); **general worker** = write cap for SOFTWARE tasks with no specialized agent; **doer** = its non-code sibling. All pinnable (`/assistant`, `/worker`, `/doer`).
 
 - **A wrong route is usually retrieval, not the model** — the shortlist is a top-N cut over every discovered cap, and one the router never sees can't be chosen. Diagnose with `registry.rank()` before touching the prompt, which is already several exceptions deep.
 - **Retrieval ranks the TASK, never the conversation carried behind it** (`contracts.task_text`) — `rank` is IDF over the whole string, so a 9 kB carry chose the shortlist, the cap the task named was never listed, and the router could not pick it (`CarriedContextRoutingTests`).

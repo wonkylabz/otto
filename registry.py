@@ -43,6 +43,7 @@ _RISK = {
     "brainstorm": "read",
     # writers / mutators: open PRs, post, create, apply, renew, etc.
     "commit": "write", "github-issue": "write", "design-doc": "write", "worker": "write",
+    "doer": "write",
     # stock caps bundled with Otto (capabilities/) — writers gated, reviewers/researchers not.
     "product-manager": "write", "qa-tester": "write", "technical-writer": "write",
     "code-reviewer": "read", "researcher": "read", "explain-like-a-story": "read",
@@ -654,6 +655,13 @@ def load():
     # agent like sre-minion). Deliberately THIN: it implements in cwd and reports — the platform
     # (repo-mode finalize, verify ladder, QA loop) owns branching/PRs/review.
     caps.append(_general_worker())
+    # Built-in general doer: the NON-code sibling of the worker. The worker is a development
+    # worker by name as well as by prompt — the pipeline keys repo-mode auto-engage and the
+    # "nothing was committed" note on `config.WORKER_CAP` — so a task like "email X" or "add
+    # this to my calendar" landing there was framed as a code change and ended in a bogus
+    # no-PR warning. This one carries none of that: it does the task with whatever tools and
+    # connectors the run has, and reports.
+    caps.append(_general_doer())
     # Built-in brainstorm partner: the read-only conversational MODE. Same shape as the two
     # general fallbacks, with one difference that matters — `route_hidden`, so Router #1 can
     # never land here on its own. It is reached only by an explicit opt-in (`/brainstorm`, or
@@ -712,13 +720,13 @@ WORKER_NAME = config.WORKER_CAP
 
 def _general_worker():
     cap = Capability("custom", WORKER_NAME,
-        "General worker. Implements a concrete, task-shaped request end to end — code or "
-        "config changes, file edits, small scripts, docs — in the target repo or working "
-        "directory, following that repo's own conventions and running its tests. Route here "
-        "for an ACTION request with a real deliverable (\"fix…\", \"add…\", \"implement…\", "
-        "\"change…\", \"update…\", \"write…\") when NO specialized capability performs that "
-        "action. The write-capable fallback for tasks that don't match a purpose-built "
-        "agent or skill.")
+        "General software worker. Implements a concrete SOFTWARE change end to end — code or "
+        "config changes, file edits, small scripts, repo docs — in a code repository, "
+        "following that repo's own conventions and running its tests. Route here for a "
+        "code/repo ACTION request (\"fix…\", \"add…\", \"implement…\", \"change…\", "
+        "\"update…\") when NO specialized capability performs that action. The write-capable "
+        "fallback for SOFTWARE tasks; anything that is not a change to a codebase belongs on "
+        "'doer'.")
     cap.risk = "write"
     cap.source = "stock"                                # ships WITH Otto → grouped under "Stock"
     cap.general = True
@@ -763,6 +771,44 @@ def _general_worker():
         "the requested change. Never inspect the platform's own internals (its database, "
         "transcripts, sessions or config) to work out how your change will be delivered — that "
         "is not your concern and there is no answer there.\n\n"
+        "Request: {request}")
+    return cap
+
+
+DOER_NAME = "doer"
+
+
+def _general_doer():
+    cap = Capability("custom", DOER_NAME,
+        "General doer. Carries out a concrete task that is NOT a software change — email, "
+        "calendar, notes and documents, messages, research written up into a deliverable, "
+        "personal errands, home, admin or life tasks — using whatever tools and connected "
+        "services the run has. Route here for a task-shaped request with a real deliverable "
+        "(\"send…\", \"schedule…\", \"draft…\", \"organize…\", \"plan…\", \"book…\") "
+        "when NO specialized capability performs that action and it does not change a code "
+        "repository. The write-capable fallback for everything outside software.")
+    cap.risk = "write"
+    cap.source = "stock"                                # ships WITH Otto → grouped under "Stock"
+    cap.general = True
+    cap.prompt = (
+        "You are a capable general-purpose assistant who gets things DONE, not a software "
+        "engineer: the task may be about email, a calendar, documents, notes, messages, "
+        "research, planning or anything else in the user's life or work.\n\n"
+        "1. UNDERSTAND — work out the concrete outcome the user wants. Reference knowledge, "
+        "learned facts and directives they have loaded are in your system prompt; use them for "
+        "stable things (who someone is, preferences, past decisions), but check anything about "
+        "the current state of a system with your tools.\n"
+        "2. DO IT — use the tools and connected services available to you (mail, calendar, "
+        "docs, web, shell). The user has already approved this task, so do not ask for "
+        "confirmation mid-task; if it is ambiguous, state your assumption and proceed with the "
+        "most reasonable interpretation.\n"
+        "3. REPORT — say exactly what you did, with links or identifiers for anything you "
+        "created or changed, and anything left for the user to do.\n\n"
+        "If a tool or service the task needs is not available to you, say so plainly as your "
+        "result — name what is missing — and stop. Never hunt for credentials or tokens on disk "
+        "to work around it, and never inspect the platform's own internals (its database, "
+        "transcripts, sessions or config). If the task turns out to be a change to a code "
+        "repository, say that it belongs to the software worker rather than doing it here.\n\n"
         "Request: {request}")
     return cap
 
