@@ -640,6 +640,15 @@ _ROUTE_MISROUTES = [
     ("route-nondev-task-to-doer", "email my landlord asking when the boiler repair is "
      "scheduled and put the answer on my calendar", "doer",
      "a task with a deliverable that is not a code change lands on the general doer"),
+    # A LOOKUP of a ticket is a question, not ticket work: "find me the ticket X requested"
+    # went to an issue-CREATING skill, and the task-shaped clause pulled Claude to `worker`.
+    ("route-ticket-lookup-to-assistant", "find me the ticket the platform team requested about "
+     "forwarding New Relic alerts to Slack", "assistant",
+     "finding an existing ticket is informational, not ticket creation or implementation"),
+    # ...but a purpose-built LISTING cap still beats that clause for the board itself.
+    ("route-board-listing-to-board-status", "show me the open PRs in infra and what's blocked "
+     "on the board", "board-status",
+     "the ticket-lookup carve-out does not pull a board listing off its purpose-built cap"),
     ("route-code-task-to-worker", "add a --dry-run flag to the cleanup script in the otto repo "
      "and cover it with a test", "worker",
      "a code change with no specialized cap still lands on the software worker"),
