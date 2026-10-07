@@ -7871,9 +7871,12 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "run_attempt", "verify", "record_attempt",
                        "record_skip", "plan_preview", "critique_plan", "summarize_plan",
-                       "candidate_repo", "followup_write_intent")}
+                       "candidate_repo", "followup_write_intent", "distil_memory")}
         self._orig_caps = activities._caps
         activities._caps = [front, writer]
+        # Memory distillation is a real model call — 5-22s against the live endpoint, racing the
+        # ~10s wall-clock gate poll below, so the suite went red on the endpoint's latency.
+        engine.distil_memory = lambda *a, **k: None
         engine.plan = lambda request, caps, project_root=None: writer
         engine.decompose = lambda request, caps, project_root=None: []
         engine.plan_preview = lambda *a, **k: {"plan": "1. bump it", "cost": 0, "tokens": None}
