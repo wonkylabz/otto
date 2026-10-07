@@ -183,7 +183,11 @@ def route(request, caps, project_root=None, *, single=False):
         "on, fix, implement, or resolve an issue/ticket IS task-shaped (there is a deliverable) "
         "— never route it to 'assistant'. That includes asking to PICK/CHOOSE a ticket TO WORK "
         "ON ('pick a good candidate to work on from the issues'): the selection is a sub-step of "
-        "implementing it, not the deliverable — route it to an implementer.\n"
+        "implementing it, not the deliverable — route it to an implementer. But FINDING, "
+        "looking up or listing EXISTING tickets/issues/PRs ('find me the ticket X requested', "
+        "'which issue tracks Y') IS informational: the answer is the ticket itself and nothing "
+        "is created, changed or worked on — route it to 'assistant', never to a capability "
+        "that creates tickets, implements them, or to a general fallback.\n"
         "DIAGNOSTIC EXCEPTION: if the request asks WHY something is broken/failing/regressed or "
         "WHAT caused a failure (e.g. 'why did this PR break the build', 'what is the issue', "
         "'diagnose this failure', 'what's wrong with X'), it is an INVESTIGATION that must gather "
@@ -232,7 +236,7 @@ def route(request, caps, project_root=None, *, single=False):
         trace("ROUTER", f"no listed option chosen -> fallback keyword score [{best.kind}] {best.name}")
         return best
     chosen = _confirm_route(chosen, sample)
-    trace("ROUTER", f"Claude chose [{chosen.kind}] {chosen.name}  (from {len(shortlist)}/{len(caps)})")
+    trace("ROUTER", f"router chose [{chosen.kind}] {chosen.name}  (from {len(shortlist)}/{len(caps)})")
     return chosen
 
 
