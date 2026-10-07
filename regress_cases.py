@@ -645,6 +645,10 @@ _ROUTE_MISROUTES = [
     ("route-ticket-lookup-to-assistant", "find me the ticket the platform team requested about "
      "forwarding New Relic alerts to Slack", "assistant",
      "finding an existing ticket is informational, not ticket creation or implementation"),
+    # ...but a purpose-built LISTING cap still beats that clause for the board itself.
+    ("route-board-listing-to-board-status", "show me the open PRs in infra and what's blocked "
+     "on the board", "board-status",
+     "the ticket-lookup carve-out does not pull a board listing off its purpose-built cap"),
     ("route-code-task-to-worker", "add a --dry-run flag to the cleanup script in the otto repo "
      "and cover it with a test", "worker",
      "a code change with no specialized cap still lands on the software worker"),
