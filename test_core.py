@@ -217,8 +217,16 @@ class AssistantWriteRedirectTests(unittest.TestCase):
         # The worker would frame it as a code change and end on a no-PR warning.
         a, _, caps = self._caps()
         d = caps[2]
-        for req in ("email my landlord about the boiler", "add the dentist appointment to my calendar"):
+        for req in ("email my landlord about the boiler", "add the dentist appointment to my calendar",
+                    "email the landlord about apartment #4", "pay invoice #2031"):
             self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), d, req)
+
+    def test_a_carried_conversation_does_not_make_a_task_code_work(self):
+        import contracts
+        a, _, caps = self._caps()
+        req = ("email my landlord about the boiler" + contracts.CARRIED_CONTEXT_MARK
+               + "earlier we looked at https://github.com/o/otto/issues/12")
+        self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), caps[2])
 
     def test_the_other_fallback_stands_in_when_one_is_disabled(self):
         a, w, caps = self._caps(doer_enabled=False)

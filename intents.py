@@ -263,8 +263,12 @@ def fast_lane_intent(request, tools):
     return fast
 
 
-# A GitHub issue/PR reference — a URL, `owner/repo#123`, or a bare `#123`. Either is code work for the redirect.
-_CODE_REF = re.compile(r"github\.com/|[\w.-]+/[\w.-]+#\d+\b|(?<![\w&])#\d+\b")
+# A GitHub issue/PR reference — a URL, `owner/repo#123`, or a `#123` that a code word names as
+# one. A bare `#N` alone is not: "apartment #4" and "invoice #2031" are life/admin tasks.
+_CODE_REF = re.compile(
+    r"github\.com/|[\w.-]+/[\w.-]+#\d+\b"
+    r"|\b(?:issues?|prs?|pull requests?|tickets?|bugs?|fix(?:es)?|close[sd]?|resolve[sd]?)"
+    r"\s+#\d+\b", re.I)
 
 
 def assistant_write_redirect(cap, caps, request="", repo_names=()):
@@ -283,8 +287,9 @@ def assistant_write_redirect(cap, caps, request="", repo_names=()):
         return None
     # ANY named repo, not `candidate_repo`'s unambiguous one: "port the fix from otto to
     # otto-web" names two, which is ambiguous for cloning but plainly code work.
-    code = bool(_CODE_REF.search(request or "")
-                or named_repos(task_text(request or "").lower(), list(repo_names)))
+    # The TASK only, like every routing signal: a link in a carried conversation is not this task's.
+    task = task_text(request or "")
+    code = bool(_CODE_REF.search(task) or named_repos(task.lower(), list(repo_names)))
     order = ((config.WORKER_CAP, config.DOER_CAP) if code
              else (config.DOER_CAP, config.WORKER_CAP))
     enabled = {c.name: c for c in caps if c.enabled}
