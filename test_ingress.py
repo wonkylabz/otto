@@ -8547,6 +8547,14 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(d["behind"], 1)
         self.assertEqual(d["commits"][0]["title"], "add b.py")
 
+    def test_a_count_from_another_head_is_not_shown(self):
+        """Nothing polls git: a manual pull + restart must not keep showing "Update · N"."""
+        head = self._git(self.work, "rev-parse", "--short", "HEAD")
+        with unittest.mock.patch.object(config, "revision", return_value=head):
+            self.assertEqual(self.u.summary()["behind"], 1)
+        with unittest.mock.patch.object(config, "revision", return_value="0000000"):
+            self.assertEqual(self.u.summary()["behind"], 0)
+
     def test_clean_main_has_no_blockers(self):
         self.assertEqual(self.u.blockers({}, root=self.work, svc="otto.service"), [])
 
@@ -8715,6 +8723,9 @@ class UpdaterTests(unittest.TestCase):
             job = self.u._launchd_job
             self.assertEqual(job({"XPC_SERVICE_NAME": "0"}, lambda: {4242, 555}), "com.otto")
             self.assertEqual(job({"XPC_SERVICE_NAME": "0"}, lambda: {555, 77}), "")
+        other = "PID\tStatus\tLabel\n4242\t0\thomebrew.mxcl.ttyd\n"
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, other)):
+            self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "0"}, lambda: {4242}), "")
 
     def test_service_keeps_a_hit_and_retries_a_miss_after_its_ttl(self):
         self.addCleanup(self.u._SERVICE.update, found="", miss_at=0.0)

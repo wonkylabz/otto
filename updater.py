@@ -26,6 +26,7 @@ _WF_FILES = re.compile(r"^(workflows|wf_[a-z_]+)\.py$")
 _PATH = None    # tests re-point this
 _SERVICE = {"found": "", "miss_at": 0.0}
 _MISS_TTL_S = 300
+_LAUNCHD_LABEL = "com.otto"     # install.sh's LaunchAgent
 
 
 def path():
@@ -100,13 +101,14 @@ def _launchd_job(env=None, ancestors=_ancestors):
 
 
 def _launchd_listed(pids):
-    """The label `launchctl list` shows at one of `pids`. Newer macOS sets XPC_SERVICE_NAME=0
-    inside a LaunchAgent too, so the env can't name the job. A Terminal app is an ancestor of
-    a manual `./run.sh`, so its `application.*` label never counts."""
+    """install.sh's label when `launchctl list` shows it at one of `pids`. Newer macOS sets
+    XPC_SERVICE_NAME=0 inside a LaunchAgent too, so the env can't name the job. Only OUR label
+    counts: a manual `./run.sh` has a Terminal app (`application.*`) or any other agent — a web
+    terminal, say — among its ancestors, and restarting that would `kickstart -k` the wrong job."""
     code, out = _launchctl("list")
     for ln in out.splitlines() if not code else []:
         pid, _, label = (ln.split("\t") + ["", ""])[:3]
-        if pid.isdigit() and int(pid) in pids and label and not label.startswith("application."):
+        if pid.isdigit() and int(pid) in pids and label == _LAUNCHD_LABEL:
             return label
     return ""
 
@@ -135,14 +137,22 @@ def _restart_argv(svc):
 
 
 def fetch(root=None):
-    """`git fetch` and cache how far behind we are. Shells out — never call it from a request
-    the UI's spinner awaits."""
+    """`git fetch` and cache how far behind we are, against WHICH head. Shells out (up to 120s) —
+    only the Update modal's own check awaits it, never a panel load."""
     code, _, err = _git("fetch", "--quiet", REMOTE, BRANCH, root=root, timeout=120)
     if code:
         return _merge(fetched_at=time.time(), fetch_error=err[-300:])
     _, log, _ = _git("log", "--format=%h%x09%s", f"HEAD..{REMOTE}/{BRANCH}", root=root)
     commits = [dict(zip(("sha", "title"), ln.split("\t", 1))) for ln in log.splitlines() if ln]
-    return _merge(fetched_at=time.time(), fetch_error="", behind=len(commits), commits=commits[:50])
+    _, head, _ = _git("rev-parse", "--short", "HEAD", root=root)
+    return _merge(fetched_at=time.time(), fetch_error="", behind=len(commits), commits=commits[:50],
+                  head=head)
+
+
+def _behind(d):
+    """The cached count, only while it was measured from the revision now RUNNING — nothing polls
+    git any more, so a manual pull + restart would otherwise show "Update · N" until a click."""
+    return d.get("behind", 0) if d.get("head") == config.revision() else 0
 
 
 def summary():
@@ -152,7 +162,7 @@ def summary():
     state = job.get("state", "")
     if state == "running" and not _job_running(job):
         state = "failed"
-    return {"supported": bool(service()), "behind": d.get("behind", 0), "job": state,
+    return {"supported": bool(service()), "behind": _behind(d), "job": state,
             "job_id": job.get("unit", "")}
 
 

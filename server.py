@@ -919,7 +919,9 @@ def _update_status():
     except Exception:  # noqa: BLE001
         runs = {}
     d = updater._read()
-    return {**updater.summary(), "commits": d.get("commits", []), "fetched_at": d.get("fetched_at"),
+    # The raw count, not summary()'s head-guarded one: it was just fetched against HEAD itself.
+    return {**updater.summary(), "behind": d.get("behind", 0), "commits": d.get("commits", []),
+            "fetched_at": d.get("fetched_at"),
             "fetch_error": d.get("fetch_error", ""), "last": d.get("job") or {},
             "revision": config.revision(), "blockers": updater.blockers(runs)}
 
