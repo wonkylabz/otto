@@ -287,7 +287,9 @@ def assistant_write_redirect(cap, caps, request="", repo_names=()):
     if named_repos(task_text(request or "").lower(), list(repo_names)):
         return worker
     try:
-        pick = _eng().route(request or "", [worker, doer])
+        # One sample: this runs inside classify_request beside the write-intent call, and both
+        # candidates are write, so route()'s default would confirm with 3 router calls.
+        pick = _eng().route(request or "", [worker, doer], single=True)
     except Exception as e:  # noqa: BLE001 - a failed pick keeps the pre-doer behaviour
         trace("ROUTER", f"worker/doer pick failed, keeping worker: {e}")
         pick = None

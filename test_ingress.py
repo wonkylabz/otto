@@ -657,6 +657,18 @@ class RouteTests(unittest.TestCase):
         best = engine.route("review a failing ci build", self._caps())
         self.assertEqual(best.name, "tc-build-status")
 
+    def test_a_single_sample_route_never_guesses_from_keywords(self):
+        # The assistant redirect holds its own default (the worker): an unusable reply must
+        # leave it standing, not swap in a keyword-overlap pick, and a write pick is NOT
+        # re-sampled — it runs inside a 180s classify activity beside another model call.
+        w, d = registry._general_worker(), registry._general_doer()
+        self._stub("no idea")
+        self.assertIsNone(engine.route("fix the flaky retry logic", [w, d], single=True))
+        self.prompts.clear()
+        self._stub("2")
+        self.assertIs(engine.route("email my landlord", [w, d], single=True), d)
+        self.assertEqual(len(self.prompts), 1)
+
     def test_shortlists_and_keeps_relevant(self):
         self._stub("1")
         caps = self._caps()

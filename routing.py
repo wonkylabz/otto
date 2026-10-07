@@ -134,7 +134,10 @@ def _confirm_route(chosen, sample):
     return best
 
 
-def route(request, caps, project_root=None):
+def route(request, caps, project_root=None, *, single=False):
+    """Router #1. `single=True` is for a caller holding its own default (the assistant
+    redirect): ONE sample, no write confirmation, and None — never the keyword fallback — when
+    the reply is unusable, so the caller's default stands rather than a keyword-overlap guess."""
     caps = [c for c in caps if getattr(c, "enabled", True)]
     caps = _repo_eligible(caps, project_root)   # repo-scoped project caps need matching repo ctx
     if not caps:
@@ -215,6 +218,8 @@ def route(request, caps, project_root=None):
         return None
 
     chosen = sample()
+    if single:
+        return chosen
     if chosen is None:
         best = max(shortlist, key=lambda c: score[c.name])
         trace("ROUTER", f"no listed option chosen -> fallback keyword score [{best.kind}] {best.name}")

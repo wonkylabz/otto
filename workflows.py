@@ -831,7 +831,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                     and not _is_brainstorm(cap)):
                 intent = await workflow.execute_activity(
                     classify_request, {"request": request, "name": cap["name"]},
-                    start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                    # 180s like route_request: an assistant redirect adds a router call
+                    # to the write-intent one (a timeout is not replayed — no patch needed).
+                    start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
                 if intent.get("write"):
                     if intent.get("redirect") and not pinned:
                         # The general assistant only ANSWERS (its prompt forbids acting), so a

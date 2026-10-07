@@ -208,7 +208,8 @@ class AssistantWriteRedirectTests(unittest.TestCase):
         self.routed = []
         self._route = engine.route
         self.pick = config.DOER_CAP
-        def fake_route(request, caps, project_root=None):
+        def fake_route(request, caps, project_root=None, single=False):
+            self.assertTrue(single)     # one sample, no keyword fallback (see the next test)
             self.routed.append((request, [c.name for c in caps]))
             return next((c for c in caps if c.name == self.pick), None)
         engine.route = fake_route
