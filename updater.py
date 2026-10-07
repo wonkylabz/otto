@@ -139,7 +139,10 @@ def _restart_argv(svc):
 def fetch(root=None):
     """`git fetch` and cache how far behind we are, against WHICH head. Shells out (up to 120s) —
     only the Update modal's own check awaits it, never a panel load."""
-    code, _, err = _git("fetch", "--quiet", REMOTE, BRANCH, root=root, timeout=120)
+    try:
+        code, _, err = _git("fetch", "--quiet", REMOTE, BRANCH, root=root, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:     # a hung remote raises TimeoutExpired
+        code, err = 1, str(e)
     if code:
         return _merge(fetched_at=time.time(), fetch_error=err[-300:])
     _, log, _ = _git("log", "--format=%h%x09%s", f"HEAD..{REMOTE}/{BRANCH}", root=root)
