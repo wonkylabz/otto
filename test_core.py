@@ -217,15 +217,7 @@ class AssistantWriteRedirectTests(unittest.TestCase):
     def tearDown(self):
         engine.route = self._route
 
-    def test_a_named_repo_goes_to_the_worker_without_a_router_call(self):
-        a, w, caps = self._caps()
-        for req in ("add a flag to the cleanup script in otto",
-                    "port the retry fix from otto to otto-web"):   # two repos: still code
-            self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto", "otto-web"]),
-                          w, req)
-        self.assertEqual(self.routed, [])
-
-    def test_otherwise_the_router_picks_between_the_two_fallbacks(self):
+    def test_the_router_picks_between_the_two_fallbacks(self):
         # A keyword guess missed "issue 641" and "fix auth.py" a review round at a time; the
         # router's FALLBACK clause is where the split is written down and regress-tested.
         a, w, caps = self._caps()
@@ -234,11 +226,12 @@ class AssistantWriteRedirectTests(unittest.TestCase):
         self.pick = config.WORKER_CAP
         self.assertIs(engine.assistant_write_redirect(a, caps, "work on issue 641"), w)
 
-    def test_a_carried_repo_name_is_not_this_tasks(self):
-        import contracts
+    def test_a_repo_name_alone_does_not_make_it_code_work(self):
+        # "email the team the otto release notes" names a repo and is not a code change.
         a, _, caps = self._caps()
-        req = "email my landlord" + contracts.CARRIED_CONTEXT_MARK + "earlier, in otto: …"
-        self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), caps[2])
+        req = "email the team the otto release notes"
+        self.assertIs(engine.assistant_write_redirect(a, caps, req), caps[2])
+        self.assertEqual(self.routed, [(req, ["worker", "doer"])])
 
     def test_a_router_that_answers_nothing_keeps_the_worker(self):
         a, w, caps = self._caps()

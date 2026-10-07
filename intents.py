@@ -263,7 +263,7 @@ def fast_lane_intent(request, tools):
     return fast
 
 
-def assistant_write_redirect(cap, caps, request="", repo_names=()):
+def assistant_write_redirect(cap, caps, request=""):
     """When the write-intent guard trips on the general ASSISTANT, bumping its risk isn't
     enough: the assistant's prompt forbids any action, so the gated run would still refuse the
     task (observed on a fresh install — "work on this issue" routed to the assistant, which then
@@ -271,21 +271,16 @@ def assistant_write_redirect(cap, caps, request="", repo_names=()):
     general cap to swap in, or None (any other cap keeps the plain risk bump; a pinned
     /assistant is the caller's responsibility to respect).
 
-    WORKER or DOER? A named registered repo settles it for free. Otherwise Router #1 picks
-    between the two — its FALLBACK clause is the one place that split is written down and
-    regress-tested; a keyword guess here missed "issue 641" and "fix auth.py" one review round
-    at a time. A router that answers nothing keeps main's behaviour: the worker."""
+    WORKER or DOER? Router #1 picks between the two — its FALLBACK clause is the one place that
+    split is written down and regress-tested. Keyword guesses here failed both ways: "issue 641"
+    and "fix auth.py" read as non-code, and a repo name in "email the team the otto release
+    notes" as code. A router that answers nothing keeps main's behaviour: the worker."""
     if cap is None or cap.name != registry.ASSISTANT_NAME:
         return None
     enabled = {c.name: c for c in caps if c.enabled}
     worker, doer = enabled.get(config.WORKER_CAP), enabled.get(config.DOER_CAP)
     if not (worker and doer):
         return worker or doer
-    # ANY named repo, not `candidate_repo`'s unambiguous one: "port the fix from otto to
-    # otto-web" names two, which is ambiguous for cloning but plainly code work. The TASK only:
-    # a repo in a carried conversation is not this task's.
-    if named_repos(task_text(request or "").lower(), list(repo_names)):
-        return worker
     try:
         # One sample: this runs inside classify_request beside the write-intent call, and both
         # candidates are write, so route()'s default would confirm with 3 router calls.

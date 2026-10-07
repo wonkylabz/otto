@@ -388,11 +388,8 @@ def classify_request(payload: dict) -> dict:
     cap = _cap(payload["name"])
     write = engine.request_write_intent(payload["request"], cap)
     out = {"write": write}
-    if write and cap is not None and cap.name == registry.ASSISTANT_NAME:
-        # Only the assistant can redirect, and only then are the repo names worth listing.
-        swap = engine.assistant_write_redirect(
-            cap, _capabilities(), payload["request"],
-            [r["name"] for r in workspace.git_repos()])
+    if write and cap is not None:
+        swap = engine.assistant_write_redirect(cap, _capabilities(), payload["request"])
         if swap is not None:
             out["redirect"] = {"kind": swap.kind, "name": swap.name, "risk": swap.risk}
     return out
