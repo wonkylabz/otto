@@ -825,6 +825,9 @@ class RouteTests(unittest.TestCase):
         d = registry._general_doer()
         self.assertNotIn("development worker", d.prompt)
         self.assertIn("not a software", d.prompt)
+        # It can't see whether repo-mode engaged, so it must not narrate the git outcome.
+        self.assertNotIn("nothing was committed", d.prompt)
+        self.assertIn("never run git yourself", d.prompt)
         self.assertNotEqual(d.name, config.WORKER_CAP)
         self._stub("0")
         engine.route("email my landlord about the boiler", self._caps())
