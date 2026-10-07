@@ -19,7 +19,6 @@ import estop
 import storage
 
 REMOTE, BRANCH = "origin", "main"
-FETCH_EVERY_S = 300
 HEALTH_WAIT_S = 180
 ALREADY_RUNNING = "An update is already running."
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +26,7 @@ _WF_FILES = re.compile(r"^(workflows|wf_[a-z_]+)\.py$")
 _PATH = None    # tests re-point this
 _SERVICE = {"found": "", "miss_at": 0.0}
 _MISS_TTL_S = 300
+_LAUNCHD_LABEL = "com.otto"     # install.sh's LaunchAgent
 
 
 def path():
@@ -90,14 +90,27 @@ def _launchd_job(env=None, ancestors=_ancestors):
     a Terminal shell carries one too ("application.…", "0") — so the job's own pid must be one
     of our ancestors, the launchd analogue of reading our cgroup."""
     label = (env if env is not None else os.environ).get("XPC_SERVICE_NAME", "")
-    if not label or label == "0" or label.startswith("application."):
-        return ""
     try:
+        if label != _LAUNCHD_LABEL:     # "0", "application.*", or some OTHER agent's label
+            return _launchd_listed(ancestors)
         code, out = _launchctl("print", f"gui/{os.getuid()}/{label}")
         m = re.search(r"^\s*pid = (\d+)", out, re.M)
         return label if not code and m and int(m.group(1)) in ancestors() else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def _launchd_listed(ancestors):
+    """install.sh's label when `launchctl list` shows it at one of our `ancestors()`. Newer macOS sets
+    XPC_SERVICE_NAME=0 inside a LaunchAgent too, so the env can't name the job. Only OUR label
+    counts: a manual `./run.sh` has a Terminal app (`application.*`) or any other agent — a web
+    terminal, say — among its ancestors, and restarting that would `kickstart -k` the wrong job."""
+    code, out = _launchctl("list")
+    pids = {int(pid) for pid, _, label in ((ln.split("\t") + ["", ""])[:3]
+                                           for ln in (out.splitlines() if not code else []))
+            if pid.isdigit() and label == _LAUNCHD_LABEL}
+    # Walk our ancestry (up to 32 `ps` calls) only when the job is actually running.
+    return _LAUNCHD_LABEL if pids and pids & ancestors() else ""
 
 
 def service():
@@ -124,14 +137,28 @@ def _restart_argv(svc):
 
 
 def fetch(root=None):
-    """`git fetch` and cache how far behind we are. Shells out — never call it from a request
-    the UI's spinner awaits."""
-    code, _, err = _git("fetch", "--quiet", REMOTE, BRANCH, root=root, timeout=120)
+    """`git fetch` and cache how far behind we are, against WHICH head. Shells out (up to 120s) —
+    only the Update modal's own check awaits it, never a panel load."""
+    try:
+        code, _, err = _git("fetch", "--quiet", REMOTE, BRANCH, root=root, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:     # a hung remote raises TimeoutExpired
+        code, err = 1, str(e)
     if code:
         return _merge(fetched_at=time.time(), fetch_error=err[-300:])
     _, log, _ = _git("log", "--format=%h%x09%s", f"HEAD..{REMOTE}/{BRANCH}", root=root)
     commits = [dict(zip(("sha", "title"), ln.split("\t", 1))) for ln in log.splitlines() if ln]
-    return _merge(fetched_at=time.time(), fetch_error="", behind=len(commits), commits=commits[:50])
+    _, head, _ = _git("rev-parse", "HEAD", root=root)     # full: `--short`'s length can grow
+    return _merge(fetched_at=time.time(), fetch_error="", behind=len(commits), commits=commits[:50],
+                  head=head)
+
+
+def _behind(d, rev=None):
+    """The cached count, only while it was measured from `rev` (default: the revision now
+    RUNNING) — nothing polls git any more, so a manual pull + restart would otherwise show
+    "Update · N" until a click. A prefix match: `rev` may be a `--short` sha."""
+    rev = config.revision() if rev is None else rev
+    head = d.get("head", "")
+    return d.get("behind", 0) if head and rev and head.startswith(rev) else 0
 
 
 def summary():
@@ -141,7 +168,7 @@ def summary():
     state = job.get("state", "")
     if state == "running" and not _job_running(job):
         state = "failed"
-    return {"supported": bool(service()), "behind": d.get("behind", 0), "job": state,
+    return {"supported": bool(service()), "behind": _behind(d), "job": state,
             "job_id": job.get("unit", "")}
 
 

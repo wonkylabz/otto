@@ -60,9 +60,10 @@ session and no convention judge pays for it.
 
 ## Updating from the UI
 
-The header **Update · N** button (`updater.py`) fast-forwards to `origin/main` and restarts the
+The header **Update** button (`updater.py`) fast-forwards to `origin/main` and restarts the
 service — the systemd user unit on Linux, the `com.otto` LaunchAgent on macOS. A manual
-`./run.sh` has no manager to restart it, so the button stays hidden. The server fetches every 5min.
+`./run.sh` has no manager to restart it, so the modal says so. Nothing polls git: a click fetches
+`origin/main` (`POST /api/update/check`), and the label shows **Update · N** once a check found commits.
 
 - **It refuses rather than guesses**: not on `main`, a dirty tree, no fast-forward, an
   `install.sh` change, a run in flight, or a gate-parked run when workflow code changed (it
@@ -73,6 +74,9 @@ service — the systemd user unit on Linux, the `com.otto` LaunchAgent on macOS.
   `/api/health`; if that never comes back it resets to the old sha and restarts again.
 - **macOS detection needs the job's pid among our ancestors** — `XPC_SERVICE_NAME` alone is
   also set in a Terminal shell, which would make a manual `./run.sh` look like the service.
+  Newer macOS sets it to `0` inside a LaunchAgent too, so the fallback matches `launchctl list`
+  pids against our ancestors, accepting only `com.otto` (a Terminal app or web terminal is an
+  ancestor of a manual `./run.sh`, and restarting that would kill the wrong job).
 - **A failed update leaves Otto PAUSED** with the reason in the header. State and the step log
   are in `data/update-state.json`.
 

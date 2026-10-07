@@ -1,14 +1,13 @@
 "use strict";
-/* Header "Update" control: shows when origin/main is ahead, opens a confirm modal, and watches
-   /api/health's `revision` change to know the restart landed. Fed by the existing health polls. */
+/* Header "Update" control: always shown; a click fetches origin/main (nothing polls git) and opens
+   a confirm modal, then watches /api/health's `revision` change to know the restart landed. */
 let UPDATE_WATCH=null;
 
 function applyUpdate(u){
   const b=document.getElementById("update"); if(!b || !u) return;
   const running=u.job==="running" || !!UPDATE_WATCH;
-  b.hidden=!u.supported || (!u.behind && !running);
   b.disabled=running;
-  b.textContent=running ? "Updating…" : `Update · ${u.behind}`;
+  b.textContent=running ? "Updating…" : u.behind ? `Update · ${u.behind}` : "Update";
 }
 
 async function showUpdateForm(){
@@ -23,7 +22,7 @@ async function showUpdateForm(){
   const last=st.last&&st.last.state&&st.last.state!=="running"
     ? `<label>Last update: ${esc(st.last.state)} ${esc(st.last.from||"")}${st.last.to?" → "+esc(st.last.to):""}${st.last.error?" — "+esc(st.last.error):""}</label>` : "";
   c.innerHTML=`<div class="aform">
-    <label>Running <code>${esc(st.revision)}</code> &middot; ${st.behind} commit${st.behind===1?"":"s"} behind</label>
+    <label>Running <code>${esc(st.revision)}</code> &middot; ${st.fetch_error?"couldn't check origin/main":st.behind?`${st.behind} commit${st.behind===1?"":"s"} behind`:"up to date"}</label>
     ${commits?`<ul>${commits}</ul>`:""}
     ${st.fetch_error?`<div class="ferr">fetch failed: ${esc(st.fetch_error)}</div>`:""}
     ${blocks?`<label>Can't update yet</label><ul class="ferr">${blocks}</ul>`:""}

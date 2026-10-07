@@ -8547,6 +8547,14 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(d["behind"], 1)
         self.assertEqual(d["commits"][0]["title"], "add b.py")
 
+    def test_a_count_from_another_head_is_not_shown(self):
+        """Nothing polls git: a manual pull + restart must not keep showing "Update · N"."""
+        head = self._git(self.work, "rev-parse", "--short", "HEAD")
+        with unittest.mock.patch.object(config, "revision", return_value=head):
+            self.assertEqual(self.u.summary()["behind"], 1)
+        with unittest.mock.patch.object(config, "revision", return_value="0000000"):
+            self.assertEqual(self.u.summary()["behind"], 0)
+
     def test_clean_main_has_no_blockers(self):
         self.assertEqual(self.u.blockers({}, root=self.work, svc="otto.service"), [])
 
@@ -8708,6 +8716,22 @@ class UpdaterTests(unittest.TestCase):
         with unittest.mock.patch.object(self.u, "_launchctl", side_effect=FileNotFoundError):
             self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "com.otto"}, lambda: {4242}), "")
 
+    def test_launchd_job_found_by_pid_when_the_env_says_0(self):
+        """Newer macOS sets XPC_SERVICE_NAME=0 inside a LaunchAgent; the list still names it."""
+        out = "PID\tStatus\tLabel\n4242\t0\tcom.otto\n555\t0\tapplication.com.googlecode.iterm2.1\n"
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, out)):
+            job = self.u._launchd_job
+            self.assertEqual(job({"XPC_SERVICE_NAME": "0"}, lambda: {4242, 555}), "com.otto")
+            self.assertEqual(job({"XPC_SERVICE_NAME": "0"}, lambda: {555, 77}), "")
+        other = "PID\tStatus\tLabel\n4242\t0\thomebrew.mxcl.ttyd\n"
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, other)):
+            self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "0"}, lambda: {4242}), "")
+        # Another agent's label in the env (a web terminal) is never the job to kickstart.
+        mine = "gui/501/homebrew.mxcl.ttyd = {\n\tstate = running\n\tpid = 4242\n}"
+        with unittest.mock.patch.object(self.u, "_launchctl", return_value=(0, mine)):
+            self.assertEqual(self.u._launchd_job({"XPC_SERVICE_NAME": "homebrew.mxcl.ttyd"},
+                                                 lambda: {4242}), "")
+
     def test_service_keeps_a_hit_and_retries_a_miss_after_its_ttl(self):
         self.addCleanup(self.u._SERVICE.update, found="", miss_at=0.0)
         self.u._SERVICE.update(found="", miss_at=0.0)
@@ -8793,6 +8817,14 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("go.disabled=false", click)
         watch = src[src.index("function watchUpdate"):]
         self.assertIn("u.job_id!==prevJob", watch)
+
+    def test_the_button_is_always_shown_and_git_is_fetched_only_on_click(self):
+        """A background fetch went unnoticed for minutes after a push; the click is the check."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "js", "update.js")).read()
+        self.assertNotIn("b.hidden", src)
+        self.assertIn('postJSON("/api/update/check"', src[src.index("async function showUpdateForm"):])
+        self.assertNotIn("updater.fetch", inspect.getsource(server).replace(
+            inspect.getsource(server.Handler._post_update_check), ""))
 
     def test_service_unit_reads_the_cgroup(self):
         p = os.path.join(self.tmp, "cg")

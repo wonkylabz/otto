@@ -19,7 +19,6 @@ import json
 import os
 import re
 import socketserver
-import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
@@ -920,18 +919,16 @@ def _update_status():
     except Exception:  # noqa: BLE001
         runs = {}
     d = updater._read()
-    return {**updater.summary(), "commits": d.get("commits", []), "fetched_at": d.get("fetched_at"),
+    # Guarded by the checkout's HEAD on disk, not summary()'s running revision: that is what an
+    # update fast-forwards. A count cached against any other head (a failed fetch, a manual pull,
+    # GET/POST /api/update with no fetch of their own) says nothing about this one.
+    disk = updater._git("rev-parse", "HEAD")[1]
+    behind = updater._behind(d, disk)
+    return {**updater.summary(), "behind": behind,
+            "commits": d.get("commits", []) if behind else [],
+            "fetched_at": d.get("fetched_at"),
             "fetch_error": d.get("fetch_error", ""), "last": d.get("job") or {},
             "revision": config.revision(), "blockers": updater.blockers(runs)}
-
-
-def _update_fetch_loop():
-    while True:
-        try:
-            updater.fetch()
-        except Exception as e:  # noqa: BLE001 - next tick retries
-            print(f"update fetch failed: {e}", flush=True)
-        time.sleep(updater.FETCH_EVERY_S)
 
 
 async def _needs_you(limit=40):
@@ -2607,7 +2604,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps({"started": ok, "error": err}))
 
     def _post_update_check(self, body):
-        """POST /api/update/check — fetch now instead of waiting for the background tick."""
+        """POST /api/update/check — the ONLY fetch: the header button asks on click, nothing polls."""
         updater.fetch()
         self._send(200, json.dumps(_update_status()))
 
@@ -2946,7 +2943,6 @@ def main():
     print(f"Slack socket: {slack_socket.reconcile()}", flush=True)
     # PR-review poll schedule — same out-of-"otto-*"-namespace reasoning.
     print(f"PR reviews: {pr_review.reconcile_schedule()}", flush=True)
-    threading.Thread(target=_update_fetch_loop, name="update-fetch", daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
