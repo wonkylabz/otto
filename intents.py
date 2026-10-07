@@ -263,14 +263,6 @@ def fast_lane_intent(request, tools):
     return fast
 
 
-# A GitHub issue/PR reference — a URL, `owner/repo#123`, or a `#123` that a code word names as
-# one. A bare `#N` alone is not: "apartment #4" and "invoice #2031" are life/admin tasks.
-_CODE_REF = re.compile(
-    r"github\.com/|[\w.-]+/[\w.-]+#\d+\b"
-    r"|\b(?:issues?|prs?|pull requests?|tickets?|bugs?|fix(?:es)?|close[sd]?|resolve[sd]?)"
-    r"\s+#\d+\b", re.I)
-
-
 def assistant_write_redirect(cap, caps, request="", repo_names=()):
     """When the write-intent guard trips on the general ASSISTANT, bumping its risk isn't
     enough: the assistant's prompt forbids any action, so the gated run would still refuse the
@@ -279,24 +271,27 @@ def assistant_write_redirect(cap, caps, request="", repo_names=()):
     general cap to swap in, or None (any other cap keeps the plain risk bump; a pinned
     /assistant is the caller's responsibility to respect).
 
-    WHICH one is decided without a model call: a request naming a registered repo or a GitHub
-    issue/PR is code work and belongs on the WORKER (repo-mode + the review loop); anything else
-    goes to the DOER, or the worker would frame "email my landlord" as a code change and end on
-    a no-PR warning. The other one stands in when the preferred one is disabled."""
+    WORKER or DOER? A named registered repo settles it for free. Otherwise Router #1 picks
+    between the two — its FALLBACK clause is the one place that split is written down and
+    regress-tested; a keyword guess here missed "issue 641" and "fix auth.py" one review round
+    at a time. A router that answers nothing keeps main's behaviour: the worker."""
     if cap is None or cap.name != registry.ASSISTANT_NAME:
         return None
-    # ANY named repo, not `candidate_repo`'s unambiguous one: "port the fix from otto to
-    # otto-web" names two, which is ambiguous for cloning but plainly code work.
-    # The TASK only, like every routing signal: a link in a carried conversation is not this task's.
-    task = task_text(request or "")
-    code = bool(_CODE_REF.search(task) or named_repos(task.lower(), list(repo_names)))
-    order = ((config.WORKER_CAP, config.DOER_CAP) if code
-             else (config.DOER_CAP, config.WORKER_CAP))
     enabled = {c.name: c for c in caps if c.enabled}
-    for name in order:
-        if name in enabled:
-            return enabled[name]
-    return None
+    worker, doer = enabled.get(config.WORKER_CAP), enabled.get(config.DOER_CAP)
+    if not (worker and doer):
+        return worker or doer
+    # ANY named repo, not `candidate_repo`'s unambiguous one: "port the fix from otto to
+    # otto-web" names two, which is ambiguous for cloning but plainly code work. The TASK only:
+    # a repo in a carried conversation is not this task's.
+    if named_repos(task_text(request or "").lower(), list(repo_names)):
+        return worker
+    try:
+        pick = _eng().route(request or "", [worker, doer])
+    except Exception as e:  # noqa: BLE001 - a failed pick keeps the pre-doer behaviour
+        trace("ROUTER", f"worker/doer pick failed, keeping worker: {e}")
+        pick = None
+    return doer if pick is doer else worker
 
 
 # UNDERSCORE COUNTS AS A WORD CHARACTER HERE. Without it `platform_stop_weights_agent` — a

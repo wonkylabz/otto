@@ -204,35 +204,56 @@ class AssistantWriteRedirectTests(unittest.TestCase):
         w.enabled, d.enabled = worker_enabled, doer_enabled
         return a, w, [a, w, d]
 
-    def test_code_work_redirects_to_the_worker(self):
+    def setUp(self):
+        self.routed = []
+        self._route = engine.route
+        self.pick = config.DOER_CAP
+        def fake_route(request, caps, project_root=None):
+            self.routed.append((request, [c.name for c in caps]))
+            return next((c for c in caps if c.name == self.pick), None)
+        engine.route = fake_route
+
+    def tearDown(self):
+        engine.route = self._route
+
+    def test_a_named_repo_goes_to_the_worker_without_a_router_call(self):
         a, w, caps = self._caps()
-        for req in ("work on this issue https://github.com/o/r/issues/12",
-                    "fix #12 please", "fix wonkylabz/otto#12",
-                    "add a flag to the cleanup script in otto",
-                    "port the retry fix from otto to otto-web"):
+        for req in ("add a flag to the cleanup script in otto",
+                    "port the retry fix from otto to otto-web"):   # two repos: still code
             self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto", "otto-web"]),
                           w, req)
+        self.assertEqual(self.routed, [])
 
-    def test_non_code_work_redirects_to_the_doer(self):
-        # The worker would frame it as a code change and end on a no-PR warning.
-        a, _, caps = self._caps()
-        d = caps[2]
-        for req in ("email my landlord about the boiler", "add the dentist appointment to my calendar",
-                    "email the landlord about apartment #4", "pay invoice #2031"):
-            self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), d, req)
+    def test_otherwise_the_router_picks_between_the_two_fallbacks(self):
+        # A keyword guess missed "issue 641" and "fix auth.py" a review round at a time; the
+        # router's FALLBACK clause is where the split is written down and regress-tested.
+        a, w, caps = self._caps()
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), caps[2])
+        self.assertEqual(self.routed, [("email my landlord", ["worker", "doer"])])
+        self.pick = config.WORKER_CAP
+        self.assertIs(engine.assistant_write_redirect(a, caps, "work on issue 641"), w)
 
-    def test_a_carried_conversation_does_not_make_a_task_code_work(self):
+    def test_a_carried_repo_name_is_not_this_tasks(self):
         import contracts
         a, _, caps = self._caps()
-        req = ("email my landlord about the boiler" + contracts.CARRIED_CONTEXT_MARK
-               + "earlier we looked at https://github.com/o/otto/issues/12")
+        req = "email my landlord" + contracts.CARRIED_CONTEXT_MARK + "earlier, in otto: …"
         self.assertIs(engine.assistant_write_redirect(a, caps, req, ["otto"]), caps[2])
+
+    def test_a_router_that_answers_nothing_keeps_the_worker(self):
+        a, w, caps = self._caps()
+        self.pick = None
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), w)
+        def boom(*a_, **k):
+            raise RuntimeError("endpoint down")
+        engine.route = boom
+        self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), w)
 
     def test_the_other_fallback_stands_in_when_one_is_disabled(self):
         a, w, caps = self._caps(doer_enabled=False)
         self.assertIs(engine.assistant_write_redirect(a, caps, "email my landlord"), w)
         a, _, caps = self._caps(worker_enabled=False)
         self.assertIs(engine.assistant_write_redirect(a, caps, "fix #12"), caps[2])
+        self.assertEqual(self.routed, [])
 
     def test_non_assistant_read_cap_keeps_plain_risk_bump(self):
         _, _, caps = self._caps()
