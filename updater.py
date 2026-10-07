@@ -19,7 +19,6 @@ import estop
 import storage
 
 REMOTE, BRANCH = "origin", "main"
-FETCH_EVERY_S = 300
 HEALTH_WAIT_S = 180
 ALREADY_RUNNING = "An update is already running."
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -90,14 +89,26 @@ def _launchd_job(env=None, ancestors=_ancestors):
     a Terminal shell carries one too ("application.…", "0") — so the job's own pid must be one
     of our ancestors, the launchd analogue of reading our cgroup."""
     label = (env if env is not None else os.environ).get("XPC_SERVICE_NAME", "")
-    if not label or label == "0" or label.startswith("application."):
-        return ""
     try:
+        if not label or label == "0" or label.startswith("application."):
+            return _launchd_listed(ancestors())
         code, out = _launchctl("print", f"gui/{os.getuid()}/{label}")
         m = re.search(r"^\s*pid = (\d+)", out, re.M)
         return label if not code and m and int(m.group(1)) in ancestors() else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def _launchd_listed(pids):
+    """The label `launchctl list` shows at one of `pids`. Newer macOS sets XPC_SERVICE_NAME=0
+    inside a LaunchAgent too, so the env can't name the job. A Terminal app is an ancestor of
+    a manual `./run.sh`, so its `application.*` label never counts."""
+    code, out = _launchctl("list")
+    for ln in out.splitlines() if not code else []:
+        pid, _, label = (ln.split("\t") + ["", ""])[:3]
+        if pid.isdigit() and int(pid) in pids and label and not label.startswith("application."):
+            return label
+    return ""
 
 
 def service():
