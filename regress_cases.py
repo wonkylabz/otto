@@ -649,6 +649,16 @@ _ROUTE_MISROUTES = [
     ("route-board-listing-to-board-status", "show me the open PRs in infra and what's blocked "
      "on the board", "board-status",
      "the ticket-lookup carve-out does not pull a board listing off its purpose-built cap"),
+    # A SUGGESTION of what to work on is advice to the asker, not an implementation: "suggest me a
+    # ticket to work on" went to sre-minion and armed a write gate to implement infra#666.
+    ("route-ticket-suggestion-to-assistant", "Suggest me a ticket to work on that is worth "
+     "(provides value). Only SRE/infrastructure stuff "
+     "https://github.com/orgs/acme/projects/6/views/1", "assistant",
+     "recommending a ticket for the ASKER to work on is informational, not implementation"),
+    # ...but asking Otto to pick one AND do it is still implementation.
+    ("route-ticket-pick-and-do-to-implementer", "pick a good candidate to work on from the "
+     "infra issues", "sre-minion",
+     "the suggestion carve-out does not pull pick-and-implement off the implementer"),
     ("route-code-task-to-worker", "add a --dry-run flag to the cleanup script in the otto repo "
      "and cover it with a test", "worker",
      "a code change with no specialized cap still lands on the software worker"),
@@ -695,6 +705,11 @@ _WRITE_INTENT_CASES = [
      "why is the webapp pod crashlooping in prod-a and what changed recently",
      False,
      "a pure investigation is NOT gated — over-gating trains the operator to rubber-stamp"),
+    # Without the carve-out, the "pick a ticket to work on = WRITE" clause bumped this to worker.
+    ("intent-read-ticket-suggestion",
+     "Suggest me a ticket to work on that is worth (provides value). Only SRE/infrastructure stuff",
+     False,
+     "recommending a ticket for the asker to work on is not a change"),
     # NOT a test of the injection fence, despite the shape. Measured 2026-08-13: this payload and
     # three stronger ones (direct override, spoofed fence-break + system turn, fake security
     # policy) all classify WRITE 5/5 with contracts._fenced patched OUT — 40/40 across the grid.

@@ -213,7 +213,9 @@ def request_write_intent(request, cap):
         "this machine? Working on / fixing / implementing / resolving an issue or ticket counts "
         "as WRITE (the deliverable is a change) — including when the agent is asked to PICK or "
         "CHOOSE which ticket to work on first ('pick a good candidate to work on'): the pick is "
-        "a sub-step, the implied deliverable is still the change. Reply with exactly WRITE if it "
+        "a sub-step, the implied deliverable is still the change. But asking to SUGGEST or "
+        "RECOMMEND a ticket for the USER to work on ('suggest me a ticket to work on') is READ: "
+        "the recommendation is the deliverable. Reply with exactly WRITE if it "
         "does, or READ if it only asks to look at, analyse, explain, or report. Reply with one "
         "word.",
     )

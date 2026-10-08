@@ -4073,6 +4073,8 @@ class FollowupHandoffTests(unittest.TestCase):
             self.assertIn("implementing", prompts[0])
             self.assertIn("counts as WRITE", prompts[0])
             self.assertIn("PICK or CHOOSE", prompts[0])   # pick-then-implement is WRITE too
+            # ...but a suggestion for the asker is READ
+            self.assertIn("is READ", prompts[0].split("SUGGEST", 1)[1][:200])
         finally:
             gateway.complete = orig
 

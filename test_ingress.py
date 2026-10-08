@@ -798,6 +798,9 @@ class RouteTests(unittest.TestCase):
         # "Pick a good candidate to work on from the Otto issues" also landed on the assistant:
         # the pick-then-implement idiom must be named task-shaped too.
         self.assertIn("PICK/CHOOSE", self.prompts[0])
+        # ...but a SUGGESTION for the asker to work on is informational (it went to sre-minion).
+        carve = self.prompts[0].split("SUGGEST", 1)[1][:300]
+        self.assertIn("route it to 'assistant', never to an implementer", carve)
 
     def test_routing_prompt_has_task_fallback(self):
         # The write-side mirror of the informational exception (issue #152): a task-shaped request
