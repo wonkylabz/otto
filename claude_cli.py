@@ -194,23 +194,34 @@ def _tool_words(name):
 def is_publish(name, tool_input=None, *, repo_mode=False):
     """Whether one tool call published something. `repo_mode`: a PR opened from Otto's own
     workspace is the deliverable Otto manages — a retry amends that branch, never a second PR."""
+    if not isinstance(tool_input, dict):
+        tool_input = {}
     if name in ("Bash", "shell"):
-        cmd = str((tool_input or {}).get("command") or "")
+        cmd = str(tool_input.get("command") or "")
         if repo_mode:
             cmd = re.sub(r"\bgh\s+pr\s+create\b", "", cmd)
         return bool(_PUBLISH_SHELL.search(cmd))
     if not str(name).startswith("mcp__"):
         return False
     words = _tool_words(name)
-    if not words or "draft" in words or words[0] in _READ_LEADS:
+    if "draft" in words:
         return False
-    return bool(_PUBLISH_VERBS & set(words)) or (
-        "create" in words and bool(_PUBLISH_CREATES & set(words)))
+    # The FIRST verb decides: a server prefix (`slack_get_comment`) must not hide a read.
+    for i, w in enumerate(words):
+        if w in _READ_LEADS:
+            return False
+        if w in _PUBLISH_VERBS:
+            return True
+        if w == "create":
+            return bool(_PUBLISH_CREATES & set(words[i + 1:]))
+    return False
 
 
 def _publish_label(name, tool_input):
+    if not isinstance(tool_input, dict):
+        tool_input = {}
     if name in ("Bash", "shell"):
-        return f"{name}: {str((tool_input or {}).get('command') or '')[:120]}"
+        return f"{name}: {str(tool_input.get('command') or '')[:120]}"
     where = ", ".join(f"{k}={tool_input[k]}" for k in _PUBLISH_TARGET_KEYS
                       if isinstance(tool_input, dict) and tool_input.get(k) not in (None, ""))
     return f"{name}" + (f" ({where})" if where else "")
@@ -254,10 +265,13 @@ def published_actions(paths, *, repo_mode=False):
                             order.append(key)
                         elif block.get("type") == "tool_result" and block.get("is_error"):
                             failed.add((path, block.get("tool_use_id")))
-        except (OSError, TypeError):
+        except (OSError, TypeError, AttributeError):
             continue
-    return [_publish_label(*calls[k]) for k in order
-            if k not in failed and is_publish(*calls[k], repo_mode=repo_mode)]
+    try:
+        return [_publish_label(*calls[k]) for k in order
+                if k not in failed and is_publish(*calls[k], repo_mode=repo_mode)]
+    except Exception:  # noqa: BLE001 - a transcript detail must never break the attempt
+        return []
 
 
 def _drain(stream, sink):

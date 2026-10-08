@@ -763,7 +763,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
 def _published(transcript_path, cwd):
     """`claude_cli.published_actions` over this attempt's transcript AND any walled pass kept
     beside it — a local pass that posted before hitting its wall posted all the same."""
-    paths = [transcript_path] + sorted(glob.glob(transcript_path[:-len(".jsonl")]
+    paths = [transcript_path] + sorted(glob.glob(glob.escape(transcript_path[:-len(".jsonl")])
                                                  + "-walled-*.jsonl"))
     ws = os.path.realpath(workspace.WORKSPACES) + os.sep
     repo_mode = bool(cwd) and os.path.realpath(cwd).startswith(ws)

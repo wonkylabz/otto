@@ -62,6 +62,10 @@ _SECRET_PATTERNS = (
     # reconstructed a live one out of an editor history cache and put it on a curl command
     # line, where it is still sitting in that run's transcript.
     re.compile(r"\bAT[AC]TT3x[A-Za-z0-9_\-=]{20,}"),                          # Atlassian
+    # Incoming-webhook URLs: the PATH is the credential (anyone holding it can post). The host
+    # stays so the reader still learns WHERE; the lookbehind keeps a re-run a no-op.
+    re.compile(r"(?<=hooks\.slack\.com/)(?:services|workflows|triggers)/[A-Za-z0-9/_\-]+"),
+    re.compile(r"(?<=/api/webhooks/)\d+/[A-Za-z0-9_\-]+"),                      # Discord
     # PEM private key block — collapse the whole body, not just the header line.
     re.compile(r"(?is)-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----"),
     # Credentials embedded in a URL: https://user:pass@host -> https://[redacted]@host. Keeping

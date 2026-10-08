@@ -4246,6 +4246,15 @@ class PublishedAttemptTests(unittest.TestCase):
                     "curl -d @m.json https://hooks.slack.com/services/T/B/x"):
             self.assertTrue(claude_cli.is_publish("Bash", {"command": cmd}), cmd)
         self.assertFalse(claude_cli.is_publish("Bash", {"command": "gh api repos/o/r/pulls/1"}))
+        # The first VERB decides, past any server prefix.
+        self.assertFalse(claude_cli.is_publish("mcp__x__slack_get_comment", {}))
+        self.assertTrue(claude_cli.is_publish("mcp__x__slack_send_message", {}))
+
+    def test_a_malformed_tool_input_never_breaks_the_attempt(self):
+        evs = (self._call("Bash", "gh issue comment 1", "a", False)
+               + self._call(self.SEND, ["C"], "b", False))
+        self.assertEqual(claude_cli.published_actions([self._transcript("m.jsonl", evs)]),
+                         [self.SEND])
 
     def test_codex_shell_commands_are_read_too(self):
         path = self._transcript("c.jsonl", [
