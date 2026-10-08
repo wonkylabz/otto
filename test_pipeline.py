@@ -4186,6 +4186,146 @@ class PostPrLoopParameterisationTests(unittest.TestCase):
                 self.assertIn(word, v["critique"])
 
 
+class PublishedAttemptTests(unittest.TestCase):
+    """A failed attempt that already PUBLISHED is never retried — the retry publishes again.
+
+    Measured: a scheduled runbook posted its report to a Slack channel on attempt 1, the judge
+    FAILed it on a contract point, and attempt 2 posted the whole report a second time. The ladder stops and a human decides instead."""
+
+    SEND = "mcp__claude_ai_Slack__slack_send_message"
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="otto-pub-")
+
+    def _transcript(self, name, events):
+        path = os.path.join(self._tmp, name)
+        with open(path, "w") as f:
+            for ev in events:
+                f.write(json.dumps(ev) + "\n")
+        return path
+
+    @staticmethod
+    def _call(name, inp, tid="t1", error=None):
+        evs = [{"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": tid, "name": name, "input": inp}]}}]
+        if error is not None:
+            evs.append({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tid, "is_error": error,
+                 "content": "x"}]}})
+        return evs
+
+    def test_the_real_slack_post_is_a_publish_and_names_its_channel(self):
+        path = self._transcript("a1.jsonl", [{"type": "otto-meta"}]
+                                + self._call(self.SEND, {"channel_id": "CH6", "message": "hi"},
+                                             error=False))
+        self.assertEqual(claude_cli.published_actions([path]),
+                         [self.SEND + " (channel_id=CH6)"])
+
+    def test_reads_drafts_and_refused_calls_are_not_publishes(self):
+        evs = (self._call("mcp__claude_ai_Slack__slack_read_channel", {}, "a", False)
+               + self._call("mcp__claude_ai_Slack__slack_send_message_draft", {}, "b", False)
+               + self._call("mcp__claude_ai_Notion__notion-get-comments", {}, "c", False)
+               + self._call("mcp__claude_ai_Gmail__create_draft", {}, "d", False)
+               + self._call(self.SEND, {"channel_id": "C"}, "e", True)
+               + self._call("Bash", {"command": "gh pr view 3"}, "f", False))
+        self.assertEqual(claude_cli.published_actions([self._transcript("r.jsonl", evs)]), [])
+
+    def test_a_call_with_no_result_counts_it_may_have_landed(self):
+        path = self._transcript("k.jsonl", self._call(self.SEND, {"channel_id": "C"}))
+        self.assertEqual(len(claude_cli.published_actions([path])), 1)
+
+    def test_every_spelling_of_an_outward_write(self):
+        for name in ("mcp__claude_ai_Atlassian__addCommentToJiraIssue",
+                     "mcp__claude_ai_Atlassian__createJiraIssue",
+                     "mcp__claude_ai_Notion__notion-create-pages", "mcp__Slack__post_message",
+                     "mcp__claude_ai_Gmail__reply",
+                     "mcp__claude_ai_Notion__notion-create-comment",
+                     "mcp__claude_ai_Atlassian__createConfluenceFooterComment"):
+            self.assertTrue(claude_cli.is_publish(name, {}), name)
+        for cmd in ("gh issue comment 4 --body x", "cd /x && gh pr create --draft",
+                    "gh api repos/o/r/issues/1/comments -X POST -f body=x",
+                    "curl -d @m.json https://hooks.slack.com/services/T/B/x"):
+            self.assertTrue(claude_cli.is_publish("Bash", {"command": cmd}), cmd)
+        self.assertFalse(claude_cli.is_publish("Bash", {"command": "gh api repos/o/r/pulls/1"}))
+        # The first VERB decides, past any server prefix.
+        self.assertFalse(claude_cli.is_publish("mcp__x__slack_get_comment", {}))
+        self.assertTrue(claude_cli.is_publish("mcp__x__slack_send_message", {}))
+
+    def test_an_unclassifiable_call_fails_closed(self):
+        path = self._transcript("u.jsonl", self._call(self.SEND, {}, "a", False))
+        with unittest.mock.patch.object(claude_cli, "is_publish",
+                                        side_effect=RuntimeError("boom")):
+            self.assertEqual(claude_cli.published_actions([path]),
+                             [self.SEND + " (unclassified)"])
+
+    def test_a_malformed_line_hides_nothing_after_it(self):
+        bad = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": ["unhashable"], "name": "Read", "input": {}}]}}
+        evs = [bad] + self._call(self.SEND, {"channel_id": "C"}, "b", False)
+        self.assertEqual(claude_cli.published_actions([self._transcript("h.jsonl", evs)]),
+                         [self.SEND + " (channel_id=C)"])
+
+    def test_a_malformed_tool_input_never_breaks_the_attempt(self):
+        evs = (self._call("Bash", "gh issue comment 1", "a", False)
+               + self._call(self.SEND, ["C"], "b", False))
+        self.assertEqual(claude_cli.published_actions([self._transcript("m.jsonl", evs)]),
+                         [self.SEND])
+
+    def test_codex_shell_commands_are_read_too(self):
+        path = self._transcript("c.jsonl", [
+            {"type": "item.completed", "item": {"type": "command_execution",
+                                                "command": "gh issue comment 1 -b x", "exit_code": 0}},
+            {"type": "item.completed", "item": {"type": "command_execution",
+                                                "command": "gh issue comment 2 -b x", "exit_code": 1}}])
+        self.assertEqual(claude_cli.published_actions([path]),
+                         ["shell: gh issue comment 1 -b x"])
+
+    def test_a_pr_from_otto_s_own_workspace_is_the_deliverable_not_a_publish(self):
+        # A retry there amends the same branch; `gh pr create` cannot open a second PR on it.
+        ws = os.path.join(self._tmp, "workspaces")
+        os.makedirs(os.path.join(ws, "run1"))
+        a = self._transcript("w-a1.jsonl", self._call("Bash", {"command": "gh pr create --draft"},
+                                                      error=False))
+        self._transcript("w-a1-walled-local.jsonl",
+                         self._call(self.SEND, {"channel_id": "C"}, "z", False))
+        with unittest.mock.patch.object(workspace, "WORKSPACES", ws):
+            in_ws = engine._published(a, os.path.join(ws, "run1"))
+            outside = engine._published(a, self._tmp)
+        # ...and the walled pass beside the canonical transcript is read too.
+        self.assertEqual(in_ws, [self.SEND + " (channel_id=C)"])
+        self.assertEqual(len(outside), 2)
+
+    def test_the_ladder_stops_on_a_failed_attempt_that_published(self):
+        limits = ladder.Limits.of(3, 2, 1)
+        state = ladder.start(limits)
+        fail = {"passed": False, "source": "judge", "critique": "c"}
+        for verdict in (fail, {"passed": False, "source": "harness", "critique": "t"}):
+            step = ladder.next_step(state, limits, verdict, published=["x"])
+            self.assertEqual((step.stop, step.reason), (True, ladder.PUBLISHED_UNVERIFIED))
+        self.assertFalse(ladder.next_step(state, limits, fail, published=[]).stop)
+        self.assertEqual(ladder.next_step(state, limits, {"passed": True},
+                                          published=["x"]).reason, ladder.PASSED)
+
+    def test_the_sync_ladder_runs_once_and_files_it_for_a_human(self):
+        calls = []
+        cap = registry.Capability("skill", "c", "d")
+        cap.risk = "read"
+
+        def fake_attempt(request, cap, **kw):
+            calls.append(kw.get("attempt"))
+            return {"workflow": "w1", "result": "report", "cost": 0.0, "session_id": "s",
+                    "attempt": kw.get("attempt"), "is_error": False, "tokens": {"output": 1},
+                    "model": "m", "published": [self.SEND + " (channel_id=C)"]}
+        with unittest.mock.patch.object(engine, "run_attempt", fake_attempt), \
+                unittest.mock.patch.object(engine, "verify",
+                                           lambda *a, **k: {"passed": False, "critique": "c"}), \
+                unittest.mock.patch.object(engine, "record_attempt", lambda *a, **k: None), \
+                unittest.mock.patch.object(engine, "_resolve_project", lambda *a, **k: None):
+            out = engine.execute("post the report", cap)
+        self.assertEqual(calls, [1], "a retry would have posted the report again")
+        self.assertEqual(out["needs_human"], {"reason": ladder.PUBLISHED_UNVERIFIED})
+
+
 class LadderStateMachineTests(unittest.TestCase):
     """`ladder.py` is the ladder's control flow, consumed by BOTH runtimes.
 

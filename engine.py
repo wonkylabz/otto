@@ -4,6 +4,7 @@ In real Otto this is a Temporal workflow. Here it's a function, but the shape is
 identical: route -> approve (signal) -> run -> audit. The crucial "real" bit: the
 RUNNER shells out to `claude -p` to actually execute your real agent/skill.
 """
+import glob
 import json
 import os
 import re
@@ -731,6 +732,10 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             # static allowlist, which is only a floor — see judging.verify's grant block.
             "tools_used": out.get("tools_used") or [],
             "tools_failed": out.get("tools_failed") or [],
+            # What this attempt put in front of people (a Slack post, a ticket, a PR comment).
+            # A retry would repeat it, so the ladder stops instead (ladder.next_step).
+            "published": ([] if resume_session else
+                          _published(transcript_path, cwd)),
             "is_error": bool(out.get("is_error")), "supervision": supervision,
             # What the supervisor actually told the agent mid-run. Lifted out of `supervision`
             # because it is not observability: the verifier MUST see it, or it scores the output
@@ -755,6 +760,16 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                             and gateway.model_kind(exec_entry) == "local")}
 
 
+def _published(transcript_path, cwd):
+    """`claude_cli.published_actions` over this attempt's transcript AND any walled pass kept
+    beside it — a local pass that posted before hitting its wall posted all the same."""
+    paths = [transcript_path] + sorted(glob.glob(glob.escape(transcript_path[:-len(".jsonl")])
+                                                 + "-walled-*.jsonl"))
+    ws = os.path.realpath(workspace.WORKSPACES) + os.sep
+    repo_mode = bool(cwd) and os.path.realpath(cwd).startswith(ws)
+    return claude_cli.published_actions(paths, repo_mode=repo_mode)
+
+
 def _strict_stop_attempt(wid, attempt, exc, started):
     """One attempt result for a strict-mode stop (OTTO_LOCAL_FALLBACK=0): the local backend
     couldn't run and Claude is not allowed to cover for it.
@@ -768,7 +783,7 @@ def _strict_stop_attempt(wid, attempt, exc, started):
     return {"workflow": wid, "result": exc.message, "cost": 0,
             "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
             "session_id": None, "model": exc.model, "attempt": attempt, "is_error": True,
-            "supervision": None, "tools_used": [], "tools_failed": [], "duration_s": time.monotonic() - started, "backend": "local",
+            "supervision": None, "tools_used": [], "tools_failed": [], "published": [], "duration_s": time.monotonic() - started, "backend": "local",
             "local_strict_stop": True, "auth_stop": False, "fallback_from": None,
             "fallback_reason": None, "fallback_detail": None,
             "local_incapable": False, "write_local": False}
@@ -803,6 +818,7 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
     strict_stopped, budget_stopped = False, False
     auth_stopped, auth_wall = False, None
     cost, tokens_out, att, harness_stopped = 0, 0, None, False
+    published_stopped = False
     while True:
         nxt = ladder.plan_attempt(state, limits)
         attempt, final = nxt.attempt, nxt.final
@@ -865,11 +881,17 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
                        fallback_detail=att.get("fallback_detail"))
         was_local_disabled = state.local_disabled
         step = ladder.next_step(state, limits, verdict,
-                                write_local=write_escalate and att.get("write_local", False))
+                                write_local=write_escalate and att.get("write_local", False),
+                                published=att.get("published"))
         state = step.state
         if state.local_disabled and not was_local_disabled:
             trace("ESCALATE", f"{wid} write cap failed verify on local — rest of ladder on Claude")
         if step.reason == ladder.PASSED:
+            break
+        if step.reason == ladder.PUBLISHED_UNVERIFIED:
+            trace("RETRY", f"{wid} attempt {attempt} failed after publishing — not retrying: "
+                           + "; ".join(att.get("published") or []))
+            published_stopped = True
             break
         if not final:
             trace("RETRY", f"{wid} attempt {attempt} failed verification — retrying with critique")
@@ -885,7 +907,7 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
             "attempts": attempt,
             "strict_stop": strict_stopped, "budget_stop": budget_stopped,
             "auth_stop": auth_stopped, "auth_wall": auth_wall,
-            "harness_stop": harness_stopped}
+            "harness_stop": harness_stopped, "published_stop": published_stopped}
 
 
 def execute(request, cap, extra_tools=None, mcp_config_path=None, resume_session=None,
@@ -922,7 +944,8 @@ def execute(request, cap, extra_tools=None, mcp_config_path=None, resume_session
                    else ({"reason": config.STRICT_STOP_REASON} if out["strict_stop"]
                    else ({"reason": "budget_exceeded"} if out["budget_stop"]
                          else (None if out["passed"] else
-                               {"reason": ("harness_exhausted" if out.get("harness_stop")
+                               {"reason": (ladder.PUBLISHED_UNVERIFIED if out.get("published_stop")
+                                           else "harness_exhausted" if out.get("harness_stop")
                                            else "verify_exhausted")}))))
     return {"workflow": out["wid"], "result": att["result"], "cost": out["cost"],
             "session_id": att["session_id"], "attempts": att["attempt"],
@@ -951,4 +974,4 @@ def _run_ladder(request, cap, wid, recall=False, project=None, remember=True, wr
     # apart from a step the judge actually failed.
     return {k: out[k] for k in
             ("result", "passed", "critique", "cost", "tokens_out", "attempts", "strict_stop",
-             "auth_stop", "auth_wall", "harness_stop", "budget_stop")}
+             "auth_stop", "auth_wall", "harness_stop", "budget_stop", "published_stop")}

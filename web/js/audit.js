@@ -11,6 +11,7 @@ const auDur=s=>s==null?"":s<60?s.toFixed(1)+"s":(s/60).toFixed(1)+"m";
 // falls back to the raw string rather than hiding it.
 const AU_REASON_LABELS={workflow_error:"workflow crashed",delivery_failed:"delivery failed",
   budget_exceeded:"budget exceeded",verify_exhausted:"verify ladder exhausted",
+  published_unverified:"failed after publishing, not retried",
   local_fallback_disabled:"local model failed, Claude fallback is off",
   claude_auth_expired:"Claude could not authenticate",
   supervisor_retry:"supervisor killed & retried",

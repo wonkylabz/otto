@@ -34,6 +34,8 @@ from dataclasses import dataclass, replace
 PASSED = "passed"
 VERIFY_EXHAUSTED = "verify_exhausted"
 HARNESS_EXHAUSTED = "harness_exhausted"
+# A failed attempt that already PUBLISHED (posted, commented, filed): a retry repeats it.
+PUBLISHED_UNVERIFIED = "published_unverified"
 
 
 @dataclass(frozen=True)
@@ -111,7 +113,7 @@ def record_attempt(state, attempt, *, killed=False, local_incapable=False):
                    local_disabled=state.local_disabled or bool(local_incapable))
 
 
-def next_step(state, limits, verdict, *, write_local=False):
+def next_step(state, limits, verdict, *, write_local=False, published=()):
     """Apply a verdict and say whether the ladder continues.
 
     The two rules worth stating, because both copies got them wrong at some point:
@@ -126,6 +128,11 @@ def next_step(state, limits, verdict, *, write_local=False):
     `max_attempts` is documented to bound."""
     if verdict and verdict.get("passed"):
         return Step(True, PASSED, state)
+    if published:
+        # Whatever failed — judge, harness or supervisor — the post is already out and a retry
+        # posts it again: a runbook double-posted its weekly report to Slack. A human decides.
+        return Step(True, PUBLISHED_UNVERIFIED,
+                    replace(state, critique=(verdict or {}).get("critique")))
     harness = bool(verdict) and verdict.get("source") == "harness"
     if (limits.local_fallback and not state.local_disabled and write_local and not harness):
         state = replace(state, local_disabled=True,

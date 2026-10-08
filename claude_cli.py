@@ -12,6 +12,7 @@ usage / session_id / is_error), so run_json's return contract is unchanged and c
 """
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -165,6 +166,121 @@ def assistant_texts(path):
                             out.append(text)
     except (OSError, TypeError):
         return []
+    return out
+
+
+# A PUBLISH is a tool call that put something in front of other people: it cannot be retracted,
+# so a retry repeats it. Matched on the tool's own words: MCP names are verb-first in every
+# spelling (snake, kebab, camel), a `get`/`list`/`read` lead is a read, a draft is not sent.
+_PUBLISH_VERBS = {"send", "post", "reply", "forward", "publish", "comment", "schedule"}
+_PUBLISH_CREATES = {"issue", "page", "pages", "pull", "incident", "event", "ticket", "message"}
+_READ_LEADS = {"get", "list", "read", "search", "query", "fetch", "find", "lookup", "download"}
+_PUBLISH_SHELL = re.compile(
+    r"\bgh\s+(?:pr|issue)\s+(?:create|comment|review)\b"
+    r"|\bgh\s+api\b[^|;&]*(?:-X\s*|--method[\s=]+)(?:POST|PATCH|PUT)\b"
+    r"|hooks\.slack\.com/|slack\.com/api/chat\.(?:postMessage|scheduleMessage)"
+    r"|discord(?:app)?\.com/api/webhooks/", re.I)
+# What a publish was AIMED at — enough for a human to find it, never its content.
+_PUBLISH_TARGET_KEYS = ("channel_id", "channel", "thread_ts", "to", "repo", "issueIdOrKey",
+                        "issue_number", "pull_number", "pageId", "parent", "calendarId")
+
+
+def _tool_words(name):
+    tool = str(name).rsplit("__", 1)[-1]
+    tool = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", tool)
+    return [w for w in re.split(r"[^a-z0-9]+", tool.lower()) if w]
+
+
+def is_publish(name, tool_input=None, *, repo_mode=False):
+    """Whether one tool call published something. `repo_mode`: a PR opened from Otto's own
+    workspace is the deliverable Otto manages — a retry amends that branch, never a second PR."""
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if name in ("Bash", "shell"):
+        cmd = str(tool_input.get("command") or "")
+        if repo_mode:
+            cmd = re.sub(r"\bgh\s+pr\s+create\b", "", cmd)
+        return bool(_PUBLISH_SHELL.search(cmd))
+    if not str(name).startswith("mcp__"):
+        return False
+    words = _tool_words(name)
+    if "draft" in words:
+        return False
+    # The FIRST verb decides: a server prefix (`slack_get_comment`) must not hide a read.
+    for i, w in enumerate(words):
+        if w in _READ_LEADS:
+            return False
+        if w in _PUBLISH_VERBS:
+            return True
+        if w == "create":
+            return bool((_PUBLISH_CREATES | _PUBLISH_VERBS) & set(words[i + 1:]))
+    return False
+
+
+def _publish_label(name, tool_input):
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    if name in ("Bash", "shell"):
+        return f"{name}: {str(tool_input.get('command') or '')[:120]}"
+    where = ", ".join(f"{k}={tool_input[k]}" for k in _PUBLISH_TARGET_KEYS
+                      if isinstance(tool_input, dict) and tool_input.get(k) not in (None, ""))
+    return f"{name}" + (f" ({where})" if where else "")
+
+
+def _note_publish_event(ev, path, calls, failed, order):
+    """Fold one transcript event into `published_actions`' call table."""
+    if not isinstance(ev, dict):
+        return
+    item = ev.get("item")
+    if (ev.get("type") == "item.completed" and isinstance(item, dict)
+            and item.get("type") == "command_execution"):
+        key = ("codex", len(order))
+        calls[key] = ("shell", {"command": item.get("command")})
+        order.append(key)
+        if item.get("exit_code") not in (None, 0):
+            failed.add(key)
+        return
+    msg = ev.get("message")
+    for block in (msg.get("content") if isinstance(msg, dict) else None) or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use" and block.get("name"):
+            key = (path, str(block.get("id")))
+            calls[key] = (str(block["name"]), block.get("input"))
+            order.append(key)
+        elif block.get("type") == "tool_result" and block.get("is_error"):
+            failed.add((path, str(block.get("tool_use_id"))))
+
+
+def published_actions(paths, *, repo_mode=False):
+    """Every publish an attempt's transcript(s) record, in order, as short labels.
+
+    Counted unless its result came back an ERROR: a call with no result at all (killed mid-call)
+    may well have landed, and the cost of a phantom is one needs-you card, not a duplicate post.
+    Reads both shapes — Claude/local `tool_use`+`tool_result`, Codex `command_execution`.
+    Best-effort like `assistant_texts`: an unreadable file contributes nothing."""
+    calls, failed = {}, set()
+    order = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for raw in f:
+                    try:
+                        _note_publish_event(json.loads(raw), path, calls, failed, order)
+                    except Exception:  # noqa: BLE001 - one bad line must not hide the rest
+                        continue
+        except OSError:
+            continue
+    out = []
+    for k in order:
+        if k in failed:
+            continue
+        name, tool_input = calls[k]
+        try:
+            if is_publish(name, tool_input, repo_mode=repo_mode):
+                out.append(_publish_label(name, tool_input))
+        except Exception:  # noqa: BLE001 - fail CLOSED: unclassifiable costs a card, not a repost
+            out.append(f"{name} (unclassified)")
     return out
 
 

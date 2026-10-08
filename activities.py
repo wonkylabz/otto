@@ -636,6 +636,8 @@ def run_capability(payload: dict) -> dict:
             # The fast-lane grant this attempt actually held, after narrowing to the live tags.
             "fast_lane": fast_lane,
             "tools_failed": att.get("tools_failed") or [],
+            # What the attempt published — whitelisted here or the workflow ladder retries it.
+            "published": att.get("published") or [],
             # Corrections the mid-run supervisor delivered into this attempt. Listed HERE for the
             # same reason as tools_used — this dict is a whitelist, and the verify activity below
             # cannot judge an amended request it never hears about.

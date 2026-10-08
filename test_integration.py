@@ -6518,6 +6518,40 @@ class WorkflowNeedsHumanTests(unittest.IsolatedAsyncioTestCase):
         delivery.notify = self._orig_notify
         engine._DB = self._orig_db
 
+    async def test_a_failed_attempt_that_already_published_is_not_retried(self):
+        # The workflow mirror of `test_pipeline.PublishedAttemptTests`, and the proof that
+        # `published` survives `run_capability`'s whitelist.
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, finalize_terminal, notify_human,
+                                record_attempt, record_skip, route_request, snapshot_settings,
+                                run_capability, resolve_pr_target, check_grounding,
+                                verify_capability)
+        inner = engine.run_attempt
+
+        def posting_attempt(*a, **k):
+            return {**inner(*a, **k), "published": ["mcp__Slack__post_message (channel_id=C)"]}
+        engine.run_attempt = posting_attempt
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="nhq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request, run_capability,
+                                resolve_pr_target, check_grounding, verify_capability,
+                                record_attempt, record_skip, deliver_result, finalize_terminal,
+                                notify_human],
+                    activity_executor=ex,
+                ):
+                    out = await env.client.execute_workflow(
+                        OttoWorkflow.run,
+                        {"request": "post the weekly report", "unattended": True,
+                         "auto_approve": True,
+                         "cap": {"name": "flaky-report", "kind": "skill", "risk": "write"}},
+                        id="nh-" + uuid.uuid4().hex[:8], task_queue="nhq")
+        self.assertEqual(self.attempts, [1])
+        self.assertEqual(out["needs_human"], {"reason": "published_unverified"})
+        self.assertIn("not retried", out["result"])
+
     async def test_verify_exhausted_no_pr_is_held_as_needs_human(self):
         import config
         import uuid

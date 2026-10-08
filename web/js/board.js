@@ -61,13 +61,14 @@ pollBoardBadge();
 // clarification signal to continue — "Needs review" is already done/dead and won't move on
 // its own (Retry/Dismiss are the only ways forward). Module-level (not just loadBoard-local)
 // so the card detail modal can reuse the same labels/hints.
-const NEEDS_LABEL={verify_exhausted:"unverified",qa_fail:"QA failed",qa_inconclusive:"QA inconclusive",
+const NEEDS_LABEL={verify_exhausted:"unverified",published_unverified:"posted, unverified",qa_fail:"QA failed",qa_inconclusive:"QA inconclusive",
                    review_fail:"review findings",review_inconclusive:"review inconclusive",
                    budget_exceeded:"over budget",workflow_error:"run failed",delivery_failed:"delivery failed",
                    workflow_dead:"worker died",stuck_timeout:"timed out",
                    local_fallback_disabled:"model failed, no fallback",
                    claude_auth_expired:"Claude login expired"};
 const NEEDS_HINT={verify_exhausted:"Didn't pass automated verification after all attempts — read the result, then Retry, or Accept it if the judge was wrong.",
+                  published_unverified:"Failed verification AFTER it had already posted or filed something outside Otto, so it wasn't retried — a retry posts it again. Check what went out; Accept if it's fine.",
                   qa_fail:"Post-PR QA found real problems on the draft PR — review its findings, then Retry.",
                   qa_inconclusive:"Post-PR QA couldn't reach a verdict — check the draft PR yourself.",
                   review_fail:"The PR code review still has unaddressed findings after all fix rounds — review the draft PR, then Retry.",

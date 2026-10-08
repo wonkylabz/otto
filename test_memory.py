@@ -68,6 +68,20 @@ class RedactTests(unittest.TestCase):
             self.assertNotIn(key, out, f"leaked: {key}")
             self.assertIn("[redacted]", out)
 
+    def test_an_incoming_webhook_url_keeps_its_host_and_loses_its_secret_path(self):
+        # Real formats. The publish detector (`claude_cli.published_actions`) traces the Bash
+        # line that posted, and a webhook URL on a curl line IS the credential.
+        # Assembled so push protection does not take the fixture for a live URL.
+        slack_url = "https://hooks.slack.com/" + "services/T0123ABCD/B0456EFGH/abcdEFGHijklMNOPqrstUVwx"
+        discord = ("https://discord.com/api/webhooks/123456789012345678/"
+                   "AbCdEf-GhIjKlMnOpQrStUvWxYz0123456789abcdefGHIJklmnopQRSTuvwxYZ01234567")
+        self.assertEqual(supervisor.redact(f"curl -d @m {slack_url}"),
+                         "curl -d @m https://hooks.slack.com/[redacted]")
+        self.assertEqual(supervisor.redact(f"curl {discord}"),
+                         "curl https://discord.com/api/webhooks/[redacted]")
+        once = supervisor.redact(slack_url)
+        self.assertEqual(supervisor.redact(once), once)
+
     def test_an_atlassian_api_token_is_scrubbed_in_the_shapes_it_actually_appears_in(self):
         # Real format: `ATATT3x` + a 192-char base64url body WITH `=` padding (`ATCTT3x` for
         # the scoped kind). An alnum-only body would stop at the padding — the same mistake
