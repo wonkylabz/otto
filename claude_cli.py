@@ -213,7 +213,7 @@ def is_publish(name, tool_input=None, *, repo_mode=False):
         if w in _PUBLISH_VERBS:
             return True
         if w == "create":
-            return bool(_PUBLISH_CREATES & set(words[i + 1:]))
+            return bool((_PUBLISH_CREATES | _PUBLISH_VERBS) & set(words[i + 1:]))
     return False
 
 
@@ -225,6 +225,31 @@ def _publish_label(name, tool_input):
     where = ", ".join(f"{k}={tool_input[k]}" for k in _PUBLISH_TARGET_KEYS
                       if isinstance(tool_input, dict) and tool_input.get(k) not in (None, ""))
     return f"{name}" + (f" ({where})" if where else "")
+
+
+def _note_publish_event(ev, path, calls, failed, order):
+    """Fold one transcript event into `published_actions`' call table."""
+    if not isinstance(ev, dict):
+        return
+    item = ev.get("item")
+    if (ev.get("type") == "item.completed" and isinstance(item, dict)
+            and item.get("type") == "command_execution"):
+        key = ("codex", len(order))
+        calls[key] = ("shell", {"command": item.get("command")})
+        order.append(key)
+        if item.get("exit_code") not in (None, 0):
+            failed.add(key)
+        return
+    msg = ev.get("message")
+    for block in (msg.get("content") if isinstance(msg, dict) else None) or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use" and block.get("name"):
+            key = (path, str(block.get("id")))
+            calls[key] = (str(block["name"]), block.get("input"))
+            order.append(key)
+        elif block.get("type") == "tool_result" and block.get("is_error"):
+            failed.add((path, str(block.get("tool_use_id"))))
 
 
 def published_actions(paths, *, repo_mode=False):
@@ -241,37 +266,22 @@ def published_actions(paths, *, repo_mode=False):
             with open(path, encoding="utf-8", errors="replace") as f:
                 for raw in f:
                     try:
-                        ev = json.loads(raw)
-                    except ValueError:
+                        _note_publish_event(json.loads(raw), path, calls, failed, order)
+                    except Exception:  # noqa: BLE001 - one bad line must not hide the rest
                         continue
-                    if not isinstance(ev, dict):
-                        continue
-                    item = ev.get("item")
-                    if (ev.get("type") == "item.completed" and isinstance(item, dict)
-                            and item.get("type") == "command_execution"):
-                        key = ("codex", len(order))
-                        calls[key] = ("shell", {"command": item.get("command")})
-                        order.append(key)
-                        if item.get("exit_code") not in (None, 0):
-                            failed.add(key)
-                        continue
-                    msg = ev.get("message")
-                    for block in (msg.get("content") if isinstance(msg, dict) else None) or []:
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get("type") == "tool_use" and block.get("name"):
-                            key = (path, block.get("id"))
-                            calls[key] = (str(block["name"]), block.get("input"))
-                            order.append(key)
-                        elif block.get("type") == "tool_result" and block.get("is_error"):
-                            failed.add((path, block.get("tool_use_id")))
-        except (OSError, TypeError, AttributeError):
+        except OSError:
             continue
-    try:
-        return [_publish_label(*calls[k]) for k in order
-                if k not in failed and is_publish(*calls[k], repo_mode=repo_mode)]
-    except Exception:  # noqa: BLE001 - a transcript detail must never break the attempt
-        return []
+    out = []
+    for k in order:
+        if k in failed:
+            continue
+        name, tool_input = calls[k]
+        try:
+            if is_publish(name, tool_input, repo_mode=repo_mode):
+                out.append(_publish_label(name, tool_input))
+        except Exception:  # noqa: BLE001 - fail CLOSED: unclassifiable costs a card, not a repost
+            out.append(f"{name} (unclassified)")
+    return out
 
 
 def _drain(stream, sink):

@@ -4239,7 +4239,9 @@ class PublishedAttemptTests(unittest.TestCase):
         for name in ("mcp__claude_ai_Atlassian__addCommentToJiraIssue",
                      "mcp__claude_ai_Atlassian__createJiraIssue",
                      "mcp__claude_ai_Notion__notion-create-pages", "mcp__Slack__post_message",
-                     "mcp__claude_ai_Gmail__reply"):
+                     "mcp__claude_ai_Gmail__reply",
+                     "mcp__claude_ai_Notion__notion-create-comment",
+                     "mcp__claude_ai_Atlassian__createConfluenceFooterComment"):
             self.assertTrue(claude_cli.is_publish(name, {}), name)
         for cmd in ("gh issue comment 4 --body x", "cd /x && gh pr create --draft",
                     "gh api repos/o/r/issues/1/comments -X POST -f body=x",
@@ -4249,6 +4251,20 @@ class PublishedAttemptTests(unittest.TestCase):
         # The first VERB decides, past any server prefix.
         self.assertFalse(claude_cli.is_publish("mcp__x__slack_get_comment", {}))
         self.assertTrue(claude_cli.is_publish("mcp__x__slack_send_message", {}))
+
+    def test_an_unclassifiable_call_fails_closed(self):
+        path = self._transcript("u.jsonl", self._call(self.SEND, {}, "a", False))
+        with unittest.mock.patch.object(claude_cli, "is_publish",
+                                        side_effect=RuntimeError("boom")):
+            self.assertEqual(claude_cli.published_actions([path]),
+                             [self.SEND + " (unclassified)"])
+
+    def test_a_malformed_line_hides_nothing_after_it(self):
+        bad = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": ["unhashable"], "name": "Read", "input": {}}]}}
+        evs = [bad] + self._call(self.SEND, {"channel_id": "C"}, "b", False)
+        self.assertEqual(claude_cli.published_actions([self._transcript("h.jsonl", evs)]),
+                         [self.SEND + " (channel_id=C)"])
 
     def test_a_malformed_tool_input_never_breaks_the_attempt(self):
         evs = (self._call("Bash", "gh issue comment 1", "a", False)
