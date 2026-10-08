@@ -4189,9 +4189,8 @@ class PostPrLoopParameterisationTests(unittest.TestCase):
 class PublishedAttemptTests(unittest.TestCase):
     """A failed attempt that already PUBLISHED is never retried — the retry publishes again.
 
-    Measured on `sched-mosaic-eb84dcaf-2026-10-08T21:30:00Z`: the weekly cost runbook posted its
-    report to #sre on attempt 1, the judge FAILed it on a contract point, and attempt 2 posted the
-    whole report a second time. The ladder stops and a human decides instead."""
+    Measured: a scheduled runbook posted its report to a Slack channel on attempt 1, the judge
+    FAILed it on a contract point, and attempt 2 posted the whole report a second time. The ladder stops and a human decides instead."""
 
     SEND = "mcp__claude_ai_Slack__slack_send_message"
 
