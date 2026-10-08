@@ -173,6 +173,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # True when the ladder ran out of HARNESS retries without a judge ever reading an
         # attempt — the run failed on timeouts/crashes, not on the capability's work.
         self._harness_stop = False
+        self._published_stop = False
         self._spent = {"output": 0, "cost": 0.0}   # running token/cost total for the budget (Tier 1)
         # Per-run snapshot of the UI-editable runtime settings, taken once via the
         # snapshot_settings activity (see _run_impl). Deterministic code reads THIS, never
@@ -1263,7 +1264,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 notes.append("\n\n_⚠️ Automated verification didn't pass — the draft PR is open for "
                              "your review; check it carefully before merging._")
             else:
-                self._needs_human = {"reason": ("harness_exhausted" if self._harness_stop
+                self._needs_human = {"reason": (ladder.PUBLISHED_UNVERIFIED
+                                                if self._published_stop
+                                                else "harness_exhausted" if self._harness_stop
                                                 else "verify_exhausted")}
 
         # NOT repo-mode: flag any in-place edits the run made to a registered live checkout, so
@@ -1458,6 +1461,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # under the wrong ending.
         harness_died = bool(pout.get("harness_stop")) and not pout.get("passed")
         self._harness_stop |= harness_died
+        self._published_stop |= bool(pout.get("published_stop")) and not pout.get("passed")
         verdict = {"passed": bool(pout.get("passed")),
                    **({"source": "harness"} if harness_died else {})}
         attempt = pout.get("steps_run") or 1
@@ -1657,10 +1661,12 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # harness-vs-judged rung accounting and both exhaustion conditions — is
             # `ladder.next_step`, the same call `engine._ladder_core` makes.
             step = ladder.next_step(state, limits, verdict,
-                                    write_local=out.get("write_local", False))
+                                    write_local=out.get("write_local", False),
+                                    published=out.get("published"))
             state = step.state
             if step.stop:
                 self._harness_stop = step.reason == ladder.HARNESS_EXHAUSTED
+                self._published_stop = step.reason == ladder.PUBLISHED_UNVERIFIED
                 break
         return out, verdict, attempt, wid
 

@@ -1033,7 +1033,7 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
     store, results = {}, []
     pending = list(steps)
     replans, total_cost, spent_out, budget_stop = 0, 0, 0, False
-    strict_stop = auth_stop = harness_stop = False
+    strict_stop = auth_stop = harness_stop = published_stop = False
     auth_wall = None
     max_par = max(1, config.PLAN_MAX_PARALLEL)
     step_caps = _plan_step_caps(steps, cap, project, resolve_cap)
@@ -1093,6 +1093,8 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
                 auth_wall = auth_wall or outcome.get("auth_wall")
             if outcome.get("harness_stop"):
                 harness_stop = True
+            if outcome.get("published_stop"):
+                published_stop = True
             if not outcome["passed"]:
                 wave_failed.append((entry, outcome["critique"]))
         for s in wave:
@@ -1107,6 +1109,10 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
             # every repaired step would hit the same dead endpoint. Stop with the reason intact.
             trace("PLAN", f"{wid} local backend unavailable and Claude fallback is disabled — "
                           f"stopping the plan")
+            break
+        if published_stop:
+            # A failed step already posted somewhere: a repaired tail would post it again.
+            trace("PLAN", f"{wid} a failed step had already published — stopping for a human")
             break
         if not wave_failed:
             continue
@@ -1144,4 +1150,4 @@ def run_plan(request, cap, steps, wid=None, project=None, model_override=None,
             "auth_stop": auth_stop, "auth_wall": auth_wall,
             # A step whose ladder died in the harness (no judge ever read it) is not a
             # judgement — the caller files it `harness_exhausted`, never `verify_exhausted`.
-            "harness_stop": harness_stop}
+            "harness_stop": harness_stop, "published_stop": published_stop}

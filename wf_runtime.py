@@ -95,6 +95,10 @@ _NEEDS_HUMAN_BANNER = {
     "harness_exhausted": "⚠️ **Needs human review** — every attempt died in the harness "
                          "(timeout or worker crash), so nothing was ever judged. This is an Otto "
                          "failure, not the capability's — check the transcript for where it hung.",
+    "published_unverified": "⚠️ **Needs human review** — this did not pass automated "
+                            "verification, but it had ALREADY posted or filed something "
+                            "outside Otto, so it was not retried (a retry posts it again). "
+                            "Check what went out; Accept if it is fine.",
     "budget_exceeded": "⚠️ **Needs human review** — this run hit its cost/token budget and was "
                        "stopped before completing.",
     # Strict local mode: the body below it is config.strict_stop_message, which already spells out
