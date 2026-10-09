@@ -457,7 +457,7 @@ def scorecard(entries):
 # aggregate below and for the run-detail drawer. A stage the trail holds but this list doesn't
 # is still reported, appended after these, so adding an `_enter` label never silently drops it.
 STAGE_ORDER = ("DECOMPOSE", "ROUTER", "CLARIFY", "PLAN", "GATE", "RUN", "PR", "REVIEW", "QA",
-               "DELIVER")
+               "MERGE", "DELIVER")
 
 
 def run_times(rows):

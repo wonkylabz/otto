@@ -99,6 +99,8 @@ _NEEDS_HUMAN_BANNER = {
                             "verification, but it had ALREADY posted or filed something "
                             "outside Otto, so it was not retried (a retry posts it again). "
                             "Check what went out; Accept if it is fine.",
+    "merge_failed": "⚠️ **Needs human review** — review and QA passed, but GitHub refused the "
+                    "automatic merge (a conflict or a branch rule). The PR was left open for you.",
     "budget_exceeded": "⚠️ **Needs human review** — this run hit its cost/token budget and was "
                        "stopped before completing.",
     # Strict local mode: the body below it is config.strict_stop_message, which already spells out

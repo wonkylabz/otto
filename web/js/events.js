@@ -784,6 +784,7 @@ function showBoardForm(){
       <div><label>Review column</label><input id="bf-review" placeholder="Review"></div>
       <div><label>Done column</label><input id="bf-done" placeholder="Done"></div>
     </div>
+    <label>Blocked column (runs needing a human)</label><input id="bf-blocked" placeholder="Blocked">
     <label>Label &rarr; capability (optional) &mdash; one <code>label=capability</code> per line</label>
     <textarea id="bf-labelcap" placeholder="incident=incident"></textarea>
     <div class="frow">
@@ -801,6 +802,7 @@ function showBoardForm(){
   document.getElementById("bf-active").value=cols.active||"In Progress";
   document.getElementById("bf-review").value=cols.review||"Review";
   document.getElementById("bf-done").value=cols.done||"Done";
+  document.getElementById("bf-blocked").value=cols.blocked||"Blocked";
   document.getElementById("bf-labelcap").value=labelLines;
   document.getElementById("bf-repoedit").value=c.repo_edit_label||"repo-edit";
   document.getElementById("bf-hold").value=c.hold_label||"hold";
@@ -819,7 +821,7 @@ function showBoardForm(){
       poll_seconds:Math.max(30,+document.getElementById("bf-poll").value||120),
       status_field:val("bf-field")||"Status",
       columns:{ready:val("bf-ready")||"Ready", active:val("bf-active")||"In Progress",
-        review:val("bf-review")||"Review", done:val("bf-done")||"Done"},
+        review:val("bf-review")||"Review", done:val("bf-done")||"Done", blocked:val("bf-blocked")||"Blocked"},
       label_cap, repo_edit_label:val("bf-repoedit")||"repo-edit", hold_label:val("bf-hold")||"hold"};
     // The form is still open and owns an error slot, so a refusal belongs in it — closing
     // regardless threw away everything just typed and looked exactly like a save.

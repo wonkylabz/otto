@@ -180,6 +180,12 @@ function toast(msg, kind){
    say something only if it was refused. Returns true when the write landed, so a caller that
    must NOT re-render on failure can branch on it. `what` names the action in the message —
    "could not save the Slack config", not a bare status code. */
+/* A modal form's save: a refusal lands in the form's own error slot, which stays open. */
+async function postForm(path, body, errEl){
+  try { await postJSON(path, body); return true; }
+  catch(e){ errEl.textContent=e.message; return false; }
+}
+
 async function postOr(path, body, what){
   try { await postJSON(path, body); return true; }
   catch(e){ toast((what||"that action")+" failed: "+e.message); return false; }

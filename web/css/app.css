@@ -37,6 +37,11 @@
   .estop.on:hover { color: var(--on-accent); background: var(--danger-deep); }
   .estop.on .estopdot { background: var(--on-accent); animation: estopPulse 1.6s ease-in-out infinite; }
   .updbtn { color: var(--accent); border-color: var(--accent); }
+  /* Factory mode is on: loud, like the pause. */
+  .factorychip { font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 4px 8px;
+    border-radius: var(--r-md); color: var(--on-accent); background: var(--warn); white-space: nowrap; }
+  .factorychip[hidden] { display: none; }
+  .modepick { display: flex; gap: 8px; margin: 8px 0 10px; }
   .estop[disabled] { opacity: .55; cursor: progress; }
   @keyframes estopPulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
   @media (prefers-reduced-motion: reduce) { .estop.on .estopdot { animation: none; } }
@@ -1063,6 +1068,7 @@
   .bchip.stage.s-pr{--sc:var(--stg-pr)}
   .bchip.stage.s-review{--sc:var(--stg-review)}
   .bchip.stage.s-qa{--sc:var(--stg-qa)}
+  .bchip.stage.s-merge{--sc:var(--stg-merge)}
   .bchip.stage.s-deliver{--sc:var(--stg-deliver)}
   /* the chosen model could not run this attempt and another substituted. Marked ON the model
      name rather than in a column of its own: it is set on 2% of rows, so a dedicated column

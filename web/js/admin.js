@@ -89,6 +89,7 @@ async function loadAdmin(){
   SECRETS=(settings&&settings.secrets)||null;
   renderAdmin(data, models, el, (settings&&settings.settings)||{});
   restoreCapView(el, view);
+  loadFactory();
   refreshMcpHealth(data.mcps);
 }
 
@@ -1268,6 +1269,7 @@ function renderAdmin(data, models, el, settings){
     <div class="phead"><h1>Configuration</h1>
       <p class="sub"><b style="color:var(--accent)">Read</b> caps run on their own; <b style="color:var(--warn)">write</b> caps wait for approval — click a risk pill to flip it. Hover any control for what it does.</p>
       <span class="pside saved" id="saved">saved ✓</span></div>
+    <div id="factory-section"></div>
     ${appearanceSection()}
     ${modelsSection(models)}
     ${settingsSection(settings)}
@@ -1564,11 +1566,6 @@ async function removeItem(path, body){
 
 /* A form save that reports into the form's OWN error slot rather than the toast: the modal is
    still open and the typed values are still there, so that is where the reader is looking. */
-async function postForm(path, body, errEl){
-  try { await postJSON(path, body); return true; }
-  catch(e){ errEl.textContent=e.message; return false; }
-}
-
 function showCapForm(cap){
   const editing = !!(cap && cap.source==='otto');
   const c=openFormModal(editing?("<b>Edit capability</b><br>"+esc(cap.name))

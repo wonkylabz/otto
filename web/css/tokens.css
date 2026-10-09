@@ -48,7 +48,7 @@
     /* pipeline-stage chips (board): one hue per stage, tuned per theme (see .bchip.stage) */
     --stg-router: #615E56; --stg-clarify: #7B3B8E; --stg-decompose: #1C675F;
     --stg-plan: #2B5A97; --stg-gate: #7A5602; --stg-run: #2F6B26;
-    --stg-pr: #A32B6E; --stg-review: #4B47A8; --stg-qa: #954716; --stg-deliver: #45607A;
+    --stg-pr: #A32B6E; --stg-review: #4B47A8; --stg-qa: #954716; --stg-merge: #2F6B3A; --stg-deliver: #45607A;
     --zebra: rgba(56,36,13,.045); --scrim: rgba(56,36,13,.34); --shadow: rgba(56,36,13,.18);
   }
 
@@ -85,7 +85,7 @@
     --danger-deep: #83201B;
     --stg-router: #506053; --stg-clarify: #6D3E92; --stg-decompose: #126864;
     --stg-plan: #23578F; --stg-gate: #765900; --stg-run: #2A6A2F;
-    --stg-pr: #9B2A6B; --stg-review: #46429F; --stg-qa: #92471A; --stg-deliver: #3F5E75;
+    --stg-pr: #9B2A6B; --stg-review: #46429F; --stg-qa: #92471A; --stg-merge: #2D6838; --stg-deliver: #3F5E75;
     --zebra: rgba(22,48,28,.045); --scrim: rgba(22,48,28,.34); --shadow: rgba(22,48,28,.18);
   }
 
@@ -103,7 +103,7 @@
     --danger-deep: #85172B;
     --stg-router: #5E5670; --stg-clarify: #8E2F86; --stg-decompose: #156465;
     --stg-plan: #2C55A0; --stg-gate: #725400; --stg-run: #24663D;
-    --stg-pr: #A3285B; --stg-review: #3F3FA0; --stg-qa: #8F4519; --stg-deliver: #3F5D77;
+    --stg-pr: #A3285B; --stg-review: #3F3FA0; --stg-qa: #8F4519; --stg-merge: #2C6636; --stg-deliver: #3F5D77;
     --zebra: rgba(46,33,64,.045); --scrim: rgba(46,33,64,.36); --shadow: rgba(46,33,64,.20);
   }
 
@@ -121,7 +121,7 @@
     --danger-deep: #F49A9A;
     --stg-router: #A6AEBA; --stg-clarify: #C79BE8; --stg-decompose: #6FC9C0;
     --stg-plan: #8FB6E8; --stg-gate: #DFC073; --stg-run: #7BC98C;
-    --stg-pr: #E79BC8; --stg-review: #A9A6F0; --stg-qa: #E8A17C; --stg-deliver: #9FB6C8;
+    --stg-pr: #E79BC8; --stg-review: #A9A6F0; --stg-qa: #E8A17C; --stg-merge: #8FD19B; --stg-deliver: #9FB6C8;
     --zebra: rgba(226,231,238,.045); --scrim: rgba(6,8,10,.62); --shadow: rgba(0,0,0,.5);
   }
 
@@ -139,6 +139,6 @@
     --danger-deep: #FF9AA3;
     --stg-router: #93A6C6; --stg-clarify: #C0A2F0; --stg-decompose: #48C9DB;
     --stg-plan: #7FB0FF; --stg-gate: #E8C169; --stg-run: #6FD1A0;
-    --stg-pr: #F0A0CE; --stg-review: #B4AFFF; --stg-qa: #F0A87F; --stg-deliver: #A8C0D8;
+    --stg-pr: #F0A0CE; --stg-review: #B4AFFF; --stg-qa: #F0A87F; --stg-merge: #97D9A3; --stg-deliver: #A8C0D8;
     --zebra: rgba(190,214,255,.045); --scrim: rgba(3,7,15,.64); --shadow: rgba(0,0,0,.55);
   }

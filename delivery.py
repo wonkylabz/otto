@@ -502,6 +502,9 @@ def _github_issue(reply_to, result, cap, run_id=None):
 
     if reply_to.get("blocked"):
         target = reply_to.get("blocked_col")
+    elif reply_to.get("merged"):
+        # Factory mode merged the PR itself: nothing is left to review.
+        target = reply_to.get("done_col")
     elif reply_to.get("repo_edit"):
         target = reply_to.get("review_col")
     else:

@@ -45,7 +45,7 @@ EXPORTED = {
 }
 # otto.db is runtime as a FILE; its behaviors + knowledge tables travel as their own sections.
 RUNTIME = frozenset({
-    "otto.db", "conventions.json", "notify-state.json", "event-replay.json",
+    "otto.db", "factory.json", "conventions.json", "notify-state.json", "event-replay.json",
     "gateway-stats.json", "mcp-tools.json", "mcp-connectors-cache.json", "pr-review-state.json",
     "slack-state.json", "slack-triggers-state.json", "schedules.json", "dismissed.json",
     "retries.json", "update-state.json", "update-job.plist", "ESTOP", "transcripts", "codex-home", "local-sessions", "repos", "logs",

@@ -946,6 +946,17 @@ function applyEstop(st){
   if(why) why.textContent=(st&&st.reason)?`— ${st.reason}`:"";
 }
 
+/* The FACTORY chip (factory.js owns the Admin side). Here, beside applyEstop, because board.js
+   calls both on its very first health tick — at load, before any later script has run. */
+function applyFactory(st){
+  const chip=document.getElementById("factorychip");
+  if(!chip) return;
+  const on=!!(st&&st.enabled);
+  chip.hidden=!on;
+  if(on) chip.title=`Factory mode is ON for ${st.slug||st.repo}: its tickets run, and its PRs merge, `
+    +`with no human approval. Admin → Mode to stop it.`;
+}
+
 async function toggleEstop(){
   if(ESTOP_BUSY) return;
   const b=document.getElementById("estop"), l=document.getElementById("estop-label");
@@ -989,6 +1000,7 @@ async function refreshHealth(){
     const h=await (await fetch("/api/health")).json();
     TEMPORAL = !!(h.temporal && h.connected);
     applyEstop(h.estop);      // rides the same payload — no extra request per turn
+    applyFactory(h.factory);
     applyUpdate(h.update);
     applyVersion(h);          // likewise: a restart onto a new build repaints on the next turn
   } catch(e){ TEMPORAL=false; }

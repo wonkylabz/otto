@@ -1025,11 +1025,27 @@ def poll_board(payload: dict) -> dict:
         return {"picked": [], "disabled": True}
     meta = board.project_meta(cfg)
     picked, skipped = [], []
-    for issue in board.list_ready(cfg):
+    # Factory mode: its tickets run pre-authorized and merge themselves, so pickup is bounded by
+    # the factory's WIP cap, counted off the board itself. An unreadable count picks nothing.
+    import factory
+    fac = factory.load()
+    room = None
+    if factory.enabled(fac):
+        counts = board.column_counts(cfg, repo=fac.get("slug"))
+        active = (counts or {}).get((cfg.get("columns") or {}).get("active"), 0)
+        room = 0 if counts is None else max(0, int(fac.get("wip") or 1) - active)
+    # Lowest issue number first: the factory PM readies tickets in build order.
+    for issue in sorted(board.list_ready(cfg), key=lambda i: i.get("number") or 0):
         n = issue.get("number")
         if n is None:
             continue
         params = board.issue_to_request(issue, cfg)
+        owned = room is not None and factory.owns(issue, fac)
+        if owned:
+            if room <= 0:
+                skipped.append(n)
+                continue
+            factory.apply(params, fac)
         # Resolve a pinned capability from the TRUSTED registry — never take risk from a label
         # (mirrors the event ingress in server._handle_event).
         if params.get("cap"):
@@ -1062,11 +1078,53 @@ def poll_board(payload: dict) -> dict:
         if board.start_run(wid, params):
             board.set_status(cfg, meta, issue.get("item_id"), (cfg.get("columns") or {}).get("active"))
             picked.append(n)
+            if owned:
+                room -= 1
+                factory.claim(wid)
         else:
             skipped.append(n)
     if picked:
         activity.logger.info(f"board: picked up {len(picked)} issue(s): {picked}")
     return {"picked": picked, "skipped": skipped}
+
+
+@activity.defn
+def factory_gate(payload: dict) -> dict:
+    """One factory sprint tick: start a sprint, skip it (queue busy, paused) or stop the factory
+    (budget, stall). All IO lives in `factory.gate`, so FactorySprintWorkflow stays deterministic."""
+    import factory
+    return factory.gate()
+
+
+@activity.defn
+def factory_after_sprint(payload: dict) -> dict:
+    """Book a finished sprint — a DONE verdict stops the factory (`factory.after_sprint`)."""
+    import factory
+    return factory.after_sprint(payload)
+
+
+@activity.defn
+@_heartbeats("merge")
+def merge_pr(payload: dict) -> dict:
+    """Factory mode: mark the PR ready and squash-merge it. Reached only when review AND QA both
+    PASSED on a factory ticket (OttoWorkflow decides; this only acts). Never raises — a refusal
+    (conflict, branch protection, a required check) comes back as {merged: False, error}."""
+    import factory
+    pr_url = payload.get("pr_url") or ""
+    rc, _, err = workspace._run(["gh", "pr", "ready", pr_url], timeout=120)
+    if rc != 0 and "already" not in err.lower():
+        return {"merged": False, "error": f"could not mark the PR ready: {err[:300]}"}
+    rc, _, err = workspace._run(["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
+                                timeout=300)
+    if rc != 0:
+        # A retried activity whose first try DID merge: the second `gh pr merge` refuses.
+        rc2, state, _ = workspace._run(["gh", "pr", "view", pr_url, "--json", "state",
+                                        "--jq", ".state"], timeout=60)
+        if not (rc2 == 0 and state.strip().upper() == "MERGED"):
+            return {"merged": False, "error": err[:300]}
+    if payload.get("factory"):
+        factory.note_merge(payload["factory"], pr_url)
+    return {"merged": True}
 
 
 @activity.defn

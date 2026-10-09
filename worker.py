@@ -12,8 +12,8 @@ from temporalio.worker import Worker
 import os
 
 import activities
-from workflows import (BoardPollWorkflow, OttoWorkflow, PrReviewPollWorkflow, ReaperWorkflow,
-                       SlackPollWorkflow)
+from workflows import (BoardPollWorkflow, FactorySprintWorkflow, OttoWorkflow,
+                       PrReviewPollWorkflow, ReaperWorkflow, SlackPollWorkflow)
 
 TASK_QUEUE = os.environ.get("OTTO_TASK_QUEUE", "otto")
 
@@ -41,6 +41,7 @@ ACTIVITIES = [
     activities.finalize_terminal,
     activities.reap_stuck, activities.notify_human,
     activities.snapshot_settings, activities.estop_check,
+    activities.factory_gate, activities.factory_after_sprint, activities.merge_pr,
 ]
 
 
@@ -52,7 +53,7 @@ async def main():
             client,
             task_queue=TASK_QUEUE,
             workflows=[OttoWorkflow, BoardPollWorkflow, PrReviewPollWorkflow, ReaperWorkflow,
-                       SlackPollWorkflow],
+                       SlackPollWorkflow, FactorySprintWorkflow],
             activities=ACTIVITIES,
             activity_executor=executor,
         )

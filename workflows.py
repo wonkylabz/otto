@@ -28,7 +28,8 @@ with workflow.unsafe.imports_passed_through():
     import contracts
     from activities import (clarify_request, classify_fast_lane, classify_followup, classify_request,
                             cleanup_workspace, deliver_result, detect_repo_changes,
-                            estop_check, execute_plan, finalize_terminal, finalize_workspace,
+                            estop_check, execute_plan, factory_after_sprint, factory_gate,
+                            finalize_terminal, finalize_workspace,
                             resolve_pinned_cap,
                             notify_human, plan_capability, plan_swarm, open_chat,
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack,
@@ -1255,6 +1256,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             if qa.get("state") in ("fail", "inconclusive"):
                 self._needs_human = {"reason": f"qa_{qa['state']}"}
 
+        # Factory mode: a PR that passed review AND QA merges itself (wf_postpr._auto_merge).
+        merged = await self._auto_merge(params, pr, review, qa, notes)
+
         # Everything left is bookkeeping and delivery, but it is not instant — a Slack post that
         # retries, a needs-human finalize and an in-place-edit scan all happen here, and with no
         # span open the board card showed no stage at all for it (the same "stalled run" read the
@@ -1325,7 +1329,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # still routes to Review, and a label'd ticket that produced no PR doesn't); else Done.
             if isinstance(reply_to, dict) and reply_to.get("kind") == "github_issue":
                 reply_to = {**reply_to, "repo_edit": bool(pr and pr.get("pr_url")),
-                            "blocked": bool(self._needs_human)}
+                            "blocked": bool(self._needs_human),
+                            "merged": merged}
             delivered = await workflow.execute_activity(
                 deliver_result, {"reply_to": reply_to, "result": reply, "cap": cap,
                                  "run_id": workflow.info().workflow_id,
@@ -1812,6 +1817,28 @@ class BoardPollWorkflow:
         return await workflow.execute_activity(
             poll_board, {}, start_to_close_timeout=timedelta(minutes=10),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+
+
+@workflow.defn
+class FactorySprintWorkflow:
+    """Fired by the `factory-sprint` Schedule (factory.py): gate, then run ONE product-manager
+    sprint as a child OttoWorkflow, then book its verdict. Every decision — budget, stall, a busy
+    queue, the pause — is the `factory_gate` activity's, so this stays deterministic."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        gate = await workflow.execute_activity(
+            factory_gate, {}, start_to_close_timeout=timedelta(minutes=5), retry_policy=_RETRY)
+        if not gate.get("go"):
+            return gate
+        out = await workflow.execute_child_workflow(
+            OttoWorkflow.run, gate["params"], id=gate["wid"],
+            task_queue=workflow.info().task_queue)
+        return await workflow.execute_activity(
+            factory_after_sprint,
+            {"wid": gate["wid"], "result": (out or {}).get("result") or "",
+             "needs_human": (out or {}).get("needs_human")},
+            start_to_close_timeout=timedelta(minutes=5), retry_policy=_RETRY)
 
 
 @workflow.defn

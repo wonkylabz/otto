@@ -25,7 +25,7 @@ from wf_runtime import (_EXEC_CEILING, _FIX_NO_LADDER, _HEARTBEAT, _JUDGE_CEILIN
 with workflow.unsafe.imports_passed_through():
     import repo_checks
     from activities import (cleanup_workspace, finalize_workspace, judge_qa, judge_review,
-                            pr_head_branch, provision_workspace, qa_capability,
+                            merge_pr, pr_head_branch, provision_workspace, qa_capability,
                             record_attempt, review_capability, run_capability, run_repo_checks)
 
 
@@ -265,6 +265,27 @@ class PostPrMixin:
                         "critique": f"{spec['unfinished_lead']} the fix round did not finish — "
                                     f"{self._fix_error(fix)}\n" + critique}
         return {"state": "fail", "rounds": rounds, cap_field: cap_name}
+
+    async def _auto_merge(self, params, pr, review, qa, notes):
+        """Factory mode (`factory.apply` sets `auto_merge`, only from the board poll activity):
+        merge the PR once BOTH loops PASSED — never on a skipped or inconclusive one. A refused
+        merge (conflict, branch protection) is a human's, routed to Blocked like a failed QA.
+        Returns whether it merged. Absent from every history recorded before it, so those replay
+        untouched."""
+        if not (params.get("auto_merge") and pr and pr.get("pr_url") and not self._needs_human
+                and (review or {}).get("state") == "pass" and (qa or {}).get("state") == "pass"):
+            return False
+        self._enter("MERGE")
+        out = await workflow.execute_activity(
+            merge_pr, {"pr_url": pr["pr_url"], "factory": params.get("factory")},
+            start_to_close_timeout=timedelta(minutes=10), heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY)
+        self._leave("MERGE")
+        if not out.get("merged"):
+            self._needs_human = {"reason": "merge_failed", "detail": out.get("error", "")}
+            return False
+        notes.append("\n\n_✅ Merged automatically (factory mode): review and QA both passed._")
+        return True
 
     async def _run_review_loop(self, request, cap, repo, pr_url):
         """Code-review the opened PR, fixing must/should-fix findings on the same branch.

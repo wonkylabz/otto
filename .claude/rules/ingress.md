@@ -65,6 +65,15 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 - **`auto_post` publishes only a reply that ENDS on a verdict** (`has_verdict`) — `ready` just means the run wrote something, and a crash writes something too; the human pressing the button has read it, the unattended paths have not (`PrReviewPublishTests`).
 - **A finished run delivers its OWN review** (`reply_to: github_pr`, set only when `auto_post` is on) — the poll sweep is the backstop for a failed post or a downtime gap, and riding it alone cost up to a full interval (`PrReviewPublishTests`).
 
+## Factory mode
+
+`factory.py` — one repo + the board as a self-driving loop: a PM sprint readies tickets, the worker builds them, a PR passing review AND QA merges itself. State `data/factory.json`, schedule `factory-sprint`.
+
+- **Only the board poll ACTIVITY stamps `auto_merge`, and only on the factory repo's tickets** (`factory.apply`) — the flag merges unread code, so no client body or other ingress may set it (`FactoryModeTests`).
+- **A skipped or inconclusive loop is never a pass** (`wf_postpr._auto_merge`) — merging needs review AND QA PASS; a refused merge is `merge_failed`, Blocked (`WorkflowAutoMergeTests`).
+- **Unmeasurable spend or an unreadable board starts nothing** (`factory.spent` → None, `board.column_counts` → None) — an empty-looking queue would start a sprint past the budget or the WIP cap (`FactoryModeTests`).
+- **Disable restores the board config enable changed, and every stop notifies** — an unattended loop that goes quiet reads as broken (`FactoryModeTests`).
+
 ## Runbooks / scheduler
 
 `runbooks.py` owns the definition (`data/runbooks.json`), `scheduler.py` the Temporal-schedule layer. A runbook is a superset of a schedule: `steps:[]` = a saved request, `+doc` = the same with prose, `steps:[…]` = a human-authored dependency graph.

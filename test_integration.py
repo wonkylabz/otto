@@ -5983,6 +5983,149 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class WorkflowAutoMergeTests(WorkflowQALoopTests):
+    """Factory mode: a PR merges itself only when review AND QA both PASSED and the run carries
+    `auto_merge` (stamped by the board poll activity alone). A skipped loop is not a pass."""
+
+    def setUp(self):
+        super().setUp()
+        import config
+        review_cap = registry.Capability("skill", config.REVIEW_CAP, "reviews a PR")
+        review_cap.risk = "read"
+        self.activities._caps = self.activities._caps + [review_cap]
+        self._orig_jr = engine.judge_review
+        engine.judge_review = lambda request, result, project=None, checks="": {"verdict": "pass", "critique": ""}
+        self.addCleanup(setattr, engine, "judge_review", self._orig_jr)
+        self.verdicts = iter([{"verdict": "pass", "critique": ""}])     # QA passes first time
+        self._orig_dm = engine.distil_memory
+        engine.distil_memory = lambda *a, **k: None     # unattended runs learn; no tier call here
+        self.addCleanup(setattr, engine, "distil_memory", self._orig_dm)
+        self._orig_notify = delivery.notify
+        delivery.notify = lambda *a, **k: False
+        self.addCleanup(setattr, delivery, "notify", self._orig_notify)
+        self.merges = []
+        orig_run = self.workspace._run
+
+        def fake_run(args, cwd=None, timeout=600):
+            if args[:2] == ["gh", "pr"]:
+                self.merges.append(args[2])
+                return 0, "", ""
+            return orig_run(args, cwd=cwd, timeout=timeout)
+        self.workspace._run = fake_run
+        self.addCleanup(setattr, self.workspace, "_run", orig_run)
+
+    async def _run(self, params):
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request, classify_request,
+                                finalize_workspace, judge_qa, judge_review, merge_pr, merge_results,
+                                plan_capability, plan_swarm, pr_head_branch, provision_workspace,
+                                resolve_pr_target, check_grounding, qa_capability, record_attempt,
+                                record_skip, review_capability, route_request, snapshot_settings,
+                                run_capability, verify_capability, estop_check, distil_memory,
+                                finalize_terminal, notify_human)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                async with Worker(
+                    env.client, task_queue="amq", workflows=[OttoWorkflow],
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm,
+                                merge_results, clarify_request, classify_request, plan_capability,
+                                provision_workspace, resolve_pr_target, check_grounding,
+                                finalize_workspace, cleanup_workspace, run_capability,
+                                verify_capability, qa_capability, judge_qa, review_capability,
+                                judge_review, merge_pr, record_attempt, record_skip,
+                                pr_head_branch, estop_check, distil_memory, finalize_terminal,
+                                notify_human],
+                    activity_executor=ex,
+                ):
+                    return await env.client.execute_workflow(
+                        OttoWorkflow.run,
+                        {"request": "add muting rules", "repo": "myrepo", "qa": True,
+                         "approval": "auto", "unattended": True, **params},
+                        id="am-" + uuid.uuid4().hex[:8], task_queue="amq")
+
+    async def test_review_and_qa_pass_merges_the_pr(self):
+        out = await self._run({"auto_merge": True})
+        self.assertEqual(self.merges, ["ready", "merge"])
+        self.assertEqual((out["review"]["state"], out["qa"]["state"]), ("pass", "pass"))
+        self.assertIsNone(out["needs_human"])
+        self.assertIn("Merged automatically", out["result"])
+
+    async def test_without_auto_merge_or_with_review_skipped_nothing_merges(self):
+        await self._run({})
+        self.verdicts = iter([{"verdict": "pass", "critique": ""}])
+        await self._run({"auto_merge": True, "review": False})
+        self.assertEqual(self.merges, [])
+
+    async def test_a_refused_merge_needs_a_human(self):
+        self.workspace._run = lambda args, cwd=None, timeout=600: (
+            (1, "", "not mergeable: conflicts") if args[:3] == ["gh", "pr", "merge"]
+            else (0, "OPEN", ""))
+        out = await self._run({"auto_merge": True})
+        self.assertEqual(out["needs_human"]["reason"], "merge_failed")
+        self.assertIn("conflicts", out["needs_human"]["detail"])
+
+    async def test_qa_fail_then_fix_then_pass(self):
+        self.skipTest("covered by WorkflowQALoopTests")
+
+
+if _HAS_TEMPORAL:
+    from temporalio import workflow as _twf
+
+    @_twf.defn(name="OttoWorkflow")
+    class _FakeOttoForSprint:
+        """Stands in for the PM child run: same workflow TYPE name, a canned sprint reply."""
+        @_twf.run
+        async def run(self, params: dict) -> dict:
+            return {"result": "planned\nFACTORY: CONTINUE", "needs_human": None}
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    """The sprint workflow only sequences: gate -> one PM child run -> book its verdict. A closed
+    gate runs no child at all."""
+
+    async def _run(self, gate):
+        import uuid
+        import factory
+        from temporalio.worker import UnsandboxedWorkflowRunner
+        from workflows import FactorySprintWorkflow
+        from activities import factory_after_sprint, factory_gate
+        booked, children = [], []
+
+        orig = (factory.gate, factory.after_sprint)
+        factory.gate = lambda: gate
+        factory.after_sprint = lambda p: booked.append(p) or {"state": "continue"}
+        self.addCleanup(lambda: (setattr(factory, "gate", orig[0]),
+                                 setattr(factory, "after_sprint", orig[1])))
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(env.client, task_queue="fsq",
+                                  workflows=[FactorySprintWorkflow, _FakeOttoForSprint],
+                                  activities=[factory_gate, factory_after_sprint],
+                                  activity_executor=ex,
+                                  # The fake child lives in this module, which the sandbox
+                                  # cannot re-import (it globs at import time).
+                                  workflow_runner=UnsandboxedWorkflowRunner()):
+                    out = await env.client.execute_workflow(
+                        FactorySprintWorkflow.run, id="fs-" + uuid.uuid4().hex[:8],
+                        task_queue="fsq")
+        return out, booked
+
+    async def test_a_closed_gate_runs_no_sprint(self):
+        out, booked = await self._run({"go": False, "why": "budget"})
+        self.assertEqual(out, {"go": False, "why": "budget"})
+        self.assertEqual(booked, [])
+
+    async def test_an_open_gate_runs_the_pm_and_books_its_verdict(self):
+        out, booked = await self._run({"go": True, "wid": "factory-x-s1",
+                                       "params": {"request": "sprint"}})
+        self.assertEqual(out, {"state": "continue"})
+        self.assertEqual(booked[0]["wid"], "factory-x-s1")
+        self.assertTrue(booked[0]["result"].endswith("FACTORY: CONTINUE"))
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
 class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
     """Post-PR code-review loop: after the draft PR opens, the review cap reviews it; FAIL folds
     the findings into a fix on the SAME branch (from_branch provision + existing_pr finalize) and

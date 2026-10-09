@@ -206,6 +206,9 @@ def project_meta(cfg):
             meta["options"] = {o.get("name"): o.get("id")
                                for o in (status.get("options") or []) if o.get("name")}
     if not meta["project_id"] or not meta["status_field_id"]:
+        # Surfaced by callers that refuse on it (factory.enable): "missing required scopes
+        # [read:project]" names the fix, an anonymous "unreachable" does not.
+        meta["error"] = err[:300]
         trace("BOARD", f"could not resolve project/field ids for {cfg.get('project')} "
                        f"(card moves will be skipped): {err[:120]}")
     return meta
@@ -272,6 +275,36 @@ def list_in_column(cfg, column_key):
     except ValueError:
         return []
     return _parse_items_in(data, cfg, column_name)
+
+
+def column_counts(cfg, repo=None):
+    """{column name: issue count} across the whole board, optionally only `repo`'s issues
+    ("owner/name"). None on any gh failure — unlike `list_in_column`'s [], because the caller
+    gates on it (factory WIP, sprint start) and an unreadable board must not read as empty."""
+    owner, num = _project_parts(cfg)
+    if not owner:
+        return None
+    rc, out, err = _run(["gh", "project", "item-list", num, "--owner", owner,
+                         "--format", "json", "-L", "200"])
+    if rc != 0:
+        trace("BOARD", f"item-list for {cfg.get('project')} failed: {err[:140]}")
+        return None
+    try:
+        data = json.loads(out or "{}")
+    except ValueError:
+        return None
+    counts = {}
+    for item in (data or {}).get("items") or []:
+        content = item.get("content") or {}
+        if (content.get("type") or "").lower() != "issue":
+            continue
+        slug = _repo_slug(content.get("repository") or content.get("url")) or ""
+        if repo and slug.lower() != repo.lower():
+            continue
+        col = _item_status(item, cfg.get("status_field"))
+        if col:
+            counts[col] = counts.get(col, 0) + 1
+    return counts
 
 
 def _issue_details(stub, timeout=60):
@@ -449,6 +482,8 @@ def start_run(wid, params):
             "cap": params.get("cap"), "repo": params.get("repo"),
             "repo_hint": params.get("repo_hint"),
             "approval": params.get("approval", "auto"), "qa": params.get("qa", False),
+            # Factory mode only (factory.apply, stamped by the poll activity, never a client).
+            "auto_merge": bool(params.get("auto_merge")), "factory": params.get("factory"),
             "clarify": params.get("clarify", False),
             "reply_to": params.get("reply_to"),
             "chat_key": params.get("chat_key"), "chat_title": params.get("chat_title"),
