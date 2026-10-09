@@ -566,6 +566,11 @@ def _settings_path():
 # `select_rules` still ranks, so a smaller budget loses the least relevant rules first.
 CONVENTIONS_DIGEST_CHARS = 24_000
 
+# Characters of imported Knowledge one fresh run is handed (`knowledge.context_block`). A matched
+# doc that fits goes in whole, else its matching passages — so this is "the largest doc a run can
+# read end to end". 1500 (the old literal) cut a 20k-char list to two fragments.
+KNOWLEDGE_INJECT_CHARS = 24_000
+
 _SETTING_SPECS = {
     "local_fallback":     ("OTTO_LOCAL_FALLBACK", "bool", "LOCAL_FALLBACK"),
     "max_attempts":       ("OTTO_MAX_ATTEMPTS", "int", "MAX_VERIFY_ATTEMPTS"),
@@ -597,6 +602,7 @@ _SETTING_SPECS = {
     "thinking_display":   ("OTTO_THINKING_DISPLAY", "choice:summarized,off", "THINKING_DISPLAY"),
     "conventions_digest_chars": ("OTTO_CONVENTIONS_DIGEST_CHARS", "int",
                                  "CONVENTIONS_DIGEST_CHARS"),
+    "knowledge_inject_chars": ("OTTO_KNOWLEDGE_INJECT_CHARS", "int", "KNOWLEDGE_INJECT_CHARS"),
     "attachment_max_mb":  ("OTTO_ATTACHMENT_MAX_MB", "int", "ATTACHMENT_MAX_MB"),
     "attachment_max_count": ("OTTO_ATTACHMENT_MAX_COUNT", "int", "ATTACHMENT_MAX_COUNT"),
 }
