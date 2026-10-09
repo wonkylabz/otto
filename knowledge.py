@@ -28,7 +28,9 @@ from ui import trace
 # Stored in the shared SQLite db (issue #103): `knowledge_docs` + `knowledge_chunks` +
 # `knowledge_settings`. Tests monkeypatch THIS alias to a temp file.
 _DB = config.DB_PATH
-_MAX_INJECT_CHARS = 1500     # hard cap on injected knowledge so a big KB can't blow the prompt
+# The injection budget is the runtime setting `knowledge_inject_chars` (config.KNOWLEDGE_INJECT_CHARS).
+# It was a hardcoded 1500 — two 800-char chunks — so a doc a run needed WHOLE ("which movies have
+# I watched?") arrived as a mid-sentence fragment and the run could only say it was cut off.
 _CHUNK_CHARS = 800           # target chunk size
 _CHUNK_OVERLAP = 120         # carry-over between adjacent chunks so a fact split across a boundary survives
 _DEFAULT_THRESHOLD = 0.18    # min normalized similarity (0..1) for a chunk to be injected
@@ -284,10 +286,7 @@ def export_docs():
         rows = conn.execute("SELECT id, title, source, text FROM knowledge_docs "
                             "ORDER BY seq").fetchall()
         return [{"title": r["title"], "source": r["source"] or "",
-                 "text": r["text"] if r["text"] is not None else _rejoin(
-                     [c["text"] for c in conn.execute(
-                         "SELECT text FROM knowledge_chunks WHERE doc_id = ? ORDER BY seq",
-                         (r["id"],))])}
+                 "text": _doc_text(conn, r["id"], r["text"])}
                 for r in rows]
 
 
@@ -308,7 +307,7 @@ def clear():
 
 def recall_knowledge(request, k=_TOP_K, threshold=None):
     """Top knowledge chunks most relevant to `request`, above the similarity threshold. Returns
-    [{title, text, score}]. Cosine when the query embeds AND chunks have vectors; otherwise
+    [{title, text, score, doc_id}]. Cosine when the query embeds AND chunks have vectors; otherwise
     normalized keyword overlap. Returns [] when nothing clears the threshold — so an unrelated
     request injects nothing."""
     if not (request or "").strip():
@@ -318,7 +317,7 @@ def recall_knowledge(request, k=_TOP_K, threshold=None):
         # One pass over the chunks joined to their doc title, in doc-then-chunk order (the same
         # order the flattened `docs` list produced).
         flat = conn.execute("""
-            SELECT d.title, c.text, c.embedding
+            SELECT d.id, d.title, c.text, c.embedding
             FROM knowledge_chunks c JOIN knowledge_docs d ON d.id = c.doc_id
             ORDER BY d.seq, c.seq
         """).fetchall()
@@ -344,27 +343,84 @@ def recall_knowledge(request, k=_TOP_K, threshold=None):
         else:
             score = _keyword_sim(query_kw, text)   # fallback (or per-chunk gap)
         if score >= thr:
-            scored.append((score, title, text))
+            scored.append((score, title, text, row["id"]))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [{"title": t, "text": txt, "score": round(s, 3)} for s, t, txt in scored[:k]]
+    return [{"title": t, "text": txt, "score": round(s, 3), "doc_id": d}
+            for s, t, txt, d in scored[:k]]
 
 
-def context_block(request):
-    """The Reference-knowledge block to inject for a fresh run, or None. Char-bounded so a large
-    KB can't blow the prompt."""
+def _doc_text(conn, doc_id, text):
+    """A doc's full text: the stored `text`, else rejoined from its chunks (a pre-`text` doc)."""
+    if text is not None:
+        return text
+    return _rejoin([c["text"] for c in conn.execute(
+        "SELECT text FROM knowledge_chunks WHERE doc_id = ? ORDER BY seq", (doc_id,))])
+
+
+def _doc_texts(doc_ids, limit):
+    """{doc_id: full text} for the ids whose text is at most `limit` chars — the only ones
+    `context_block` can inject whole. The size is read in SQL first, so one matching chunk in a
+    multi-MB doc never loads the doc. A vanished or oversized doc is simply absent."""
+    out = {}
+    with _conn() as conn:
+        for i in doc_ids:
+            # one row: the size, plus the text itself only when it fits (a legacy doc's text is
+            # NULL either way and is rejoined from its chunks below)
+            r = conn.execute("""
+                SELECT CASE WHEN LENGTH(d.text) <= ? THEN d.text END AS text,
+                       COALESCE(LENGTH(d.text),
+                                (SELECT SUM(LENGTH(c.text)) FROM knowledge_chunks c
+                                 WHERE c.doc_id = d.id)) AS size
+                FROM knowledge_docs d WHERE d.id = ?""", (limit, i)).fetchone()
+            # a legacy doc's chunk sum over-counts its overlaps, so it only ever errs to "too big"
+            if r is not None and (r["size"] or 0) <= limit:
+                out[i] = _doc_text(conn, i, r["text"])
+    return out
+
+
+def context_block(request, budget=None):
+    """The Reference-knowledge block to inject for a fresh run, or None. Char-bounded by
+    `knowledge_inject_chars` so a large KB can't blow the prompt.
+
+    A matched doc that FITS the remaining budget goes in WHOLE, once — retrieval picks which docs
+    are relevant, but a list-shaped question needs all of one, never its best 3 chunks. A doc too
+    big for that falls back to its matched snippets, and anything clipped or left out is MARKED:
+    an unmarked cut reads as the end of the document, so the run either invents the rest or
+    reports a truncation it cannot explain."""
     hits = recall_knowledge(request)
     if not hits:
         return None
-    out, used = [], 0
+    if budget is None:
+        budget = config.setting("knowledge_inject_chars")
+    budget = max(0, int(budget))
+    full = _doc_texts(dict.fromkeys(h["doc_id"] for h in hits), budget)
+    out, used, whole, excerpted = [], 0, set(), set()
     for h in hits:
+        if h["doc_id"] in whole or used >= budget:
+            continue
+        doc = (full.get(h["doc_id"]) or "").strip()
+        if doc and used + len(doc) <= budget:
+            out.append(f"[{h['title']}] (complete document)\n{doc}")
+            used += len(doc)
+            whole.add(h["doc_id"])
+            continue
         snippet = h["text"].strip()
-        if used + len(snippet) > _MAX_INJECT_CHARS:
-            snippet = snippet[: max(0, _MAX_INJECT_CHARS - used)].rstrip()
-        if not snippet:
-            break
-        out.append(f"[{h['title']}]\n{snippet}")
-        used += len(snippet)
-        if used >= _MAX_INJECT_CHARS:
-            break
-    trace("KNOWLEDGE", f"injecting {len(out)} reference snippet(s) ({used} chars)")
+        if h["doc_id"] in excerpted:     # the doc's label already said this is a partial view
+            note = f"[{h['title']}] (another matching passage)"
+        else:
+            note = (f"[{h['title']}] (excerpt — only matching passages are shown, so do "
+                    "not treat this as all of it)")
+            excerpted.add(h["doc_id"])
+        if used + len(snippet) > budget:
+            room = budget - used
+            snippet = (snippet[:room].rstrip()
+                       + f" …[clipped — {len(snippet) - room} more chars of this passage not shown]")
+            used = budget
+        else:
+            used += len(snippet)
+        out.append(note + "\n" + snippet)
+    if not out:
+        return None
+    trace("KNOWLEDGE", f"injecting {len(out)} reference block(s), {len(whole)} whole doc(s) "
+                       f"({used}/{budget} chars)")
     return _KB_HEADER + "\n" + "\n\n".join(out)

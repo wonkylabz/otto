@@ -1004,15 +1004,56 @@ class KnowledgeTests(unittest.TestCase):
         res = knowledge.reembed_all()
         self.assertEqual((res["embedded"], res["model"]), (0, None))       # no model -> no-op
 
+    @staticmethod
+    def _body_len(block):
+        # The budget caps the injected TEXT exactly; the header, each block's "[title] (…)" label
+        # line and the clip marker sit outside it, so measure what is left once they are removed.
+        body = re.sub(r" …\[clipped — \d+ more chars of this passage not shown\]", "",
+                      block[len(knowledge._KB_HEADER) + 1:])
+        body = re.sub(r"(?m)^\[[^\]\n]*\] \((complete document|excerpt[^)\n]*|another matching "
+                      r"passage)\)\n", "", body)
+        return len(body.replace("\n\n", ""))
+
     def test_context_block_is_char_bounded(self):
         knowledge.gateway.embed = lambda texts, model_name=None: None
         knowledge.add_document("big", "vpn certificate renewal " * 400)   # huge matching doc
-        block = knowledge.context_block("vpn certificate renewal")
+        block = knowledge.context_block("vpn certificate renewal", budget=1500)
         self.assertIsNotNone(block)
-        # _MAX_INJECT_CHARS caps the SNIPPET text only; the fixed header plus each hit's
-        # "[title]\n" wrapper sit outside it, so allow the header + a small constant for those.
-        self.assertLessEqual(len(block),
-                             knowledge._MAX_INJECT_CHARS + len(knowledge._KB_HEADER) + 120)
+        self.assertLessEqual(self._body_len(block), 1500)
+
+    def test_a_doc_that_fits_is_injected_whole_and_once(self):
+        # Retrieval picks WHICH doc; a list-shaped question needs all of it. 30 entries span
+        # several chunks, every one matching "movie", and must come back as ONE complete block.
+        knowledge.gateway.embed = lambda texts, model_name=None: None
+        movies = "\n\n".join(f"Movie {i}: watched title number {i}, a movie I liked "
+                               + "x" * 60 for i in range(30))
+        knowledge.add_document("Movies Watched", movies)
+        block = knowledge.context_block("which movie have I watched", budget=24_000)
+        self.assertIn("(complete document)", block)
+        self.assertEqual(block.count("[Movies Watched]"), 1)
+        for i in (0, 15, 29):
+            self.assertIn(f"Movie {i}:", block)
+
+    def test_a_doc_too_big_is_an_excerpt_and_the_clip_is_marked(self):
+        # An unmarked cut reads as the end of the doc — the run invents the rest or reports a
+        # truncation it can't explain.
+        knowledge.gateway.embed = lambda texts, model_name=None: None
+        knowledge.add_document("big", "vpn certificate renewal " * 400)
+        block = knowledge.context_block("vpn certificate renewal", budget=1000)
+        self.assertNotIn("(complete document)", block)
+        self.assertIn("(excerpt — only matching passages are shown", block)
+        self.assertIn("…[clipped —", block)
+
+    def test_budget_reads_the_runtime_setting(self):
+        knowledge.gateway.embed = lambda texts, model_name=None: None
+        knowledge.add_document("big", "vpn certificate renewal " * 400)
+        orig = knowledge.config.setting
+        knowledge.config.setting = lambda n: 200 if n == "knowledge_inject_chars" else orig(n)
+        try:
+            block = knowledge.context_block("vpn certificate renewal")
+        finally:
+            knowledge.config.setting = orig
+        self.assertLessEqual(self._body_len(block), 200)
 
     def test_empty_kb_and_blank_query(self):
         self.assertEqual(knowledge.recall_knowledge("anything"), [])      # empty KB

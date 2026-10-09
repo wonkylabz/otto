@@ -7594,7 +7594,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # group (`RuntimeSettingsUiCoverageTests`), and the bytes are that one help line.
     # -> 125682 for keeping the cap list's search/open groups across a save's re-render. Same
     # split: the capture/restore live in `capview.js`; the bytes are the two calls in loadAdmin.
-    ASSET_MAX = 125682
+    # -> 125835 for the `knowledge_inject_chars` knob: same rule as `judge_tools` — a runtime
+    # setting carries a label and a group, and the bytes are that help line and one group entry.
+    ASSET_MAX = 125835
 
     def _assets(self):
         out = {}
