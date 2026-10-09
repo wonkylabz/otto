@@ -4621,7 +4621,7 @@ class EstopIngressTests(unittest.TestCase):
         import activities
         import board
         touched = []
-        self._tripwires(board, ["load", "list_ready", "set_status"], touched)
+        self._tripwires(board, ["load", "item_list", "list_ready", "set_status"], touched)
         with contextlib.redirect_stdout(io.StringIO()):
             out = activities.poll_board({})
         self.assertTrue(out["paused"])
@@ -8897,6 +8897,8 @@ class FactoryModeTests(unittest.TestCase):
                          ("game", True, False, "auto", True))
         self.assertEqual(p["factory"], st["started_at"])
         self.assertTrue(p["reply_to"]["repo_edit"])
+        self.assertEqual(p["cap"], config.WORKER_CAP)       # code, never routed by topic
+        self.assertEqual(self.factory.apply({"cap": "my-impl"}, st)["cap"], "my-impl")
 
     # --- budget ----------------------------------------------------------------------
     def test_spend_sums_only_this_factorys_runs_and_their_children(self):
@@ -9025,7 +9027,9 @@ class FactoryModeTests(unittest.TestCase):
         started = []
         with unittest.mock.patch.object(board, "load", return_value=cfg), \
                 unittest.mock.patch.object(board, "project_meta", return_value={}), \
-                unittest.mock.patch.object(board, "list_ready", return_value=ready), \
+                unittest.mock.patch.object(board, "item_list", return_value={"items": []}), \
+                unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
+                unittest.mock.patch.object(board, "issue_details", side_effect=dict), \
                 unittest.mock.patch.object(board, "column_counts", return_value={}), \
                 unittest.mock.patch.object(board, "set_status"), \
                 unittest.mock.patch.object(workspace, "resolve", return_value={"name": "game"}), \
@@ -9043,14 +9047,18 @@ class FactoryModeTests(unittest.TestCase):
         self._on(wip=1)
         cfg = {"enabled": True, "project": "me/7", "columns": {"ready": "Ready", "active": "In Progress"}}
         ready = [{"number": 3, "repo": "me/game", "item_id": "i3", "title": "t", "body": "", "labels": []}]
-        for counts in ({"In Progress": 1}, None):
+        # At the WIP cap: skipped before its issue is even read. Unreadable board: no pickup.
+        for data, counts in (({"items": []}, {"In Progress": 1}), (None, None)):
             with unittest.mock.patch.object(board, "load", return_value=cfg), \
                     unittest.mock.patch.object(board, "project_meta", return_value={}), \
-                    unittest.mock.patch.object(board, "list_ready", return_value=ready), \
+                    unittest.mock.patch.object(board, "item_list", return_value=data), \
+                    unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
+                    unittest.mock.patch.object(board, "issue_details") as details, \
                     unittest.mock.patch.object(board, "column_counts", return_value=counts), \
                     unittest.mock.patch.object(board, "start_run") as start:
                 activities.poll_board({})
             self.assertFalse(start.called, f"counts={counts}")
+            self.assertFalse(details.called, f"counts={counts}")
 
     def test_a_merged_ticket_moves_to_done_not_review(self):
         import board
@@ -9080,6 +9088,30 @@ class FactoryModeTests(unittest.TestCase):
             self.assertEqual(activities.merge_pr({"pr_url": "u"})["merged"], False)
             self.state = "MERGED"            # a retry whose first try already merged
             self.assertEqual(activities.merge_pr({"pr_url": "u"}), {"merged": True})
+
+    def test_project_meta_is_cached_only_when_complete(self):
+        import board
+        board._META_CACHE.clear()
+        self.addCleanup(board._META_CACHE.clear)
+        cfg = {"project": "me/7", "status_field": "Status"}
+        good = {"project_id": "P", "status_field_id": "F", "options": {"Ready": "r"}}
+        with unittest.mock.patch.object(board, "_project_meta",
+                                        return_value={"project_id": None, "options": {}}) as m:
+            board.project_meta(cfg); board.project_meta(cfg)
+        self.assertEqual(m.call_count, 2)                  # a failure is retried, never cached
+        with unittest.mock.patch.object(board, "_project_meta", return_value=good) as m:
+            board.project_meta(cfg)
+            board.project_meta(cfg)["options"]["Ready"] = "mutated"
+            self.assertEqual(board.project_meta(cfg)["options"]["Ready"], "r")
+        self.assertEqual(m.call_count, 1)
+
+    def test_goals_set_a_real_product_bar_and_sprint_one_builds_the_foundation(self):
+        goals = self.factory.GOALS_TEMPLATE.format(seed="a card game")
+        for item in ("make run", "make test", "make lint", "user interface", "CI", "manifest"):
+            self.assertIn(item, goals)
+        brief = self.factory.SPRINT_BRIEF
+        self.assertIn("Foundation first", brief)
+        self.assertIn("Product section", brief)
 
     def test_factory_state_never_travels_in_a_snapshot(self):
         import snapshot

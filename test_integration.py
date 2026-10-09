@@ -7317,14 +7317,16 @@ class BoardPollPickupTests(unittest.TestCase):
                       "options": {"In Progress": "opt-ip", "Review": "opt-rv",
                                   "Done": "opt-dn", "Blocked": "opt-bl"}}
         self._orig = {n: getattr(board, n) for n in
-                      ("load", "enabled", "project_meta", "list_ready", "issue_to_request",
-                       "start_run", "set_status")}
+                      ("load", "enabled", "project_meta", "item_list", "ready_stubs",
+                       "issue_details", "issue_to_request", "start_run", "set_status")}
         board.load = lambda: self._cfg
         board.enabled = lambda cfg=None: True
         board.project_meta = lambda cfg: self._meta
-        board.list_ready = lambda cfg: [
+        board.item_list = lambda cfg: {"items": []}
+        board.ready_stubs = lambda cfg, data: [
             {"number": 41, "item_id": "IT41", "repo": "o/r", "title": "renew the cert"},
             {"number": 42, "item_id": "IT42", "repo": "o/r", "title": "already running"}]
+        board.issue_details = lambda stub: dict(stub)
 
         def fake_issue_to_request(issue, cfg):
             # `cap` is a plain NAME here (the label->cap mapping); poll_board resolves it against
@@ -7366,6 +7368,21 @@ class BoardPollPickupTests(unittest.TestCase):
         self.assertEqual(rt["review_col"], "Review")
         self.assertEqual(rt["done_col"], "Done")
         self.assertEqual(rt["blocked_col"], "Blocked")
+
+    def test_an_unreadable_board_is_an_error_not_an_empty_column(self):
+        """A rate-limited read used to come back as [] — "nothing Ready" — so a ticket sat
+        unpicked with every poll reporting success."""
+        self.board.item_list = lambda cfg: None
+        out = self.activities.poll_board({})
+        self.assertEqual(out["error"], "board unreadable")
+        self.assertEqual(self.started, [])
+
+    def test_an_empty_ready_column_spends_no_further_graphql(self):
+        calls = []
+        self.board.ready_stubs = lambda cfg, data: []
+        self.board.project_meta = lambda cfg: calls.append("meta") or self._meta
+        self.activities.poll_board({})
+        self.assertEqual(calls, [])
 
     def test_disabled_board_does_nothing(self):
         self.board.enabled = lambda cfg=None: False

@@ -26,6 +26,7 @@ import json
 import os
 import re
 import subprocess
+import time
 
 import config
 import contracts
@@ -181,9 +182,27 @@ def _repo_slug(value):
 
 # --- project metadata (ids needed to move a card) --------------------------
 
+# project_meta is two GraphQL calls of ids that change only when someone edits the board's
+# fields, and the poll asked for them every interval. Cached per process for this long, keyed on
+# what selects them; only a COMPLETE answer is cached, so a failure is retried next time.
+META_TTL_S = 3600
+_META_CACHE = {}
+
+
 def project_meta(cfg):
     """Resolve the ids needed to move cards: project id, the Status field id, and the
     {column-name: option-id} map. Best-effort — returns empty ids on any gh failure."""
+    key = (project_spec(cfg.get("project")), cfg.get("status_field"))
+    hit = _META_CACHE.get(key)
+    if hit and time.time() - hit[0] < META_TTL_S:
+        return {**hit[1], "options": dict(hit[1]["options"])}
+    meta = _project_meta(cfg)
+    if meta.get("project_id") and meta.get("status_field_id"):
+        _META_CACHE[key] = (time.time(), meta)
+    return meta
+
+
+def _project_meta(cfg):
     owner, num = _project_parts(cfg)
     meta = {"project_id": None, "status_field_id": None, "options": {}}
     if not owner:
@@ -255,6 +274,30 @@ def _parse_items(data, cfg):
     return _parse_items_in(data, cfg, (cfg.get("columns") or {}).get("ready"))
 
 
+def item_list(cfg):
+    """The board's raw `gh project item-list` JSON, or None on any failure — the ONE GraphQL read
+    a poll makes; `list_ready`/`column_counts` take it as `data` instead of each re-fetching.
+    A rate-limited read is a failure, never an empty board."""
+    owner, num = _project_parts(cfg)
+    if not owner:
+        return None
+    rc, out, err = _run(["gh", "project", "item-list", num, "--owner", owner,
+                         "--format", "json", "-L", "200"])
+    if rc != 0:
+        trace("BOARD", f"item-list for {cfg.get('project')} failed: {err[:140]}")
+        return None
+    try:
+        return json.loads(out or "{}")
+    except ValueError:
+        return None
+
+
+def ready_stubs(cfg, data):
+    """Ready-column stubs from an `item_list` read, lowest issue number first — the factory PM
+    readies tickets in build order. Pure."""
+    return sorted(_parse_items(data, cfg), key=lambda i: i.get("number") or 0)
+
+
 def list_in_column(cfg, column_key):
     """Issue stubs [{item_id, number, repo, url}] currently in the column named by
     cfg['columns'][column_key]. Best-effort; [] on any gh failure. Used by the reaper to find
@@ -277,21 +320,14 @@ def list_in_column(cfg, column_key):
     return _parse_items_in(data, cfg, column_name)
 
 
-def column_counts(cfg, repo=None):
+def column_counts(cfg, repo=None, data=None):
     """{column name: issue count} across the whole board, optionally only `repo`'s issues
     ("owner/name"). None on any gh failure — unlike `list_in_column`'s [], because the caller
-    gates on it (factory WIP, sprint start) and an unreadable board must not read as empty."""
-    owner, num = _project_parts(cfg)
-    if not owner:
-        return None
-    rc, out, err = _run(["gh", "project", "item-list", num, "--owner", owner,
-                         "--format", "json", "-L", "200"])
-    if rc != 0:
-        trace("BOARD", f"item-list for {cfg.get('project')} failed: {err[:140]}")
-        return None
-    try:
-        data = json.loads(out or "{}")
-    except ValueError:
+    gates on it (factory WIP, sprint start) and an unreadable board must not read as empty.
+    Pass an `item_list` read as `data` to spend no further GraphQL."""
+    if data is None:
+        data = item_list(cfg)
+    if data is None:
         return None
     counts = {}
     for item in (data or {}).get("items") or []:
@@ -325,20 +361,18 @@ def _issue_details(stub, timeout=60):
             "labels": [l.get("name") for l in (data.get("labels") or []) if l.get("name")]}
 
 
+def issue_details(stub):
+    """A Ready stub plus its title/body/labels, or None when the issue can't be read."""
+    details = _issue_details(stub)
+    return {**stub, **details} if details else None
+
+
 def list_ready(cfg):
     """Return Ready-column issues with full details: [{item_id, number, repo, url, title, body,
-    labels}]. Best-effort — returns [] on any gh failure."""
-    owner, num = _project_parts(cfg)
-    if not owner:
-        return []
-    rc, out, err = _run(["gh", "project", "item-list", num, "--owner", owner,
-                         "--format", "json", "-L", "200"])
-    if rc != 0:
-        trace("BOARD", f"item-list for {cfg.get('project')} failed: {err[:140]}")
-        return []
-    try:
-        data = json.loads(out or "{}")
-    except ValueError:
+    labels}]. Best-effort — returns [] on any gh failure. The poll reads lazier than this (one
+    issue read per card it will START, see activities.poll_board)."""
+    data = item_list(cfg)
+    if data is None:
         return []
     issues = []
     for stub in _parse_items(data, cfg):

@@ -1023,28 +1023,40 @@ def poll_board(payload: dict) -> dict:
     cfg = board.load()
     if not board.enabled(cfg):
         return {"picked": [], "disabled": True}
-    meta = board.project_meta(cfg)
+    # GraphQL is rate-limited per user, and Otto's every `gh` call shares that budget. So a poll
+    # makes ONE board read (the Ready list and the factory's WIP count both come from it), fetches
+    # the cached ids only once a card will move, and reads an issue only for a card it will start.
+    # A failed read — a rate limit included — is reported as an error, never as an empty column.
+    data = board.item_list(cfg)
+    if data is None:
+        return {"picked": [], "skipped": [], "error": "board unreadable"}
     picked, skipped = [], []
+    stubs = board.ready_stubs(cfg, data)
+    if not stubs:
+        return {"picked": picked, "skipped": skipped}
+    meta = board.project_meta(cfg)
     # Factory mode: its tickets run pre-authorized and merge themselves, so pickup is bounded by
-    # the factory's WIP cap, counted off the board itself. An unreadable count picks nothing.
+    # the factory's WIP cap, counted off the same board read.
     import factory
     fac = factory.load()
     room = None
     if factory.enabled(fac):
-        counts = board.column_counts(cfg, repo=fac.get("slug"))
+        counts = board.column_counts(cfg, repo=fac.get("slug"), data=data)
         active = (counts or {}).get((cfg.get("columns") or {}).get("active"), 0)
-        room = 0 if counts is None else max(0, int(fac.get("wip") or 1) - active)
-    # Lowest issue number first: the factory PM readies tickets in build order.
-    for issue in sorted(board.list_ready(cfg), key=lambda i: i.get("number") or 0):
-        n = issue.get("number")
+        room = max(0, int(fac.get("wip") or 1) - active)
+    for stub in stubs:
+        n = stub.get("number")
         if n is None:
             continue
+        owned = room is not None and factory.owns(stub, fac)
+        if owned and room <= 0:
+            skipped.append(n)
+            continue
+        issue = board.issue_details(stub)
+        if issue is None:
+            continue
         params = board.issue_to_request(issue, cfg)
-        owned = room is not None and factory.owns(issue, fac)
         if owned:
-            if room <= 0:
-                skipped.append(n)
-                continue
             factory.apply(params, fac)
         # Resolve a pinned capability from the TRUSTED registry — never take risk from a label
         # (mirrors the event ingress in server._handle_event).

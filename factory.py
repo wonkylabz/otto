@@ -74,14 +74,22 @@ end to end, never ask a question back.
    | base64 -d`). It holds the product vision and its Definition of Done — the only source of
    what "finished" means. Read the repo's current tree and the PRs merged so far
    (`gh pr list --repo {slug} --state merged`).
+   **Foundation first.** If the repo has no project manifest or no `Makefile`, or the Product
+   section of `{goals}` still says it is to be expanded, the FIRST ticket you ready must be the
+   foundation: scaffold the project (manifest, `Makefile` with `run`/`test`/`lint`, a GitHub
+   Actions workflow running lint + tests, a README skeleton) AND rewrite the Product section of
+   `{goals}` into a concrete feature list and interface for the seed. Every other ticket this
+   sprint depends on it, so give it the lowest number.
 2. Look at the board columns "{done}" and "{blocked}" for issues of `{slug}`.
    For each card in "{blocked}": read its last comment (why it failed), then EITHER rewrite the
    issue so it is smaller and unambiguous and move it back to "{ready}", adding the label
    `factory-retry-1` (or bump an existing `factory-retry-N`), OR — if it already carries
    `factory-retry-2` — close it with a one-line comment saying why it was dropped.
 3. Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
-   Definition of Done. Each must be small (one PR), independently mergeable on top of the
-   current default branch, testable, and state its own acceptance criteria. Never duplicate an
+   Definition of Done and the Product section. Each must be one coherent PR, mergeable on top of
+   the current default branch, and state its own acceptance criteria — including the tests it adds
+   and that `make test` and `make lint` pass. Aim for a real product: a feature is done when a user
+   can reach it from the interface, not when a function exists. Never duplicate an
    open or done issue. Add each to the board and move it to "{ready}" in the order it must be
    built — earliest dependency first (the line builds the lowest issue number first).
 4. Do NOT write code, open PRs, or touch the repo's files yourself — implementation is the
@@ -90,7 +98,8 @@ end to end, never ask a question back.
 Your reply MUST end with exactly one of these as its LAST line:
 FACTORY: CONTINUE
 FACTORY: DONE — <one line of evidence that every Definition-of-Done item is met>
-Say DONE only when every Definition-of-Done item is already merged; never when work remains.
+Say DONE only when every Definition-of-Done item AND every Product feature is already merged —
+check the tree, not the issue titles; never when work remains.
 """
 
 GOALS_TEMPLATE = """\
@@ -99,12 +108,26 @@ GOALS_TEMPLATE = """\
 ## Seed
 {seed}
 
+## Product
+<!-- Expanded by the FOUNDATION ticket: who it is for, the core loop, every feature the seed
+     implies, and the interface people use it through. Edit it any time to steer the line. -->
+_To be expanded by the foundation ticket._
+
 ## Definition of Done
-<!-- The factory's PM refines this list on its first sprint; edit it any time to steer the line.
-     The factory stops when every item here is merged. -->
-- [ ] A first playable / usable version of the seed above, runnable from a fresh clone
-- [ ] Automated tests that exercise its core behaviour, runnable with one command
-- [ ] A README explaining how to run it
+<!-- The factory stops when every item here is merged. -->
+- [ ] Runs from a fresh clone with one documented command (`make run`)
+- [ ] A real user interface suited to the product (for a game: a playable web or rich terminal UI) — not just a library
+- [ ] Every feature listed under Product is implemented and reachable from that interface
+- [ ] `make test` runs the automated suite: core logic AND the interface's main flows
+- [ ] `make lint` passes, with a formatter and a linter configured
+- [ ] CI (GitHub Actions) runs lint and tests on every pull request
+- [ ] A project manifest with pinned dependencies (e.g. `pyproject.toml`, `package.json`)
+- [ ] A README: what it is, how to install, run, test and use it
+
+## Quality bar (every PR)
+- New behaviour ships with tests; `make test` and `make lint` pass
+- No placeholders, stubs or TODOs standing in for the feature the ticket asks for
+- One coherent, reviewable change
 """
 
 
@@ -164,7 +187,14 @@ def owns(issue, state=None):
 
 def apply(params, state):
     """Stamp a factory ticket's run params: always repo-mode + review + QA, never a clarify
-    pause (nobody is there to answer), pre-authorized, and merged when both loops PASS."""
+    pause (nobody is there to answer), pre-authorized, and merged when both loops PASS.
+
+    Pinned to the worker unless a label already pinned a cap: a factory ticket is code in the
+    factory repo by construction, and Router #1 reading a game-rules ticket by its TOPIC sent
+    half of them to the non-code `doer`. The name is resolved against the trusted registry by
+    the poll activity, like any label pin."""
+    if not params.get("cap"):
+        params["cap"] = config.WORKER_CAP
     params.update({"repo": state["repo"], "repo_hint": None, "qa": True, "clarify": False,
                    "approval": "auto", "auto_merge": True, "factory": state["started_at"]})
     if isinstance(params.get("reply_to"), dict):
