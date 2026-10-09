@@ -46,8 +46,13 @@ can read the token file.
   Write, and `rm` through Bash, applied to every registered repo's live checkout and to
   Otto's own runtime state.
 - Those `claude -p` deny rules match the command TEXT: `cat <file>` is refused, but
-  `python3 -c "open(<file>)"` reads it. Only the API credentials are masked by the kernel
-  around `claude -p`; the rest of the deny set is a guard against accidents, not a determined run.
+  `python3 -c "open(<file>)"` reads it. So with a usable `bwrap` the kernel enforces the read
+  deny set around `claude -p` too: `data/` is masked whole (only the clones, the run's own
+  uploads and its `--mcp-config` file are bound back) and so is every credential store, except
+  the two `claude` itself must read — `~/.claude.json` and `~/.claude/.credentials.json`.
+- WRITE denies outside `data/` still match text only: `python3` writes past an `Edit(...)` rule
+  (measured), so a registered checkout or `~/.claude/settings.json` is guarded against
+  accidents, not a determined run.
 - The **local** execution backend bypasses `claude -p`'s permission system entirely.
   `local_runtime._deny_guard` re-implements the deny list for its own Write/Edit, but its
   `Bash` is **not** covered — parsing a shell to catch `tee`/`sed -i` would be theatre.
@@ -82,10 +87,10 @@ to act with your access.
   cannot prove the exact bytes the model saw, and retrying a run whose request held a pasted
   secret re-runs it with `[REDACTED]` in its place.
 - Chat history, memory and knowledge in `data/otto.db` are still stored in the clear. All of
-  `data/` is read-denied to runs, but on `claude -p` that deny matches command text (see above),
-  so it stops an accidental read, not a determined one.
-- The API token (`data/.api/token`) and the browser session hashes beside it are the one thing
-  in `data/` the kernel hides from every run. Delete the token to rotate it: every browser is
+  `data/` is read-denied to runs, and kernel-masked wherever `bwrap` works (see above); a run
+  whose cwd is Otto's own checkout still reads it, by design.
+- The API token (`data/.api/token`) and the browser session hashes beside it are hidden by the
+  kernel from every run, Otto-cwd ones included. Delete the token to rotate it: every browser is
   logged out and every script needs the new value.
 
 ### ntfy push

@@ -160,7 +160,7 @@ def _effective_mcp(cap, base_path):
             merged = {}
     merged.update(repo)   # repo servers win on a name clash — they're what this cap needs
     safe = re.sub(r"[^0-9A-Za-z]+", "-", cap.name).strip("-") or "cap"
-    path = os.path.join(config.DATA_DIR, f".mcp-{safe}.json")
+    path = config.mcp_config_path(safe)
     storage.write_json(path, {"mcpServers": merged})
     return path, [f"mcp__{n}" for n in repo]
 

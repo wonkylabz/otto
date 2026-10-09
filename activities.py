@@ -9,7 +9,6 @@ import contextlib
 import contextvars
 import copy
 import functools
-import os
 import re
 import threading
 import time
@@ -411,7 +410,7 @@ def _mcp():
         # for Claude Code to expand — requires re-admitting that name to the CLI's whole
         # environment, which hands it to the run's own Bash too. `storage` writes through
         # `mkstemp`, so the file lands 0600, and `file_safety` read-denies it to every run.
-        mcp_path = os.path.join(config.DATA_DIR, ".mcp-active.json")
+        mcp_path = config.mcp_config_path("active")
         storage.write_json(mcp_path, mcp_client.resolved_config(active))
     return mcp_tools, mcp_path
 

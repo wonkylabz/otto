@@ -26,6 +26,7 @@ data/update-job.plist
 data/memory
 data/transcripts
 data/.mcp-active.json
+data/.mcp
 data/.api
 data/tickets
 !data/.gitkeep

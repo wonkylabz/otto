@@ -384,7 +384,8 @@ class ApiTokenAuthTests(unittest.TestCase):
 
     def test_claude_runs_through_the_mask(self):
         import claude_cli
-        self.assertIn("file_safety.claude_argv(cmd)", inspect.getsource(claude_cli.run_json))
+        self.assertIn("file_safety.claude_argv(cmd, cwd=cwd, keep=[mcp_config_path])",
+                      inspect.getsource(claude_cli.run_json))
 
     def test_the_login_screen_trades_a_pasted_token_for_the_cookie(self):
         import api_auth
@@ -481,6 +482,136 @@ class ApiTokenAuthTests(unittest.TestCase):
         new = api_auth.token()
         self.assertNotEqual(old, new)
         self.assertEqual(self._req("/api/settings", headers={"X-Otto-Token": old})[0], 401)
+
+
+class ClaudeReadDenyMaskTests(unittest.TestCase):
+    """#225: `claude -p`'s `Read(...)` deny matches command TEXT, so an interpreter reads what
+    `cat` can't. The kernel mask in `claude_argv` is what holds — proved per family, per reader,
+    against an unconfined control that reads the same canary."""
+
+    READERS = (
+        lambda p: ["python3", "-c", f"print(open({p!r}).read())"],
+        lambda p: ["node", "-e", f"process.stdout.write(require('fs').readFileSync({p!r}, 'utf8'))"],
+        lambda p: ["cat", p],
+    )
+
+    def setUp(self):
+        import file_safety
+        if not file_safety.sandbox_available():
+            self.skipTest("no usable bwrap")
+        self.fs = file_safety
+        self.canary = f"canary-{os.getpid()}-{time.time_ns()}"
+        self.made = []
+
+    def _plant(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            self.skipTest(f"{path} exists; refusing to overwrite it")
+        with open(path, "w") as f:
+            f.write(self.canary)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def _read(self, argv, cwd=None):
+        import subprocess
+        return subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                              cwd=cwd).stdout
+
+    def _families(self):
+        d = config.DATA_DIR
+        return [os.path.join(d, "models.json"), os.path.join(d, "otto.db-canary"),
+                os.path.join(d, "transcripts", "x-a1.jsonl"),
+                os.path.join(d, "logs", "worker.log"), os.path.join(d, "temporal.db-canary"),
+                config.mcp_config_path("other"), os.path.join(d, ".mcp-legacy.json"),
+                os.path.join(d, "uploads", "u1", "f.txt"),
+                os.path.join(os.path.dirname(d), ".env")]
+
+    def test_every_family_is_unreadable_by_every_reader(self):
+        for path in map(self._plant, self._families()):
+            for reader in self.READERS:
+                with self.subTest(path=path, reader=reader(path)[0]):
+                    self.assertIn(self.canary, self._read(reader(path)))     # control
+                    self.assertNotIn(self.canary, self._read(self.fs.claude_argv(reader(path))))
+
+    def test_a_store_replaced_mid_run_stays_masked(self):
+        # A FILE mask detaches when the outer process atomically replaces the file, which is how
+        # every data/*.json store is written; the directory mask on data/ is what holds.
+        import subprocess
+        p = self._plant(os.path.join(config.DATA_DIR, "settings.json"))
+        proc = subprocess.Popen(self.fs.claude_argv(["bash", "-c", f"sleep 1.5; cat {p} 2>&1"]),
+                                stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        time.sleep(0.5)
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(self.canary + "-new")
+        os.replace(tmp, p)
+        out, _ = proc.communicate(timeout=30)
+        self.assertNotIn(self.canary, out)
+
+    def test_what_a_run_needs_is_bound_back(self):
+        d = config.DATA_DIR
+        ws = self._plant(os.path.join(d, "workspaces", "wf-x", "README"))
+        repo = self._plant(os.path.join(d, "repos", "slug", "CLAUDE.md"))
+        mine = self._plant(os.path.join(d, "uploads", "mine", "a.png"))
+        theirs = self._plant(os.path.join(d, "uploads", "theirs", "b.png"))
+        mcp = self._plant(config.mcp_config_path("active"))
+        cwd = os.path.dirname(ws)
+        with self.fs.upload_grant([os.path.dirname(mine)]):
+            argv = lambda p: self.fs.claude_argv(["cat", p], cwd=cwd, keep=[mcp])
+            for p in (ws, repo, mine, mcp):
+                self.assertIn(self.canary, self._read(argv(p), cwd=cwd), p)
+            self.assertNotIn(self.canary, self._read(argv(theirs), cwd=cwd))
+        out = self._read(self.fs.claude_argv(
+            ["bash", "-c", f"echo hi > {cwd}/new && cat {cwd}/new"], cwd=cwd), cwd=cwd)
+        self.assertEqual(out.strip(), "hi")                  # the clone stays writable
+        self.addCleanup(lambda: os.unlink(os.path.join(cwd, "new")))
+
+    def test_an_otto_cwd_run_reads_otto_state_never_a_credential(self):
+        import api_auth
+        root = os.path.dirname(config.DATA_DIR)
+        models = self._plant(os.path.join(config.DATA_DIR, "models.json"))
+        other = self._plant(config.mcp_config_path("other"))
+        mine = self._plant(config.mcp_config_path("active"))
+        upload = self._plant(os.path.join(config.DATA_DIR, "uploads", "u1", "f.txt"))
+        tok = api_auth.token()
+        argv = lambda p: self.fs.claude_argv(["python3", "-c", f"print(open({p!r}).read())"],
+                                             cwd=root, keep=[mine])
+        self.assertIn(self.canary, self._read(argv(models), cwd=root))
+        self.assertIn(self.canary, self._read(argv(mine), cwd=root))       # its --mcp-config
+        for p in (other, upload):
+            self.assertNotIn(self.canary, self._read(argv(p), cwd=root), p)
+        self.assertNotIn(tok, self._read(argv(api_auth.path()), cwd=root))
+
+    def test_an_otto_cwd_runs_mcp_mask_survives_a_peers_replace(self):
+        # Every run start atomically rewrites the active config; a FILE mask detached on that.
+        import subprocess
+        root = os.path.dirname(config.DATA_DIR)
+        p = self._plant(config.mcp_config_path("active"))
+        proc = subprocess.Popen(self.fs.claude_argv(["bash", "-c", f"sleep 1.5; cat {p} 2>&1"],
+                                                    cwd=root),
+                                stdout=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL)
+        time.sleep(0.5)
+        with open(p + ".tmp", "w") as f:
+            f.write(self.canary + "-new")
+        os.replace(p + ".tmp", p)
+        out, _ = proc.communicate(timeout=30)
+        self.assertNotIn(self.canary, out)
+
+    def test_claudes_own_login_is_never_masked(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        needs = [os.path.join(home, ".claude.json"),
+                 os.path.join(home, ".claude", ".credentials.json")]
+        for p in needs:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as f:
+                f.write(self.canary)
+        with mock.patch.object(self.fs, "_home", return_value=home):
+            argv = self.fs.claude_argv(["true"])
+            masked = self.fs._mask_mounts(needs)
+        self.assertTrue(masked)                       # the files exist, so they WOULD be masked
+        for p in needs:
+            self.assertNotIn(p, argv)
 
 
 class _FakeClaude:

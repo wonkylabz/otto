@@ -815,6 +815,12 @@ def secret_status():
 
 DATA_DIR = os.path.join(_HERE, "data")
 
+
+def mcp_config_path(name):
+    """A resolved `--mcp-config` payload. Under its own DIRECTORY so a kernel mask holds: a file
+    mask detaches when a peer run atomically replaces the file (#225)."""
+    return os.path.join(DATA_DIR, ".mcp", f"{name}.json")
+
 # The ONE SQLite database the JSON stores are migrating into (issue #103) — audit + chats today,
 # more stores per later phases. Modules keep their own module-level alias (engine._DB,
 # chats._DB) defaulting from here, since that's the seam the tests monkeypatch to a temp file.
