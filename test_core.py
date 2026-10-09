@@ -2910,10 +2910,9 @@ class RuleEnforcementTests(unittest.TestCase):
         "run-pipeline.md:Unattended dead-end rule",
         "run-pipeline.md:conventions._SOURCES is the whole input set.",
         "run-pipeline.md:engine.critique_plan",
-        # --- tools-mcp.md (11) ---
+        # --- tools-mcp.md (10) ---
         "tools-mcp.md:--setting-sources user for any run with no cwd of its own",
         "tools-mcp.md:--strict-mcp-config only on tool-free calls",
-        "tools-mcp.md:A Read(//path/",
         "tools-mcp.md:A cap needing a connector must not run locally",
         "tools-mcp.md:A deny rule covers rm through Bash, not just writes",
         "tools-mcp.md:A path deny rule has exactly one working spelling: Edit(//abs/",

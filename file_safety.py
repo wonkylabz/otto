@@ -274,7 +274,9 @@ def _secret_store_globs():
         # Every `--mcp-config` payload Otto writes for `claude -p` — `.mcp-active.json` and each
         # project cap's merge of it (`engine._effective_mcp`) — carries the credentials RESOLVED
         # (`mcp_client.resolved_def`), so the family is a credential store, not Otto state.
-        # The glob must name the dot: `data/*.json` never matches a dotfile, so no bwrap mount.
+        # A directory, so a mask survives the per-run atomic replace; the dotfile glob is the
+        # pre-#225 layout, still on disk in an upgraded install.
+        os.path.join(config.DATA_DIR, ".mcp", "**"),
         os.path.join(config.DATA_DIR, ".mcp-*.json"),
         *_api_credential_globs(),
     ]
@@ -372,11 +374,13 @@ _SANDBOX = None
 _SANDBOX_PROBE = "/var/tmp/.otto-sandbox-probe"
 
 
-def _mask_mounts(patterns):
+def _mask_mounts(patterns, skip=()):
     mounts = []
     for pattern in patterns:
         targets = [pattern[:-3]] if pattern.endswith("/**") else sorted(globmod.glob(pattern))
         for path in targets:
+            if os.path.realpath(path) in skip:
+                continue
             if os.path.isdir(path):
                 mounts += ["--tmpfs", path]
             elif os.path.isfile(path):
@@ -384,19 +388,62 @@ def _mask_mounts(patterns):
     return mounts
 
 
-def claude_argv(cmd):
-    """`cmd` (a `claude` invocation) with the API credentials masked by the KERNEL (#217).
+# Read-denied files the `claude` process ITSELF must read: its config and OAuth login. Only the
+# text-matching `Read(...)` deny stands between a run and these (#225).
+def _claude_needs():
+    home = _home()
+    return {os.path.realpath(os.path.join(home, ".claude.json")),
+            os.path.realpath(os.path.join(home, ".claude", ".credentials.json"))}
 
-    `claude -p`'s `permissions.deny` matches command TEXT: measured, `cat <token>` was refused
-    while `python3 -c "open(<token>)"` printed it (2/2). Otherwise transparent — every other path
-    is bound read-write, so auth, MCP, the network and the cwd behave as before. Without a
-    usable bwrap the run proceeds unmasked: walling every Claude run is not an option."""
+
+def _data_allowlist(cwd):
+    """A tmpfs over DATA_DIR with only what a run may see bound back: the clones, its own cwd,
+    its own uploads. An allowlist, so a store added tomorrow is hidden by
+    default — and a DIRECTORY mask, so a store's atomic replace (which detaches a file mask,
+    see the token-rotation test) can't re-expose it."""
+    data = os.path.realpath(config.DATA_DIR)
+    binds = []
+    for sub in ("workspaces", "repos"):
+        p = os.path.join(data, sub)
+        if os.path.isdir(p):
+            binds += ["--bind", p, p]
+    c = os.path.realpath(cwd) if cwd else ""
+    if c.startswith(data + os.sep) and os.path.isdir(c):
+        binds += ["--bind", c, c]
+    for name in _UPLOAD_GRANT.get():
+        p = os.path.join(data, "uploads", name)
+        if os.path.isdir(p):
+            binds += ["--ro-bind", p, p]
+    return ["--tmpfs", data, *binds]
+
+
+def claude_argv(cmd, cwd=None, keep=()):
+    """`cmd` (a `claude` invocation) with the read deny-set enforced by the KERNEL (#217, #225).
+
+    `claude -p`'s `permissions.deny` matches command TEXT: measured, `cat <file>` was refused
+    while `python3 -c "open(<file>)"` printed it (2/2). So `data/` is masked whole with the
+    allowed parts bound back, and every secret store `claude` doesn't read itself is masked. A
+    run whose cwd IS Otto keeps Otto's state, never the credentials. `keep` names the argv files
+    `claude` must read (`--mcp-config`). Everything else is bound read-write, so auth, MCP, the
+    network and the cwd behave as before. Without a usable bwrap the run proceeds unmasked:
+    walling every Claude run is not an option."""
     if not sandbox_available():
         return cmd
     api_auth.token()        # mask an EXISTING file: one created after the mount would be readable
-    return ["bwrap", "--dev-bind", "/", "/", "--die-with-parent",
-            *_mask_mounts([*dict.fromkeys(s for g in _api_credential_globs()
-                                          for s in _both_spellings(g))]),
+    keep = {os.path.realpath(k) for k in keep if k}
+    secrets = [*_secret_store_globs(), *_upload_globs()]
+    data = []
+    if not _reads_allowed_from(cwd):
+        secrets = [*secrets, os.path.join(_otto_root(), ".env")]
+        if os.path.isdir(config.DATA_DIR):
+            data = _data_allowlist(cwd)
+            inside = os.path.realpath(config.DATA_DIR) + os.sep
+            secrets = [g for g in secrets if not os.path.realpath(g).startswith(inside)]
+    mounts = _mask_mounts([*dict.fromkeys(s for g in secrets for s in _both_spellings(g))],
+                          skip=_claude_needs() | keep)
+    # Last, so an argv file inside a masked directory is bound back over the mask.
+    kept = [a for p in sorted(keep) if os.path.isfile(p) for a in ("--ro-bind", p, p)]
+    return ["bwrap", "--dev-bind", "/", "/", "--die-with-parent", *data, *mounts, *kept,
             "--", *cmd]
 
 
