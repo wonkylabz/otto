@@ -82,6 +82,9 @@ end to end, never ask a question back.
    sprint depends on it, so give it the lowest number.
 2. Look at the board columns "{done}" and "{blocked}" for issues of `{slug}`.
    Nothing new is picked up while ANY card sits in "{blocked}" — unblocking comes first.
+   A re-readied ticket is rebuilt from scratch on a fresh branch off the default branch, so when
+   you move one back to "{ready}", CLOSE its open PR with a one-line comment, and never point
+   the issue text at an old PR or tell it how to branch or push — the platform owns git.
    For each card in "{blocked}": read its last comment (why it failed). If its PR is open and only
    an unobservable or wrong criterion failed (e.g. "passes in CI"), fix that criterion in the
    issue text and move it back to "{ready}". Otherwise EITHER rewrite the
@@ -208,7 +211,10 @@ def apply(params, state):
     if not params.get("cap"):
         params["cap"] = config.WORKER_CAP
     params.update({"repo": state["repo"], "repo_hint": None, "qa": True, "clarify": False,
-                   "approval": "auto", "auto_merge": True, "factory": state["started_at"]})
+                   "approval": "auto", "auto_merge": True, "factory": state["started_at"],
+                   # Always off the default branch, never onto an older PR the ticket mentions
+                   # (activities.resolve_pr_target).
+                   "fresh_branch": True})
     if isinstance(params.get("reply_to"), dict):
         params["reply_to"]["repo_edit"] = True
     return params

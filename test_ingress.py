@@ -8898,6 +8898,7 @@ class FactoryModeTests(unittest.TestCase):
         self.assertEqual(p["factory"], st["started_at"])
         self.assertTrue(p["reply_to"]["repo_edit"])
         self.assertEqual(p["cap"], config.WORKER_CAP)       # code, never routed by topic
+        self.assertTrue(p["fresh_branch"])                  # never onto a stale PR it mentions
         self.assertEqual(self.factory.apply({"cap": "my-impl"}, st)["cap"], "my-impl")
 
     # --- budget ----------------------------------------------------------------------
@@ -9173,6 +9174,23 @@ class FactoryModeTests(unittest.TestCase):
             out = activities.poll_board({})
         self.assertFalse(start.called)
         self.assertEqual(out["skipped"], [3])
+
+    def test_a_fresh_branch_run_never_targets_a_pr_the_ticket_names(self):
+        import activities
+        with unittest.mock.patch.object(workspace, "pr_target",
+                                        return_value={"branch": "otto/gh-issue-12"}) as pt:
+            self.assertEqual(activities.resolve_pr_target(
+                {"repo": "game", "request": "see PR #17", "fresh": True}), {})
+            self.assertFalse(pt.called)
+            self.assertEqual(activities.resolve_pr_target(
+                {"repo": "game", "request": "see PR #17"}), {"branch": "otto/gh-issue-12"})
+
+    def test_board_start_passes_fresh_branch_through(self):
+        import board
+        import ingress
+        with unittest.mock.patch.object(ingress, "start_run", return_value=ingress.STARTED) as st:
+            board.start_run("gh-issue-1", {"request": "x", "fresh_branch": True})
+        self.assertTrue(st.call_args[0][1]["fresh_branch"])
 
     def test_factory_state_never_travels_in_a_snapshot(self):
         import snapshot

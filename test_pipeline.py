@@ -4013,7 +4013,8 @@ class PlanBranchNoteTests(unittest.TestCase):
         """Resolved once, above the gate (the preview needs it) and read from cache at provision
         — two `gh` round-trips per run would be the obvious wrong way to wire this."""
         src = workflow_src()
-        self.assertEqual(src.count("resolve_pr_target, {\"repo\": repo, \"request\": request}"), 2,
+        # A prefix: the pre-gate call also carries factory mode's `fresh` flag.
+        self.assertEqual(src.count("resolve_pr_target, {\"repo\": repo, \"request\": request"), 2,
                          "expected exactly the pre-gate resolve and the resume repair tier")
         gate = src.index("# Approval for writes.")
         pre = src.index("self._pr_target = await workflow.execute_activity(")

@@ -1022,7 +1022,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # reuses it instead of asking again.
         if repo and not resume and not subtask:
             self._pr_target = await workflow.execute_activity(
-                resolve_pr_target, {"repo": repo, "request": request},
+                resolve_pr_target, {"repo": repo, "request": request,
+                                    "fresh": params.get("fresh_branch")},
                 start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY) or {}
 
         # Approval for writes. Unless the fast lane (issue #193) already decided it needs none.

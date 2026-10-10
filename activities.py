@@ -498,8 +498,14 @@ def resolve_pr_target(payload: dict) -> dict:
     overwhelmingly common case and the behaviour that predates this activity.
 
     An activity, not workflow code, because it shells out to `gh`: the answer depends on live
-    GitHub state and must be recorded once in history, not re-derived on every replay."""
+    GitHub state and must be recorded once in history, not re-derived on every replay.
+
+    `fresh` (factory mode) always branches off the default branch: a factory ticket re-run after
+    its PR went stale must build on what has merged since, and pushing that rebuilt history onto
+    the old PR's branch is refused as a non-fast-forward — the work then never leaves the clone."""
     import workspace
+    if payload.get("fresh"):
+        return {}
     return workspace.pr_target(payload.get("repo"), payload.get("request")) or {}
 
 

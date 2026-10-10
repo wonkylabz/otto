@@ -519,6 +519,7 @@ def start_run(wid, params):
             "approval": params.get("approval", "auto"), "qa": params.get("qa", False),
             # Factory mode only (factory.apply, stamped by the poll activity, never a client).
             "auto_merge": bool(params.get("auto_merge")), "factory": params.get("factory"),
+            "fresh_branch": bool(params.get("fresh_branch")),
             "clarify": params.get("clarify", False),
             "reply_to": params.get("reply_to"),
             "chat_key": params.get("chat_key"), "chat_title": params.get("chat_title"),
