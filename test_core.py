@@ -3497,7 +3497,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # the local runtime's, its Bash env is stripped, and who posts a runbook's Slack message.
     # 90826 -> 91526: three rules from the merged PRs' review rounds — a fresh PR closes its
     # linked issue, a stock cap holds on every backend and reader, a guard's plan lists every door.
-    MAX_RULES_BYTES = 91526   # fetched tier — bounded, but looser; it is not always loaded
+    # 91526 -> 91795: the QA judge reads a post-merge criterion ("passes in CI") as not its to
+    # prove — read as unproven, it dead-ended a PR whose QA ran CI's own commands green.
+    MAX_RULES_BYTES = 91795   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
