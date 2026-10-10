@@ -6057,6 +6057,21 @@ class WorkflowAutoMergeTests(WorkflowQALoopTests):
         await self._run({"auto_merge": True, "review": False})
         self.assertEqual(self.merges, [])
 
+    async def test_a_factory_ticket_with_no_pr_is_blocked_not_done(self):
+        """The worker reporting a missing prerequisite opens no PR; under factory mode that is a
+        Blocked ticket, or the card closes as Done with nothing built."""
+        # No addCleanup: tearDown restores the REAL finalize, and a cleanup (which runs after it)
+        # would put setUp's fake back for every later test.
+        self.workspace.finalize = lambda run_id, **kw: {"branch": "otto/x", "pushed": False,
+                                                        "committed": False, "pr_url": None,
+                                                        "detail": "nothing to commit"}
+        out = await self._run({"auto_merge": True})
+        self.assertEqual(out["needs_human"]["reason"], "factory_no_pr")
+        self.assertEqual(self.merges, [])
+        self.verdicts = iter([{"verdict": "pass", "critique": ""}])
+        out = await self._run({})                     # outside factory mode: unchanged
+        self.assertIsNone(out["needs_human"])
+
     async def test_a_refused_merge_needs_a_human(self):
         self.workspace._run = lambda args, cwd=None, timeout=600: (
             (1, "", "not mergeable: conflicts") if args[:3] == ["gh", "pr", "merge"]

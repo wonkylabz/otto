@@ -272,6 +272,13 @@ class PostPrMixin:
         merge (conflict, branch protection) is a human's, routed to Blocked like a failed QA.
         Returns whether it merged. Absent from every history recorded before it, so those replay
         untouched."""
+        # A factory ticket's deliverable IS a merged PR. One that opened none (it reported a
+        # missing prerequisite, or found nothing to change) is Blocked for the PM, never Done.
+        # Patched: a run in flight across this change replays without the extra terminal row.
+        if (params.get("auto_merge") and not (pr and pr.get("pr_url")) and not self._needs_human
+                and workflow.patched("factory-no-pr")):
+            self._needs_human = {"reason": "factory_no_pr"}
+            return False
         if not (params.get("auto_merge") and pr and pr.get("pr_url") and not self._needs_human
                 and (review or {}).get("state") == "pass" and (qa or {}).get("state") == "pass"):
             return False

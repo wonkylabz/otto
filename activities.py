@@ -1043,7 +1043,7 @@ def poll_board(payload: dict) -> dict:
     if factory.enabled(fac):
         counts = board.column_counts(cfg, repo=fac.get("slug"), data=data)
         active = (counts or {}).get((cfg.get("columns") or {}).get("active"), 0)
-        room = max(0, int(fac.get("wip") or 1) - active)
+        room = 0 if factory.line_stopped(counts, cfg) else max(0, int(fac.get("wip") or 1) - active)
     for stub in stubs:
         n = stub.get("number")
         if n is None:

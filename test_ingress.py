@@ -8937,6 +8937,8 @@ class FactoryModeTests(unittest.TestCase):
         with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
                 unittest.mock.patch.object(board, "load", return_value={"project": "me/7", "columns": cols}):
             with unittest.mock.patch.object(board, "column_counts", return_value={"In Progress": 1}):
+                self.assertIn("in progress", self.factory.gate()["why"])
+            with unittest.mock.patch.object(board, "column_counts", return_value={"Ready": 2}):
                 self.assertIn("queued", self.factory.gate()["why"])
             with unittest.mock.patch.object(board, "column_counts", return_value=None):
                 self.assertEqual(self.factory.gate()["why"], "board unreadable")
@@ -9112,6 +9114,34 @@ class FactoryModeTests(unittest.TestCase):
         brief = self.factory.SPRINT_BRIEF
         self.assertIn("Foundation first", brief)
         self.assertIn("Product section", brief)
+
+    def test_a_blocked_card_stops_pickup_and_lets_the_sprint_run(self):
+        import activities
+        import board
+        self._on(wip=1)
+        cols = {"ready": "Ready", "active": "In Progress", "done": "Done", "blocked": "Blocked"}
+        cfg = {"enabled": True, "project": "me/7", "columns": cols}
+        ready = [{"number": 3, "repo": "me/game", "item_id": "i3"}]
+        with unittest.mock.patch.object(board, "load", return_value=cfg), \
+                unittest.mock.patch.object(board, "project_meta", return_value={}), \
+                unittest.mock.patch.object(board, "item_list", return_value={"items": []}), \
+                unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
+                unittest.mock.patch.object(board, "column_counts", return_value={"Blocked": 1}), \
+                unittest.mock.patch.object(board, "start_run") as start:
+            out = activities.poll_board({})
+        self.assertFalse(start.called)
+        self.assertEqual(out["skipped"], [3])
+        # Ready can't drain while the line is stopped, so the sprint must run anyway.
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value=cfg), \
+                unittest.mock.patch.object(board, "column_counts",
+                                           return_value={"Ready": 1, "Blocked": 1}):
+            self.assertTrue(self.factory.gate()["go"])
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value=cfg), \
+                unittest.mock.patch.object(board, "column_counts",
+                                           return_value={"In Progress": 1, "Blocked": 1}):
+            self.assertIn("in progress", self.factory.gate()["why"])
 
     def test_factory_state_never_travels_in_a_snapshot(self):
         import snapshot

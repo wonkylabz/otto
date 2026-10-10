@@ -81,14 +81,19 @@ end to end, never ask a question back.
    `{goals}` into a concrete feature list and interface for the seed. Every other ticket this
    sprint depends on it, so give it the lowest number.
 2. Look at the board columns "{done}" and "{blocked}" for issues of `{slug}`.
-   For each card in "{blocked}": read its last comment (why it failed), then EITHER rewrite the
+   Nothing new is picked up while ANY card sits in "{blocked}" — unblocking comes first.
+   For each card in "{blocked}": read its last comment (why it failed). If its PR is open and only
+   an unobservable or wrong criterion failed (e.g. "passes in CI"), fix that criterion in the
+   issue text and move it back to "{ready}". Otherwise EITHER rewrite the
    issue so it is smaller and unambiguous and move it back to "{ready}", adding the label
    `factory-retry-1` (or bump an existing `factory-retry-N`), OR — if it already carries
    `factory-retry-2` — close it with a one-line comment saying why it was dropped.
 3. Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
    Definition of Done and the Product section. Each must be one coherent PR, mergeable on top of
    the current default branch, and state its own acceptance criteria — including the tests it adds
-   and that `make test` and `make lint` pass. Aim for a real product: a feature is done when a user
+   and that `make test` and `make lint` pass LOCALLY. Every criterion must be checkable from a
+   clone of the PR branch: never "passes in CI" or anything only GitHub can observe — CI is a
+   Definition-of-Done item YOU check (`gh run list --repo {slug}`), not a ticket's. Aim for a real product: a feature is done when a user
    can reach it from the interface, not when a function exists. Never duplicate an
    open or done issue. Add each to the board and move it to "{ready}" in the order it must be
    built — earliest dependency first (the line builds the lowest issue number first).
@@ -183,6 +188,13 @@ def owns(issue, state=None):
     if s.get("slug"):
         return slug == s["slug"].lower()
     return slug.split("/")[-1] == (s.get("repo") or "").lower()
+
+
+def line_stopped(counts, cfg):
+    """True while any factory card is Blocked. Later tickets build on earlier ones, so picking
+    the next while one is stuck runs it on a tree missing its prerequisites: the worker
+    correctly reports the gap and changes nothing, and the card closes as if it were done."""
+    return bool((counts or {}).get((cfg.get("columns") or {}).get("blocked"), 0))
 
 
 def apply(params, state):
@@ -430,9 +442,13 @@ def gate():
     if counts is None:
         return {"go": False, "why": "board unreadable"}
     cols = bcfg.get("columns") or {}
-    queued = counts.get(cols.get("ready"), 0) + counts.get(cols.get("active"), 0)
-    if queued:
-        return {"go": False, "why": f"{queued} ticket(s) still queued"}
+    ready, active, blocked = (counts.get(cols.get(k), 0) for k in ("ready", "active", "blocked"))
+    if active:
+        return {"go": False, "why": f"{active} ticket(s) in progress"}
+    # A Blocked card stops the line (`line_stopped`), so Ready cannot drain while one sits there:
+    # that is exactly when a sprint must run — the PM is the one who unblocks it.
+    if ready and not blocked:
+        return {"go": False, "why": f"{ready} ticket(s) still queued"}
 
     n = int(s["sprint_n"]) + 1
     wid = f"factory-{tag(s)}-s{n}"
