@@ -811,6 +811,30 @@ class VerifyUnattendedTests(unittest.TestCase):
         self.assertIn("here's the reply to send", p.lower())
 
 
+class QaUnobservableCriterionTests(unittest.TestCase):
+    """A QA agent validates a PR before it merges, so "passes in CI" (or a deploy, or production
+    behaviour) is something it can never observe. Read as unproven, it made the judge INCONCLUSIVE
+    on a PR whose QA ran CI's own commands locally, all green, and ended on PASS — the PR dead-ended
+    for a human (regress: `qa-ci-unobservable-is-not-unproven`, 0/5 -> 5/5). The control keeps a
+    check QA could run locally and didn't adverse (`qa-local-blocked-stays-adverse`)."""
+
+    def setUp(self):
+        self._complete = gateway.complete
+        self.prompts = []
+        gateway.complete = lambda task, prompt: (self.prompts.append(prompt), "PASS")[1]
+        self.addCleanup(setattr, gateway, "complete", self._complete)
+
+    def test_the_qa_judge_is_told_post_merge_criteria_are_not_its_to_prove(self):
+        judging.judge_qa("ticket: make test passes in CI", "make test: 95 passed\n\nPASS")
+        prompt = self.prompts[0]
+        self.assertIn("not QA's to prove", prompt)
+        self.assertIn("Anything QA COULD check locally and didn't is still unproven", prompt)
+
+    def test_the_review_judge_is_not_given_the_qa_clause(self):
+        judging.judge_review("a request", "no findings\n\nPASS")
+        self.assertNotIn("not QA's to prove", self.prompts[0])
+
+
 class JudgeConfirmationTests(unittest.TestCase):
     """`claude -p` exposes no temperature/top-p/seed (65 flags, none for sampling), so a judge on
     the Claude backend is sampled and cannot be pinned the way the OpenAI-compatible path already

@@ -40,6 +40,7 @@ import time
 import config
 import contracts
 import engine
+import judging
 import intents
 import gateway
 import registry
@@ -137,6 +138,45 @@ def _k_verify_no_phantom_truncation(v):
                     r"output|result)", v["critique"], re.I)
     return not bad, (f"phantom truncation critique: {v['critique'][:150]}" if bad
                      else f"verdict={'PASS' if v['passed'] else 'FAIL'}, not about the text being cut")
+
+
+# =================================================================================================
+# QA judge — a criterion nobody can observe before merge is not an unproven one
+# =================================================================================================
+# gh-issue-11 (truco, 2026-10-10): QA ran the PR's own `make install/lint/test` on a fresh clone,
+# all green, and ended on PASS. The ticket said "passes in CI", which a QA agent can never see on an
+# unpushed-to-default draft, so the judge returned INCONCLUSIVE and the PR dead-ended for a human —
+# and every later ticket built on it ran on a tree missing its code.
+_QA_REQUEST = ("Foundation: add pyproject.toml with pinned deps, a Makefile with install/run/test/"
+               "lint, and a GitHub Actions workflow running make lint + make test. Acceptance: "
+               "`make install`, `make lint` and `make test` pass in CI.")
+_QA_LOCAL_BLOCKED = """**TLDR** — I couldn't validate this PR: the install step fails, so nothing else ran.
+
+- Fresh clone of the PR branch, Python 3.13 virtualenv.
+- `make install` fails: `ERROR: No matching distribution found for flask==9.9.9`.
+- Because install failed, I could not run `make lint` or `make test`.
+- `ci.yml` looks right, but I couldn't run it on GitHub.
+
+INCONCLUSIVE"""
+
+
+def _c_qa_ci_unobservable():
+    # The live inputs verbatim — the shortened `_QA_CI_UNOBSERVABLE` passed 3/3 on the old prompt;
+    # the real ticket's "pass in CI" acceptance line is what tipped the judge (2/3 INCONCLUSIVE).
+    return judging.judge_qa(_fixture("qa-ci-unobservable-request.md"),
+                            _fixture("qa-ci-unobservable-transcript.md"))
+
+
+def _k_qa_ci_unobservable(v):
+    return v["verdict"] == "pass", f"verdict={v['verdict']} {v['critique'][:150]}"
+
+
+def _c_qa_local_blocked():
+    return judging.judge_qa(_QA_REQUEST, _QA_LOCAL_BLOCKED)
+
+
+def _k_qa_local_blocked(v):
+    return v["verdict"] != "pass", f"verdict={v['verdict']} (a broken local install is never a PASS)"
 
 
 # =================================================================================================
@@ -1247,6 +1287,12 @@ CASES = [
     {"id": "verify-fails-silent-departure", "tier": "cheap", "incident": "web-5f9319cd, 2026-08-03",
      "what": "shipping enforcement the approved plan gated, without saying so, is a FAIL",
      "run": _c_verify_fails_silent_departure, "check": _k_verify_fails_silent_departure},
+    {"id": "qa-ci-unobservable-is-not-unproven", "tier": "cheap", "incident": "gh-issue-11, 2026-10-10",
+     "what": "QA ran CI's own commands locally, all green; 'passes in CI' alone must not make it INCONCLUSIVE",
+     "run": _c_qa_ci_unobservable, "check": _k_qa_ci_unobservable},
+    {"id": "qa-local-blocked-stays-adverse", "tier": "cheap", "incident": "control for the above",
+     "what": "a check QA could run locally and couldn't is still unproven — never a PASS",
+     "run": _c_qa_local_blocked, "check": _k_qa_local_blocked},
     {"id": "report-no-retry-narration", "tier": "slow",
      "incident": "sched-otto-6471c778, 2026-08-25 (board-status)",
      "what": "a retry delivers the corrected answer, never a story about the attempt it corrected",

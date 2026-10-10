@@ -658,7 +658,13 @@ _TRANSCRIPT_JUDGES = {
         "verdicts": "  PASS — QA empirically proved the change works and is safe to merge.\n"
                     "  FAIL — QA found a concrete defect, regression, or unmet requirement.\n"
                     "  INCONCLUSIVE — QA could not prove it either way (e.g. blocked, partial, "
-                    "or its own verdict was inconclusive).",
+                    "or its own verdict was inconclusive).\n"
+                    "A criterion that only exists AFTER the PR is pushed or merged — passing in "
+                    "CI on GitHub, a deploy, production behaviour — is not QA's to prove. When QA "
+                    "ran its local equivalent (the same commands CI runs) and they passed, that "
+                    "criterion alone never makes the outcome INCONCLUSIVE: judge the rest, and "
+                    "mention it as unobserved. Anything QA COULD check locally and didn't is "
+                    "still unproven.",
         "closing": "On the next line(s), give a short, specific summary of what's wrong or "
                    "unproven so the next fix attempt can act on it (omit if PASS).",
     },
