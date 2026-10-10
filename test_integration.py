@@ -6092,7 +6092,9 @@ if _HAS_TEMPORAL:
         """Stands in for the PM child run: same workflow TYPE name, a canned sprint reply."""
         @_twf.run
         async def run(self, params: dict) -> dict:
-            return {"result": "planned\nFACTORY: CONTINUE", "needs_human": None}
+            # The brief's tail rides back so a test can see what the PM was handed.
+            return {"result": (params.get("doc") or "")[-40:] + "\nplanned\nFACTORY: CONTINUE",
+                    "needs_human": None}
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
@@ -6105,8 +6107,15 @@ class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
         import factory
         from temporalio.worker import UnsandboxedWorkflowRunner
         from workflows import FactorySprintWorkflow
-        from activities import factory_after_sprint, factory_gate
+        import activities
+        from activities import factory_after_sprint, factory_gate, factory_playtest
         booked, children = [], []
+        played = []
+
+        def _play(payload):
+            played.append(payload["wid"])
+            return {"verdict": "defects", "block": "\nPLAYTEST REPORT: envido in hand 2"}
+        self._patch_activity(activities, "factory_playtest", _play)
 
         orig = (factory.gate, factory.after_sprint)
         factory.gate = lambda: gate
@@ -6117,7 +6126,8 @@ class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
             with ThreadPoolExecutor(max_workers=4) as ex:
                 async with Worker(env.client, task_queue="fsq",
                                   workflows=[FactorySprintWorkflow, _FakeOttoForSprint],
-                                  activities=[factory_gate, factory_after_sprint],
+                                  activities=[factory_gate, factory_after_sprint,
+                                              activities.factory_playtest],
                                   activity_executor=ex,
                                   # The fake child lives in this module, which the sandbox
                                   # cannot re-import (it globs at import time).
@@ -6125,7 +6135,31 @@ class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     out = await env.client.execute_workflow(
                         FactorySprintWorkflow.run, id="fs-" + uuid.uuid4().hex[:8],
                         task_queue="fsq")
+        self.played = played
         return out, booked
+
+    def _patch_activity(self, mod, name, fn):
+        # The registered name must stay `factory_playtest`, so wrap a fake under that name.
+        from temporalio import activity as _act
+
+        @_act.defn(name=name)
+        def fake(payload: dict) -> dict:
+            return fn(payload)
+        orig = getattr(mod, name)
+        setattr(mod, name, fake)
+        self.addCleanup(setattr, mod, name, orig)
+
+    async def test_a_changed_product_is_playtested_and_the_pm_gets_the_report(self):
+        out, booked = await self._run({"go": True, "wid": "factory-x-s2", "playtest": True,
+                                       "params": {"request": "sprint", "doc": "BRIEF"}})
+        self.assertEqual(self.played, ["factory-x-s2-play"])
+        self.assertIn("envido in hand 2", booked[0]["result"])
+
+    async def test_an_unchanged_product_is_not_playtested_again(self):
+        out, booked = await self._run({"go": True, "wid": "factory-x-s3", "playtest": False,
+                                       "params": {"request": "sprint", "doc": "BRIEF"}})
+        self.assertEqual(self.played, [])
+        self.assertNotIn("PLAYTEST", booked[0]["result"])
 
     async def test_a_closed_gate_runs_no_sprint(self):
         out, booked = await self._run({"go": False, "why": "budget"})

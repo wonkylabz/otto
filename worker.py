@@ -42,6 +42,7 @@ ACTIVITIES = [
     activities.reap_stuck, activities.notify_human,
     activities.snapshot_settings, activities.estop_check,
     activities.factory_gate, activities.factory_after_sprint, activities.merge_pr,
+    activities.factory_playtest,
 ]
 
 

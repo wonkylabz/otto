@@ -1155,6 +1155,43 @@ def factory_after_sprint(payload: dict) -> dict:
 
 
 @activity.defn
+@_heartbeats("playtest")
+def factory_playtest(payload: dict) -> dict:
+    """Use the factory's product as a real user would, on a throwaway clone of the default
+    branch, and book the verdict (`factory.note_playtest`). Every ticket's QA proves its OWN
+    criteria; nothing else ever played a whole match, so wrong rules and an unreadable UI
+    shipped with every check green. Never raises — a failed playtest is a missing report."""
+    import factory
+    import workspace
+    s = factory.load()
+    wid = payload["wid"]
+    cap = _cap(config.QA_CAP)
+    if cap is None or not factory.enabled(s):
+        return {"result": "", "verdict": ""}
+    run_id = f"{wid}-ws"
+    try:
+        ws = workspace.provision(s["repo"], run_id)
+    except Exception as e:  # noqa: BLE001 - see docstring
+        activity.logger.info(f"playtest checkout not provisioned: {e}")
+        return {"result": "", "verdict": ""}
+    req = factory.playtest_request(s)
+    try:
+        mcp_tools, mcp_path = _mcp()
+        att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
+                                 mcp_config_path=mcp_path, wid=wid, cwd=ws["path"])
+    finally:
+        workspace.cleanup(run_id)
+    # Audited under a wid the factory owns (`factory._owned`), so it counts against the budget.
+    engine.record_attempt(att["workflow"], f"[playtest] {s.get('slug')}", cap, att["result"],
+                          att["cost"], 1, None, tokens=att.get("tokens"),
+                          model=att.get("model"), repo=s["repo"],
+                          duration_s=att.get("duration_s"))
+    return {"verdict": factory.note_playtest(att["result"]),
+            # The brief's appendix, built here: workflow code never imports factory (it does IO).
+            "block": factory.playtest_block(att["result"])}
+
+
+@activity.defn
 @_heartbeats("merge")
 def merge_pr(payload: dict) -> dict:
     """Factory mode: mark the PR ready and squash-merge it. Reached only when review AND QA both

@@ -40,6 +40,7 @@ SCHED_ID = "factory-sprint"
 SPRINT_WF_ID = "factory-sprint-run"
 PM_CAP = "product-manager"
 GOALS_FILE = "GOALS.md"
+SPEC_FILE = "SPEC.md"
 _HISTORY = 20
 
 _DEFAULTS = {
@@ -61,8 +62,11 @@ _DEFAULTS = {
     "status": "manual",
     "prev_board": None,
     "history": [],
+    "playtest_merged": -1,   # `merged` when the product was last playtested (-1 = never)
+    "playtest_verdict": "",  # "clean" | "defects" | "" (unparseable or never)
 }
 
+_PLAYTEST_RE = re.compile(r"^[\s*_`>#-]*PLAYTEST:\s*(CLEAN|DEFECTS)\b", re.I)
 _VERDICT_RE = re.compile(r"^[\s*_`>#-]*FACTORY:\s*(DONE|CONTINUE)\b(.*)$", re.I)
 
 SPRINT_BRIEF = """\
@@ -80,6 +84,16 @@ end to end, never ask a question back.
    Actions workflow running lint + tests, a README skeleton) AND rewrite the Product section of
    `{goals}` into a concrete feature list and interface for the seed. Every other ticket this
    sprint depends on it, so give it the lowest number.
+   **Spec before features.** If `{spec}` does not exist yet, the next ticket (right after the
+   foundation, or the FIRST if the foundation is already merged) writes it, with two numbered
+   sections: **Rules** (R1, R2…) — every domain rule the product must obey, taken from an
+   authoritative source the ticket must find and cite (official rules, a standard, an RFC),
+   stating explicitly what is ILLEGAL and when, never paraphrased from memory; and **UX**
+   (U1, U2…) — what a first-time user must be able to tell at every moment without reading the
+   code: whose turn or what state it is, what just happened and its outcome, who won each step,
+   what actions are legal now. That ticket also adds a test per rule, legal AND illegal cases,
+   written from the rule's text. Every later ticket cites the R/U ids it implements, and its
+   acceptance criteria include a test for each cited rule.
 2. Look at the board columns "{done}", "{blocked}" and "{review}" for issues of `{slug}`.
    Nothing new is picked up while ANY card sits in "{blocked}" or "{review}" — unblocking comes
    first. You cannot merge, and no run is coming back for a card in "{review}": its run ended
@@ -103,14 +117,49 @@ end to end, never ask a question back.
    can reach it from the interface, not when a function exists. Never duplicate an
    open or done issue. Add each to the board and move it to "{ready}" in the order it must be
    built — earliest dependency first (the line builds the lowest issue number first).
-4. Do NOT write code, open PRs, or touch the repo's files yourself — implementation is the
+4. If a PLAYTEST REPORT is appended below, it is a product tester's account of using the
+   current default branch as a real user. Every BLOCKER or MAJOR defect in it becomes a ticket
+   (or is folded into an open one) BEFORE any new feature this sprint, citing the defect and the
+   `{spec}` id it violates — a product that works but is wrong or unusable is not done.
+5. Do NOT write code, open PRs, or touch the repo's files yourself — implementation is the
    worker's job once a card is in "{ready}".
 
 Your reply MUST end with exactly one of these as its LAST line:
 FACTORY: CONTINUE
 FACTORY: DONE — <one line of evidence that every Definition-of-Done item is met>
 Say DONE only when every Definition-of-Done item AND every Product feature is already merged —
-check the tree, not the issue titles; never when work remains.
+check the tree, not the issue titles; never when work remains. DONE is refused while the latest
+playtest still reports defects.
+"""
+
+PLAYTEST_BRIEF = """You are the product tester for `{slug}`, an autonomous build loop's only real user. Your
+working directory is a fresh, throwaway clone of its default branch. Nobody is watching: never
+ask a question back, never commit, push, or open a PR.
+
+1. Read `{goals}` (the product and its Definition of Done) and `{spec}` if it exists (numbered
+   Rules R* and UX U*). Without `{spec}`, hold the product to the authoritative rules of its
+   domain and to what a first-time user needs to see.
+2. Set it up and launch it exactly as its README says (e.g. `make run`, in the background), in
+   this directory only. Use it the way a real user would, END TO END, more than once: for a
+   game, play complete matches to the end; for an app, every main flow. A web UI is driven with
+   a headless browser (Playwright — install it into a scratch venv or via `npx` if missing):
+   screenshot every meaningful step and LOOK at each screenshot with the Read tool. A terminal
+   UI is driven through its input and output. Stop everything you started when done.
+3. Judge it as its user, not its author:
+   - **Rules** — every move or action either side made or was offered: legal under {spec}/the
+     domain's rules? Name any illegal one with the exact sequence that produced it.
+   - **UX** — at every step, could a newcomer tell what state it is in, whose turn it is, what
+     just happened, and who won each step? Is the outcome of each step SHOWN, not just logged?
+   - **Quality** — layout, legibility, broken or unstyled elements, errors in the console or
+     server log, anything a user would call unfinished.
+4. Report a numbered list of DEFECTS. Each: what you did, what you saw (quote it, name the
+   screenshot), the {spec} id or {goals} item it violates, and a severity — BLOCKER (wrong
+   rules, a crash, a flow that cannot be completed), MAJOR (a user cannot tell what happened,
+   or it looks broken), MINOR (polish). Be concrete enough that each can become a ticket.
+
+Your reply MUST end with exactly one of these as its LAST line:
+PLAYTEST: CLEAN   (no BLOCKER or MAJOR defect)
+PLAYTEST: DEFECTS
 """
 
 GOALS_TEMPLATE = """\
@@ -134,6 +183,8 @@ _To be expanded by the foundation ticket._
 - [ ] CI (GitHub Actions) runs lint and tests on every pull request
 - [ ] A project manifest with pinned dependencies (e.g. `pyproject.toml`, `package.json`)
 - [ ] A README: what it is, how to install, run, test and use it
+- [ ] `SPEC.md` holds the domain Rules (cited from an authoritative source) and the UX contract; every rule has a test
+- [ ] The latest playtest of the default branch reports no BLOCKER or MAJOR defect
 
 ## Quality bar (every PR)
 - New behaviour ships with tests; `make test` and `make lint` pass
@@ -480,14 +531,55 @@ def gate():
     brief = SPRINT_BRIEF.format(
         slug=s["slug"], project=board.project_spec(bcfg.get("project")), goals=GOALS_FILE,
         done=cols.get("done"), blocked=cols.get("blocked"), ready=cols.get("ready"),
-        review=cols.get("review"),
+        review=cols.get("review"), spec=SPEC_FILE,
         max_tickets=s["max_tickets"])
     params = {"request": f"Run factory sprint #{n} for {s['slug']}.",
               "cap_name": PM_CAP, "approval": "auto", "unattended": True, "scheduled": True,
               "doc": brief, "factory": s["started_at"],
               "chat_key": f"factory-{tag(s)}", "chat_title": f"Factory — {s['slug']}"[:80],
               "chat_labels": ["factory"]}
-    return {"go": True, "wid": wid, "params": params, "sprint": n}
+    # The product is playtested once per change to it: never before the first merge, and never
+    # twice over the same tree (a playtest costs a whole run).
+    merged = int(s.get("merged") or 0)
+    playtest = merged > 0 and merged != int(s.get("playtest_merged", -1))
+    return {"go": True, "wid": wid, "params": params, "sprint": n, "playtest": playtest}
+
+
+def playtest_request(state=None):
+    s = state if state is not None else load()
+    return PLAYTEST_BRIEF.format(slug=s.get("slug"), goals=GOALS_FILE, spec=SPEC_FILE)
+
+
+def playtest_verdict(result):
+    """The playtest's LAST non-blank line: "clean" | "defects" | "" (unparseable)."""
+    lines = [l for l in (result or "").splitlines() if l.strip()]
+    m = _PLAYTEST_RE.match(lines[-1]) if lines else None
+    return m.group(1).lower() if m else ""
+
+
+def note_playtest(result):
+    """Book a playtest against the merge count it tested. Unparseable counts as DEFECTS for the
+    DONE gate (`playtest_clean`) — a tester that could not say "clean" has not said it."""
+    word = playtest_verdict(result)
+
+    def _fn(st):
+        st["playtest_merged"] = int(st.get("merged") or 0)
+        st["playtest_verdict"] = word
+        _event(st, "playtest", word or "unparseable")
+    _mutate(_fn)
+    return word
+
+
+def playtest_clean(state):
+    """DONE needs the CURRENT tree playtested clean — a stale clean predates the last merge."""
+    return (state.get("playtest_verdict") == "clean"
+            and int(state.get("playtest_merged", -1)) == int(state.get("merged") or 0))
+
+
+def playtest_block(result):
+    """The report as the PM brief's appendix (factory.SPRINT_BRIEF step 4)."""
+    text = (result or "").strip() or "(the playtest produced no report)"
+    return "\n\n---\nPLAYTEST REPORT (the current default branch, used as a real user):\n\n" + text
 
 
 def verdict(result):
@@ -509,9 +601,13 @@ def after_sprint(payload):
     s = load()
     if not enabled(s):
         return {"state": "off"}
-    if word == "done":
+    if word == "done" and playtest_clean(s):
         disable("done", evidence)
         return {"state": "done"}
+    if word == "done":
+        # The PM's own check reads the tree; only the playtest USED it. Not idle either way:
+        # the next sprint turns the defects into tickets.
+        _mutate(lambda st: _event(st, "done_refused", "the latest playtest is not clean"))
 
     def _fn(st):
         merged = int(st.get("merged") or 0)

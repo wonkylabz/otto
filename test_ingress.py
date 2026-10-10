@@ -8961,10 +8961,51 @@ class FactoryModeTests(unittest.TestCase):
         # A merge credited to an EARLIER factory does not count for this one.
         self.factory.note_merge("2020-01-01T00:00:00", "https://github.com/me/game/pull/3")
         self.assertEqual(self.factory.load()["merged"], 1)
+        self.factory.note_playtest("no defects worth a ticket\nPLAYTEST: CLEAN")
         with unittest.mock.patch.object(self.factory, "disable") as dis:
             self.assertEqual(self.factory.after_sprint({"result": "FACTORY: DONE — all merged"}),
                              {"state": "done"})
         self.assertEqual(dis.call_args[0][0], "done")
+
+    # --- the playtest -----------------------------------------------------------------
+    def test_done_is_refused_until_the_current_tree_is_playtested_clean(self):
+        # Every ticket's QA proved its own criteria while the product shipped wrong rules and an
+        # unreadable UI: DONE needs someone to have USED the tree being declared done.
+        self._on(merged=2, merged_seen=2)
+        done = {"result": "FACTORY: DONE — all merged"}
+        with unittest.mock.patch.object(self.factory, "disable") as dis:
+            self.assertEqual(self.factory.after_sprint(done)["state"], "continue")
+            self.factory.note_playtest("1. envido offered in hand 2 — BLOCKER\nPLAYTEST: DEFECTS")
+            self.assertEqual(self.factory.after_sprint(done)["state"], "continue")
+            self.factory.note_playtest("looks fine")          # unparseable is not clean
+            self.assertEqual(self.factory.after_sprint(done)["state"], "continue")
+            self.factory.note_playtest("PLAYTEST: CLEAN")
+            self.factory.note_merge("2026-10-10T10:00:00", "https://github.com/me/game/pull/9")
+            self.assertEqual(self.factory.after_sprint(done)["state"], "continue")  # stale clean
+            dis.assert_not_called()
+            self.factory.note_playtest("**PLAYTEST: CLEAN**")
+            self.assertEqual(self.factory.after_sprint(done), {"state": "done"})
+
+    def test_the_gate_playtests_once_per_merged_change_and_the_brief_is_spec_first(self):
+        import board
+        self._on(merged=0)
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value={
+                    "project": "me/7", "columns": {"ready": "Ready", "active": "In progress"}}), \
+                unittest.mock.patch.object(board, "column_counts", return_value={}):
+            self.assertFalse(self.factory.gate()["playtest"])        # nothing to play yet
+            self.factory.note_merge("2026-10-10T10:00:00", "https://github.com/me/game/pull/1")
+            g = self.factory.gate()
+            self.assertTrue(g["playtest"])
+            self.factory.note_playtest("PLAYTEST: DEFECTS")
+            self.assertFalse(self.factory.gate()["playtest"])        # same tree, not again
+        self.assertIn("SPEC.md", g["params"]["doc"])
+        self.assertIn("ILLEGAL", g["params"]["doc"])
+        self.assertIn("PLAYTEST REPORT", g["params"]["doc"])
+        req = self.factory.playtest_request()
+        self.assertIn("PLAYTEST: CLEAN", req)
+        self.assertIn("screenshot", req)
+        self.assertIn("SPEC.md", self.factory.GOALS_TEMPLATE)
 
     # --- enable / disable ------------------------------------------------------------
     def test_enable_refuses_without_a_seed_and_names_a_missing_gh_scope(self):

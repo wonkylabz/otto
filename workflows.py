@@ -29,6 +29,7 @@ with workflow.unsafe.imports_passed_through():
     from activities import (clarify_request, classify_fast_lane, classify_followup, classify_request,
                             cleanup_workspace, deliver_result, detect_repo_changes,
                             estop_check, execute_plan, factory_after_sprint, factory_gate,
+                            factory_playtest,
                             finalize_terminal, finalize_workspace,
                             resolve_pinned_cap,
                             notify_human, plan_capability, plan_swarm, open_chat,
@@ -1833,8 +1834,18 @@ class FactorySprintWorkflow:
             factory_gate, {}, start_to_close_timeout=timedelta(minutes=5), retry_policy=_RETRY)
         if not gate.get("go"):
             return gate
+        params = gate["params"]
+        # Playtest the product before the PM plans, and hand the PM the report (factory.py).
+        # Patched: a sprint recorded before this command must still replay.
+        if gate.get("playtest") and workflow.patched("factory-playtest"):
+            play = await workflow.execute_activity(
+                factory_playtest, {"wid": f"{gate['wid']}-play"},
+                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+                retry_policy=_RETRY_EXEC)
+            if play.get("block"):
+                params = {**params, "doc": params["doc"] + play["block"]}
         out = await workflow.execute_child_workflow(
-            OttoWorkflow.run, gate["params"], id=gate["wid"],
+            OttoWorkflow.run, params, id=gate["wid"],
             task_queue=workflow.info().task_queue)
         return await workflow.execute_activity(
             factory_after_sprint,
