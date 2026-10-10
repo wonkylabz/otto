@@ -197,6 +197,16 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         self.assertEqual(workspace.closing_line(head + f'fix {url}9\n"""' + earlier, origin),
                          "Closes #9")
 
+    def test_a_board_tickets_own_issue_closes_whatever_its_request_embeds(self):
+        # A board request embeds the whole ticket body, which closing_line rightly refuses, so
+        # every board PR left its issue open after the merge (truco#20 / #26).
+        origin = "https://github.com/msosas/truco.git"
+        ticket = {"kind": "github_issue", "repo": "msosas/truco", "number": 20}
+        self.assertEqual(workspace.issue_closing_line(ticket, origin), "Closes #20")
+        self.assertIsNone(workspace.issue_closing_line(dict(ticket, repo="acme/other"), origin))
+        self.assertIsNone(workspace.issue_closing_line({"kind": "slack", "number": 20}, origin))
+        self.assertIsNone(workspace.issue_closing_line(None, origin))
+
     def test_finalize_appends_the_close_to_a_fresh_pr_only(self):
         req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
         seen = []

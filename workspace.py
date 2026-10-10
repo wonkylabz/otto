@@ -306,6 +306,16 @@ def origin_slug(url):
     return m.group(1).lower() if m else None
 
 
+def issue_closing_line(issue, origin):
+    """`Closes #N` for a `github_issue` reply target of the PR's own repo; else None. Pure."""
+    if not isinstance(issue, dict) or issue.get("kind") != "github_issue":
+        return None
+    num, slug = issue.get("number"), (issue.get("repo") or "").lower()
+    if not num or not slug or slug != origin_slug(origin):
+        return None
+    return f"Closes #{num}"
+
+
 # What may sit beside the issue link for the request to still BE "do this issue": a short
 # directive. A negation or a comparison makes the link a reference, not the task.
 _CLOSE_MAX_WORDS = 6
@@ -753,7 +763,7 @@ def post_plan(path, pr_url, run_id, plan, request=None, cap=None, concerns=None)
 
 def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None, body=None,
              plan=None, request=None, cap=None, concerns=None, close_issue=True,
-             asker_text=None):
+             asker_text=None, issue=None):
     """`_finalize` (commit/push/PR), then the approved plan onto whatever PR that resolved to.
 
     One wrapper rather than a call at each of `_finalize`'s four PR-bearing exits — the plan
@@ -762,9 +772,13 @@ def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None,
 
     A fresh PR's body gains `Closes #N` for the issue the request links (`closing_line`); an
     existing PR's body is never touched here, and `close_issue=False` (a swarm part, one of
-    several PRs for the issue) adds nothing."""
+    several PRs for the issue) adds nothing. A board ticket's run passes its `issue` (the
+    `github_issue` reply_to) — its request embeds the whole ticket, which `closing_line`
+    rightly refuses, so every board PR left its issue open after the merge."""
     if close_issue and not existing_pr:
-        close = closing_line(request, _git_origin(workspace_path(run_id)), asker_text)
+        origin = _git_origin(workspace_path(run_id))
+        close = (issue_closing_line(issue, origin)
+                 or closing_line(request, origin, asker_text))
         if close:
             body = f"{body}\n\n{close}" if body else close
     out = _finalize(run_id, title=title, base_head=base_head, existing_pr=existing_pr,

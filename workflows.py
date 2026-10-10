@@ -1218,7 +1218,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # even on a poor result — so clones don't leak; a stale-sweep backstops a hard failure).
         if ws:
             pr, result = await self._finalize_pr(ws, request, result, cap, repo,
-                                                 is_error=bool(out.get("is_error")))
+                                                 is_error=bool(out.get("is_error")),
+                                                 issue=params.get("reply_to"))
 
         # Post-PR code-review loop: get a strict Claude PR review, fold must/should-fix findings
         # into a fix on the SAME branch, re-review — bounded rounds (sre-minion's Phase 5-7,
