@@ -23,23 +23,23 @@ async function loadFactory(){
       +` · idle ${esc(""+(s.idle_sprints||0))}/${esc(""+s.max_idle_sprints)}`
     : (s.status && s.status!=="manual" ? `last factory: <b>${esc(s.status)}</b>` : `every write waits for a human, as configured per capability`);
   const hist=(s.history||[]).length;
+  const tip=FACTORY.temporal?'Self-driving build loop on one repo: tickets run and PRs merge with no approval':'needs Temporal (run via ./run.sh)';
+  const btns=on
+    ? `<button class="addbtn" id="mode-log" title="what the factory did, newest first">Log</button>
+       <button class="addbtn" id="mode-edit" title="change the budget, WIP and cadence">Edit</button>
+       <button class="addbtn addnew" id="mode-manual" title="Stops the sprint schedule and restores the board settings Factory changed. Runs already going finish.">Back to Manual</button>`
+    : (hist?`<button class="addbtn" id="mode-log" title="what the last factory did, newest first">Log</button>`:'')
+      +`<button class="addbtn addnew" id="mode-factory" ${FACTORY.temporal?'':'disabled'} title="${tip}">Start factory</button>`;
   host.innerHTML=`<div class="asection coll collapsed" data-sect="mode"><h3><span class="secttoggle" title="collapse / expand">
-      <span class="gcaret">&#9662;</span>Mode<span class="sectcount">${on?'factory':'manual'}</span></span></h3>
-    <div class="asection-body"><div class="moderow">
-      <span class="modeseg" role="group" aria-label="mode">
-        <button class="${on?'':'on'}" id="mode-manual" title="Every write waits for a human. From Factory: stops the sprint schedule and restores the board settings Factory changed; runs already going finish.">Manual</button>
-        <button class="${on?'on':''}" id="mode-factory" ${FACTORY.temporal?'':'disabled'} title="${FACTORY.temporal?'Self-driving build loop on one repo: tickets run and PRs merge with no approval':'needs Temporal (run via ./run.sh)'}">Factory</button>
-      </span>
-      ${on?'<button class="addbtn" id="mode-edit" title="change the budget, WIP and cadence">Edit</button>':''}
-      ${hist?`<button class="addbtn" id="mode-log" title="what the factory did, newest first">Log (${hist})</button>`:''}
-      <span class="sub">${status}</span>
-    </div></div></div>`;
+      <span class="gcaret">&#9662;</span>Mode<span class="sectcount">${on?'factory':'manual'}</span></span>
+    <span class="h3btns">${btns}</span></h3>
+    <div class="asection-body"><p class="sub" style="margin:0">${status}</p></div></div>`;
   wireSections(host);
-  document.getElementById("mode-factory").addEventListener("click",()=>{ if(!on) showFactoryForm(); });
-  const edit=document.getElementById("mode-edit"); if(edit) edit.addEventListener("click",showFactoryForm);
-  const log=document.getElementById("mode-log"); if(log) log.addEventListener("click",showFactoryLog);
-  document.getElementById("mode-manual").addEventListener("click",async()=>{
-    if(!on) return;
+  const bind=(id,fn)=>{ const b=document.getElementById(id); if(b) b.addEventListener("click",fn); };
+  bind("mode-factory",showFactoryForm);
+  bind("mode-edit",showFactoryForm);
+  bind("mode-log",showFactoryLog);
+  bind("mode-manual",async()=>{
     if(await postOr("/api/factory/disable",{},"switching to Manual")) loadFactory();
   });
 }
