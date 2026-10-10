@@ -9027,7 +9027,8 @@ class FactoryModeTests(unittest.TestCase):
         ready = [{"number": n, "repo": "me/game", "item_id": f"i{n}", "title": f"t{n}", "body": "",
                   "labels": []} for n in (9, 3, 5)]
         started = []
-        with unittest.mock.patch.object(board, "load", return_value=cfg), \
+        with unittest.mock.patch.object(board, "_generations", return_value=[]), \
+                unittest.mock.patch.object(board, "load", return_value=cfg), \
                 unittest.mock.patch.object(board, "project_meta", return_value={}), \
                 unittest.mock.patch.object(board, "item_list", return_value={"items": []}), \
                 unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
@@ -9142,6 +9143,36 @@ class FactoryModeTests(unittest.TestCase):
                 unittest.mock.patch.object(board, "column_counts",
                                            return_value={"In Progress": 1, "Blocked": 1}):
             self.assertIn("in progress", self.factory.gate()["why"])
+
+    def test_a_re_readied_card_gets_the_next_run_generation(self):
+        import board
+        g = lambda gens: unittest.mock.patch.object(board, "_generations", return_value=gens)
+        with g(None):
+            self.assertEqual(board.next_run_id(11), "gh-issue-11")      # unknown: old behaviour
+        with g([]):
+            self.assertEqual(board.next_run_id(11), "gh-issue-11")
+        with g([("gh-issue-11", "closed")]):
+            self.assertEqual(board.next_run_id(11), "gh-issue-11-r1")   # re-readied: runs again
+            self.assertEqual(board.latest_run_id(11), "gh-issue-11")
+        with g([("gh-issue-11", "closed"), ("gh-issue-11-r1", "running")]):
+            self.assertIsNone(board.next_run_id(11))                    # in flight: never doubled
+            self.assertEqual(board.latest_run_id(11), "gh-issue-11-r1")
+
+    def test_board_poll_skips_a_card_whose_run_is_still_going(self):
+        import activities
+        import board
+        cfg = {"enabled": True, "project": "me/7", "columns": {"ready": "Ready", "active": "In Progress"}}
+        ready = [{"number": 3, "repo": "me/other", "item_id": "i3"}]
+        with unittest.mock.patch.object(board, "load", return_value=cfg), \
+                unittest.mock.patch.object(board, "project_meta", return_value={}), \
+                unittest.mock.patch.object(board, "item_list", return_value={"items": []}), \
+                unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
+                unittest.mock.patch.object(board, "issue_details", side_effect=dict), \
+                unittest.mock.patch.object(board, "next_run_id", return_value=None), \
+                unittest.mock.patch.object(board, "start_run") as start:
+            out = activities.poll_board({})
+        self.assertFalse(start.called)
+        self.assertEqual(out["skipped"], [3])
 
     def test_factory_state_never_travels_in_a_snapshot(self):
         import snapshot

@@ -11,9 +11,10 @@ Design notes:
   * **Moving a card to Ready IS the human approval.** Board-sourced runs default to
     `approval="auto"` so a write (incl. a repo-edit that opens a draft PR) actually executes; a
     `hold` label flips it back to `"ask"` (surfaces on Otto's Board tab for a second gate).
-  * **Idempotency** has two guards: the run's workflow id is deterministic (`gh-issue-<n>`) so a
-    duplicate start is rejected by Temporal, and claiming (moving out of Ready) stops the next
-    poll from re-listing it. See `start_run` + the poll activity.
+  * **Idempotency** has two guards: the run's workflow id is deterministic (`gh-issue-<n>`, then
+    `-r1`, `-r2`… for a card re-readied after its run closed — `next_run_id`) so a duplicate start
+    is rejected by Temporal, and claiming (moving out of Ready) stops the next poll from
+    re-listing it. See `start_run` + the poll activity.
   * **`gh` is the transport** (same dependency as `workspace.py`'s draft-PR path). Every `gh`
     call goes through `_run` and never raises — a transient failure just retries next poll.
   * Config lives in `data/board.json` (hot-editable, like `event-rules.json`/`schedules.json`),
@@ -510,7 +511,7 @@ def has_comment_marker(repo, number, marker):
 
 def start_run(wid, params):
     """Start an unattended OttoWorkflow for a ticket. Deterministic id + REJECT_DUPLICATE so a
-    given issue runs at most once (ever). Returns True if newly started, False if it already
+    given run GENERATION starts at most once (`next_run_id` picks the generation). Returns True if newly started, False if it already
     exists (idempotent skip) or Temporal is unreachable. Never raises."""
     full = {"request": params["request"], "unattended": True,
             "cap": params.get("cap"), "repo": params.get("repo"),
@@ -524,6 +525,69 @@ def start_run(wid, params):
             "chat_labels": params.get("chat_labels")}
     return ingress.start_run(wid, full, estop_key="board",
                              trace_tag="BOARD") == ingress.STARTED
+
+
+# --- which run a card gets ---------------------------------------------------
+
+# A card can come BACK to Ready — a human (or the factory PM) re-readies a Blocked ticket after
+# rewriting it. Its first run already holds `gh-issue-<n>`, and REJECT_DUPLICATE refused every
+# re-run, so the card sat in Ready forever while every poll reported it skipped. So a card's run
+# is a GENERATION: the first free id in `gh-issue-<n>`, `-r1`, `-r2`, … A generation still running
+# is never doubled; a closed one makes room for the next. Also covers another repo's #n.
+MAX_GENERATIONS = 20
+
+
+def run_id(n, gen=0):
+    return f"gh-issue-{n}" if not gen else f"gh-issue-{n}-r{gen}"
+
+
+async def _run_states(n):
+    """[(wid, 'running'|'closed')] for every generation that exists, oldest first."""
+    import temporal_client as tc
+    from temporalio.service import RPCError, RPCStatusCode
+    c = await tc.client()
+    out = []
+    for gen in range(MAX_GENERATIONS):
+        wid = run_id(n, gen)
+        try:
+            desc = await c.get_workflow_handle(wid).describe()
+        except RPCError as e:
+            if e.status == RPCStatusCode.NOT_FOUND:
+                break
+            raise
+        name = desc.status.name if desc.status else "RUNNING"
+        out.append((wid, "running" if name == "RUNNING" else "closed"))
+    return out
+
+
+def _generations(n):
+    """`_run_states`, or None when Temporal can't be asked (the caller falls back)."""
+    import temporal_client as tc
+    if not tc.OK:
+        return None
+    try:
+        return tc.run(_run_states(n))
+    except Exception as e:  # noqa: BLE001 - Temporal unreachable / transient
+        trace("BOARD", f"run lookup for #{n} failed: {str(e)[:120]}")
+        return None
+
+
+def next_run_id(n):
+    """The id a Ready card #n should start under, or None when a generation is still RUNNING
+    (it is in flight — never doubled). Unknown (Temporal unreachable) falls back to the first
+    generation, whose REJECT_DUPLICATE keeps the old at-most-once behaviour."""
+    gens = _generations(n)
+    if gens is None:
+        return run_id(n)
+    if any(state == "running" for _, state in gens):
+        return None
+    return run_id(n, len(gens)) if len(gens) < MAX_GENERATIONS else None
+
+
+def latest_run_id(n):
+    """The newest generation's id — what the reaper must judge a stuck In-Progress card by."""
+    gens = _generations(n)
+    return gens[-1][0] if gens else run_id(n)
 
 
 # --- Temporal poll schedule ------------------------------------------------

@@ -47,6 +47,8 @@ Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver t
 
 `board.py` — Projects v2 as an async queue. Ready→In Progress on pickup, result comment + move to Review/Done. **Moving to Ready is approval** (`hold` flips to `ask`). Config `data/board.json`.
 
+- **A re-readied card runs again as the next GENERATION** (`board.next_run_id`: `-r1`, `-r2`…) — one fixed id under REJECT_DUPLICATE left it in Ready forever; a running generation is never doubled, the reaper judges the latest (`FactoryModeTests`).
+
 ## GitHub PR reviews
 
 `pr_review.py` — the GitHub ingress's PULL half. Polls `gh search prs --review-requested=@me`,

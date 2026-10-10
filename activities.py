@@ -1011,7 +1011,7 @@ def record_skip(payload: dict) -> None:
 def poll_board(payload: dict) -> dict:
     """Poll the configured GitHub Projects board: pick up every issue parked in the Ready
     column as an unattended OttoWorkflow, claim it (move out of Ready), and return what was
-    picked. Idempotent — a deterministic `gh-issue-<n>` workflow id means re-polling a still-
+    picked. Idempotent — a deterministic `gh-issue-<n>[-rK]` workflow id means re-polling a still-
     Ready card never double-runs it. The result is delivered back to the issue by
     delivery._github_issue (see the `reply_to` enrichment below)."""
     import board
@@ -1086,7 +1086,12 @@ def poll_board(payload: dict) -> dict:
             "done_col": (cfg.get("columns") or {}).get("done"),
             "blocked_col": (cfg.get("columns") or {}).get("blocked"),
         })
-        wid = f"gh-issue-{n}"
+        # A card re-readied after its run closed gets the next generation (board.next_run_id);
+        # None = a generation is still running, which is the old duplicate case.
+        wid = board.next_run_id(n)
+        if wid is None:
+            skipped.append(n)
+            continue
         if board.start_run(wid, params):
             board.set_status(cfg, meta, issue.get("item_id"), (cfg.get("columns") or {}).get("active"))
             picked.append(n)
@@ -1588,7 +1593,7 @@ def reap_stuck(payload: dict) -> dict:
             n = stub.get("number")
             if n is None:
                 continue
-            wid = f"gh-issue-{n}"
+            wid = board.latest_run_id(n)
             state = _reap_state(wid)
             if state == "alive":
                 continue

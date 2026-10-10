@@ -3506,7 +3506,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 92318 -> 93323: factory mode. Four rules, one per way an edit makes an unattended,
     # self-merging loop unsafe: who may stamp auto-merge, what counts as a pass, failing
     # closed on spend and WIP, and a stop that restores and notifies.
-    MAX_RULES_BYTES = 93323   # fetched tier — bounded, but looser; it is not always loaded
+    # 93323 -> 93619: factory mode. Four rules, one per way an edit makes an unattended,
+    # 92807 -> 93096: a re-readied board card runs again as the next run generation.
+    MAX_RULES_BYTES = 93619   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

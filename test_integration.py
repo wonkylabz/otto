@@ -7333,7 +7333,9 @@ class BoardPollPickupTests(unittest.TestCase):
                                   "Done": "opt-dn", "Blocked": "opt-bl"}}
         self._orig = {n: getattr(board, n) for n in
                       ("load", "enabled", "project_meta", "item_list", "ready_stubs",
-                       "issue_details", "issue_to_request", "start_run", "set_status")}
+                       "issue_details", "issue_to_request", "start_run", "set_status",
+                       "next_run_id")}
+        board.next_run_id = lambda n: f"gh-issue-{n}"     # never ask the live Temporal
         board.load = lambda: self._cfg
         board.enabled = lambda cfg=None: True
         board.project_meta = lambda cfg: self._meta
@@ -7424,8 +7426,9 @@ class ReaperSweepTests(unittest.TestCase):
                       "options": {"Blocked": "opt-bl"}}
         self._orig_board = {n: getattr(board, n) for n in
                             ("load", "enabled", "project_meta", "list_in_column",
-                             "set_status_raw", "add_label")}
+                             "set_status_raw", "add_label", "latest_run_id")}
         board.load = lambda: self._cfg
+        board.latest_run_id = lambda n: f"gh-issue-{n}"   # never ask the live Temporal
         board.enabled = lambda cfg=None: True
         board.project_meta = lambda cfg: self._meta
         board.list_in_column = lambda cfg, key: [
