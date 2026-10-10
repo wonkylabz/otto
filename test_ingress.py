@@ -8967,6 +8967,29 @@ class FactoryModeTests(unittest.TestCase):
                              {"state": "done"})
         self.assertEqual(dis.call_args[0][0], "done")
 
+    def test_the_board_is_cached_only_once_every_configured_column_is_there(self):
+        # Blocked was added on GitHub after the first read; caching that read hid it for an
+        # hour, so enable refused a board that had the column and moves there went nowhere.
+        import board
+        cols = {"ready": "Ready", "blocked": "Blocked"}
+        reads = [{"project_id": "P", "status_field_id": "F", "options": {"Ready": "r"}},
+                 {"project_id": "P", "status_field_id": "F",
+                  "options": {"Ready": "r", "Blocked": "b"}}]
+        board._META_CACHE.clear()
+        self.addCleanup(board._META_CACHE.clear)
+        cfg = {"project": "me/7", "status_field": "Status", "columns": cols}
+        with unittest.mock.patch.object(board, "_project_meta",
+                                        side_effect=lambda c: reads.pop(0)) as pm:
+            self.assertNotIn("Blocked", board.project_meta(cfg)["options"])   # not cached
+            self.assertIn("Blocked", board.project_meta(cfg)["options"])      # re-read, cached
+            self.assertIn("Blocked", board.project_meta(cfg)["options"])      # from the cache
+            self.assertEqual(pm.call_count, 2)
+            # A column configured LATER than the cached read is not served stale either.
+            reads.append({"project_id": "P", "status_field_id": "F",
+                          "options": {"Ready": "r", "Blocked": "b", "Doing": "d"}})
+            again = board.project_meta({**cfg, "columns": {**cols, "active": "Doing"}})
+            self.assertIn("Doing", again["options"])
+
     # --- MCP allowlist ----------------------------------------------------------------
     def test_a_factory_run_gets_only_the_ticked_mcp_servers_and_the_rest_are_denied(self):
         # Factory runs are unattended and pre-approved: the operator's mail/chat/home servers

@@ -190,15 +190,25 @@ META_TTL_S = 3600
 _META_CACHE = {}
 
 
+def _complete(meta, cfg):
+    """Ids resolved AND every configured column present on the board."""
+    want = {c for c in (cfg.get("columns") or {}).values() if c}
+    return bool(meta.get("project_id") and meta.get("status_field_id")
+                and want <= set(meta.get("options") or {}))
+
+
 def project_meta(cfg):
     """Resolve the ids needed to move cards: project id, the Status field id, and the
-    {column-name: option-id} map. Best-effort — returns empty ids on any gh failure."""
+    {column-name: option-id} map. Best-effort — returns empty ids on any gh failure.
+    Cached only once COMPLETE (`_complete`): a board missing a configured column is re-read
+    until the operator adds it — caching the gap hid a just-added Blocked for an hour, so
+    Factory's enable refused a board that had it and every move there went nowhere."""
     key = (project_spec(cfg.get("project")), cfg.get("status_field"))
     hit = _META_CACHE.get(key)
-    if hit and time.time() - hit[0] < META_TTL_S:
+    if hit and time.time() - hit[0] < META_TTL_S and _complete(hit[1], cfg):
         return {**hit[1], "options": dict(hit[1]["options"])}
     meta = _project_meta(cfg)
-    if meta.get("project_id") and meta.get("status_field_id"):
+    if _complete(meta, cfg):
         _META_CACHE[key] = (time.time(), meta)
     return meta
 
