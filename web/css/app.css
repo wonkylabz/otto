@@ -41,7 +41,11 @@
   .factorychip { font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 4px 8px;
     border-radius: var(--r-md); color: var(--on-accent); background: var(--warn); white-space: nowrap; }
   .factorychip[hidden] { display: none; }
-  .modepick { display: flex; gap: 8px; margin: 8px 0 10px; }
+  /* Admin → Mode: a segmented switch. */
+  .moderow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .modeseg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+  .modeseg button { font-size: 12px; padding: 4px 12px; background: none; color: var(--text-2); border: 0; cursor: pointer; }
+  .modeseg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .estop[disabled] { opacity: .55; cursor: progress; }
   @keyframes estopPulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
   @media (prefers-reduced-motion: reduce) { .estop.on .estopdot { animation: none; } }
@@ -1538,13 +1542,8 @@
   @media (max-height: 620px) { .hint, .optpanel .repohint { display: none; } }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
   /* ---- Otto, the mascot: the dock ------------------------------------------------------
-     Mounted OUTSIDE <main>, so switching tabs never unmounts him — the tabs are view swaps
-     inside one page, and a mascot living in a view would restart its animation on every
-     switch and disappear on seven of the eight. Docked at the FOOT OF THE WORKFLOW RAIL: the
-     rail's own empty space, the one region of this view that holds no control (the composer,
-     the chat list and the ledger each own theirs) — and the only one that stays his when the
-     chat list is collapsed. The dock itself is pointer-transparent; only Otto and his bubble
-     take clicks.
+     Outside <main> (ui.md says why), docked at the foot of the workflow rail — the one region
+     holding no control. The dock is pointer-transparent; only Otto and his bubble take clicks.
      He speaks in ONE voice and one colour: the bubble is plain ink with his accent down its
      edge, never a per-stage tint. Recolouring the panel on every stage turned a line of
      speech into a status light, which is what the board's stage chips are for. */

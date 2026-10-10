@@ -1400,21 +1400,7 @@ ${sessionsSection()}
   }));
   // Section-level collapse: the title toggles its .asection.coll. Which sections you left open is
   // remembered, so Admin doesn't re-collapse everything on every reload/refresh.
-  const SECTS="otto.admin.sections";
-  const sread=()=>{try{return JSON.parse(localStorage.getItem(SECTS))||{};}catch(e){return{};}};
-  const swrite=st=>{try{localStorage.setItem(SECTS,JSON.stringify(st));}catch(e){}};
-  const remembered=sread();
-  el.querySelectorAll(".asection.coll[data-sect]").forEach(sec=>{
-    if(remembered[sec.dataset.sect]) sec.classList.remove("collapsed");
-  });
-  enhanceToggles(el,".secttoggle",".asection","collapsed");
-  el.querySelectorAll(".secttoggle").forEach(t=>t.addEventListener("click",()=>{
-    const sec=t.closest(".asection"), st=sread();
-    if(!sec.dataset.sect) return;
-    const open=!sec.classList.toggle("collapsed");
-    if(open) st[sec.dataset.sect]=1; else delete st[sec.dataset.sect];
-    swrite(st);
-  }));
+  wireSections(el);
   el.querySelectorAll(".asection[data-sub] > h3 .secttoggle").forEach(t=>t.addEventListener("click",()=>{
     const sec=t.closest(".asection"), k="otto.admin.subclosed";
     let st={}; try{ st=JSON.parse(localStorage.getItem(k))||{}; }catch(e){}
@@ -1427,7 +1413,7 @@ ${sessionsSection()}
     const sec=b.closest(".asection");
     if(!sec.classList.contains("collapsed")) return;
     sec.classList.remove("collapsed");
-    const st=sread(); st[sec.dataset.sect]=1; swrite(st);
+    const st=sectsRead(); st[sec.dataset.sect]=1; sectsWrite(st);
   }));
   const setAllCollapsed=v=>el.querySelectorAll("#cap-list .agroup, #cap-list .asub").forEach(g=>g.classList.toggle("collapsed",v));
   const exp=el.querySelector("#cap-expand"), col=el.querySelector("#cap-collapse");

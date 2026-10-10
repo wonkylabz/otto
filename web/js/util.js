@@ -67,6 +67,31 @@ function byData(root, attr, value, sel){
    `aria-expanded` is synced after the handlers run, not during: several of these toggles are
    bound by delegation on an ancestor, so the class flip happens on the way up and reading it
    inline would report the state the section just left. */
+/* Admin's collapsible sections: the title toggles its .asection.coll, and which ones you left
+   open is remembered, so Admin doesn't re-collapse everything on every reload. Shared because a
+   section rendered on its own (factory.js's Mode) lands after Admin's wiring ran. */
+const SECTS="otto.admin.sections";
+function sectsRead(){ try{ return JSON.parse(localStorage.getItem(SECTS))||{}; }catch(e){ return {}; } }
+function sectsWrite(st){ try{ localStorage.setItem(SECTS,JSON.stringify(st)); }catch(e){} }
+function wireSections(root){
+  const remembered=sectsRead();
+  root.querySelectorAll(".asection.coll[data-sect]").forEach(sec=>{
+    if(remembered[sec.dataset.sect]) sec.classList.remove("collapsed");
+  });
+  enhanceToggles(root,".secttoggle",".asection","collapsed");
+  root.querySelectorAll(".secttoggle").forEach(t=>{
+    if(t.dataset.sectWired) return;            // idempotent, like enhanceToggles
+    t.dataset.sectWired="1";
+    t.addEventListener("click",()=>{
+      const sec=t.closest(".asection"), st=sectsRead();
+      if(!sec.dataset.sect) return;
+      const open=!sec.classList.toggle("collapsed");
+      if(open) st[sec.dataset.sect]=1; else delete st[sec.dataset.sect];
+      sectsWrite(st);
+    });
+  });
+}
+
 function enhanceToggles(root, sel, box, openClass){
   // `openClass` is the class on `box` meaning EXPANDED. The two conventions in the tree are
   // opposite spellings of one state — `.asection.collapsed` and `.dbgatt.open` — so the

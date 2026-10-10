@@ -18,25 +18,39 @@ async function loadFactory(){
   applyFactory(s);
   const spent=(s.spent_usd===null||s.spent_usd===undefined)?"?":`$${(+s.spent_usd).toFixed(2)}`;
   const status=on
-    ? `<b>${esc(s.slug||s.repo)}</b> · sprint <b>${esc(""+(s.sprint_n||0))}</b>`
-      +` · merged <b>${esc(""+(s.merged||0))}</b> · spent <b>${esc(spent)}</b> of $${esc(""+s.budget_usd)}`
-      +` · WIP ${esc(""+s.wip)} · idle sprints ${esc(""+(s.idle_sprints||0))}/${esc(""+s.max_idle_sprints)}`
+    ? `<b>${esc(s.slug||s.repo)}</b> · sprint ${esc(""+(s.sprint_n||0))} · merged ${esc(""+(s.merged||0))}`
+      +` · spent ${esc(spent)} of $${esc(""+s.budget_usd)} · WIP ${esc(""+s.wip)}`
+      +` · idle ${esc(""+(s.idle_sprints||0))}/${esc(""+s.max_idle_sprints)}`
     : (s.status && s.status!=="manual" ? `last factory: <b>${esc(s.status)}</b>` : `every write waits for a human, as configured per capability`);
-  const hist=(s.history||[]).slice(0,6).map(h=>
-    `<div class="jstatus"><span title="${esc(h.at)}">${esc(shortWhen(h.at))}</span> · <b>${esc(h.event)}</b> ${esc(h.detail||"")}</div>`).join("");
-  host.innerHTML=`<div class="asection" data-sect="mode"><h3><span>Mode<span class="badge ${on?'warn':'off'}">${on?'factory':'manual'}</span></span></h3>
-    <div class="asection-body">
-      <div class="modepick">
-        <button class="btn ${on?'':'approve'}" id="mode-manual" title="Back to Manual: stops the sprint schedule and restores the board settings Factory changed. Runs already going finish.">Manual</button>
-        <button class="btn ${on?'approve':''}" id="mode-factory" ${FACTORY.temporal?'':'disabled'} title="${FACTORY.temporal?'Self-driving build loop on one repo: tickets run and PRs merge with no approval':'needs Temporal (run via ./run.sh)'}">Factory${on?' — edit':''}</button>
-      </div>
-      <div class="jstatus">${status}</div>${hist}
-    </div></div>`;
-  document.getElementById("mode-factory").addEventListener("click",showFactoryForm);
+  const hist=(s.history||[]).length;
+  host.innerHTML=`<div class="asection coll collapsed" data-sect="mode"><h3><span class="secttoggle" title="collapse / expand">
+      <span class="gcaret">&#9662;</span>Mode<span class="sectcount">${on?'factory':'manual'}</span></span></h3>
+    <div class="asection-body"><div class="moderow">
+      <span class="modeseg" role="group" aria-label="mode">
+        <button class="${on?'':'on'}" id="mode-manual" title="Every write waits for a human. From Factory: stops the sprint schedule and restores the board settings Factory changed; runs already going finish.">Manual</button>
+        <button class="${on?'on':''}" id="mode-factory" ${FACTORY.temporal?'':'disabled'} title="${FACTORY.temporal?'Self-driving build loop on one repo: tickets run and PRs merge with no approval':'needs Temporal (run via ./run.sh)'}">Factory</button>
+      </span>
+      ${on?'<button class="addbtn" id="mode-edit" title="change the budget, WIP and cadence">Edit</button>':''}
+      ${hist?`<button class="addbtn" id="mode-log" title="what the factory did, newest first">Log (${hist})</button>`:''}
+      <span class="sub">${status}</span>
+    </div></div></div>`;
+  wireSections(host);
+  document.getElementById("mode-factory").addEventListener("click",()=>{ if(!on) showFactoryForm(); });
+  const edit=document.getElementById("mode-edit"); if(edit) edit.addEventListener("click",showFactoryForm);
+  const log=document.getElementById("mode-log"); if(log) log.addEventListener("click",showFactoryLog);
   document.getElementById("mode-manual").addEventListener("click",async()=>{
     if(!on) return;
     if(await postOr("/api/factory/disable",{},"switching to Manual")) loadFactory();
   });
+}
+
+function showFactoryLog(){
+  const f=openFormModal("<b>Factory log</b>");
+  const rows=(FACTORY.state.history||[]).map(h=>
+    `<tr><td><b>${esc(h.event)}</b><br><span class="sub" title="${esc(h.at)}">${esc(shortWhen(h.at))}</span></td>`
+    +`<td>${esc(h.detail||"")}</td></tr>`).join("");
+  f.innerHTML=`<table class="ctable"><thead><tr><th>Event</th><th>Detail</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
 }
 
 function showFactoryForm(){
