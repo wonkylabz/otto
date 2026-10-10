@@ -80,12 +80,15 @@ end to end, never ask a question back.
    Actions workflow running lint + tests, a README skeleton) AND rewrite the Product section of
    `{goals}` into a concrete feature list and interface for the seed. Every other ticket this
    sprint depends on it, so give it the lowest number.
-2. Look at the board columns "{done}" and "{blocked}" for issues of `{slug}`.
-   Nothing new is picked up while ANY card sits in "{blocked}" — unblocking comes first.
+2. Look at the board columns "{done}", "{blocked}" and "{review}" for issues of `{slug}`.
+   Nothing new is picked up while ANY card sits in "{blocked}" or "{review}" — unblocking comes
+   first. You cannot merge, and no run is coming back for a card in "{review}": its run ended
+   before the merge (often a usage limit after the PR opened). Treat it exactly like a card in
+   "{blocked}" — never wait for its PR to merge.
    A re-readied ticket is rebuilt from scratch on a fresh branch off the default branch, so when
    you move one back to "{ready}", CLOSE its open PR with a one-line comment, and never point
    the issue text at an old PR or tell it how to branch or push — the platform owns git.
-   For each card in "{blocked}": read its last comment (why it failed). If its PR is open and only
+   For each card in "{blocked}" or "{review}": read its last comment (why it failed). If its PR is open and only
    an unobservable or wrong criterion failed (e.g. "passes in CI"), fix that criterion in the
    issue text and move it back to "{ready}". Otherwise EITHER rewrite the
    issue so it is smaller and unambiguous and move it back to "{ready}", adding the label
@@ -193,11 +196,20 @@ def owns(issue, state=None):
     return slug.split("/")[-1] == (s.get("repo") or "").lower()
 
 
+def stuck_cards(counts, cfg):
+    """Factory cards no run is moving: Blocked, AND the review column. A factory card only lands
+    in review when its run ended before the merge — a Claude usage-limit wall after the PR
+    opened, or a run outside factory mode — and nothing in the loop ever looks there, so the PM
+    waited for a merge nobody would make until the stall limit stopped the factory."""
+    cols = cfg.get("columns") or {}
+    return sum((counts or {}).get(cols.get(k), 0) for k in ("blocked", "review"))
+
+
 def line_stopped(counts, cfg):
-    """True while any factory card is Blocked. Later tickets build on earlier ones, so picking
-    the next while one is stuck runs it on a tree missing its prerequisites: the worker
-    correctly reports the gap and changes nothing, and the card closes as if it were done."""
-    return bool((counts or {}).get((cfg.get("columns") or {}).get("blocked"), 0))
+    """True while any factory card is stuck (`stuck_cards`). Later tickets build on earlier ones,
+    so picking the next while one is stuck runs it on a tree missing its prerequisites: the
+    worker correctly reports the gap and changes nothing, and the card closes as if it were done."""
+    return bool(stuck_cards(counts, cfg))
 
 
 def apply(params, state):
@@ -448,12 +460,12 @@ def gate():
     if counts is None:
         return {"go": False, "why": "board unreadable"}
     cols = bcfg.get("columns") or {}
-    ready, active, blocked = (counts.get(cols.get(k), 0) for k in ("ready", "active", "blocked"))
+    ready, active = (counts.get(cols.get(k), 0) for k in ("ready", "active"))
     if active:
         return {"go": False, "why": f"{active} ticket(s) in progress"}
-    # A Blocked card stops the line (`line_stopped`), so Ready cannot drain while one sits there:
+    # A stuck card stops the line (`line_stopped`), so Ready cannot drain while one sits there:
     # that is exactly when a sprint must run — the PM is the one who unblocks it.
-    if ready and not blocked:
+    if ready and not stuck_cards(counts, bcfg):
         return {"go": False, "why": f"{ready} ticket(s) still queued"}
 
     n = int(s["sprint_n"]) + 1
@@ -468,6 +480,7 @@ def gate():
     brief = SPRINT_BRIEF.format(
         slug=s["slug"], project=board.project_spec(bcfg.get("project")), goals=GOALS_FILE,
         done=cols.get("done"), blocked=cols.get("blocked"), ready=cols.get("ready"),
+        review=cols.get("review"),
         max_tickets=s["max_tickets"])
     params = {"request": f"Run factory sprint #{n} for {s['slug']}.",
               "cap_name": PM_CAP, "approval": "auto", "unattended": True, "scheduled": True,

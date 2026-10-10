@@ -9192,6 +9192,25 @@ class FactoryModeTests(unittest.TestCase):
             board.start_run("gh-issue-1", {"request": "x", "fresh_branch": True})
         self.assertTrue(st.call_args[0][1]["fresh_branch"])
 
+    def test_a_card_left_in_review_stops_the_line_and_runs_the_sprint(self):
+        """A run that hit a usage limit after opening its PR left the card in review, where no
+        part of the loop looked: the PM waited on a merge nobody would make until the factory
+        stopped as stalled."""
+        import board
+        self._on()
+        cols = {"ready": "Ready", "active": "In Progress", "review": "In review",
+                "done": "Done", "blocked": "Blocked"}
+        cfg = {"project": "me/7", "columns": cols}
+        self.assertTrue(self.factory.line_stopped({"In review": 1}, cfg))
+        self.assertFalse(self.factory.line_stopped({"Done": 3}, cfg))
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value=cfg), \
+                unittest.mock.patch.object(board, "column_counts",
+                                           return_value={"Ready": 2, "In review": 1}):
+            g = self.factory.gate()
+        self.assertTrue(g["go"])
+        self.assertIn('"In review"', g["params"]["doc"])
+
     def test_factory_state_never_travels_in_a_snapshot(self):
         import snapshot
         self.assertIn("factory.json", snapshot.RUNTIME)
