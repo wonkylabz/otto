@@ -21,6 +21,7 @@ async function loadFactory(){
     ? `<b>${esc(s.slug||s.repo)}</b> · sprint ${esc(""+(s.sprint_n||0))} · merged ${esc(""+(s.merged||0))}`
       +` · spent ${esc(spent)} of $${esc(""+s.budget_usd)} · WIP ${esc(""+s.wip)}`
       +` · idle ${esc(""+(s.idle_sprints||0))}/${esc(""+s.max_idle_sprints)}`
+      +(s.paused?` · <b>paused</b> (${esc(s.paused.reason||"")}) — resumes by itself`:"")
     : (s.status && s.status!=="manual" ? `last factory: <b>${esc(s.status)}</b>` : `every write waits for a human, as configured per capability`);
   const hist=(s.history||[]).length;
   const tip=FACTORY.temporal?'Self-driving build loop on one repo: tickets run and PRs merge with no approval':'needs Temporal (run via ./run.sh)';

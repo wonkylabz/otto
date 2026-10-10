@@ -8990,6 +8990,54 @@ class FactoryModeTests(unittest.TestCase):
             again = board.project_meta({**cfg, "columns": {**cols, "active": "Doing"}})
             self.assertIn("Doing", again["options"])
 
+    # --- a Claude wall pauses ----------------------------------------------------------
+    def test_a_usage_limit_pauses_the_line_and_it_resumes_without_counting_idle(self):
+        # A spent limit failed every sprint the same way: each counted idle, so the factory
+        # stopped itself as "stalled" hours before the reset, and the walled ticket later cost
+        # a retry it never deserved.
+        import board
+        import delivery
+        self._on(wids=["gh-issue-20-r1", "factory-x-s7"], idle_sprints=0, max_idle_sprints=3)
+        engine._append_audit({"workflow": "gh-issue-20-r1", "outcome": "needs_human",
+                              "reason": "claude_usage_limit", "at": "2026-10-10T17:52:22"})
+        engine._append_audit({"workflow": "web-other", "outcome": "needs_human",
+                              "reason": "claude_usage_limit", "at": "2026-10-10T17:52:23"})
+        notes, moved = [], []
+        bcfg = {"project": "me/7", "columns": {"ready": "Ready", "blocked": "Blocked"}}
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(delivery, "notify",
+                                           side_effect=lambda t, **k: notes.append(t)), \
+                unittest.mock.patch.object(board, "load", return_value=bcfg), \
+                unittest.mock.patch.object(board, "item_list", return_value={}), \
+                unittest.mock.patch.object(board, "project_meta", return_value={}), \
+                unittest.mock.patch.object(board, "_parse_items_in", return_value=[
+                    {"number": 20, "repo": "me/game", "item_id": "I20"},
+                    {"number": 5, "repo": "me/game", "item_id": "I5"}]), \
+                unittest.mock.patch.object(board, "set_status",
+                                           side_effect=lambda c, m, i, col: moved.append((i, col)) or True), \
+                unittest.mock.patch.object(board, "column_counts", return_value={}):
+            with unittest.mock.patch.object(self.factory, "claude_available",
+                                            return_value=(False, "limit resets 5pm")):
+                for _ in range(5):      # far past max_idle_sprints
+                    self.assertTrue(self.factory.gate()["why"].startswith("paused"))
+            st = self.factory.load()
+            self.assertEqual(st["paused"]["wids"], ["gh-issue-20-r1"])   # a Manual run is not ours
+            self.assertEqual((st["enabled"], st["idle_sprints"]), (True, 0))
+            # A walled SPRINT pauses too, and is never booked idle.
+            self.assertEqual(self.factory.after_sprint(
+                {"wid": "factory-x-s7", "result": "",
+                 "needs_human": {"reason": "claude_usage_limit"}})["state"], "paused")
+            with unittest.mock.patch.object(self.factory, "claude_available", return_value=(True, "")):
+                self.assertTrue(self.factory.gate()["go"])
+            self.assertEqual(moved, [("I20", "Ready")])                  # #5 is not a walled one
+            self.assertIsNone(self.factory.load()["paused"])
+            self.assertTrue(self.factory.gate()["go"])                   # the old wall stays handled
+        self.assertEqual(notes, ["Otto factory paused: Claude unavailable", "Otto factory resumed"])
+
+    def test_pickup_holds_while_paused(self):
+        import activities
+        self.assertIn('fac.get("paused") or factory.line_stopped', inspect.getsource(activities.poll_board))
+
     # --- MCP allowlist ----------------------------------------------------------------
     def test_a_factory_run_gets_only_the_ticked_mcp_servers_and_the_rest_are_denied(self):
         # Factory runs are unattended and pre-approved: the operator's mail/chat/home servers

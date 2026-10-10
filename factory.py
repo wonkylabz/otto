@@ -62,6 +62,8 @@ _DEFAULTS = {
     "status": "manual",
     "prev_board": None,
     "history": [],
+    "paused": None,          # {reason, since, wids}: a Claude wall hit; sprints skip, not idle
+    "walls_seen_at": "",     # audit watermark: walls at or before this are already handled
     "mcp_allow": [],         # MCP servers the factory's runs may use; every other one is denied
     "playtest_merged": -1,   # `merged` when the product was last playtested (-1 = never)
     "playtest_verdict": "",  # "clean" | "defects" | "" (unparseable or never)
@@ -350,6 +352,126 @@ def mcp_allow_for(wid, state=None):
     return list(s.get("mcp_allow") or [])
 
 
+# --- a Claude wall pauses the line ---------------------------------------------------------
+# A spent usage limit (or an expired login) fails EVERY run the same way until it clears — it
+# says nothing about the tickets. Left to the normal machinery, each sprint after it planned
+# nothing and counted idle, so the factory stopped itself as "stalled" hours before the limit
+# reset, and the PM then rewrote the walled ticket as if it had failed, spending a retry on it.
+WALL_REASONS = ("claude_usage_limit", "claude_auth_expired")
+_ISSUE_WID_RE = re.compile(r"^gh-issue-(\d+)(?:-r\d+)?(?:-|$)")
+
+
+def _walls_since(s):
+    """[(wid, reason, at)] of factory runs that died on a WALL after the watermark. Never
+    raises: an unreadable trail is no evidence of a wall."""
+    since = max(s.get("started_at") or "", s.get("walls_seen_at") or "")
+    wids = s.get("wids") or []
+    out = []
+    try:
+        conn = storage.sqlite_connect(config.DB_PATH)
+        try:
+            rows = conn.execute(
+                "SELECT workflow, at, json_extract(data, '$.reason') FROM audit WHERE at > ? "
+                "AND json_extract(data, '$.outcome') = 'needs_human'", (since,)).fetchall()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError) as e:
+        if "no such table" not in str(e):       # a fresh install has no trail yet
+            trace("FACTORY", f"wall check skipped: {str(e)[:120]}")
+        return []
+    for wf, at, reason in rows:
+        if reason in WALL_REASONS and _owned(wf or "", wids):
+            out.append((wf, reason, at))
+    return out
+
+
+def pause(reason, wids, seen_at=None):
+    """Hold the line on a wall: no sprint, no pickup, no idle count. Notifies once."""
+    import delivery
+    before = load()
+    if before.get("paused"):
+        return before
+
+    def _fn(s):
+        s["paused"] = {"reason": reason, "since": _now(), "wids": sorted(set(wids))}
+        s["walls_seen_at"] = max(s.get("walls_seen_at") or "", seen_at or _now())
+        _event(s, "paused", f"{reason}: {', '.join(sorted(set(wids)))[:200]}")
+    state = _mutate(_fn)
+    delivery.notify("Otto factory paused: Claude unavailable",
+                    lines=[f"repo: {before.get('slug')}", f"reason: {reason}",
+                           "resumes by itself once Claude answers again"],
+                    tags=["factory"], priority="default")
+    return state
+
+
+def claude_available():
+    """(ok, detail) from one tool-free cheap-tier turn — the same wall every run would hit."""
+    import claude_cli
+    import gateway
+    model = gateway.downshift_model_id() or config.ROUTER_MODEL
+    out = claude_cli.run_json("Reply with the single word OK.", model=model,
+                              timeout=config.CLAUDE_TIER_TIMEOUT_S,
+                              disallowed_tools=config.ALL_BUILTIN_TOOLS,
+                              setting_sources="", strict_mcp=True)
+    if out.get("is_error"):
+        return False, str(out.get("result") or "")[:200]
+    return True, ""
+
+
+def _requeue(s, wids):
+    """Move each walled ticket's card from Blocked back to Ready — no retry label: nothing was
+    wrong with the ticket. A card already elsewhere (the PM moved it, a human did) is left."""
+    import board
+    nums = {int(m.group(1)) for m in (_ISSUE_WID_RE.match(w) for w in wids) if m}
+    if not nums:
+        return []
+    bcfg = board.load()
+    cols = bcfg.get("columns") or {}
+    data = board.item_list(bcfg)
+    if data is None:
+        return []
+    meta = board.project_meta(bcfg)
+    moved = []
+    for stub in board._parse_items_in(data, bcfg, cols.get("blocked")):
+        if stub.get("number") in nums and (stub.get("repo") or "").lower() == (s.get("slug") or "").lower():
+            if board.set_status(bcfg, meta, stub.get("item_id"), cols.get("ready")):
+                moved.append(stub["number"])
+    return moved
+
+
+def resume():
+    """Claude answers again: re-ready the walled tickets, clear the pause, notify."""
+    import delivery
+    s = load()
+    p = s.get("paused") or {}
+    moved = _requeue(s, p.get("wids") or [])
+
+    def _fn(st):
+        st["paused"] = None
+        st["walls_seen_at"] = _now()
+        _event(st, "resumed", "re-readied " + (", ".join(f"#{n}" for n in moved) or "nothing"))
+    state = _mutate(_fn)
+    delivery.notify("Otto factory resumed", tags=["factory"], priority="default",
+                    lines=[f"repo: {s.get('slug')}",
+                           f"re-readied: {', '.join(f'#{n}' for n in moved) or 'none'}"])
+    return state
+
+
+def _wall_gate(s):
+    """None to carry on, or the gate's skip result while a wall holds."""
+    if not s.get("paused"):
+        walls = _walls_since(s)
+        if not walls:
+            return None
+        pause(walls[-1][1], [w for w, _r, _a in walls], seen_at=max(a for _w, _r, a in walls))
+        return {"go": False, "why": f"paused: {walls[-1][1]}"}
+    ok, detail = claude_available()
+    if not ok:
+        return {"go": False, "why": f"paused: {s['paused'].get('reason')} ({detail[:80]})"}
+    resume()
+    return None
+
+
 # --- enable / disable --------------------------------------------------------------------
 
 class Refused(Exception):
@@ -513,6 +635,11 @@ def gate():
         return {"go": False, "why": "factory off"}
     if estop.blocked("factory"):
         return {"go": False, "why": "paused"}
+    # Before the stall and budget limits: a wall's skipped sprints must not count against them.
+    held = _wall_gate(s)
+    if held:
+        return held
+    s = load()
     cost = spent(s)
     if cost is None:
         return {"go": False, "why": "spend unmeasurable"}
@@ -617,6 +744,10 @@ def after_sprint(payload):
     s = load()
     if not enabled(s):
         return {"state": "off"}
+    nh = payload.get("needs_human") or {}
+    if nh.get("reason") in WALL_REASONS:
+        pause(nh["reason"], [payload.get("wid") or ""])
+        return {"state": "paused", "reason": nh["reason"]}
     if word == "done" and playtest_clean(s):
         disable("done", evidence)
         return {"state": "done"}
