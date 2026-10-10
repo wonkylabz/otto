@@ -1396,6 +1396,42 @@ class QARequestTests(unittest.TestCase):
         self.assertIn("INCONCLUSIVE", req)
         self.assertIn("dev/staging", req)
 
+    def test_a_provisioned_checkout_is_where_qa_runs_the_suite(self):
+        # With no checkout QA sat in Otto's own cwd, a clone elsewhere was refused, and the
+        # repo's tests never ran: truco#30 went INCONCLUSIVE on an untested `make test`.
+        req = engine.qa_review_request("https://github.com/o/r/pull/7", "r", "x",
+                                       checkout="/w/qa0-ws")
+        self.assertIn("`/w/qa0-ws`", req)
+        self.assertIn("Never clone elsewhere", req)
+        self.assertNotIn("Never clone", engine.qa_review_request("https://github.com/o/r/pull/7",
+                                                                 "r", "x"))
+
+    def test_the_qa_round_runs_in_a_clone_of_the_prs_head_and_cleans_it_up(self):
+        import activities
+        import workspace
+        seen, cleaned = {}, []
+        import types
+        cap = types.SimpleNamespace(name="qa-tester", risk="write")
+        with mock.patch.object(activities, "_cap", return_value=cap), \
+             mock.patch.object(activities, "_mcp", return_value=([], None)), \
+             mock.patch.object(activities, "_warm_conventions"), \
+             mock.patch.object(workspace, "pr_branch", return_value="otto/gh-issue-29"), \
+             mock.patch.object(workspace, "provision", return_value={"path": "/w/x"}), \
+             mock.patch.object(workspace, "cleanup", side_effect=cleaned.append), \
+             mock.patch.object(engine, "run_attempt",
+                               side_effect=lambda req, c, **k: seen.update(k, req=req) or
+                               {"workflow": "w", "result": "PASS", "cost": 0}):
+            activities._post_pr_capability("qa", {"pr_url": "https://github.com/o/r/pull/7",
+                                                  "repo": "r", "request": "x", "wid": "w-qa0"})
+            self.assertEqual(seen["cwd"], "/w/x")
+            self.assertIn("`/w/x`", seen["req"])
+            self.assertEqual(cleaned, ["w-qa0-ws"])
+            # The reviewer reads the diff through gh, never a checkout.
+            seen.clear()
+            activities._post_pr_capability("review", {"pr_url": "https://github.com/o/r/pull/7",
+                                                      "repo": "r", "request": "x", "wid": "w-rev0"})
+            self.assertIsNone(seen["cwd"])
+
     def test_omits_repo_clause_when_none(self):
         req = engine.qa_review_request("https://github.com/o/r/pull/7", None, "do a thing")
         self.assertIn("pull/7", req)

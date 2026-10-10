@@ -724,6 +724,22 @@ _POST_PR = {
 }
 
 
+def _qa_checkout(payload):
+    """A throwaway clone of the PR's head branch for QA to run in, or None (QA then runs
+    without one, as before). Never raises: a missing checkout costs evidence, not the round."""
+    import workspace
+    run_id = f"{payload.get('wid') or 'qa'}-ws"
+    try:
+        branch = workspace.pr_branch(payload.get("repo"), payload.get("pr_url"))
+        if not branch:
+            return None
+        ws = workspace.provision(payload.get("repo"), run_id, from_branch=True, branch=branch)
+        return {"path": ws["path"], "run_id": run_id}
+    except Exception as e:  # noqa: BLE001 - see docstring
+        activity.logger.info(f"QA checkout not provisioned: {e}")
+        return None
+
+
 def _post_pr_capability(kind, payload):
     """Run one post-PR loop's capability against an opened PR. PRE-AUTHORIZED: enabling the loop
     is the grant, so this runs without a gate. Returns the transcript + metadata, or
@@ -736,11 +752,22 @@ def _post_pr_capability(kind, payload):
                              "registered/enabled")
         return {"missing": True, spec["cap_field"]: want}
     mcp_tools, mcp_path = _mcp()
-    req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
-                                           payload["request"])
     _warm_conventions(engine._resolve_project(None, payload.get("repo")))
-    att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
-                             mcp_config_path=mcp_path, wid=payload.get("wid"))
+    # QA proves the PR by RUNNING it, so it gets a clone of the PR's head as its cwd — with
+    # none it sat in Otto's checkout, where a clone elsewhere is refused and the registered
+    # checkout is write-denied, so `make test` never ran and every PR went INCONCLUSIVE.
+    ws = _qa_checkout(payload) if kind == "qa" else None
+    extra = {"checkout": ws["path"]} if ws else {}
+    req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
+                                           payload["request"], **extra)
+    try:
+        att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
+                                 mcp_config_path=mcp_path, wid=payload.get("wid"),
+                                 cwd=ws["path"] if ws else None)
+    finally:
+        if ws:
+            import workspace
+            workspace.cleanup(ws["run_id"])
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "duration_s": att.get("duration_s"),
