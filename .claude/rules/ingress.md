@@ -75,6 +75,7 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 - **A skipped or inconclusive loop is never a pass** (`wf_postpr._auto_merge`) — merging needs review AND QA PASS; a refused merge is `merge_failed`, Blocked (`WorkflowAutoMergeTests`).
 - **Unmeasurable spend or an unreadable board starts nothing** (`factory.spent` → None, `board.column_counts` → None) — an empty-looking queue would start a sprint past the budget or the WIP cap (`FactoryModeTests`).
 - **DONE needs the CURRENT tree playtested clean** (`factory.playtest_clean`) — every ticket's QA proved its own criteria while the product shipped wrong rules and an unreadable UI; only a run that USED it can say done (`FactoryModeTests`).
+- **A factory run gets only the MCP servers the operator TICKED; the rest are DENIED** (`factory.mcp_allow_for`, keyed on the wid it owns) — an unattended, pre-approved run held the operator's mail, chat and home servers (`FactoryModeTests`).
 - **Disable restores the board config enable changed, and every stop notifies** — an unattended loop that goes quiet reads as broken (`FactoryModeTests`).
 
 ## Runbooks / scheduler

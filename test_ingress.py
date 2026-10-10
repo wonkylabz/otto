@@ -8967,6 +8967,36 @@ class FactoryModeTests(unittest.TestCase):
                              {"state": "done"})
         self.assertEqual(dis.call_args[0][0], "done")
 
+    # --- MCP allowlist ----------------------------------------------------------------
+    def test_a_factory_run_gets_only_the_ticked_mcp_servers_and_the_rest_are_denied(self):
+        # Factory runs are unattended and pre-approved: the operator's mail/chat/home servers
+        # were handed to every ticket, review and QA run on a game repo.
+        import activities
+        import mcp_client
+        import policy
+        self._on(wids=["gh-issue-31", "factory-x-s1"], mcp_allow=["playwright"])
+        fa = self.factory.mcp_allow_for
+        self.assertEqual(fa("gh-issue-31-revfix0"), ["playwright"])   # its loops are owned too
+        self.assertEqual(fa("factory-x-s1-play"), ["playwright"])
+        self.assertIsNone(fa("web-abc"))                              # Manual runs: untouched
+        self.assertIsNone(fa(None))
+        with unittest.mock.patch.object(policy, "enabled_mcps",
+                                        return_value=["playwright", "slack-admin", "HomeAssistant"]), \
+                unittest.mock.patch.object(policy, "active_mcp_config", return_value=None), \
+                unittest.mock.patch.object(policy, "all_mcps", return_value=[
+                    {"name": n} for n in ("playwright", "slack-admin", "HomeAssistant")]), \
+                unittest.mock.patch.object(mcp_client, "catalogue", return_value={}):
+            self.assertEqual(activities._mcp("gh-issue-31")[0], ["mcp__playwright"])
+            self.assertEqual(len(activities._mcp("web-abc")[0]), 3)
+            denies = activities._mcp_denies("gh-issue-31")
+            self.assertIn("mcp__slack-admin", denies)
+            self.assertIn("mcp__HomeAssistant", denies)
+            self.assertNotIn("mcp__playwright", denies)
+            self.assertIsNone(activities._mcp_denies("web-abc"))
+        st = self.factory.validate({"repo": "g", "seed": "s", "budget_usd": 5,
+                                    "mcp_allow": ["playwright", " ", "playwright"]})
+        self.assertEqual(st["mcp_allow"], ["playwright"])
+
     # --- the playtest -----------------------------------------------------------------
     def test_done_is_refused_until_the_current_tree_is_playtested_clean(self):
         # Every ticket's QA proved its own criteria while the product shipped wrong rules and an

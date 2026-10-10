@@ -10902,7 +10902,7 @@ class FastLaneGrantTests(unittest.TestCase):
         cap = self.cap
         seen = []
         with mock.patch.object(activities, "_cap", lambda name: cap), \
-             mock.patch.object(activities, "_mcp", lambda: ([], None)), \
+             mock.patch.object(activities, "_mcp", lambda *a: ([], None)), \
              mock.patch.object(policy, "safe_tools", lambda pol=None: ["mcp__ha__HassTurnOn"]), \
              mock.patch.object(engine, "run_attempt",
                                lambda request, cap, **kw: seen.append(kw) or {
@@ -11097,6 +11097,31 @@ class FastLaneReviewRoundTwoTests(unittest.TestCase):
              config.SUPERVISE, workspace.refresh_repos) = saved
         self.assertIsNone(calls[0]["setting_sources"],
                           "a project cap's cwd only lives on the cap; 'user' hid its own .claude/ skills")
+
+    def test_a_scoped_run_denies_its_unlisted_servers_on_top_of_the_default_trim(self):
+        # Factory runs (factory.mcp_allow_for): a deny beats the operator's own allow rules.
+        saved = (gateway.exec_model_entry, gateway.exec_model_id, engine._claude,
+                 config.SUPERVISE, workspace.refresh_repos)
+        calls = []
+        try:
+            config.SUPERVISE = False
+            workspace.refresh_repos = lambda *a, **k: None
+            gateway.exec_model_entry = lambda cap_name=None, cfg=None: {
+                "name": "sonnet", "provider": "claude", "model": "claude-sonnet"}
+            gateway.exec_model_id = lambda cap_name=None: "claude-sonnet"
+            engine._claude = lambda prompt, **kw: calls.append(kw) or {
+                "result": "ok", "total_cost_usd": 0, "session_id": "s", "usage": {}}
+            cap = registry.Capability("builtin", config.WORKER_CAP, "does tasks")
+            cap.risk = "write"
+            engine.run_attempt("build it", cap, wid="w1", deny_tools=["mcp__slack-admin"])
+            engine.run_attempt("build it", cap, wid="w2")
+        finally:
+            (gateway.exec_model_entry, gateway.exec_model_id, engine._claude,
+             config.SUPERVISE, workspace.refresh_repos) = saved
+        self.assertIn("mcp__slack-admin", calls[0]["disallowed_tools"])
+        for t in config.DISALLOWED_TOOLS:
+            self.assertIn(t, calls[0]["disallowed_tools"])
+        self.assertIsNone(calls[1]["disallowed_tools"])
 
     def test_the_judge_drops_the_worker_contract_on_the_fast_lane(self):
         self.assertIn("cap_contract_block(cap, request) if fast_lane is None else None",

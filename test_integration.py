@@ -3999,7 +3999,7 @@ class FastLaneWorkflowTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [cap]
         self._patches = [mock.patch.object(policy, "safe_tools", lambda pol=None: list(self.SAFE)),
                          mock.patch.object(gateway, "backend_of", lambda e: "claude"),
-                         mock.patch.object(activities, "_mcp", lambda: ([], None))]
+                         mock.patch.object(activities, "_mcp", lambda *a: ([], None))]
         for p in self._patches:
             p.start()
         self.previews, self.grants, self.asked, self.audited = [], [], [], []

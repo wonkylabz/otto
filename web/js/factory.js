@@ -5,7 +5,7 @@
    GitHub board at a self-driving loop: a PM sprint readies tickets, the worker builds them, review
    and QA iterate, and a PR that passes both merges itself. Switching it on is the approval for all
    of that, so the header says so from every tab (chat.js's applyFactory, riding /api/health). */
-let FACTORY={state:{}, repos:[], board:"", temporal:false};
+let FACTORY={state:{}, repos:[], board:"", temporal:false, mcps:[]};
 
 async function loadFactory(){
   const host=document.getElementById("factory-section");
@@ -13,7 +13,7 @@ async function loadFactory(){
   let d;
   try { d=await getJSON("/api/factory"); }
   catch(e){ host.innerHTML=`<p class="err">Couldn't load factory mode (${esc(e.message)}).</p>`; return; }
-  FACTORY={state:d.state||{}, repos:d.repos||[], board:d.board||"", temporal:!!d.temporal};
+  FACTORY={state:d.state||{}, repos:d.repos||[], board:d.board||"", temporal:!!d.temporal, mcps:d.mcps||[]};
   const s=FACTORY.state, on=!!s.enabled;
   applyFactory(s);
   const spent=(s.spent_usd===null||s.spent_usd===undefined)?"?":`$${(+s.spent_usd).toFixed(2)}`;
@@ -74,6 +74,9 @@ function showFactoryForm(){
       <div><label>Stop after N sprints with no merge</label><input id="ff-idle" type="number" min="1"></div>
     </div>
     <label>New tickets per sprint</label><input id="ff-tickets" type="number" min="1">
+    <label>MCP servers the factory may use</label>
+    <span class="sk-help">Its runs are unattended and pre-approved, so every server is OFF unless ticked &mdash; keep mail, chat and home servers out. Manual runs are unaffected.</span>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 16px">${FACTORY.mcps.map(m=>`<label class="mtoggle"><input type="checkbox" class="ff-mcp" value="${esc(m.name)}"${(s.mcp_allow||[]).includes(m.name)?' checked':''}> ${esc(m.display)} <span class="sub">${esc(m.source)}</span></label>`).join("")||'<span class="sub">no MCP servers enabled</span>'}</div>
     <div class="ferr" id="ff-err"></div>
     <div class="factions"><button class="btn approve" id="ff-save">${on?'Save':'Start factory'}</button><button class="btn decline" id="ff-cancel">Cancel</button></div>
   </div>`;
@@ -92,7 +95,8 @@ function showFactoryForm(){
     btn.disabled=true;
     const body={repo:val("ff-repo")||s.repo, seed:document.getElementById("ff-seed").value,
       budget_usd:+val("ff-budget")||0, wip:+val("ff-wip")||1, sprint_every_s:+val("ff-every")||1800,
-      max_idle_sprints:+val("ff-idle")||3, max_tickets:+val("ff-tickets")||5};
+      max_idle_sprints:+val("ff-idle")||3, max_tickets:+val("ff-tickets")||5,
+      mcp_allow:[...f.querySelectorAll(".ff-mcp:checked")].map(c=>c.value)};
     const ok=await postForm("/api/factory/enable", body, document.getElementById("ff-err"));
     btn.disabled=false;
     if(ok){ closeFormModal(); loadFactory(); }

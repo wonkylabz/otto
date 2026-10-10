@@ -394,11 +394,21 @@ def classify_request(payload: dict) -> dict:
     return out
 
 
-def _mcp():
-    """Build the active MCP tool list + on-disk config (shared by every attempt)."""
+def _mcp(wid=None):
+    """Build the active MCP tool list + on-disk config (shared by every attempt). A factory
+    run (`factory.mcp_allow_for`) sees only the servers the operator ticked; `_mcp_denies`
+    denies the rest outright."""
+    import factory
     pol = policy.load()
-    mcp_tools = [f"mcp__{n}" for n in policy.enabled_mcps(pol)]
+    names = policy.enabled_mcps(pol)
     active = policy.active_mcp_config(pol)
+    allow = factory.mcp_allow_for(wid)
+    scoped = allow is not None
+    if scoped:
+        names = [n for n in names if n in allow]
+        kept = {n: d for n, d in ((active or {}).get("mcpServers") or {}).items() if n in allow}
+        active = {"mcpServers": kept} if kept else None
+    mcp_tools = [f"mcp__{n}" for n in names]
     mcp_path = None
     if active:
         # Fixed path shared by every concurrent run in this worker; the content is
@@ -410,9 +420,16 @@ def _mcp():
         # for Claude Code to expand — requires re-admitting that name to the CLI's whole
         # environment, which hands it to the run's own Bash too. `storage` writes through
         # `mkstemp`, so the file lands 0600, and `file_safety` read-denies it to every run.
-        mcp_path = config.mcp_config_path("active")
+        mcp_path = config.mcp_config_path("factory" if scoped else "active")
         storage.write_json(mcp_path, mcp_client.resolved_config(active))
     return mcp_tools, mcp_path
+
+
+def _mcp_denies(wid=None):
+    """Every MCP server a factory run may NOT use, as deny rules (None for any other run)."""
+    import factory
+    allow = factory.mcp_allow_for(wid)
+    return None if allow is None else mcp_client.server_denies(allow)
 
 
 @activity.defn
@@ -597,7 +614,7 @@ def run_capability(payload: dict) -> dict:
     if fast_lane is not None:
         live = set(policy.safe_tools())
         fast_lane = [t for t in fast_lane if t in live]
-    mcp_tools, mcp_path = _mcp()
+    mcp_tools, mcp_path = _mcp(payload.get("wid"))
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
     _warm_conventions(project)
     atts = payload.get("attachments") or []
@@ -627,7 +644,8 @@ def run_capability(payload: dict) -> dict:
             discussion=discussion, fast_lane=fast_lane,
             supervise_enforce=payload.get("supervise_enforce", True),
             attachments=atts, frontman=bool(payload.get("frontman")),
-            external_text=payload.get("external_text"))
+            external_text=payload.get("external_text"),
+            deny_tools=_mcp_denies(payload.get("wid")))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "session_id": att.get("session_id"), "attempt": att["attempt"],
@@ -751,7 +769,7 @@ def _post_pr_capability(kind, payload):
         activity.logger.info(f"{spec['label']} requested but cap '{want}' is not "
                              "registered/enabled")
         return {"missing": True, spec["cap_field"]: want}
-    mcp_tools, mcp_path = _mcp()
+    mcp_tools, mcp_path = _mcp(payload.get("wid"))
     _warm_conventions(engine._resolve_project(None, payload.get("repo")))
     # QA proves the PR by RUNNING it, so it gets a clone of the PR's head as its cwd — with
     # none it sat in Otto's checkout, where a clone elsewhere is refused and the registered
@@ -763,7 +781,8 @@ def _post_pr_capability(kind, payload):
     try:
         att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                                  mcp_config_path=mcp_path, wid=payload.get("wid"),
-                                 cwd=ws["path"] if ws else None)
+                                 cwd=ws["path"] if ws else None,
+                                 deny_tools=_mcp_denies(payload.get("wid")))
     finally:
         if ws:
             import workspace
@@ -1176,9 +1195,10 @@ def factory_playtest(payload: dict) -> dict:
         return {"result": "", "verdict": ""}
     req = factory.playtest_request(s)
     try:
-        mcp_tools, mcp_path = _mcp()
+        mcp_tools, mcp_path = _mcp(wid)
         att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
-                                 mcp_config_path=mcp_path, wid=wid, cwd=ws["path"])
+                                 mcp_config_path=mcp_path, wid=wid, cwd=ws["path"],
+                                 deny_tools=_mcp_denies(wid))
     finally:
         workspace.cleanup(run_id)
     # Audited under a wid the factory owns (`factory._owned`), so it counts against the budget.

@@ -1575,6 +1575,10 @@ class Handler(BaseHTTPRequestHandler):
                 "state": st, "temporal": TEMPORAL_OK,
                 "repos": [r["name"] for r in workspace.git_repos()],
                 "board": board.project_url(board.load()),
+                # The allowlist's choices: enabled servers only, from the CACHED health read.
+                "mcps": [{"name": m["name"], "display": m.get("display") or m["name"],
+                          "source": m["source"]}
+                         for m in policy.all_mcps(policy.load()) if m["enabled"]],
             }))
         elif self.path == "/api/pr-review-config":
             # Auto-review of PRs assigned to the operator (the GitHub ingress's pull half).

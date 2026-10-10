@@ -62,6 +62,7 @@ _DEFAULTS = {
     "status": "manual",
     "prev_board": None,
     "history": [],
+    "mcp_allow": [],         # MCP servers the factory's runs may use; every other one is denied
     "playtest_merged": -1,   # `merged` when the product was last playtested (-1 = never)
     "playtest_verdict": "",  # "clean" | "defects" | "" (unparseable or never)
 }
@@ -338,6 +339,17 @@ def spent(state=None):
     return round(total, 4)
 
 
+def mcp_allow_for(wid, state=None):
+    """The MCP servers a run may use when this factory started it, or None (not a factory run:
+    no restriction). Keyed on OWNERSHIP, not on `enabled` — a run still going after Manual was
+    switched back on keeps the scope it started under. A factory run is unattended and
+    pre-approved, so the operator's personal servers (mail, chat, home) are off unless ticked."""
+    s = state if state is not None else load()
+    if not wid or not _owned(wid, s.get("wids") or []):
+        return None
+    return list(s.get("mcp_allow") or [])
+
+
 # --- enable / disable --------------------------------------------------------------------
 
 class Refused(Exception):
@@ -394,7 +406,11 @@ def validate(form):
         raise Refused("write the seed — the idea the factory builds")
     if budget <= 0:
         raise Refused("set a budget above $0 — a factory with no ceiling never stops spending")
+    allow = form.get("mcp_allow") or []
+    if not isinstance(allow, list):
+        raise Refused("mcp_allow must be a list of MCP server names")
     return {"repo": repo, "seed": seed, "budget_usd": round(budget, 2),
+            "mcp_allow": sorted({str(n).strip() for n in allow if str(n).strip()}),
             "wip": _int(form.get("wip"), 1, 1),
             "sprint_every_s": _int(form.get("sprint_every_s"), 300, 1800),
             "max_idle_sprints": _int(form.get("max_idle_sprints"), 1, 3),
