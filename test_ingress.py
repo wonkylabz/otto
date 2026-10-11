@@ -9078,6 +9078,15 @@ class FactoryModeTests(unittest.TestCase):
         self.assertEqual(board.column_counts(cfg, data=data), {"In review": 2})
         self.assertEqual(board.column_counts(cfg, data=data, skip_label="hold"), {"In review": 1})
         self.assertIn("is a HUMAN's", self.factory.SPRINT_BRIEF)
+        # A gh whose item-list omits labels cannot skip: it says so rather than going silent.
+        bare = {"items": [{"content": {"type": "Issue", "repository": "me/game", "number": 3},
+                           "status": "In review"}]}
+        board._NO_LABELS_WARNED.clear()
+        with unittest.mock.patch.object(board, "trace") as tr:
+            self.assertEqual(board.column_counts(cfg, data=bare, skip_label="hold"),
+                             {"In review": 1})
+            board.column_counts(cfg, data=bare, skip_label="hold")
+        self.assertEqual(tr.call_count, 1)
 
     def test_a_schedule_blip_while_editing_never_switches_a_running_factory_off(self):
         import board

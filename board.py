@@ -331,6 +331,16 @@ def list_in_column(cfg, column_key):
     return _parse_items_in(data, cfg, column_name)
 
 
+_NO_LABELS_WARNED = []
+
+
+def _warn_no_labels():
+    if not _NO_LABELS_WARNED:
+        _NO_LABELS_WARNED.append(True)
+        trace("BOARD", "`gh project item-list` returned no labels — held cards cannot be told "
+                       "apart and count toward the factory's WIP and stop-the-line (upgrade gh)")
+
+
 def column_counts(cfg, repo=None, data=None, skip_label=None):
     """{column name: issue count} across the whole board, optionally only `repo`'s issues
     ("owner/name"). None on any gh failure — unlike `list_in_column`'s [], because the caller
@@ -348,8 +358,13 @@ def column_counts(cfg, repo=None, data=None, skip_label=None):
         slug = _repo_slug(content.get("repository") or content.get("url")) or ""
         if repo and slug.lower() != repo.lower():
             continue
-        if skip_label and skip_label in (item.get("labels") or []):
-            continue
+        if skip_label:
+            if "labels" not in item:
+                # gh 2.93's item-list carries them; an older one may not, and then a held card
+                # counts like any other. Said, never silent — the line would just look stuck.
+                _warn_no_labels()
+            elif skip_label in (item.get("labels") or []):
+                continue
         col = _item_status(item, cfg.get("status_field"))
         if col:
             counts[col] = counts.get(col, 0) + 1
