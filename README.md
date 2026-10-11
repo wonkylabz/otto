@@ -142,7 +142,7 @@ split that matters is **interactive** (can clarify, waits for your approval) vs 
 | **Web chat** | the front door; the only interactive one |
 | **Jobs** | runbooks on a Temporal Schedule — a saved request, optionally with prose that *is* its approved plan, or a human-authored dependency graph; a runbook with a Slack destination posts its result there (a channel id, `#name`, or a user id to DM) |
 | **Webhooks** | `POST /api/events/<cap>`, HMAC-signed over body **and** timestamp, replay-protected |
-| **GitHub board** | a Projects v2 board as a queue — moving a card to **Ready** is the approval; the result is commented back |
+| **GitHub board** | a Projects v2 board as a queue — moving a card to **Ready** is the approval; the result is commented back, and a card moved back to Ready runs again; [Factory mode](#factory-mode) drives it on its own |
 | **Slack** | DMs and @-mentions, under your own account, a bot user, or both — see [docs/slack.md](docs/slack.md) |
 
 GitHub also has a **pull** half: `pr_review.py` polls PRs where you're a requested reviewer,
@@ -190,6 +190,35 @@ checkout. Otto pushes a branch, opens a draft PR, and tears the clone down after
   is never a target.
 - Registered checkouts are refreshed with `git fetch`, never `git pull` — that tree is yours
   and is routinely dirty.
+
+## Factory mode
+
+Admin → Mode → **Start factory** points one empty registered repo and the GitHub board at a
+self-driving build loop, seeded with an idea:
+
+```
+PM sprint ─▶ tickets in Ready ─▶ worker builds ─▶ draft PR ─▶ review + QA ─▶ auto-merge ─▶ Done
+    ▲                                                                                      │
+    └──────────── playtest of main ◀──────────── queue drained ◀──────────────────────────┘
+```
+
+- **It is unsafe by design, and the switch is the approval.** Tickets on that repo run without
+  a gate, and a PR that passes review **and** QA merges itself. Every other ingress stays
+  Manual, the header shows a FACTORY chip on every tab, and the global Pause still stops it.
+- **The seed becomes `GOALS.md`** (product + Definition of Done). The PM writes a `SPEC.md`
+  first — domain rules cited from an authoritative source, legal and illegal cases, and a UX
+  contract — and every later ticket cites the rules it implements, with a test per rule.
+- **Each sprint after a merge starts with a playtest**: QA uses `main` as a real user (headless
+  browser, screenshots) and its defects become the next tickets. The factory only declares
+  itself done once the current `main` playtests clean.
+- **One ticket at a time** by default (WIP), so each builds on the last merge; a Blocked or
+  stranded card stops the line until the next sprint's PM rewrites or drops it.
+- **It stops itself, loudly**: on its budget, after N sprints merging nothing, or on DONE — each
+  with a push notification. A spent Claude usage limit *pauses* it instead, and it resumes on
+  its own once Claude answers again.
+- **MCP servers are an allowlist**: factory runs get only the servers you tick in its form, so
+  your mail, chat and home servers stay out of an unattended, pre-approved loop.
+- Back to **Manual** restores the board settings Factory changed; runs already going finish.
 
 ## How it works (file ≈ layer)
 
