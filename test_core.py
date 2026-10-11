@@ -1432,6 +1432,13 @@ class QARequestTests(unittest.TestCase):
                                                       "repo": "r", "request": "x", "wid": "w-rev0"})
             self.assertIsNone(seen["cwd"])
 
+    def test_qa_reports_every_acceptance_criterion_with_its_evidence(self):
+        # The judge reads only the report: a QA that checked everything but summarised by topic
+        # was INCONCLUSIVE for the criteria its summary never named (tarot#11).
+        req = engine.qa_review_request("https://github.com/o/r/pull/7", "r", "x")
+        self.assertIn("one line per criterion", req)
+        self.assertIn("Never leave a criterion out", req)
+
     def test_omits_repo_clause_when_none(self):
         req = engine.qa_review_request("https://github.com/o/r/pull/7", None, "do a thing")
         self.assertIn("pull/7", req)

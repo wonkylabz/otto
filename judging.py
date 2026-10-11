@@ -641,6 +641,14 @@ def qa_review_request(pr_url, repo, request, checkout=None):
         "Design and run a reversible empirical test in a safe environment (dev/staging only), "
         "prove whether the change actually behaves as intended, then tear everything down and "
         "confirm it left zero residue. Do NOT mark the PR ready or merge it — only validate.\n\n"
+        # The judge reads ONLY this report, never the tool calls behind it: a QA that checked
+        # every criterion but summarised by topic was judged INCONCLUSIVE for the ones its
+        # summary never named (tarot#11).
+        "Your final report is the ONLY thing the reviewer of your work sees. If the request "
+        "lists acceptance criteria, include a checklist with one line per criterion, in its "
+        "order: met / not met / not checkable here, plus the evidence for it (the command you "
+        "ran and the output that proves it, or the file and test that covers it). Never "
+        "leave a criterion out.\n\n"
         "End your reply with a final line that is exactly one of: PASS (the change is proven to "
         "work and is safe to merge), FAIL (a concrete defect or unmet requirement — state it), "
         "or INCONCLUSIVE (could not be empirically proven either way — say why).")
