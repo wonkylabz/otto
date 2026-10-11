@@ -266,7 +266,7 @@ class PostPrMixin:
                                     f"{self._fix_error(fix)}\n" + critique}
         return {"state": "fail", "rounds": rounds, cap_field: cap_name}
 
-    async def _auto_merge(self, params, pr, review, qa, notes):
+    async def _auto_merge(self, params, pr, review, qa, notes, request=None, cap=None, repo=None):
         """Factory mode (`factory.apply` sets `auto_merge`, only from the board poll activity):
         merge the PR once BOTH loops PASSED — never on a skipped or inconclusive one. A refused
         merge (conflict, branch protection) is a human's, routed to Blocked like a failed QA.
@@ -282,6 +282,16 @@ class PostPrMixin:
         if not (params.get("auto_merge") and pr and pr.get("pr_url") and not self._needs_human
                 and (review or {}).get("state") == "pass" and (qa or {}).get("state") == "pass"):
             return False
+        # Review ran BEFORE QA, so a QA fix round pushed commits no reviewer has read. Review the
+        # final tree once more; anything short of a clean pass with no fix of its own (which QA
+        # would then not have seen) is a human's. Patched: in-flight runs replay without it.
+        if ((qa or {}).get("rounds") and request is not None
+                and workflow.patched("factory-rereview")):
+            again = await self._run_review_loop(request, cap, repo, pr["pr_url"])
+            if again.get("state") != "pass" or again.get("rounds"):
+                self._needs_human = {"reason": "merge_failed",
+                                     "detail": "QA's fixes did not pass a fresh code review"}
+                return False
         self._enter("MERGE")
         out = await workflow.execute_activity(
             merge_pr, {"pr_url": pr["pr_url"], "factory": params.get("factory")},

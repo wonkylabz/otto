@@ -626,7 +626,7 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
     return verdict
 
 
-def qa_review_request(pr_url, repo, request, checkout=None):
+def qa_review_request(pr_url, repo, request, checkout=None, checkout_error=None):
     """The instruction handed to the QA capability (default agent:sre-qa) for the post-PR
     loop. Pure (unit-testable). Tells QA to validate the PR empirically in dev/staging,
     tear down, confirm zero residue, and end with a one-word verdict the judge can parse.
@@ -634,7 +634,9 @@ def qa_review_request(pr_url, repo, request, checkout=None):
     repo = f" in repo `{repo}`" if repo else ""
     where = (f"Your working directory `{checkout}` is a throwaway clone of this PR's head "
              "branch, yours alone: run the repo's own setup, tests and lint THERE, and show "
-             "each command's output. Never clone elsewhere.\n\n") if checkout else ""
+             "each command's output. Never clone elsewhere.\n\n") if checkout else (
+        f"No checkout of this PR could be provisioned for you ({checkout_error}). Say so "
+        "plainly in your report.\n\n" if checkout_error else "")
     return (
         f"QA this pull request{repo} before it merges: {pr_url}\n\n"
         f"It was opened to satisfy this request:\n{request}\n\n{where}"

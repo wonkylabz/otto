@@ -184,6 +184,10 @@ def plan_task_steps(payload: dict) -> dict:
     list means 'not plan mode / not worth planning' and the workflow falls through to the normal
     verify ladder. The planner itself is pinned to Claude (engine.plan_steps)."""
     cap = _cap(payload["name"])
+    # A factory run never decomposes: the step runner carries neither its MCP allowlist nor its
+    # deny list, so an escalated step would inherit every server the operator has.
+    if payload.get("factory"):
+        return {"steps": []}
     if cap is None or not engine.plan_mode_active(cap, requested=payload.get("requested", False)):
         return {"steps": []}
     steps = engine.plan_steps(payload["request"], cap)
@@ -747,15 +751,17 @@ def _qa_checkout(payload):
     without one, as before). Never raises: a missing checkout costs evidence, not the round."""
     import workspace
     run_id = f"{payload.get('wid') or 'qa'}-ws"
+    from ui import trace
     try:
         branch = workspace.pr_branch(payload.get("repo"), payload.get("pr_url"))
         if not branch:
-            return None
+            trace("QA", f"{payload.get('wid')}: no checkout — the PR's head branch did not resolve")
+            return {"error": "the PR's head branch could not be resolved"}
         ws = workspace.provision(payload.get("repo"), run_id, from_branch=True, branch=branch)
         return {"path": ws["path"], "run_id": run_id}
     except Exception as e:  # noqa: BLE001 - see docstring
-        activity.logger.info(f"QA checkout not provisioned: {e}")
-        return None
+        trace("QA", f"{payload.get('wid')}: no checkout — {str(e)[:200]}")
+        return {"error": f"the PR branch could not be cloned: {str(e)[:200]}"}
 
 
 def _post_pr_capability(kind, payload):
@@ -775,7 +781,11 @@ def _post_pr_capability(kind, payload):
     # none it sat in Otto's checkout, where a clone elsewhere is refused and the registered
     # checkout is write-denied, so `make test` never ran and every PR went INCONCLUSIVE.
     ws = _qa_checkout(payload) if kind == "qa" else None
-    extra = {"checkout": ws["path"]} if ws else {}
+    # A failed checkout is SAID in the request, so QA reports it and the judge's critique names
+    # the real cause rather than an unexplained INCONCLUSIVE.
+    extra = ({"checkout": ws["path"]} if ws and ws.get("path")
+             else {"checkout_error": ws["error"]} if ws else {})
+    ws = ws if ws and ws.get("path") else None
     req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
                                            payload["request"], **extra)
     try:
@@ -1095,10 +1105,9 @@ def poll_board(payload: dict) -> dict:
     room = None
     if factory.enabled(fac):
         counts = board.column_counts(cfg, repo=fac.get("slug"), data=data)
-        active = (counts or {}).get((cfg.get("columns") or {}).get("active"), 0)
-        # A wall (factory.pause) holds pickup too: a ticket started now dies on the same refusal.
-        room = (0 if fac.get("paused") or factory.line_stopped(counts, cfg)
-                else max(0, int(fac.get("wip") or 1) - active))
+        room, why = factory.pickup_room(fac, counts, cfg, meta)
+        if why:
+            activity.logger.info(f"board: factory pickup held — {why}")
     for stub in stubs:
         n = stub.get("number")
         if n is None:
@@ -1147,12 +1156,15 @@ def poll_board(payload: dict) -> dict:
         if wid is None:
             skipped.append(n)
             continue
+        if owned:
+            # Claimed BEFORE it starts: an unclaimed factory run escapes the MCP allowlist and
+            # the budget, and the next poll sees it running and never retries the claim.
+            factory.claim(wid)
         if board.start_run(wid, params):
             board.set_status(cfg, meta, issue.get("item_id"), (cfg.get("columns") or {}).get("active"))
             picked.append(n)
             if owned:
                 room -= 1
-                factory.claim(wid)
         else:
             skipped.append(n)
     if picked:
@@ -1186,28 +1198,38 @@ def factory_playtest(payload: dict) -> dict:
     import workspace
     s = factory.load()
     wid = payload["wid"]
+    if not factory.enabled(s):
+        return {"verdict": "", "block": ""}
+
+    def skipped(why):
+        # Named in the factory log and handed to the PM, so a DONE refused for "not clean" is
+        # never a mystery: the playtest did not run, and this is why.
+        factory.note_playtest_skipped(why)
+        return {"verdict": "", "block": factory.playtest_block(
+            f"(the playtest could not run: {why} — no product evidence this sprint)")}
     cap = _cap(config.QA_CAP)
-    if cap is None or not factory.enabled(s):
-        return {"result": "", "verdict": ""}
+    if cap is None:
+        return skipped(f"the QA capability '{config.QA_CAP}' is not registered/enabled")
     run_id = f"{wid}-ws"
     try:
         ws = workspace.provision(s["repo"], run_id)
     except Exception as e:  # noqa: BLE001 - see docstring
-        activity.logger.info(f"playtest checkout not provisioned: {e}")
-        return {"result": "", "verdict": ""}
+        return skipped(f"could not clone the default branch: {str(e)[:200]}")
     req = factory.playtest_request(s)
     try:
         mcp_tools, mcp_path = _mcp(wid)
         att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                                  mcp_config_path=mcp_path, wid=wid, cwd=ws["path"],
                                  deny_tools=_mcp_denies(wid))
+        # Audited under a wid the factory owns (`factory._owned`): it counts against the budget.
+        engine.record_attempt(att["workflow"], f"[playtest] {s.get('slug')}", cap, att["result"],
+                              att["cost"], 1, None, tokens=att.get("tokens"),
+                              model=att.get("model"), repo=s["repo"],
+                              duration_s=att.get("duration_s"))
+    except Exception as e:  # noqa: BLE001 - see docstring
+        return skipped(f"{type(e).__name__}: {str(e)[:200]}")
     finally:
         workspace.cleanup(run_id)
-    # Audited under a wid the factory owns (`factory._owned`), so it counts against the budget.
-    engine.record_attempt(att["workflow"], f"[playtest] {s.get('slug')}", cap, att["result"],
-                          att["cost"], 1, None, tokens=att.get("tokens"),
-                          model=att.get("model"), repo=s["repo"],
-                          duration_s=att.get("duration_s"))
     return {"verdict": factory.note_playtest(att["result"]),
             # The brief's appendix, built here: workflow code never imports factory (it does IO).
             "block": factory.playtest_block(att["result"])}
@@ -1233,7 +1255,7 @@ def merge_pr(payload: dict) -> dict:
         if not (rc2 == 0 and state.strip().upper() == "MERGED"):
             return {"merged": False, "error": err[:300]}
     if payload.get("factory"):
-        factory.note_merge(payload["factory"], pr_url)
+        factory.note_merge(payload["factory"], pr_url)     # idempotent per PR url
     return {"merged": True}
 
 

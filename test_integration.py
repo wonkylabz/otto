@@ -6102,7 +6102,7 @@ class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
     """The sprint workflow only sequences: gate -> one PM child run -> book its verdict. A closed
     gate runs no child at all."""
 
-    async def _run(self, gate):
+    async def _run(self, gate, play=None):
         import uuid
         import factory
         from temporalio.worker import UnsandboxedWorkflowRunner
@@ -6115,7 +6115,7 @@ class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
         def _play(payload):
             played.append(payload["wid"])
             return {"verdict": "defects", "block": "\nPLAYTEST REPORT: envido in hand 2"}
-        self._patch_activity(activities, "factory_playtest", _play)
+        self._patch_activity(activities, "factory_playtest", play or _play)
 
         orig = (factory.gate, factory.after_sprint)
         factory.gate = lambda: gate
@@ -6160,6 +6160,14 @@ class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
                                        "params": {"request": "sprint", "doc": "BRIEF"}})
         self.assertEqual(self.played, [])
         self.assertNotIn("PLAYTEST", booked[0]["result"])
+
+    async def test_a_crashed_sprint_is_still_booked(self):
+        # Unbooked, a sprint failing the same way every tick never trips the stall limit.
+        def _boom(payload):
+            raise RuntimeError("clone failed")
+        out, booked = await self._run({"go": True, "wid": "factory-x-s4", "playtest": True,
+                                       "params": {"request": "sprint", "doc": "BRIEF"}}, play=_boom)
+        self.assertEqual(booked[0]["needs_human"]["reason"], "sprint_error")
 
     async def test_a_closed_gate_runs_no_sprint(self):
         out, booked = await self._run({"go": False, "why": "budget"})

@@ -8892,9 +8892,12 @@ class FactoryModeTests(unittest.TestCase):
     def test_apply_forces_repo_mode_qa_and_auto_merge_with_no_clarify_pause(self):
         st = self._on()
         p = self.factory.apply({"reply_to": {"repo_edit": False}, "clarify": True,
-                                "approval": "ask"}, st)
+                                "approval": "auto"}, st)
         self.assertEqual((p["repo"], p["qa"], p["clarify"], p["approval"], p["auto_merge"]),
                          ("game", True, False, "auto", True))
+        # The board's `hold` label (approval "ask") still holds: gated, never merged unread.
+        held = self.factory.apply({"reply_to": {}, "approval": "ask"}, st)
+        self.assertEqual((held["approval"], held["auto_merge"]), ("ask", False))
         self.assertEqual(p["factory"], st["started_at"])
         self.assertTrue(p["reply_to"]["repo_edit"])
         self.assertEqual(p["cap"], config.WORKER_CAP)       # code, never routed by topic
@@ -8990,6 +8993,120 @@ class FactoryModeTests(unittest.TestCase):
             again = board.project_meta({**cfg, "columns": {**cols, "active": "Doing"}})
             self.assertIn("Doing", again["options"])
 
+    # --- review-loop fixes -----------------------------------------------------------------
+    def test_a_new_factory_inherits_nothing_from_the_last(self):
+        # A stale clean playtest let a fresh factory declare DONE untested; a stale pause
+        # re-readied the new repo's cards whose numbers matched the old walled tickets.
+        import board
+        self._on(enabled=False, merged=3, playtest_merged=3, playtest_verdict="clean",
+                 paused={"reason": "x", "wids": ["gh-issue-2"]}, walls_seen_at="2026-01-01",
+                 merged_prs=["u"], blind_ticks=2)
+        meta = {"project_id": "P", "status_field_id": "F",
+                "options": {c: c for c in ("Ready", "In progress", "In review", "Done", "Blocked")}}
+        cols = {"ready": "Ready", "active": "In progress", "review": "In review", "done": "Done",
+                "blocked": "Blocked"}
+        with unittest.mock.patch.object(workspace, "resolve", return_value={"name": "game", "path": "/x"}), \
+                unittest.mock.patch.object(self.factory, "_repo_slug", return_value="me/game"), \
+                unittest.mock.patch.object(board, "load", return_value={"project": "me/7", "columns": cols}), \
+                unittest.mock.patch.object(board, "project_meta", return_value=meta), \
+                unittest.mock.patch.object(board, "save"), \
+                unittest.mock.patch.object(board, "reconcile_schedule", return_value="ok"), \
+                unittest.mock.patch.object(self.factory, "_seed_goals", return_value="kept"), \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule", return_value="created"):
+            st = self.factory.enable({"repo": "game", "seed": "s", "budget_usd": 5})
+        self.assertEqual((st["playtest_merged"], st["playtest_verdict"], st["paused"],
+                          st["walls_seen_at"], st["merged_prs"], st["blind_ticks"]),
+                         (-1, "", None, "", [], 0))
+
+    def test_enable_without_a_sprint_schedule_is_refused_and_undone(self):
+        import board
+        import delivery
+        cols = {"ready": "Ready", "active": "In progress", "review": "In review", "done": "Done",
+                "blocked": "Blocked"}
+        meta = {"project_id": "P", "status_field_id": "F", "options": {c: c for c in cols.values()}}
+        with unittest.mock.patch.object(workspace, "resolve", return_value={"name": "game", "path": "/x"}), \
+                unittest.mock.patch.object(self.factory, "_repo_slug", return_value="me/game"), \
+                unittest.mock.patch.object(board, "load", return_value={"project": "me/7", "columns": cols}), \
+                unittest.mock.patch.object(board, "project_meta", return_value=meta), \
+                unittest.mock.patch.object(board, "save"), \
+                unittest.mock.patch.object(board, "reconcile_schedule", return_value="ok"), \
+                unittest.mock.patch.object(delivery, "notify"), \
+                unittest.mock.patch.object(self.factory, "_seed_goals", return_value="kept"), \
+                unittest.mock.patch.object(self.factory, "_hold_ready") as hold, \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                           return_value="skipped (connection refused)"):
+            with self.assertRaises(self.factory.Refused) as cm:
+                self.factory.enable({"repo": "game", "seed": "s", "budget_usd": 5})
+        self.assertIn("sprint schedule", str(cm.exception))
+        self.assertFalse(self.factory.load()["enabled"])
+        hold.assert_not_called()                 # a refused enable moves no cards
+
+    def test_a_limit_stop_holds_the_factorys_ready_cards_and_restores_the_board_first(self):
+        import board
+        import delivery
+        self._on()
+        order = []
+        with unittest.mock.patch.object(board, "save", side_effect=lambda c: order.append("save")), \
+                unittest.mock.patch.object(board, "reconcile_schedule"), \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule"), \
+                unittest.mock.patch.object(delivery, "notify"), \
+                unittest.mock.patch.object(self.factory, "_hold_ready",
+                                           side_effect=lambda s: order.append("hold") or [7]):
+            self.factory.disable("budget", "spent")
+        self.assertEqual(order, ["save", "hold"])
+        self.assertIn("held [7]", self.factory.load()["history"][0]["detail"])
+
+    def test_ownership_spans_a_runs_loops_but_never_another_generation(self):
+        own = self.factory._owned
+        self.assertTrue(own("gh-issue-5-rev0", ["gh-issue-5"]))
+        self.assertTrue(own("factory-x-s2-play", ["factory-x-s2"]))
+        self.assertTrue(own("gh-issue-5-r1-qa0", ["gh-issue-5-r1"]))
+        # Another repo's re-run of #5 on a shared board is not the factory's.
+        self.assertFalse(own("gh-issue-5-r1", ["gh-issue-5"]))
+        self.assertFalse(own("gh-issue-5-r12-rev0", ["gh-issue-5"]))
+
+    def test_a_retried_merge_counts_once(self):
+        self._on(merged=0)
+        for _ in range(2):
+            self.factory.note_merge("2026-10-10T10:00:00", "https://github.com/me/game/pull/4")
+        self.assertEqual(self.factory.load()["merged"], 1)
+
+    def test_resume_stays_paused_when_the_walled_cards_cannot_be_moved(self):
+        import delivery
+        self._on(paused={"reason": "claude_usage_limit", "wids": ["gh-issue-20"]})
+        with unittest.mock.patch.object(self.factory, "_requeue", return_value=None), \
+                unittest.mock.patch.object(self.factory, "_walls_since", return_value=[]), \
+                unittest.mock.patch.object(delivery, "notify") as notify:
+            self.assertIsNone(self.factory.resume())
+        self.assertTrue(self.factory.load()["paused"])
+        notify.assert_not_called()
+
+    def test_a_blind_gate_notifies_once_on_the_third_tick(self):
+        import delivery
+        self._on()
+        with unittest.mock.patch.object(self.factory, "spent", return_value=None), \
+                unittest.mock.patch.object(self.factory, "_walls_since", return_value=[]), \
+                unittest.mock.patch.object(delivery, "notify") as notify:
+            for _ in range(5):
+                self.assertEqual(self.factory.gate()["why"], "spend unmeasurable")
+        self.assertEqual(notify.call_count, 1)
+
+    def test_qa_fix_commits_get_a_fresh_review_before_the_merge(self):
+        # Review runs before QA; a QA fix round pushed commits no reviewer read, and merged.
+        from test_support import workflow_src
+        src = workflow_src()
+        i = src.index('workflow.patched("factory-rereview")')
+        self.assertIn('(qa or {}).get("rounds")', src[i - 200:i])
+        self.assertLess(i, src.index('self._enter("MERGE")'))
+
+    def test_factory_runs_never_decompose_into_plan_steps(self):
+        import activities
+        with unittest.mock.patch.object(engine, "plan_mode_active", return_value=True), \
+                unittest.mock.patch.object(engine, "plan_steps", return_value=["a", "b"]), \
+                unittest.mock.patch.object(activities, "_cap", return_value=object()):
+            self.assertEqual(activities.plan_task_steps(
+                {"request": "r", "name": "product-manager", "factory": "2026"}), {"steps": []})
+
     # --- a Claude wall pauses ----------------------------------------------------------
     def test_a_usage_limit_pauses_the_line_and_it_resumes_without_counting_idle(self):
         # A spent limit failed every sprint the same way: each counted idle, so the factory
@@ -9034,9 +9151,21 @@ class FactoryModeTests(unittest.TestCase):
             self.assertTrue(self.factory.gate()["go"])                   # the old wall stays handled
         self.assertEqual(notes, ["Otto factory paused: Claude unavailable", "Otto factory resumed"])
 
-    def test_pickup_holds_while_paused(self):
-        import activities
-        self.assertIn('fac.get("paused") or factory.line_stopped', inspect.getsource(activities.poll_board))
+    def test_pickup_holds_while_paused_blind_or_past_the_budget(self):
+        # Rate-limited metadata left the started card in Ready, WIP read 0, and the next poll
+        # started more; the budget was checked only once per sprint tick.
+        cfg = {"columns": {"active": "In Progress", "blocked": "Blocked", "review": "In review"}}
+        meta = {"project_id": "P", "status_field_id": "F", "options": {"In Progress": "a"}}
+        st = self._on(wip=2, budget_usd=10.0)
+        room = self.factory.pickup_room
+        with unittest.mock.patch.object(self.factory, "spent", return_value=1.0):
+            self.assertEqual(room(st, {"In Progress": 1}, cfg, meta), (1, ""))
+            self.assertEqual(room({**st, "paused": {"reason": "x"}}, {}, cfg, meta)[0], 0)
+            self.assertEqual(room(st, {"Blocked": 1}, cfg, meta)[0], 0)
+            self.assertEqual(room(st, {}, cfg, {})[1], "board metadata incomplete")
+        for cost in (None, 10.0):
+            with unittest.mock.patch.object(self.factory, "spent", return_value=cost):
+                self.assertEqual(room(st, {}, cfg, meta), (0, "budget"))
 
     # --- MCP allowlist ----------------------------------------------------------------
     def test_a_factory_run_gets_only_the_ticked_mcp_servers_and_the_rest_are_denied(self):
@@ -9172,7 +9301,9 @@ class FactoryModeTests(unittest.TestCase):
         started = []
         with unittest.mock.patch.object(board, "_generations", return_value=[]), \
                 unittest.mock.patch.object(board, "load", return_value=cfg), \
-                unittest.mock.patch.object(board, "project_meta", return_value={}), \
+                unittest.mock.patch.object(board, "project_meta", return_value={
+                    "project_id": "P", "status_field_id": "F", "options": {"In Progress": "a"}}), \
+                unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
                 unittest.mock.patch.object(board, "item_list", return_value={"items": []}), \
                 unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
                 unittest.mock.patch.object(board, "issue_details", side_effect=dict), \

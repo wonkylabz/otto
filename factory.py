@@ -64,6 +64,8 @@ _DEFAULTS = {
     "history": [],
     "paused": None,          # {reason, since, wids}: a Claude wall hit; sprints skip, not idle
     "walls_seen_at": "",     # audit watermark: walls at or before this are already handled
+    "blind_ticks": 0,
+    "merged_prs": [],        # PR urls already counted in `merged` (a retried merge counts once)        # consecutive ticks that could not read spend or the board
     "mcp_allow": [],         # MCP servers the factory's runs may use; every other one is denied
     "playtest_merged": -1,   # `merged` when the product was last playtested (-1 = never)
     "playtest_verdict": "",  # "clean" | "defects" | "" (unparseable or never)
@@ -276,8 +278,12 @@ def apply(params, state):
     the poll activity, like any label pin."""
     if not params.get("cap"):
         params["cap"] = config.WORKER_CAP
+    # The board's `hold` label still holds: a human asked to approve that ticket, so it waits at
+    # the gate and is never merged unread.
+    held = params.get("approval") == "ask"
     params.update({"repo": state["repo"], "repo_hint": None, "qa": True, "clarify": False,
-                   "approval": "auto", "auto_merge": True, "factory": state["started_at"],
+                   "approval": "ask" if held else "auto", "auto_merge": not held,
+                   "factory": state["started_at"],
                    # Always off the default branch, never onto an older PR the ticket mentions
                    # (activities.resolve_pr_target).
                    "fresh_branch": True})
@@ -297,16 +303,33 @@ def claim(wid):
 def note_merge(factory_tag, pr_url):
     """A factory PR merged. Ignored when it belongs to an earlier factory (`started_at` moved)."""
     def _fn(s):
-        if s.get("started_at") and s["started_at"] == factory_tag:
-            s["merged"] = int(s.get("merged") or 0) + 1
-            _event(s, "merged", pr_url or "")
+        if not (s.get("started_at") and s["started_at"] == factory_tag):
+            return
+        # Once per PR: a retried merge activity reaches here twice, and an inflated count hides
+        # idle sprints and moves the playtest/DONE watermark past a tree nobody tested.
+        if pr_url and pr_url in (s.get("merged_prs") or []):
+            return
+        s["merged_prs"] = list(s.get("merged_prs") or []) + ([pr_url] if pr_url else [])
+        s["merged"] = int(s.get("merged") or 0) + 1
+        _event(s, "merged", pr_url or "")
     _mutate(_fn)
 
 
 # --- budget ------------------------------------------------------------------------------
 
+_GEN_RE = re.compile(r"^r\d+(?:-|$)")
+
+
 def _owned(wid, wids):
-    return any(wid == w or wid.startswith(w + "-") for w in wids)
+    """`wid` is a claimed run or one of its loops (`-rev0`, `-qa1`, `-play`). Never a later
+    GENERATION (`-r1`) of a claimed card: the factory claims each generation itself, and on a
+    shared board `gh-issue-5-r1` may be another repo's issue #5."""
+    for w in wids:
+        if wid == w:
+            return True
+        if wid.startswith(w + "-") and not _GEN_RE.match(wid[len(w) + 1:]):
+            return True
+    return False
 
 
 def spent(state=None):
@@ -391,12 +414,18 @@ def pause(reason, wids, seen_at=None):
     before = load()
     if before.get("paused"):
         return before
+    fresh = []
 
     def _fn(s):
+        if s.get("paused"):          # a concurrent pause won the lock: keep its record
+            return
+        fresh.append(True)
         s["paused"] = {"reason": reason, "since": _now(), "wids": sorted(set(wids))}
         s["walls_seen_at"] = max(s.get("walls_seen_at") or "", seen_at or _now())
         _event(s, "paused", f"{reason}: {', '.join(sorted(set(wids)))[:200]}")
     state = _mutate(_fn)
+    if not fresh:
+        return state
     delivery.notify("Otto factory paused: Claude unavailable",
                     lines=[f"repo: {before.get('slug')}", f"reason: {reason}",
                            "resumes by itself once Claude answers again"],
@@ -429,13 +458,14 @@ def _requeue(s, wids):
     cols = bcfg.get("columns") or {}
     data = board.item_list(bcfg)
     if data is None:
-        return []
+        return None
     meta = board.project_meta(bcfg)
     moved = []
     for stub in board._parse_items_in(data, bcfg, cols.get("blocked")):
         if stub.get("number") in nums and (stub.get("repo") or "").lower() == (s.get("slug") or "").lower():
-            if board.set_status(bcfg, meta, stub.get("item_id"), cols.get("ready")):
-                moved.append(stub["number"])
+            if not board.set_status(bcfg, meta, stub.get("item_id"), cols.get("ready")):
+                return None
+            moved.append(stub["number"])
     return moved
 
 
@@ -444,7 +474,15 @@ def resume():
     import delivery
     s = load()
     p = s.get("paused") or {}
-    moved = _requeue(s, p.get("wids") or [])
+    # Runs already in flight when it paused may have walled since; the watermark moves to now
+    # below, so they are re-readied here or never.
+    wids = list(p.get("wids") or []) + [w for w, _r, _a in _walls_since(s)]
+    moved = _requeue(s, wids)
+    if moved is None:
+        # Clearing the pause now would strand the walled cards in Blocked, where the PM spends a
+        # retry on them — the exact thing the pause exists to prevent. Stay paused, try next tick.
+        _mutate(lambda st: _event(st, "resume_deferred", "board unreadable"))
+        return None
 
     def _fn(st):
         st["paused"] = None
@@ -468,7 +506,8 @@ def _wall_gate(s):
     ok, detail = claude_available()
     if not ok:
         return {"go": False, "why": f"paused: {s['paused'].get('reason')} ({detail[:80]})"}
-    resume()
+    if resume() is None:
+        return {"go": False, "why": "paused: resume deferred (board unreadable)"}
     return None
 
 
@@ -583,8 +622,13 @@ def enable(form):
         s.update(cfg)
         s["slug"] = slug
         if fresh:
+            # EVERYTHING a run of the line accumulates resets, or a new factory inherits the old
+            # one's clean playtest (and declares DONE untested) or its pause (and re-readies the
+            # new repo's cards whose numbers match the old walled tickets).
             s.update({"started_at": _now(), "sprint_n": 0, "idle_sprints": 0, "merged": 0,
-                      "merged_seen": 0, "wids": [], "prev_board": bcfg})
+                      "merged_seen": 0, "wids": [], "prev_board": bcfg, "paused": None,
+                      "walls_seen_at": "", "playtest_merged": -1, "playtest_verdict": "",
+                      "blind_ticks": 0, "merged_prs": []})
         s["enabled"], s["status"] = True, "running"
         _event(s, "enabled", f"{slug}, budget ${cfg['budget_usd']}, wip {cfg['wip']}, "
                              f"{GOALS_FILE} {goals}")
@@ -592,6 +636,11 @@ def enable(form):
     board.save({**bcfg, "enabled": True, "approval_default": "auto"})
     sched = {"board": board.reconcile_schedule(), "sprint": reconcile_schedule(trigger=True)}
     trace("FACTORY", f"enabled on {slug}: {sched}")
+    if not str(sched["sprint"]).startswith(("created", "updated")):
+        # No schedule, no sprint: "running" at sprint 0 forever. Undo and say why.
+        disable("schedule_failed", str(sched["sprint"]))
+        raise Refused(f"could not create the sprint schedule ({sched['sprint']}) — is Temporal "
+                      "up? Nothing was left enabled")
     return {**state, "schedules": sched}
 
 
@@ -603,24 +652,87 @@ def disable(reason="manual", detail=""):
     before = load()
     if not enabled(before):
         return before
+    # The board first: marking the factory off before a failed restore leaves auto-approval on
+    # with no factory to switch off again (a second disable returns early above).
+    if isinstance(before.get("prev_board"), dict):
+        board.save(before["prev_board"])
+        board.reconcile_schedule()
+    # A LIMIT stop must stop the work too: the factory's tickets still in Ready would otherwise
+    # run as ordinary board tickets — no WIP cap, no budget, no MCP allowlist. Manual (and a
+    # refused enable) leave them for the operator, who is the one deciding.
+    held = _hold_ready(before) if reason in _LIMIT_STOPS else []
 
     def _fn(s):
         s["enabled"] = False
         s["status"] = f"stopped: {reason}"
-        _event(s, f"stopped:{reason}", detail)
+        _event(s, f"stopped:{reason}", detail + (f" — held {held}" if held else ""))
     state = _mutate(_fn)
-    if isinstance(before.get("prev_board"), dict):
-        board.save(before["prev_board"])
-        board.reconcile_schedule()
     sched = reconcile_schedule()
     trace("FACTORY", f"stopped ({reason}): {detail[:160]} — {sched}")
     delivery.notify(f"Otto factory stopped: {reason}",
                     lines=[f"repo: {before.get('slug')}", f"sprints: {before.get('sprint_n')}",
                            f"merged PRs: {before.get('merged')}",
-                           f"spent: ${spent(before) or 0:.2f} of ${before.get('budget_usd')}"],
+                           f"spent: {_usd(spent(before))} of ${before.get('budget_usd')}"],
                     detail=detail or None, tags=["factory"],
                     priority="default" if reason in ("done", "manual") else "high")
     return state
+
+
+_LIMIT_STOPS = ("budget", "stalled")
+
+
+def _usd(v):
+    return "unknown" if v is None else f"${v:.2f}"
+
+
+def _hold_ready(s):
+    """Move the factory repo's Ready cards to Blocked; returns their numbers. Best-effort."""
+    import board
+    try:
+        bcfg = board.load()
+        cols = bcfg.get("columns") or {}
+        data = board.item_list(bcfg)
+        if data is None:
+            return []
+        meta = board.project_meta(bcfg)
+        return [st["number"] for st in board._parse_items_in(data, bcfg, cols.get("ready"))
+                if (st.get("repo") or "").lower() == (s.get("slug") or "").lower()
+                and board.set_status(bcfg, meta, st.get("item_id"), cols.get("blocked"))]
+    except Exception as e:  # noqa: BLE001 - a stop must still complete and notify
+        trace("FACTORY", f"could not hold the Ready cards: {str(e)[:160]}")
+        return []
+
+
+def pickup_room(state, counts, cfg, meta):
+    """(room, why) — how many more factory tickets the board poll may start now. Zero while the
+    line is stopped or paused, when the card could not be moved to In progress (incomplete
+    metadata: the run would start, the card would stay in Ready, and WIP would read 0 forever),
+    and past or unable to measure the budget (the sprint gate checks it only once per tick)."""
+    cols = cfg.get("columns") or {}
+    if state.get("paused") or line_stopped(counts, cfg):
+        return 0, "line stopped"
+    meta = meta or {}
+    if not (meta.get("project_id") and meta.get("status_field_id")
+            and cols.get("active") in (meta.get("options") or {})):
+        return 0, "board metadata incomplete"
+    cost = spent(state)
+    if cost is None or cost >= float(state.get("budget_usd") or 0):
+        return 0, "budget"
+    active = (counts or {}).get(cols.get("active"), 0)
+    return max(0, int(state.get("wip") or 1) - active), ""
+
+
+def _blind(why):
+    """A tick that could not see (spend or board): skipped, but never silently for long — the
+    third in a row notifies once, so a lasting fault does not read as a healthy, idle line."""
+    import delivery
+    st = _mutate(lambda s: s.update(blind_ticks=int(s.get("blind_ticks") or 0) + 1))
+    if st["blind_ticks"] == 3:
+        _mutate(lambda s: _event(s, "blind", why))
+        delivery.notify("Otto factory can't see its state", tags=["factory"], priority="high",
+                        lines=[f"repo: {st.get('slug')}", f"cause: {why}",
+                               "no sprint starts until this clears"])
+    return {"go": False, "why": why}
 
 
 # --- the sprint gate (activities.factory_gate / factory_after_sprint) -----------------------
@@ -642,7 +754,7 @@ def gate():
     s = load()
     cost = spent(s)
     if cost is None:
-        return {"go": False, "why": "spend unmeasurable"}
+        return _blind("spend unmeasurable")
     if cost >= float(s["budget_usd"] or 0):
         disable("budget", f"spent ${cost:.2f} of ${s['budget_usd']}")
         return {"go": False, "why": "budget"}
@@ -652,7 +764,9 @@ def gate():
     bcfg = board.load()
     counts = board.column_counts(bcfg, repo=s.get("slug"))
     if counts is None:
-        return {"go": False, "why": "board unreadable"}
+        return _blind("board unreadable")
+    if s.get("blind_ticks"):
+        _mutate(lambda st: st.update(blind_ticks=0))
     cols = bcfg.get("columns") or {}
     ready, active = (counts.get(cols.get(k), 0) for k in ("ready", "active"))
     if active:
@@ -713,6 +827,12 @@ def note_playtest(result):
     return word
 
 
+def note_playtest_skipped(why):
+    """A playtest that could not run is recorded as such, so DONE's refusal names the cause."""
+    _mutate(lambda st: _event(st, "playtest_skipped", why))
+    trace("FACTORY", f"playtest skipped: {why}")
+
+
 def playtest_clean(state):
     """DONE needs the CURRENT tree playtested clean — a stale clean predates the last merge."""
     return (state.get("playtest_verdict") == "clean"
@@ -754,7 +874,9 @@ def after_sprint(payload):
     if word == "done":
         # The PM's own check reads the tree; only the playtest USED it. Not idle either way:
         # the next sprint turns the defects into tickets.
-        _mutate(lambda st: _event(st, "done_refused", "the latest playtest is not clean"))
+        _mutate(lambda st: _event(st, "done_refused", "the latest playtest is not clean (verdict: "
+                                  f"{st.get('playtest_verdict') or 'none'}, of merge "
+                                  f"{st.get('playtest_merged')} / {st.get('merged')})"))
 
     def _fn(st):
         merged = int(st.get("merged") or 0)
