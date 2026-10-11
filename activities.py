@@ -1104,7 +1104,10 @@ def poll_board(payload: dict) -> dict:
     fac = factory.load()
     room = None
     if factory.enabled(fac):
-        counts = board.column_counts(cfg, repo=fac.get("slug"), data=data)
+        # A HELD card (the board's hold label) is a human's, outside the line: it neither fills
+        # the WIP cap nor stops the line from its review column (factory.apply).
+        counts = board.column_counts(cfg, repo=fac.get("slug"), data=data,
+                                     skip_label=cfg.get("hold_label"))
         room, why = factory.pickup_room(fac, counts, cfg, meta)
         if why:
             activity.logger.info(f"board: factory pickup held — {why}")

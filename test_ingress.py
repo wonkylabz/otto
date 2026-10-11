@@ -9054,7 +9054,8 @@ class FactoryModeTests(unittest.TestCase):
                                            side_effect=lambda s: order.append("hold") or [7]):
             self.factory.disable("budget", "spent")
         self.assertEqual(order, ["save", "hold"])
-        self.assertIn("held [7]", self.factory.load()["history"][0]["detail"])
+        self.assertFalse(self.factory.load()["enabled"])     # off before any card moved
+        self.assertIn("[7]", self.factory.load()["history"][0]["detail"])
 
     def test_ownership_spans_a_runs_loops_but_never_another_generation(self):
         own = self.factory._owned
@@ -9064,6 +9065,41 @@ class FactoryModeTests(unittest.TestCase):
         # Another repo's re-run of #5 on a shared board is not the factory's.
         self.assertFalse(own("gh-issue-5-r1", ["gh-issue-5"]))
         self.assertFalse(own("gh-issue-5-r12-rev0", ["gh-issue-5"]))
+
+    def test_a_held_card_is_outside_the_line(self):
+        # A held ticket's PR waits in review for its human; counted, it stopped the line and the
+        # PM closed the PR the human was holding.
+        import board
+        data = {"items": [{"content": {"type": "Issue", "repository": "me/game", "number": 1},
+                           "status": "In review", "labels": ["hold"]},
+                          {"content": {"type": "Issue", "repository": "me/game", "number": 2},
+                           "status": "In review", "labels": []}]}
+        cfg = {"status_field": "Status"}
+        self.assertEqual(board.column_counts(cfg, data=data), {"In review": 2})
+        self.assertEqual(board.column_counts(cfg, data=data, skip_label="hold"), {"In review": 1})
+        self.assertIn("is a HUMAN's", self.factory.SPRINT_BRIEF)
+
+    def test_a_schedule_blip_while_editing_never_switches_a_running_factory_off(self):
+        import board
+        self._on()
+        cols = {"ready": "Ready", "active": "In progress", "review": "In review", "done": "Done",
+                "blocked": "Blocked"}
+        meta = {"project_id": "P", "status_field_id": "F", "options": {c: c for c in cols.values()}}
+        with unittest.mock.patch.object(workspace, "resolve", return_value={"name": "game", "path": "/x"}), \
+                unittest.mock.patch.object(self.factory, "_repo_slug", return_value="me/game"), \
+                unittest.mock.patch.object(board, "load", return_value={"project": "me/7", "columns": cols}), \
+                unittest.mock.patch.object(board, "project_meta", return_value=meta), \
+                unittest.mock.patch.object(board, "save"), \
+                unittest.mock.patch.object(board, "reconcile_schedule", return_value="ok"), \
+                unittest.mock.patch.object(self.factory, "_seed_goals", return_value="kept"), \
+                unittest.mock.patch.object(self.factory, "disable") as dis, \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                           return_value="skipped (timeout)"):
+            with self.assertRaises(self.factory.Refused) as cm:
+                self.factory.enable({"repo": "game", "seed": "s", "budget_usd": 20})
+        self.assertIn("keeps running", str(cm.exception))
+        dis.assert_not_called()
+        self.assertEqual(self.factory.load()["budget_usd"], 20.0)
 
     def test_a_retried_merge_counts_once(self):
         self._on(merged=0)
@@ -9098,6 +9134,10 @@ class FactoryModeTests(unittest.TestCase):
         i = src.index('workflow.patched("factory-rereview")')
         self.assertIn('(qa or {}).get("rounds")', src[i - 200:i])
         self.assertLess(i, src.index('self._enter("MERGE")'))
+        # Judge-only (a fix would push commits QA never saw), under ids of its own, and a
+        # failure says what happened rather than blaming GitHub.
+        self.assertIn('rounds=0, tag="re"', src[i:i + 600])
+        self.assertIn('"merge_unreviewed"', src[i:i + 900])
 
     def test_factory_runs_never_decompose_into_plan_steps(self):
         import activities

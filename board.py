@@ -331,7 +331,7 @@ def list_in_column(cfg, column_key):
     return _parse_items_in(data, cfg, column_name)
 
 
-def column_counts(cfg, repo=None, data=None):
+def column_counts(cfg, repo=None, data=None, skip_label=None):
     """{column name: issue count} across the whole board, optionally only `repo`'s issues
     ("owner/name"). None on any gh failure — unlike `list_in_column`'s [], because the caller
     gates on it (factory WIP, sprint start) and an unreadable board must not read as empty.
@@ -347,6 +347,8 @@ def column_counts(cfg, repo=None, data=None):
             continue
         slug = _repo_slug(content.get("repository") or content.get("url")) or ""
         if repo and slug.lower() != repo.lower():
+            continue
+        if skip_label and skip_label in (item.get("labels") or []):
             continue
         col = _item_status(item, cfg.get("status_field"))
         if col:

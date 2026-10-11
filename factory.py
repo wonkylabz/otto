@@ -64,8 +64,8 @@ _DEFAULTS = {
     "history": [],
     "paused": None,          # {reason, since, wids}: a Claude wall hit; sprints skip, not idle
     "walls_seen_at": "",     # audit watermark: walls at or before this are already handled
-    "blind_ticks": 0,
-    "merged_prs": [],        # PR urls already counted in `merged` (a retried merge counts once)        # consecutive ticks that could not read spend or the board
+    "blind_ticks": 0,        # consecutive ticks that could not read spend or the board
+    "merged_prs": [],        # PR urls already counted in `merged` (a retried merge counts once)
     "mcp_allow": [],         # MCP servers the factory's runs may use; every other one is denied
     "playtest_merged": -1,   # `merged` when the product was last playtested (-1 = never)
     "playtest_verdict": "",  # "clean" | "defects" | "" (unparseable or never)
@@ -104,6 +104,7 @@ end to end, never ask a question back.
    first. You cannot merge, and no run is coming back for a card in "{review}": its run ended
    before the merge (often a usage limit after the PR opened). Treat it exactly like a card in
    "{blocked}" — never wait for its PR to merge.
+   A card labelled `{hold}` is a HUMAN's: never close its PR, re-ready, rewrite or close it.
    A re-readied ticket is rebuilt from scratch on a fresh branch off the default branch, so when
    you move one back to "{ready}", CLOSE its open PR with a one-line comment, and never point
    the issue text at an old PR or tell it how to branch or push — the platform owns git.
@@ -617,8 +618,11 @@ def enable(form):
                       "names in Events → Board queue → configure, or add the column on GitHub")
     goals = _seed_goals(slug, cfg["seed"])
 
+    started = []
+
     def _fn(s):
         fresh = not enabled(s)
+        started.append(fresh)
         s.update(cfg)
         s["slug"] = slug
         if fresh:
@@ -637,10 +641,15 @@ def enable(form):
     sched = {"board": board.reconcile_schedule(), "sprint": reconcile_schedule(trigger=True)}
     trace("FACTORY", f"enabled on {slug}: {sched}")
     if not str(sched["sprint"]).startswith(("created", "updated")):
-        # No schedule, no sprint: "running" at sprint 0 forever. Undo and say why.
-        disable("schedule_failed", str(sched["sprint"]))
-        raise Refused(f"could not create the sprint schedule ({sched['sprint']}) — is Temporal "
-                      "up? Nothing was left enabled")
+        if started and started[0]:
+            # No schedule, no sprint: "running" at sprint 0 forever. Undo and say why.
+            disable("schedule_failed", str(sched["sprint"]))
+            raise Refused(f"could not create the sprint schedule ({sched['sprint']}) — is "
+                          "Temporal up? Nothing was left enabled")
+        # An EDIT of a running factory: its existing schedule still fires, so a Temporal blip
+        # must not switch the whole line off — the new knobs are saved, the schedule is not.
+        raise Refused(f"settings saved, but the sprint schedule could not be updated "
+                      f"({sched['sprint']}) — the factory keeps running on its old cadence")
     return {**state, "schedules": sched}
 
 
@@ -660,13 +669,15 @@ def disable(reason="manual", detail=""):
     # A LIMIT stop must stop the work too: the factory's tickets still in Ready would otherwise
     # run as ordinary board tickets — no WIP cap, no budget, no MCP allowlist. Manual (and a
     # refused enable) leave them for the operator, who is the one deciding.
-    held = _hold_ready(before) if reason in _LIMIT_STOPS else []
-
     def _fn(s):
         s["enabled"] = False
         s["status"] = f"stopped: {reason}"
-        _event(s, f"stopped:{reason}", detail + (f" — held {held}" if held else ""))
+        _event(s, f"stopped:{reason}", detail)
     state = _mutate(_fn)
+    # After marking it off, so a poll in between cannot start one more factory ticket.
+    held = _hold_ready(before) if reason in _LIMIT_STOPS else []
+    if held:
+        state = _mutate(lambda s: _event(s, "held", f"Ready → Blocked: {held}"))
     sched = reconcile_schedule()
     trace("FACTORY", f"stopped ({reason}): {detail[:160]} — {sched}")
     delivery.notify(f"Otto factory stopped: {reason}",
@@ -762,7 +773,7 @@ def gate():
         disable("stalled", f"{s['idle_sprints']} sprints in a row merged nothing")
         return {"go": False, "why": "stalled"}
     bcfg = board.load()
-    counts = board.column_counts(bcfg, repo=s.get("slug"))
+    counts = board.column_counts(bcfg, repo=s.get("slug"), skip_label=bcfg.get("hold_label"))
     if counts is None:
         return _blind("board unreadable")
     if s.get("blind_ticks"):
@@ -788,7 +799,7 @@ def gate():
     brief = SPRINT_BRIEF.format(
         slug=s["slug"], project=board.project_spec(bcfg.get("project")), goals=GOALS_FILE,
         done=cols.get("done"), blocked=cols.get("blocked"), ready=cols.get("ready"),
-        review=cols.get("review"), spec=SPEC_FILE,
+        review=cols.get("review"), spec=SPEC_FILE, hold=bcfg.get("hold_label") or "hold",
         max_tickets=s["max_tickets"])
     params = {"request": f"Run factory sprint #{n} for {s['slug']}.",
               "cap_name": PM_CAP, "approval": "auto", "unattended": True, "scheduled": True,
