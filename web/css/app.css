@@ -652,6 +652,7 @@
   .sectcount { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--dim);
     background: var(--raised); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
   .asection.coll h3:hover .sectcount { color: var(--text-2); border-color: var(--line-strong); }
+  .sectcount.bad::after { content: "!"; margin-left: 6px; font-weight: 800; color: var(--danger-deep); }
   .h3btns { display: inline-flex; align-items: center; gap: 8px; }
   /* An integration (Slack, GitHub) groups the features it offers, so a second one drops in as a
      sibling. A subsection is INDENTED and one step quieter than its parent — the outer name is the
@@ -888,7 +889,15 @@
   p.sub.gccenter { text-align: center; max-width: none; }   /* the scanning hint, under the centered button — .sub's own max-width would otherwise keep it hugging the left edge */
   .memstat { font-size: 12px; color: var(--dim); }
   .memstat b { color: var(--text); font-weight: 600; font-size: 16px; }
-  .memstat b.gold { color: var(--text); }
+  .fbpanel { margin: 10px 0 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; }
+  .fbhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+  .fbhead small { color: var(--dim); font-size: 12px; }
+  .fbgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 12px 10px; }
+  .fbcell { display: flex; flex-direction: column; gap: 1px; padding-left: 10px; border-left: 2px solid var(--line-strong); font-size: 11px; color: var(--dim); }
+  .fbcell b { font-size: 20px; line-height: 1.1; font-weight: 600; color: var(--text); }
+  .fbcell.hot { border-left-color: var(--warn); }
+  .fbcell.hot b { color: var(--warn); }
+  .fbfoot { display: flex; gap: 18px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
   .clearbtn { font-size: 12px; color: var(--dim); background: transparent;
     border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px 11px; cursor: pointer; margin-left: auto; }
   .clearbtn:hover { color: var(--danger); border-color: var(--danger); }

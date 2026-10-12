@@ -908,6 +908,8 @@ def _bump(task, fell_back, down_model=None, down_until=None, strict=False, healt
     `health` is a (name, ok, detail) triple folded into the SAME mutation as the counters, so
     recording model health costs no extra lock/write per call."""
     def _mut(d):
+        if not d.get("tasks"):
+            d["since"] = time.time()   # counters are all-time; this is where they start
         t = d.setdefault("tasks", {}).setdefault(task, {"calls": 0, "fallbacks": 0})
         t["calls"] += 1
         if fell_back:
@@ -1216,7 +1218,8 @@ def stats():
             for name, until in (data.get("down") or {}).items() if until and until > now}
     tasks = data.get("tasks") or {}
     overhead = round(sum((t.get("cost_usd") or 0) for t in tasks.values()), 4)
-    return {"tasks": tasks, "down": down, "overhead_usd": overhead}
+    return {"tasks": tasks, "down": down, "overhead_usd": overhead,
+            "since": data.get("since")}
 
 
 def _claude_complete(prompt, model):

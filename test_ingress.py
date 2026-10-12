@@ -7596,7 +7596,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # split: the capture/restore live in `capview.js`; the bytes are the two calls in loadAdmin.
     # -> 125835 for the `knowledge_inject_chars` knob: same rule as `judge_tools` — a runtime
     # setting carries a label and a group, and the bytes are that help line and one group entry.
-    ASSET_MAX = 125835
+    # -> 126900 for the fallback-rate panel (Admin -> LLM models): a per-phase card grid with a
+    # "since" date; the bytes are its CSS and the markup that dates the counters.
+    ASSET_MAX = 126900
 
     def _assets(self):
         out = {}
