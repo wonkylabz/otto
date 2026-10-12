@@ -24,6 +24,8 @@ function setAdminBadge(mcp, models){
   const parts=[];
   if(mcp) parts.push(`${mcp} MCP server${mcp>1?"s":""}`);
   if(models) parts.push(`${models} LLM model${models>1?"s":""}`);
+  for(const [k,v] of [["models",models],["mcp",mcp]])   // the sections' own counts go red too
+    document.querySelectorAll(`[data-sect="${k}"] .sectcount, [data-sub="${k}"] .sectcount`).forEach(c=>c.classList.toggle("bad",!!v));
   b.title=n?`${parts.join(" and ")} ${n>1?"need":"needs"} attention`:"";
 }
 async function pollAdminBadge(){

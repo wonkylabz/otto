@@ -365,11 +365,19 @@ function endpointsBlock(m){
         <button class="addbtn" data-editep="${esc(e.name)}" title="change the URL, key, kind or headers — every model on this endpoint follows">edit</button></span></td>
       <td class="c-rm r"><button class="remove" data-delep="${esc(e.name)}" title="remove this endpoint and its models">&times;</button></td></tr>`;
   }).join("");
-  return `<table class="ctable modtable eptable">
+  return subsect("endpoints","Endpoints",eps.length,`<table class="ctable modtable eptable">
     <colgroup><col><col class="c-tag"><col class="c-test"><col class="c-rm"></colgroup>
     <thead><tr><th title="an OpenAI-compatible server (vLLM / Ollama / a hosted API): its URL, key and any extra headers are set once here, and every model on it inherits them">Endpoint</th>
       <th class="c-tag" title="how many models run on this endpoint">Models</th><th class="c-test"></th><th class="c-rm"></th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+    <tbody>${rows}</tbody></table>`);
+}
+
+// A collapsible subsection inside an Admin section; open by default, closed state remembered per `key`.
+function subsect(key,title,count,body,bad){
+  let closed=false;
+  try{ closed=!!(JSON.parse(localStorage.getItem("otto.admin.subclosed"))||{})[key]; }catch(e){}
+  return `<div class="asection coll subsection${closed?' collapsed':''}" data-sub="${key}"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>${title}<span class="sectcount${bad?' bad':''}">${count}</span></span></h3>
+    <div class="asection-body">${body}</div></div>`;
 }
 
 function modelsSection(m){
@@ -425,26 +433,26 @@ function modelsSection(m){
       <td class="c-rm r"><button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button></td>
     </tr>`).join("");
   const gs=(typeof GATEWAY_STATS!=="undefined"&&GATEWAY_STATS)||{tasks:{},down:{}};
-  const fb=Object.entries(gs.tasks||{}).filter(([,v])=>(v.calls||0)>0)
-    .map(([t,v])=>{const pct=Math.round(100*(v.fallbacks||0)/v.calls);
-      return `<span class="memstat" title="${v.fallbacks||0} of ${v.calls} ${esc(t)} calls fell back to Claude">${esc(t)} <b class="${pct>25?'gold':''}">${pct}%</b></span>`;})
-    .join(" ");
+  const since=gs.since?new Date(gs.since*1000).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
+  const fbRows=Object.entries(gs.tasks||{}).filter(([,v])=>(v.calls||0)>0)
+    .sort((a,b)=>(b[1].fallbacks/b[1].calls)-(a[1].fallbacks/a[1].calls));
+  const fb=fbRows.map(([t,v])=>{const pct=Math.round(100*(v.fallbacks||0)/v.calls);
+      return `<span class="fbcell${pct>25?' hot':''}" title="${v.fallbacks||0} of ${v.calls} ${esc(t)} calls fell back to Claude"><span>${esc(t)}</span><b>${pct}%</b><span>${v.fallbacks||0} / ${v.calls}</span></span>`;}).join("");
   const down=Object.entries(gs.down||{})
     .map(([n,s])=>`<span class="memstat" title="marked down after a failure; skipped for ${s}s more">&#9888; ${esc(n)} down</span>`).join(" ");
-  // What the judges cost. Every tier call here (verify, supervise, routing, clarify, plan
-  // critique, memory) is spend the AUDIT TRAIL cannot hold — an audit row exists only for an
-  // execution attempt — so the scorecard's "avg $" is execution-only and this is the missing
-  // half. Shown next to the fallback rate because both answer "what is this tier costing me".
+  const fbtotal=fbRows.reduce((n,[,v])=>n+v.calls,0);
+  // Judge-side spend the audit trail cannot hold (it only records execution attempts).
   const oh=gs.overhead_usd||0;
   const ohtip=Object.entries(gs.tasks||{}).filter(([,v])=>(v.cost_usd||0)>0)
     .sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0))
     .map(([t,v])=>`${t} $${(v.cost_usd||0).toFixed(2)}`).join(", ");
   const ohbadge=oh>0?`<span class="memstat" title="Claude spend on judging rather than executing${ohtip?` \u2014 ${ohtip}`:''}. Counted apart from the audit trail, which only records execution attempts.">judging <b>$${oh.toFixed(2)}</b></span>`:"";
-  const badge=(fb||down||ohbadge)?`<div class="memhead" style="margin:6px 0 2px">
-      <span class="memstat">Claude-fallback rate</span> ${fb} ${ohbadge} ${down}</div>`:"";
-  // Broken models, named. Rendered OUTSIDE .asection-body (like the MCP one) so it survives the
-  // section being collapsed — which it is by default, and a warning you have to expand to see is
-  // the failure mode this whole thing exists to fix.
+  const badge=(fb||down||ohbadge)?`<div class="fbpanel">
+      ${fb?`<div class="fbhead"><b>Claude-fallback rate</b>
+        <small>${since?`since ${esc(since)}`:"all-time"} \u00b7 ${fbtotal} calls</small></div>
+        <div class="fbgrid">${fb}</div>`:""}
+      ${(ohbadge||down)?`<div class="fbfoot">${ohbadge} ${down}</div>`:""}</div>`:"";
+  // Outside .asection-body so the warning survives the section being collapsed.
   const bad=(m.pool||[]).filter(p=>MODEL_HEALTH[p.name]&&!MODEL_HEALTH[p.name].ok);
   // What the broken model is USED for is the actionable half — and the per-capability pin is the
   // one that bites hardest (every attempt of that cap runs on the dead endpoint) while the phase
@@ -461,7 +469,7 @@ function modelsSection(m){
       ${bad.length>1?'are':'is'} failing. ${bad.map(p=>`<code>${esc(p.name)}</code>${usedBy(p)}${MODEL_HEALTH[p.name].detail?`: ${esc(MODEL_HEALTH[p.name].detail)}`:''}`).join("<br>")}
       <br>Whatever ${bad.length>1?'they run':'it runs'} keeps working only while Claude covers the call. Fix ${bad.length>1?'them':'it'} below, then Recheck.</span></div>`:'';
   return `<div class="asection coll collapsed" data-sect="models"><h3><span class="secttoggle" title="collapse / expand">
-      <span class="gcaret">&#9662;</span>LLM models<span class="sectcount">${m.pool.length}</span></span>
+      <span class="gcaret">&#9662;</span>LLM models<span class="sectcount${modelIssues()?' bad':''}">${m.pool.length}</span></span>
     <span class="h3btns"><button class="addbtn" id="model-recheck" title="re-test every model for reachability — Claude entries included, so this costs one claude -p turn each">&#8635; Recheck health</button>
     <button class="addbtn addnew" id="add-endpoint" title="an OpenAI-compatible server (vLLM / Ollama / a hosted API): set its URL, key and any extra headers once, then add its models with discover">+ Add endpoint</button>
     <button class="addbtn addnew" id="add-claude" title="list the Claude models available and add them as picks \u2014 from the Anthropic API with ANTHROPIC_API_KEY, else Claude Code's cached model catalog">+ Add Claude</button>
@@ -469,11 +477,9 @@ function modelsSection(m){
     ${warn}
     <div class="asection-body">
     ${endpointsBlock(m)}
-    <p class="sub" style="margin:2px 0 8px">One model per phase — hover a column header for what it does. The cheap phases take a local model happily.</p>
-    ${badge}
-    <table class="ctable modtable mpool">
+    ${subsect("models","Models",m.pool.length,`<table class="ctable modtable mpool">
       <colgroup><col><col class="c-tag"><col class="c-health"><col class="c-phases"><col class="c-turns"><col class="c-vision"><col class="c-test"><col class="c-ord"><col class="c-rm"></colgroup>
-      ${head}<tbody>${rows}</tbody></table></div></div>`;
+      ${head}<tbody>${rows}</tbody></table>${badge}`,modelIssues())}</div></div>`;
 }
 
 function wireModels(el){
@@ -1277,7 +1283,7 @@ function renderAdmin(data, models, el, settings){
       <div id="cap-list">${capListHtml}</div>
       <p class="capnone" id="cap-empty" hidden>No capabilities match your search.</p></div></div>
     ${stagesSection(STAGE_STATS)}
-    <div class="asection coll collapsed" data-sect="mcp"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>MCP servers<span class="sectcount">${data.mcps.length}</span></span>
+    <div class="asection coll collapsed" data-sect="mcp"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>MCP servers<span class="sectcount${mcpIssues?' bad':''}">${data.mcps.length}</span></span>
       <span class="h3btns"><button class="addbtn" id="mcp-recheck" title="re-run claude mcp list (health check)">&#8635; Recheck health</button>
       <button class="addbtn addnew" id="add-mcp">+ Add MCP server</button></span></h3>
       ${mcpIssues?`<div class="mcpwarn"><span class="msg"><b>${mcpIssues}</b> enabled MCP server${mcpIssues>1?'s':''} ${mcpIssues>1?'are':'is'} unreachable or ${mcpIssues>1?'need':'needs'} authentication &mdash; runs that use ${mcpIssues>1?'them':'it'} may fail. Fix ${mcpIssues>1?'them':'it'} below, then Recheck.</span></div>`:''}
@@ -1402,9 +1408,16 @@ ${sessionsSection()}
   enhanceToggles(el,".secttoggle",".asection","collapsed");
   el.querySelectorAll(".secttoggle").forEach(t=>t.addEventListener("click",()=>{
     const sec=t.closest(".asection"), st=sread();
+    if(!sec.dataset.sect) return;
     const open=!sec.classList.toggle("collapsed");
     if(open) st[sec.dataset.sect]=1; else delete st[sec.dataset.sect];
     swrite(st);
+  }));
+  el.querySelectorAll(".asection[data-sub] > h3 .secttoggle").forEach(t=>t.addEventListener("click",()=>{
+    const sec=t.closest(".asection"), k="otto.admin.subclosed";
+    let st={}; try{ st=JSON.parse(localStorage.getItem(k))||{}; }catch(e){}
+    if(sec.classList.toggle("collapsed")) st[sec.dataset.sub]=1; else delete st[sec.dataset.sub];
+    try{ localStorage.setItem(k,JSON.stringify(st)); }catch(e){}
   }));
   // Every "+ Add" opens the shared modal now, but what it adds lands in THIS section's list, and
   // a recheck writes its result there too — so expand the section, or both read as no-ops.
