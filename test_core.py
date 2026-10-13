@@ -3499,7 +3499,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # linked issue, a stock cap holds on every backend and reader, a guard's plan lists every door.
     # 91526 -> 91795: the QA judge reads a post-merge criterion ("passes in CI") as not its to
     # prove — read as unproven, it dead-ended a PR whose QA ran CI's own commands green.
-    MAX_RULES_BYTES = 91795   # fetched tier — bounded, but looser; it is not always loaded
+    # 91795 -> 92064: a bug in workflow code fails the run, never the task — a bare re-raise
+    # left a dead scheduled run Running for days, holding its schedule's SKIP overlap.
+    MAX_RULES_BYTES = 92064   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

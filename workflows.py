@@ -367,7 +367,17 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                     f"❌ **This run failed** — {_failure_detail(e)}", None, self._cap)
             except Exception:  # noqa: BLE001 - best-effort; never mask the original error
                 pass
-            raise
+            # FAIL THE RUN, never the task. Temporal fails the WORKFLOW only on a FailureError
+            # (an activity/child failure); anything else raised from workflow code — a TypeError
+            # from a stale passed-through module, a KeyError — fails the workflow TASK, which is
+            # retried forever. Everything above has already declared the run dead, so a retry has
+            # nothing left to recover: it sat Running for days, invisible to the Reaper (it has
+            # its needs-human row) and holding its schedule's SKIP overlap
+            # (`sched-rb-8707935b-2026-10-11T22:00:00Z`, 323 identical task failures).
+            if isinstance(e, (exceptions.FailureError, asyncio.TimeoutError)):  # already fail the run
+                raise
+            raise exceptions.ApplicationError(
+                f"{type(e).__name__}: {e}", type=type(e).__name__, non_retryable=True) from e
 
     async def _take_fast_lane(self, params, request, cap, approval, unattended, resume, subtask,
                               repo):

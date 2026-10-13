@@ -2899,6 +2899,49 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ensure_columns", said)          # never leak the internals outward
         self.assertTrue(finals, "the durable workflow_error row must still be written")
 
+    async def test_a_bug_in_workflow_code_fails_the_run_instead_of_hanging_it(self):
+        """A non-FailureError raised by WORKFLOW code (not an activity) fails only the workflow
+        TASK, which Temporal retries forever: `sched-rb-8707935b-2026-10-11T22:00:00Z` hit a
+        TypeError from a stale passed-through mixin, wrote its needs-human row, and then sat
+        Running for days holding its schedule's SKIP overlap. The run must CLOSE as failed.
+        The bug here: an attempt hands back a non-string result, which workflow code chokes on."""
+        import asyncio
+        import uuid
+        from temporalio.client import WorkflowFailureError
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, finalize_terminal, open_chat,
+                                record_attempt, record_chat, record_skip, route_request,
+                                snapshot_settings, run_capability, resolve_pr_target,
+                                check_grounding, verify_capability)
+
+        real_run = engine.run_attempt
+        engine.run_attempt = lambda *a, **k: {**real_run(*a, **k), "result": 12345}
+        finals = []
+        orig_final = engine.record_terminal
+        engine.record_terminal = lambda *a, **k: finals.append((a, k))
+        self.addCleanup(setattr, engine, "record_terminal", orig_final)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="wfbugq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request,
+                                run_capability, resolve_pr_target, check_grounding,
+                                verify_capability, record_attempt, record_skip,
+                                deliver_result, open_chat, record_chat, finalize_terminal],
+                    activity_executor=ex,
+                ):
+                    with self.assertRaises(WorkflowFailureError) as raised:
+                        await asyncio.wait_for(env.client.execute_workflow(
+                            OttoWorkflow.run,
+                            {"request": "check builds", "scheduled": True,
+                             "cap": {"name": "evt-write", "kind": "skill", "risk": "write"},
+                             "auto_approve": True},
+                            id="wfbug-" + uuid.uuid4().hex[:8], task_queue="wfbugq"), 60)
+        cause = raised.exception.cause            # the converted bug, not some activity failure
+        self.assertEqual(cause.type, "TypeError")
+        self.assertTrue(cause.non_retryable)
+        self.assertTrue(finals, "the durable workflow_error row must still be written")
+
     async def test_failed_run_finalizes_chat_placeholder(self):
         """Issue #79: an unattended run that FAILS mid-execution (after _open_chat wrote the
         pending placeholder) must still finalize the Chat thread — rewriting the placeholder into
