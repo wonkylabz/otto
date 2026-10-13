@@ -1401,12 +1401,6 @@ ${sessionsSection()}
   // Section-level collapse: the title toggles its .asection.coll. Which sections you left open is
   // remembered, so Admin doesn't re-collapse everything on every reload/refresh.
   wireSections(el);
-  el.querySelectorAll(".asection[data-sub] > h3 .secttoggle").forEach(t=>t.addEventListener("click",()=>{
-    const sec=t.closest(".asection"), k="otto.admin.subclosed";
-    let st={}; try{ st=JSON.parse(localStorage.getItem(k))||{}; }catch(e){}
-    if(sec.classList.toggle("collapsed")) st[sec.dataset.sub]=1; else delete st[sec.dataset.sub];
-    try{ localStorage.setItem(k,JSON.stringify(st)); }catch(e){}
-  }));
   // Every "+ Add" opens the shared modal now, but what it adds lands in THIS section's list, and
   // a recheck writes its result there too — so expand the section, or both read as no-ops.
   el.querySelectorAll(".asection.coll h3 .addbtn").forEach(b=>b.addEventListener("click",()=>{

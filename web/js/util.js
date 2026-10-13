@@ -90,6 +90,17 @@ function wireSections(root){
       sectsWrite(st);
     });
   });
+  // A subsection (data-sub) remembers the opposite: which ones you CLOSED, under its own key.
+  root.querySelectorAll(".asection[data-sub] > h3 .secttoggle").forEach(t=>{
+    if(t.dataset.subWired) return;
+    t.dataset.subWired="1";
+    t.addEventListener("click",()=>{
+      const sec=t.closest(".asection"), k="otto.admin.subclosed";
+      let st={}; try{ st=JSON.parse(localStorage.getItem(k))||{}; }catch(e){}
+      if(sec.classList.toggle("collapsed")) st[sec.dataset.sub]=1; else delete st[sec.dataset.sub];
+      try{ localStorage.setItem(k,JSON.stringify(st)); }catch(e){}
+    });
+  });
 }
 
 function enhanceToggles(root, sel, box, openClass){
