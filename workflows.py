@@ -374,7 +374,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # nothing left to recover: it sat Running for days, invisible to the Reaper (it has
             # its needs-human row) and holding its schedule's SKIP overlap
             # (`sched-rb-8707935b-2026-10-11T22:00:00Z`, 323 identical task failures).
-            if isinstance(e, exceptions.FailureError):
+            if isinstance(e, (exceptions.FailureError, asyncio.TimeoutError)):  # already fail the run
                 raise
             raise exceptions.ApplicationError(
                 f"{type(e).__name__}: {e}", type=type(e).__name__, non_retryable=True) from e

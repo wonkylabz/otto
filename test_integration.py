@@ -2930,13 +2930,16 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
                                 deliver_result, open_chat, record_chat, finalize_terminal],
                     activity_executor=ex,
                 ):
-                    with self.assertRaises(WorkflowFailureError):
+                    with self.assertRaises(WorkflowFailureError) as raised:
                         await asyncio.wait_for(env.client.execute_workflow(
                             OttoWorkflow.run,
                             {"request": "check builds", "scheduled": True,
                              "cap": {"name": "evt-write", "kind": "skill", "risk": "write"},
                              "auto_approve": True},
                             id="wfbug-" + uuid.uuid4().hex[:8], task_queue="wfbugq"), 60)
+        cause = raised.exception.cause            # the converted bug, not some activity failure
+        self.assertEqual(cause.type, "TypeError")
+        self.assertTrue(cause.non_retryable)
         self.assertTrue(finals, "the durable workflow_error row must still be written")
 
     async def test_failed_run_finalizes_chat_placeholder(self):
