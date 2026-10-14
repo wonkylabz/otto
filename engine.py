@@ -212,10 +212,11 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # server, a connector, a tool its server added since it was listed) would otherwise widen a
     # grant no human reviewed, and only `--allowedTools` may say what it holds. The deny list
     # above stays as a second layer; `file_safety`'s own `--settings` deny is unaffected.
-    sources = "" if fast_lane is not None else _setting_sources(cwd)
     # An explicit cwd (an isolated repo workspace, issue #57) overrides the cap's own cwd, so a
     # global agent can run inside a freshly-cloned repo it doesn't otherwise belong to.
     cwd = cwd or getattr(cap, "cwd", None)
+    # After the cap's cwd resolves: a project cap has no explicit one, and "user" hid its own skills.
+    sources = "" if fast_lane is not None else _setting_sources(cwd)
 
     # Backend choice: `claude -p` (the default) vs the LOCAL agent runtime. Local runs when
     # the resolved execution model (per-chat override > per-cap cap_exec override > phase
