@@ -311,26 +311,24 @@ def named_repos(text, repo_names):
     return list(dict.fromkeys(hits))
 
 
-_CLAIM_STOP = frozenset({
-    "the", "this", "that", "a", "an", "our", "your", "my", "same", "other", "new", "each", "git",
-    "main", "whole", "which", "whose", "any", "one", "another", "remote", "local", "target",
-    "source", "upstream", "its", "their", "his", "her"})
 _NAME = r"[a-z0-9][a-z0-9._-]*"
-_REPO_CLAIM = re.compile(
-    _BOUND_L + r"(" + _NAME + r")(?:/(" + _NAME + r"))?[`'\"]?\s+repo(?:sitory)?" + _BOUND_R)
+# Only two shapes are evidence of a repo claim. "in repo X", "the helm repo" and "terraform repo"
+# read as prepositions and adjectives, and a false claim returns None: no clone, nowhere to write.
+_SLASH_CLAIM = re.compile(_BOUND_L + r"(" + _NAME + r")/(" + _NAME + r")[`'\"]?\s+repo(?:sitory)?"
+                          + _BOUND_R)
+_QUOTED_CLAIM = re.compile(r"`(" + _NAME + r")`\s+repo(?:sitory)?" + _BOUND_R)
 
 
 def unregistered_repo_claims(text, repo_names):
-    """Names the text CALLS a repo ("the billing repository", "infra/billing repository") that are
-    not registered. Pure. Registered-only matching cannot see these, so a request naming one
-    registered repo and claiming another unregistered one looked unambiguous and cloned the wrong
-    tree (`web-83c9fd12`: "infra/billing repository" -> infra, which has no billing manifests)."""
+    """Unregistered names the text CALLS a repo: "`x` repo", or "<registered>/<x> repository" (a
+    registered name in the ORG slot is not org/repo, so "acme-corp/ci repository" is not one).
+    Pure. Registered-only matching cannot see these, so a request naming one registered repo and
+    claiming another cloned the wrong tree (`web-83c9fd12`: "infra/<x> repository" -> infra)."""
     known = {(n or "").lower().strip() for n in repo_names or []}
-    claims = []
-    for m in _REPO_CLAIM.finditer((text or "").lower()):
-        for part in m.groups():
-            if part and part not in _CLAIM_STOP and part not in known:
-                claims.append(part)
+    text = (text or "").lower()
+    claims = [m.group(1) for m in _QUOTED_CLAIM.finditer(text) if m.group(1) not in known]
+    claims += [m.group(2) for m in _SLASH_CLAIM.finditer(text)
+               if m.group(1) in known and m.group(2) not in known]
     return list(dict.fromkeys(claims))
 
 

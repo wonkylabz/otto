@@ -2596,8 +2596,13 @@ class RepoNameBoundaryTests(unittest.TestCase):
                                                 self.NAMES + ["billing"]), None)
 
     def test_a_generic_repo_phrase_is_not_a_claim(self):
+        """A false claim returns None -> no clone, nowhere to write, so only explicit shapes
+        count: prepositions ("in repo infra"), adjectives ("the helm repo") and an org/repo
+        slash with the registered name in the repo slot must keep auto-engaging."""
         for r in ("fix the bug in the infra repo", "update this repository's infra docs",
-                  "fix infra repository drift"):
+                  "fix infra repository drift", "fix the bug in repo infra",
+                  "open a PR to repo infra", "bump the infra's terraform repo",
+                  "update every repo in infra", "fix a bug in the acme-corp/infra repository"):
             self.assertEqual(intents.candidate_repo(r, self.NAMES), "infra", r)
 
 
