@@ -2586,6 +2586,20 @@ class RepoNameBoundaryTests(unittest.TestCase):
         """The leading-segment pass had the same class — it must not regress separately."""
         self.assertIsNone(intents.candidate_repo("see productivity_tracker_v2 notes", ["webapp"]))
 
+    def test_a_claimed_unregistered_repo_is_ambiguous(self):
+        """`web-83c9fd12`: "the infra/billing repository" cloned `infra` (billing unregistered), so
+        the worker found no manifests and told the user to relaunch."""
+        for r in ("open a PR in the infra/billing repository that sets maxUnavailable",
+                  "open a PR in the `billing` repo, mirroring infra"):
+            self.assertIsNone(intents.candidate_repo(r, self.NAMES), r)
+        self.assertEqual(intents.candidate_repo("open a PR in the infra/billing repository",
+                                                self.NAMES + ["billing"]), None)
+
+    def test_a_generic_repo_phrase_is_not_a_claim(self):
+        for r in ("fix the bug in the infra repo", "update this repository's infra docs",
+                  "fix infra repository drift"):
+            self.assertEqual(intents.candidate_repo(r, self.NAMES), "infra", r)
+
 
 class PreviewModelTierTests(unittest.TestCase):
     """"Which model writes the plan I approve" was not a setting — the preview took the EXECUTION

@@ -311,6 +311,29 @@ def named_repos(text, repo_names):
     return list(dict.fromkeys(hits))
 
 
+_CLAIM_STOP = frozenset({
+    "the", "this", "that", "a", "an", "our", "your", "my", "same", "other", "new", "each", "git",
+    "main", "whole", "which", "whose", "any", "one", "another", "remote", "local", "target",
+    "source", "upstream", "its", "their", "his", "her"})
+_NAME = r"[a-z0-9][a-z0-9._-]*"
+_REPO_CLAIM = re.compile(
+    _BOUND_L + r"(" + _NAME + r")(?:/(" + _NAME + r"))?[`'\"]?\s+repo(?:sitory)?" + _BOUND_R)
+
+
+def unregistered_repo_claims(text, repo_names):
+    """Names the text CALLS a repo ("the billing repository", "infra/billing repository") that are
+    not registered. Pure. Registered-only matching cannot see these, so a request naming one
+    registered repo and claiming another unregistered one looked unambiguous and cloned the wrong
+    tree (`web-83c9fd12`: "infra/billing repository" -> infra, which has no billing manifests)."""
+    known = {(n or "").lower().strip() for n in repo_names or []}
+    claims = []
+    for m in _REPO_CLAIM.finditer((text or "").lower()):
+        for part in m.groups():
+            if part and part not in _CLAIM_STOP and part not in known:
+                claims.append(part)
+    return list(dict.fromkeys(claims))
+
+
 def candidate_repo(request, repo_names):
     """The single registered repo a request UNAMBIGUOUSLY names, or None. Pure (unit-testable).
     Matches a repo name only as a whole token (so 'infra' doesn't match 'infrastructure', and
@@ -323,6 +346,8 @@ def candidate_repo(request, repo_names):
     text = task_text(request).lower()
     uniq = named_repos(text, repo_names)
     if uniq:
+        if unregistered_repo_claims(text, repo_names):
+            return None
         return uniq[0] if len(uniq) == 1 else None
     # Second pass: a repo's LEADING name segment as a whole token — a registered "otto-dev"
     # must match "the Otto issues" (observed: the register-name mismatch silently disabled
