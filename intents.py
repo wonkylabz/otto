@@ -7,6 +7,7 @@ their parsers are pure and colocated. Fail-open/fail-closed biases are per-class
 documented on each.
 """
 
+import os
 import re
 
 import config
@@ -388,6 +389,67 @@ def repo_edit_intent(request, repo):
     return intent
 
 
+_TARGET_SAMPLES = 3
+_MAX_TARGET_REPOS = 5
+
+
+def _parse_target_pick(text, n):
+    """The 1-based repo number in a chooser's reply, or None. The LAST integer wins (a reasoning
+    preamble naming other options poisons a first-integer parse), and out of range is no pick. Pure."""
+    nums = re.findall(r"\d+", gateway._strip_reasoning(text or ""))
+    pick = int(nums[-1]) if nums else 0
+    return pick if 1 <= pick <= n else None
+
+
+def repo_layout(path, cap=700):
+    """A repo's top level plus a few children of each directory, as one line, or "". The names a
+    repo does not announce ("which of these holds the Kubernetes manifests?") live here, not in
+    its name: measured on the real request, names alone chose the wrong repo 4/4, this 0/4."""
+    try:
+        out = []
+        for d in sorted(os.listdir(path)):
+            if d.startswith("."):
+                continue
+            p = os.path.join(path, d)
+            if os.path.isdir(p):
+                kids = [k for k in sorted(os.listdir(p)) if not k.startswith(".")][:6]
+                out.append(f"{d}/ ({', '.join(kids)})")
+            else:
+                out.append(d)
+        return "; ".join(out)[:cap]
+    except OSError:
+        return ""
+
+
+def repo_edit_target(request, repos, layouts=None):
+    """Which ONE of several registered `repos` a request's code change must land in, or None.
+    Naming two repos ("the infra/billing repository ... the billing service") is ambiguity to a
+    name match, but a person says it to locate the change, not to ask for two. Cheap 'clarify'
+    tier, sampled `_TARGET_SAMPLES` times and UNANIMOUS or None: a wrong clone burns the whole run
+    (the worker reports a mismatch and stops), while None is today's behaviour. None also when the
+    change must land in more than one. Pure of state; the model call is the only effect."""
+    repos = list(repos or [])
+    layouts = layouts or {}
+    listing = "\n".join(f"{i}. {r}" + (f" — contents: {layouts[r]}" if layouts.get(r) else "")
+                        for i, r in enumerate(repos, 1))
+    prompt = (
+        "A user's request names several git repositories. Decide which ONE repository the CODE "
+        "CHANGE (editing files, committing, opening a pull request) must land in. A repo named "
+        "only as context, a source to read or copy from, or a service the change is about is NOT "
+        "the target; the target is where the files to edit live.\n"
+        + _DATA_FENCE_PREAMBLE + "\n"
+        f"The request is:\n{_fenced(request)}\n\nRepositories:\n{_fenced(listing)}\n\n"
+        "Reply with the number of the ONE repository to edit. Reply 0 if the change must land in "
+        "more than one of them, or you cannot tell. Reply with one number.")
+    picks = []
+    for _ in range(_TARGET_SAMPLES):
+        picks.append(_parse_target_pick(gateway.complete("clarify", prompt), len(repos)))
+    target = repos[picks[0] - 1] if picks[0] and len(set(picks)) == 1 else None
+    gateway.decided("clarify", target or "NONE")
+    trace("REPO", f"edit target among {repos} -> {target or 'undecided'}")
+    return target
+
+
 def _parse_pr_title(text, fallback):
     """First usable line of a drafted PR title, or the fallback. Strips leaked reasoning and
     quote/backtick wrapping; rejects anything too short or too long to be a title."""
@@ -463,6 +525,18 @@ def auto_engage_repo(request, repo_names, cap_name=None):
     with no repo-mode, edited the live checkout, and could open no PR because the worker
     never does its own git). Other caps keep the repo_edit_intent guard against over-cloning."""
     repo = _eng().candidate_repo(request, repo_names)
+    if not repo and cap_name == config.WORKER_CAP:
+        # Several registered repos named: the worker's deliverable is still one code change, so
+        # ask which repo it lands in rather than leave the run with no clone and nowhere to write.
+        text = task_text(request)
+        named = named_repos(text, repo_names)
+        if 2 <= len(named) <= _MAX_TARGET_REPOS and not unregistered_repo_claims(text, repo_names):
+            paths = {os.path.basename(p.rstrip("/")): p for p in registry.projects()}
+            layouts = {n: repo_layout(paths[n]) for n in named if n in paths}
+            repo = _eng().repo_edit_target(request, named, layouts)
+            if repo:
+                trace("REPO", f"worker run names {named} -> engaging repo-mode on '{repo}'")
+            return repo
     if not repo:
         return None
     if cap_name == config.WORKER_CAP:

@@ -97,10 +97,89 @@ class AutoEngageRepoTests(unittest.TestCase):
             engine.repo_edit_intent = orig
 
     def test_ambiguous_or_absent_candidate_stays_none(self):
-        self.assertIsNone(engine.auto_engage_repo("work on otto and infra",
-                                                  ["otto", "infra"], config.WORKER_CAP))
+        orig = engine.repo_edit_target
+        engine.repo_edit_target = lambda request, repos, layouts=None: None
+        try:
+            self.assertIsNone(engine.auto_engage_repo("work on otto and infra",
+                                                      ["otto", "infra"], config.WORKER_CAP))
+        finally:
+            engine.repo_edit_target = orig
         self.assertIsNone(engine.auto_engage_repo("work on something", ["otto"],
                                                   config.WORKER_CAP))
+
+    def test_the_worker_asks_which_of_several_named_repos_gets_the_change(self):
+        """`web-83c9fd12`: "the infra/billing repository" names two registered repos, so the name
+        match gave up, the run got no clone, and the worker had nowhere to write."""
+        orig, seen = engine.repo_edit_target, []
+        engine.repo_edit_target = lambda request, repos, layouts=None: (seen.append(repos), repos[1])[1]
+        try:
+            req = "open a PR in the infra/billing repository that sets maxUnavailable"
+            names = ["infra", "billing", "ci"]
+            self.assertEqual(engine.auto_engage_repo(req, names, config.WORKER_CAP), "billing")
+            self.assertEqual(seen, [["infra", "billing"]])
+            # Only the worker: another cap's deliverable may not be a code change at all.
+            self.assertIsNone(engine.auto_engage_repo(req, names, "tc-deploy"))
+        finally:
+            engine.repo_edit_target = orig
+
+    def test_a_claimed_unregistered_repo_is_never_put_to_the_chooser(self):
+        orig = engine.repo_edit_target
+        def boom(request, repos, layouts=None):
+            raise AssertionError("the chooser cannot resolve a repo nobody registered")
+        engine.repo_edit_target = boom
+        try:
+            self.assertIsNone(engine.auto_engage_repo(
+                "mirror ci into the infra/billing repository", ["infra", "ci"], config.WORKER_CAP))
+        finally:
+            engine.repo_edit_target = orig
+
+
+class RepoEditTargetTests(unittest.TestCase):
+    """`intents.repo_edit_target`: unanimous over samples, else None — a wrong clone burns the
+    run, None is the old behaviour."""
+
+    def _pick(self, replies):
+        import intents
+        it, orig = iter(replies), intents.gateway.complete
+        intents.gateway.complete = lambda tier, prompt, **k: next(it)
+        try:
+            return intents.repo_edit_target("edit billing, mirroring infra", ["infra", "billing"])
+        finally:
+            intents.gateway.complete = orig
+
+    def test_unanimous_pick_wins(self):
+        self.assertEqual(self._pick(["2", "2", "2"]), "billing")
+
+    def test_a_split_vote_is_no_pick(self):
+        self.assertIsNone(self._pick(["2", "1", "2"]))
+
+    def test_zero_garbage_and_out_of_range_are_no_pick(self):
+        for bad in (["0"] * 3, ["both"] * 3, ["7"] * 3):
+            self.assertIsNone(self._pick(bad), bad)
+
+    def test_each_repos_layout_reaches_the_chooser_inside_the_fence(self):
+        import intents
+        seen, orig = [], intents.gateway.complete
+        intents.gateway.complete = lambda tier, prompt, **k: (seen.append(prompt), "2")[1]
+        try:
+            intents.repo_edit_target("edit it", ["infra", "billing"],
+                                     {"billing": "Deploy/ (chart)", "infra": ""})
+        finally:
+            intents.gateway.complete = orig
+        self.assertIn("2. billing — contents: Deploy/ (chart)", seen[0])
+        self.assertIn("1. infra\n", seen[0])
+
+    def test_repo_layout_lists_top_level_and_a_few_children(self):
+        import intents, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "Deploy", "chart"))
+            os.makedirs(os.path.join(d, ".git"))
+            open(os.path.join(d, "README.md"), "w").close()
+            self.assertEqual(intents.repo_layout(d), "Deploy/ (chart); README.md")
+        self.assertEqual(intents.repo_layout("/nonexistent/x"), "")
+
+    def test_the_last_integer_wins_over_a_reasoning_preamble(self):
+        self.assertEqual(self._pick(["Options 1 and 2 both appear, so: 2"] * 3), "billing")
 
     def test_a_repo_named_only_in_the_carried_conversation_is_not_a_candidate(self):
         """#154: the carry is an earlier conversation; naming a second repo there made the task's

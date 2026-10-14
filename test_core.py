@@ -2587,7 +2587,7 @@ class EngineFacadeBudgetTests(unittest.TestCase):
     # same way it reaches `critique_plan`, and the integration harnesses patch the gate's model
     # calls by their `engine.` name — importing `plans` directly there would make the new call
     # unstubabble in the 19 tests that drive the gate.
-    MAX_REEXPORTS = 142
+    MAX_REEXPORTS = 143
 
     def _reexports(self):
         with open(os.path.join(self.ROOT, "engine.py"), encoding="utf-8") as fh:
@@ -3501,7 +3501,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # prove — read as unproven, it dead-ended a PR whose QA ran CI's own commands green.
     # 91795 -> 92064: a bug in workflow code fails the run, never the task — a bare re-raise
     # left a dead scheduled run Running for days, holding its schedule's SKIP overlap.
-    MAX_RULES_BYTES = 92064   # fetched tier — bounded, but looser; it is not always loaded
+    # 92064 -> 92318: several registered repos named -> the worker picks the edit target, else the
+    # run had no clone and nowhere to write.
+    MAX_RULES_BYTES = 92318   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
