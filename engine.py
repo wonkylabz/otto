@@ -53,7 +53,8 @@ from routing import (ROUTE_DESC_CHARS, ROUTE_SHORTLIST, MAX_SWARM, _repo_eligibl
 from intents import (_parse_clarification, clarify, _parse_write_intent,  # noqa: F401
                      followup_write_intent, _parse_handoff, followup_handoff,  # noqa: F401
                      request_write_intent, assistant_write_redirect, candidate_repo,  # noqa: F401
-                     repo_edit_intent, _parse_pr_title, _OPERATIONAL_SENTINEL_PREFIXES,  # noqa: F401
+                     repo_edit_intent, repo_edit_target, _parse_pr_title,  # noqa: F401
+                     _OPERATIONAL_SENTINEL_PREFIXES,  # noqa: F401
                      _is_operational_sentinel, pr_copy, auto_engage_repo)  # noqa: F401
 from judging import (_parse_verdict, _parse_qa_verdict, _APPROVED_PLAN_CHARS,  # noqa: F401
                      _approved_plan_note, _grounding_note, _JUDGE_REASONING_RULE,  # noqa: F401
