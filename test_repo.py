@@ -1423,6 +1423,19 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.ws.diff(before, {"r": {"head": "aaa", "dirty": False, "path": "/r"},
                                                "new": {"head": "x", "dirty": False, "path": "/n"}}), [])
 
+    def test_snapshot_skips_managed_clones(self):
+        """`refresh_repos` hard-resets a managed clone mid-run, moving its HEAD. Snapshotted, that
+        read as an in-place edit and flagged read-only runs as writes."""
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        live, managed = os.path.join(tmp, "live"), os.path.join(tmp, "managed", "m")
+        for p in (live, managed):
+            os.makedirs(os.path.join(p, ".git"))
+        with mock.patch.object(self.ws.registry, "projects", return_value=[live, managed]), \
+                mock.patch.object(self.ws.repos, "MANAGED", os.path.join(tmp, "managed")), \
+                mock.patch.object(self.ws, "_repo_state", return_value={"head": "a", "dirty": False}):
+            self.assertEqual(set(self.ws.snapshot()), {"live"})
+
 
 class ChatGitIdentityForwardingTests(unittest.TestCase):
     """A repo-mode chat is continuable only if its git identity was RECORDED, and that crosses
