@@ -883,10 +883,8 @@ def _repo_state(path):
 
 
 def snapshot():
-    """git HEAD + dirty state of every registered git repo (keyed by name). Managed clones are
-    skipped: `refresh_repos` hard-resets them mid-run, which reads as an in-place edit."""
-    return {r["name"]: {"path": r["path"], **_repo_state(r["path"])}
-            for r in git_repos() if not repos.is_managed(r["path"])}
+    """git HEAD + dirty state of every registered git repo (keyed by name)."""
+    return {r["name"]: {"path": r["path"], **_repo_state(r["path"])} for r in git_repos()}
 
 
 def diff(before, after):
