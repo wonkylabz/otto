@@ -8824,6 +8824,8 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("go.disabled=false", click)
         watch = src[src.index("function watchUpdate"):]
         self.assertIn("u.job_id!==prevJob", watch)
+        # A veil left up on the failure/timeout path blocks the whole UI until a reload.
+        self.assertIn("veil.remove()", watch[watch.index("timed out") - 400:])
 
     def test_the_button_is_always_shown_and_git_is_fetched_only_on_click(self):
         """A background fetch went unnoticed for minutes after a push; the click is the check."""
