@@ -46,7 +46,9 @@ async function showUpdateForm(){
 }
 
 function watchUpdate(from, prevJob){
-  toast("Updating Otto — the page reconnects when it's back.","ok");
+  const veil=document.createElement("div"); veil.className="upveil";
+  veil.innerHTML=`<span class="spin"></span>Updating Otto — reconnecting when it's back…`;
+  document.body.appendChild(veil);
   const started=Date.now();
   UPDATE_WATCH=poll(async ()=>{
     let h;
@@ -56,7 +58,7 @@ function watchUpdate(from, prevJob){
     // An outcome counts only from THIS update's job, never the last one's "done".
     const u=h.update||{}, done=u.job && u.job!=="running" && u.job_id && u.job_id!==prevJob;
     if(!done && Date.now()-started<300000) return;
-    UPDATE_WATCH(); UPDATE_WATCH=null;
+    UPDATE_WATCH(); UPDATE_WATCH=null; veil.remove();
     applyUpdate(h.update);
     toast(`Update ${done?u.job:"timed out"} — still on ${from}. Open Update for details.`);
   }, 4000, 8000);

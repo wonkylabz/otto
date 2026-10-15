@@ -1219,6 +1219,9 @@
   .spin { display: inline-block; width: 11px; height: 11px; border: 2px solid var(--line);
     border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .upveil { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
+    gap: 10px; background: rgba(0,0,0,.35); backdrop-filter: blur(6px); color: var(--text); font-size: 14px; }
+  .upveil .spin { width: 20px; height: 20px; border-width: 3px; }
   .pageSpin { display: flex; align-items: center; justify-content: center; height: 100%; }
   .pageSpin .spin { width: 26px; height: 26px; border-width: 3px; }
   .cronpreset { font-family: var(--mono); font-size: 12px; color: var(--accent); background: var(--raised);
