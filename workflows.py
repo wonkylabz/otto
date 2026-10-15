@@ -1169,7 +1169,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # "forgot to pick a repo" case (issue #59). Unattended automation is deliberately
             # configured, so it's left unsnapshotted (a noted limitation).
             snap = await workflow.execute_activity(
-                snapshot_repos, {}, start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
+                snapshot_repos, {}, start_to_close_timeout=timedelta(seconds=300), retry_policy=_RETRY)
             pre_snap = snap.get("snap") or None
 
         # Run under the REAL Temporal workflow id (not an engine-minted counter id), so the

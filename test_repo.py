@@ -1423,6 +1423,16 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.ws.diff(before, {"r": {"head": "aaa", "dirty": False, "path": "/r"},
                                                "new": {"head": "x", "dirty": False, "path": "/n"}}), [])
 
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_snapshot_activity_refreshes_before_it_snapshots(self):
+        """`refresh_repos` hard-resets a managed clone mid-run, moving its HEAD. Taken before it,
+        the baseline made that move read as an in-place edit on every read-only run."""
+        order = []
+        with mock.patch.object(workspace, "refresh_repos", side_effect=lambda *a, **k: order.append("refresh")), \
+                mock.patch.object(workspace, "snapshot", side_effect=lambda: order.append("snap") or {}):
+            activities.snapshot_repos({})
+        self.assertEqual(order, ["refresh", "snap"])
+
 
 class ChatGitIdentityForwardingTests(unittest.TestCase):
     """A repo-mode chat is continuable only if its git identity was RECORDED, and that crosses

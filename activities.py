@@ -533,8 +533,10 @@ def cleanup_workspace(payload: dict) -> None:
 
 @activity.defn
 def snapshot_repos(payload: dict) -> dict:
-    """git state of registered repos before a non-repo-mode run, to detect in-place edits (#59)."""
+    """git state of registered repos before a non-repo-mode run, to detect in-place edits (#59).
+    Refreshes first: it hard-resets managed clones, which must land in the baseline, not the diff."""
     import workspace
+    workspace.refresh_repos()
     return {"snap": workspace.snapshot()}
 
 
