@@ -219,6 +219,16 @@ def any_enabled(cfg=None):
     return enabled(cfg) or bot_enabled(cfg)
 
 
+def answers_anyone(identity, cfg=None):
+    """Whether `identity` is switched on AND would answer someone: both allowlists empty means
+    nobody (allow_self counts for the owner's own identity). The ONE readiness rule — onboarding
+    and the Events setup guide both read it, rather than each keeping a copy."""
+    cfg = cfg if cfg is not None else load()
+    on = cfg.get("bot_enabled" if identity == BOT else "enabled")
+    listed = any(allow_ids(cfg, k) for k in allow_keys(identity))
+    return bool(on and (listed or (identity == USER and cfg.get("allow_self"))))
+
+
 def enabled_identities(cfg=None):
     """The identities currently listening, user first. Used for status and for the pollers."""
     cfg = cfg if cfg is not None else load()

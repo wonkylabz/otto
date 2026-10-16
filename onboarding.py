@@ -37,7 +37,7 @@ USAGES = ("personal", "work", "both")
 # Route and judge re-sampling are deliberately NOT here: one sample is a coin flip, and the cost
 # of a misroute or a false FAIL exceeds the samples saved (routing-capabilities.md, run-pipeline.md).
 _PROFILE_KEYS = ("max_attempts", "max_review_rounds", "max_qa_rounds", "effort", "supervise",
-                 "budget_soft_usd", "budget_hard_usd")
+                 "budget_soft_usd", "budget_hard_usd", "budget_soft_tokens", "budget_hard_tokens")
 PROFILES = {
     # The default pick: an install upgraded mid-life has tuned values, and a wizard that opens by
     # itself must not reset them because someone clicked through it.
@@ -128,8 +128,9 @@ def normalize(answers):
     """Validate the client's answers; unknown values fall back rather than raise, because a stale
     browser tab must still be able to finish onboarding."""
     a = answers if isinstance(answers, dict) else {}
-    usage = a.get("usage") if a.get("usage") in USAGES else "personal"
-    profile = a.get("profile") if a.get("profile") in PROFILES else "keep"
+    pick = lambda k, ok, dflt: a.get(k) if isinstance(a.get(k), str) and a.get(k) in ok else dflt  # noqa: E731
+    usage = pick("usage", USAGES, "personal")
+    profile = pick("profile", PROFILES, "keep")
     picked = a.get("integrations")
     picked = {x for x in picked if isinstance(x, str)} if isinstance(picked, list) else set()
     wants = [k for k in INTEGRATIONS if k in picked]
@@ -151,19 +152,22 @@ def _settings_plan(profile):
     out = []
     for name, target in profile_settings(profile, cur).items():
         s = cur[name]
+        # Pinned wins even when the values match: a pinned key's "default" IS the env value (the
+        # config constant reads env at import), so "already set" would hide that nothing applies.
         out.append({"name": name, "before": s["value"], "after": target,
                     "pinned": s["env_pinned"], "env": s["env"],
-                    "action": "keep" if s["value"] == target
-                    else ("pinned" if s["env_pinned"] else "set")})
+                    "action": "pinned" if s["env_pinned"]
+                    else ("keep" if s["value"] == target else "set")})
     return out
 
 
-def _mcp_names(mcps):
-    """Servers a run can actually use: enabled, activated (an Otto-added def stays unspawned until
-    confirmed) and not last seen unhealthy."""
+def _usable_mcps(mcps):
+    """[(haystack, label)] for servers a run can actually use: enabled, activated (an Otto-added
+    def stays unspawned until confirmed) and not last seen unhealthy. The label is what the rest
+    of the UI shows — a connector's display name, never its tool-namespace id."""
     import policy               # noqa: PLC0415
-    return [f"{m.get('name', '')} {m.get('display', '')}".lower() for m in mcps
-            if m.get("enabled", True) and m.get("confirmed") is not False
+    return [(f"{m.get('name', '')} {m.get('display', '')}".lower(), m.get("display") or m.get("name", ""))
+            for m in mcps if m.get("enabled", True) and m.get("confirmed") is not False
             and m.get("health") not in policy.UNHEALTHY]
 
 
@@ -180,9 +184,7 @@ def _detect(key, mcps, connectors_checked=True):
         import slack            # noqa: PLC0415 — slack pulls in Temporal-free but heavy imports
         cfg = slack.load()
         names = {slack.USER: "as you", slack.BOT: "as a bot"}
-        live = [i for i in slack.enabled_identities(cfg)
-                if any(slack.allow_ids(cfg, k) for k in slack.allow_keys(i))
-                or (i == slack.USER and cfg.get("allow_self"))]
+        live = [i for i in slack.enabled_identities(cfg) if slack.answers_anyone(i, cfg)]
         # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here;
         # a grant nobody has read yet is unknown, like the gh login and the connector cache.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
@@ -224,7 +226,7 @@ def _detect(key, mcps, connectors_checked=True):
         # CLASS, not transport: a hosted model on an OpenAI-compatible URL is not "your hardware".
         local = [m["name"] for m in gateway.load().get("pool", []) if gateway.model_kind(m) == "local"]
         return bool(local), (", ".join(local) if local else "no local model configured")
-    hits = [n.split()[0] for n in _mcp_names(mcps) if re.search(spec["match"], n)]
+    hits = [label for hay, label in _usable_mcps(mcps) if re.search(spec["match"], hay)]
     if hits:
         return True, ", ".join(hits)
     if not connectors_checked:
@@ -282,8 +284,13 @@ def apply(answers, expect):
     if changes:
         config.save_settings(changes)
     now = time.time()
-    storage.mutate_json(_STATE, lambda d: {"version": VERSION, "answers": a,
-                                           "completed_at": now}, default={})
+    def _mut(d):
+        d = d if isinstance(d, dict) else {}
+        prev = d.get("answers") if isinstance(d.get("answers"), dict) else {}
+        # "keep" applies nothing, so it must not overwrite the record of what IS in force.
+        stored = {**a, "profile": prev["profile"]} if a["profile"] == "keep" and prev.get("profile") else a
+        return {"version": VERSION, "answers": stored, "completed_at": now}
+    storage.mutate_json(_STATE, _mut, default={})
     return {"applied": sorted(changes)}
 
 

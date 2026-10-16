@@ -1632,6 +1632,9 @@ class Handler(BaseHTTPRequestHandler):
                 # scope_gaps checks against, so the guide can't drift from what is enforced.
                 "scope_catalog": {k: slack.scope_catalog(i, scfg) for k, i in
                                   (("user", slack.USER), ("bot", slack.BOT))},
+                # Switched on with someone to answer — the setup guide's "done", by slack's rule.
+                "answering": {k: slack.answers_anyone(i, scfg) for k, i in
+                              (("user", slack.USER), ("bot", slack.BOT))},
                 "socket": slack_socket.status(),   # instant delivery for the bot, if configured
                 "poll": slack.poll_status() if TEMPORAL_OK else {"exists": False},
                 "caps": [c.name for c in CAPS if c.enabled],  # for the optional pinned-cap picker

@@ -20,7 +20,6 @@ const gInline=rows=>`<p class="gdcodes">${rows.join(" ")}</p>`;
 const gGated=steps=>{ const last=steps[steps.length-1]; last.done=last.done && steps.slice(0,-1).every(s=>s.done); return steps; };
 const gMissing=sc=>(sc && sc.known && (sc.missing||[]).length)
   ? `<div class="obnote">The token is missing ${sc.missing.map(([s])=>gCode(s)).join(", ")}. Add the scope(s), <b>reinstall the app</b> (the old token never gains them), update the token and restart Otto.</div>` : "";
-const gIds=a=>slackIds(a).length;
 
 // The scope list comes from the server (slack._SCOPES), the same table scope_gaps checks.
 const gScopes=(d,k)=>gInline(((d.scope_catalog||{})[k]||[]).map(([s,why,opt])=>`<code title="${esc(why)}${opt?" (optional)":""}">${esc(s)}${opt?" <i>optional</i>":""}</code>`));
@@ -41,11 +40,11 @@ function slackSteps(d, ident){
       gList(toks.map(([env,shape,,set])=>`${gCode(env+"="+shape)} ${set?'<span class="gdok">set</span>':'<span class="gdno">not set</span>'}`))+
       `<p class="obsub">${gCode("./.venv/bin/python setup_wizard.py")} can write the user token for you without echoing it. Tokens are read at startup, so <b>restart Otto</b> afterwards, then press Re-check.</p>`+
       (user?gMissing(d.scopes):"")+(bot?gMissing(d.bot_scopes):"")});
-  if(user) out.push({t:"Choose who Otto answers as you", done:!!c.enabled && (gIds(c.allow_users)+gIds(c.allow_channels)>0 || !!c.allow_self),
+  if(user) out.push({t:"Choose who Otto answers as you", done:!!(d.answering||{}).user,
     b:`Otto only answers people and channels on the allowlist — <b>both empty means nobody</b>. Add Slack member IDs (profile → ⋮ → <i>Copy member ID</i>) and/or channel IDs (the ${gCode("C…")} part of a channel link), tick <b>Enabled</b> and save. Writes still wait for your approval on the Board unless you change that.`+
       `<p class="obsub">Trying it alone? <b>Test mode</b> lets your own self-DM trigger a run — turn it off on a real workspace.</p>`,
     act:{label:"Open Auto-answer settings", run:()=>{ gSlackSync(d); showSlackForm(); }}});
-  if(bot) out.push({t:"Choose where the bot answers", done:!!c.bot_enabled && gIds(c.bot_allow_users)+gIds(c.bot_allow_channels)>0,
+  if(bot) out.push({t:"Choose where the bot answers", done:!!(d.answering||{}).bot,
     b:`List the channels the bot may answer in and the people who may DM it, tick <b>Enabled</b> and save. A listed channel still needs the bot <b>invited</b> to it: type ${gCode("/invite @Otto")} there.`+
       `<p class="obsub"><b>Approvers</b> are a separate list on purpose — who may ask is not who may approve a write.</p>`,
     act:{label:"Open Bot user settings", run:()=>{ gSlackSync(d); showSlackBotForm(); }}});

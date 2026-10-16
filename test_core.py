@@ -2546,7 +2546,6 @@ class OnboardingTests(unittest.TestCase):
             seen.append(pr_review.viewer_cached())
             return 0, "octo\n", ""
         with mock.patch.object(pr_review, "_run", side_effect=slow), \
-                mock.patch.object(pr_review, "_viewer_asked", False), \
                 mock.patch.object(pr_review, "_viewer_failed", 0.0), \
                 mock.patch.object(pr_review.viewer, "_cache", None, create=True):
             self.assertEqual(pr_review.viewer(), "octo")
@@ -2555,7 +2554,6 @@ class OnboardingTests(unittest.TestCase):
     def test_a_failed_gh_lookup_stays_failed_after_its_retry_window(self):
         import pr_review
         with mock.patch.object(pr_review.viewer, "_cache", "", create=True), \
-                mock.patch.object(pr_review, "_viewer_asked", True), \
                 mock.patch.object(pr_review, "_viewer_failed", 0.0):
             self.assertEqual(pr_review.viewer_cached(), "")
 
@@ -2563,6 +2561,47 @@ class OnboardingTests(unittest.TestCase):
         self._apply({"usage": "work", "profile": "quality"})
         self.ob.skip({"usage": "work", "profile": "economic", "integrations": None})
         self.assertEqual(self.ob.state()["answers"]["profile"], "quality")
+
+    def test_unhashable_answers_fall_back_rather_than_raise(self):
+        self.assertEqual(self.ob.normalize({"profile": [], "usage": {}})["profile"], "keep")
+
+    def test_an_env_pinned_key_reads_pinned_even_when_it_matches(self):
+        # A pinned key's config "default" IS the env value, so value == target proves nothing.
+        os.environ["OTTO_MAX_ATTEMPTS"] = "3"
+        row = next(s for s in self.ob.preview({"profile": "balanced"})["settings"]
+                   if s["name"] == "max_attempts")
+        self.assertEqual(row["action"], "pinned")
+
+    def test_applying_keep_keeps_the_record_of_the_profile_in_force(self):
+        self._apply({"usage": "work", "profile": "economic"})
+        self._apply({"usage": "work", "profile": "keep"})
+        self.assertEqual(self.ob.state()["answers"]["profile"], "economic")
+
+    def test_balanced_resets_token_caps_too(self):
+        config.save_settings({"budget_hard_tokens": 50000})
+        self._apply({"profile": "balanced"})
+        self.assertEqual(config.setting("budget_hard_tokens"), config.BUDGET_HARD_TOKENS)
+
+    def test_a_connector_is_named_as_the_ui_names_it(self):
+        mcps = [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail"}]
+        got = self.ob.preview({"integrations": ["email"]}, mcps)["integrations"][0]
+        self.assertEqual(got["detail"], "claude.ai Gmail")
+
+    def test_slack_readiness_is_one_rule_in_slack(self):
+        import slack
+        self.assertFalse(slack.answers_anyone(slack.USER, {"enabled": True}))
+        self.assertTrue(slack.answers_anyone(slack.USER, {"enabled": True, "allow_self": True}))
+        self.assertFalse(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "allow_self": True}))
+        self.assertTrue(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}))
+        src = ui_src()
+        self.assertIn("(d.answering||{}).user", src)
+        self.assertNotIn("c.allow_self", src[src.index("let GUIDE=null"):], "a second copy of the rule")
+
+    def test_an_integration_detour_parks_the_wizard_instead_of_skipping(self):
+        src = ui_src()
+        go = src[src.index("function obGoto"):]
+        self.assertLess(go.index("OB.parked=true"), go.index("closeFormModal()"))
+        self.assertIn("!OB.parked", src[src.index("function obDismissed"):][:200])
 
     def test_a_stale_preview_writes_nothing(self):
         a = {"profile": "economic"}

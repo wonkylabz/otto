@@ -175,7 +175,6 @@ def known_repos(cfg=None):
 # per window rather than one per Events-panel load.
 _VIEWER_RETRY_S = int(os.environ.get("OTTO_PR_VIEWER_RETRY_S") or 120)
 _viewer_failed = 0.0
-_viewer_asked = False
 
 
 def viewer():
@@ -185,25 +184,23 @@ def viewer():
     # `is None` guard, so ONE failed `gh api user` — the worker booting before the network is
     # up — returned None for the worker's whole life, and `_parse_search` needs a viewer to
     # apply `skip_own`: the toggle read as on and silently did nothing (#47).
-    global _viewer_failed, _viewer_asked
+    global _viewer_failed
     if getattr(viewer, "_cache", None):
         return viewer._cache
     if time.time() - _viewer_failed < _VIEWER_RETRY_S:
         return None
     rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
     viewer._cache = out.strip() if rc == 0 else ""
-    _viewer_asked = True       # only once ANSWERED: a lookup in flight is not a failed one
     if not viewer._cache:
         _viewer_failed = time.time()
     return viewer._cache or None
 
 
 def viewer_cached():
-    """The login `viewer()` has already resolved: the login, "" after a recent failure, or None
-    when it was never asked. Never runs `gh` — for a caller a spinner is waiting on."""
-    if getattr(viewer, "_cache", None):
-        return viewer._cache
-    return "" if _viewer_asked else None
+    """The last ANSWER `viewer()` got: the login, "" if that lookup failed, or None before any
+    lookup has returned (one in flight included). Never runs `gh` — for a caller a spinner is
+    waiting on."""
+    return getattr(viewer, "_cache", None)
 
 
 def _parse_search(data, cfg, me=None):

@@ -17,6 +17,8 @@ async function initOnboarding(){
 
 async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
+  // Parked by an integration's Open: resume exactly where it was, choices intact.
+  if(!meta && OB && OB.parked){ OB.parked=false; obRender(); return; }
   if(!meta){ try { meta=await getJSON("/api/onboarding"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
   const prev=meta.answers||{};
   // Always preselect "keep": a re-run (or a VERSION bump's auto-open) clicked straight through
@@ -37,7 +39,7 @@ function obBody(){
 // Any way out that isn't Apply — X, Esc, "Just the tour", an integration's Open — counts as
 // dismissed, keeping the draft answers: otherwise every page load reopens it on someone who has
 // already dealt with it. Setup in the header still runs it again.
-function obDismissed(){ if(OB && !OB.done) postOr("/api/onboarding/skip",{answers:OB.answers},"saving onboarding"); }
+function obDismissed(){ if(OB && !OB.done && !OB.parked) postOr("/api/onboarding/skip",{answers:OB.answers},"saving onboarding"); }
 
 function obRender(){
   const body=obBody(), step=OB_STEPS[OB.step], a=OB.answers, m=OB.meta;
@@ -130,6 +132,11 @@ async function obReview(){
 /* Deep link into the section that sets an integration. Admin/Events render asynchronously after
    activateTab, so wait for the section to exist; then open it (remembered, like a click) and show it. */
 function obGoto(tab, sect){
+  // From the wizard this is a detour, not a dismissal: nothing is applied yet, so park it and
+  // say how to come back, rather than recording a skip that drops the chosen profile.
+  if(OB && !OB.done && !document.getElementById("formModal").hidden){
+    OB.parked=true; toast("Onboarding is paused — press Setup to finish applying your choices","ok");
+  }
   closeFormModal(); endTour();
   activateTab(tab);
   const t0=Date.now();
