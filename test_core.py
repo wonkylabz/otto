@@ -2513,9 +2513,34 @@ class OnboardingTests(unittest.TestCase):
 
     def test_the_guide_asks_for_the_scopes_scope_gaps_would_require(self):
         import slack
-        names = [s for s, _ in slack.scope_catalog(slack.USER, {"watch_mentions": False})]
+        names = [s for s, _w, _o in slack.scope_catalog(slack.USER, {"watch_mentions": False})]
         self.assertNotIn("search:read", names, "a switched-off feature's scope is over-granting")
         self.assertIn("users:read", names)
+        bot = {s: o for s, _w, o in slack.scope_catalog(slack.BOT, {})}
+        self.assertIs(bot.get("groups:read"), True, "optional private-channel scopes are asked for too")
+
+    def test_an_unusable_mcp_server_is_not_an_integration(self):
+        for row in ({"name": "gmail", "confirmed": False}, {"name": "gmail", "health": "failed"}):
+            got = self.ob.preview({"integrations": ["email"]}, [row])["integrations"][0]
+            self.assertFalse(got["ready"], row)
+
+    def test_a_listener_whose_token_lacks_a_scope_is_not_ready(self):
+        import slack
+        with mock.patch.object(slack, "scope_gaps", return_value={"missing": [("im:history", "x")]}):
+            got = self._slack({"enabled": True, "allow_users": ["U1"]}, [slack.USER])
+        self.assertFalse(got["ready"])
+
+    def test_a_failed_gh_lookup_stays_failed_after_its_retry_window(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "", create=True), \
+                mock.patch.object(pr_review, "_viewer_asked", True), \
+                mock.patch.object(pr_review, "_viewer_failed", 0.0):
+            self.assertEqual(pr_review.viewer_cached(), "")
+
+    def test_a_draft_never_replaces_the_applied_profile(self):
+        self._apply({"usage": "work", "profile": "quality"})
+        self.ob.skip({"usage": "work", "profile": "economic", "integrations": None})
+        self.assertEqual(self.ob.state()["answers"]["profile"], "quality")
 
     def test_a_stale_preview_writes_nothing(self):
         a = {"profile": "economic"}
@@ -2583,10 +2608,13 @@ class OnboardingTests(unittest.TestCase):
     def _github(self, who):
         import pr_review
         import workspace
+        repo = os.path.join(self._dir, "repo")
+        os.makedirs(os.path.join(repo, ".git"), exist_ok=True)
         with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
                 mock.patch.object(pr_review, "viewer_cached", return_value=who), \
                 mock.patch.object(pr_review, "viewer", side_effect=AssertionError("shells out")), \
-                mock.patch.object(workspace, "git_repos", return_value=[{"name": "r"}]):
+                mock.patch.object(workspace, "git_repos", side_effect=AssertionError("spawns git")), \
+                mock.patch.object(registry, "projects", return_value=[repo]):
             return self.ob.preview({"integrations": ["github"]})["integrations"][0]
 
     def test_github_needs_a_signed_in_gh_and_never_waits_on_one(self):
@@ -2621,7 +2649,7 @@ class OnboardingTests(unittest.TestCase):
         self.ob.skip({"usage": "work", "profile": "economic", "integrations": ["slack"]})
         st = self.ob.state()
         self.assertFalse(st["auto_open"])
-        self.assertEqual(st["answers"]["profile"], "economic")
+        self.assertNotIn("profile", st["answers"], "an unapplied profile is never stored")
         self.assertEqual(st["answers"]["integrations"], ["slack"])
         self.assertEqual(self.ob.normalize({"integrations": "slack,email"})["integrations"], [],
                          "a non-list never substring-matches")
@@ -2671,6 +2699,8 @@ class EventsSetupGuideTests(unittest.TestCase):
         close = self.src[self.src.index("function closeFormModal"):]
         close = close[:close.index("\n}")]
         self.assertIn("FORM_MODAL_THEN", close, "the one-shot hook must fire on every close")
+        opened = self.src[self.src.index("function openFormModal"):self.src.index("function closeFormModal")]
+        self.assertIn("FORM_MODAL_THEN=null", opened, "a hook must not survive into the next modal")
         self.assertIn("afterFormModal(()=>openGuide(key))", self.src)
 
     def test_the_slack_scopes_come_from_the_table_scope_gaps_checks(self):

@@ -8,14 +8,8 @@
 let OB=null;   // {meta, answers, step}
 
 async function initOnboarding(){
-  const status=document.querySelector("header .status"), upd=document.getElementById("update");
-  if(status && !document.getElementById("ob-start")){
-    const b=document.createElement("button");
-    b.className="estop obbtn"; b.id="ob-start"; b.textContent="Setup";
-    b.title="Re-run onboarding: how you use Otto, a cost profile, what to connect, and a tour";
-    b.addEventListener("click",()=>openOnboarding());
-    status.insertBefore(b, upd);
-  }
+  const b=document.getElementById("ob-start");
+  if(b && !b.dataset.wired){ b.dataset.wired="1"; b.addEventListener("click",()=>openOnboarding()); }
   let meta; try { meta=await getJSON("/api/onboarding"); } catch(e){ return; }
   // A push's deep link (#run=<wid>) lands on the run it is about; the wizard must not cover it.
   if(meta.auto_open && !/^#run=/.test(location.hash)) openOnboarding(meta);
@@ -28,10 +22,6 @@ async function openOnboarding(meta){
   OB={meta, step:0, seq:0, done:false, answers:{usage:prev.usage||"", profile:prev.profile||"keep",
                                                  integrations:Array.isArray(prev.integrations)?prev.integrations:null}};
   obRender();
-  // Any way out that isn't Apply — X, Esc, "Just the tour", an integration's Open — counts as
-  // dismissed, keeping the draft answers: otherwise every page load reopens it on someone who
-  // has already dealt with it. Setup in the header still runs it again.
-  afterFormModal(()=>{ if(OB && !OB.done) postOr("/api/onboarding/skip",{answers:OB.answers},"saving onboarding"); });
 }
 
 const OB_STEPS=["welcome","usage","profile","integrations","review"];
@@ -39,8 +29,13 @@ const OB_STEPS=["welcome","usage","profile","integrations","review"];
 function obBody(){
   const body=openFormModal("<b>Set up Otto</b>");
   body.closest(".modalBox").classList.add("wideModalBox");
+  afterFormModal(obDismissed);   // re-armed per render: openFormModal clears any hook
   return body;
 }
+// Any way out that isn't Apply — X, Esc, "Just the tour", an integration's Open — counts as
+// dismissed, keeping the draft answers: otherwise every page load reopens it on someone who has
+// already dealt with it. Setup in the header still runs it again.
+function obDismissed(){ if(OB && !OB.done) postOr("/api/onboarding/skip",{answers:OB.answers},"saving onboarding"); }
 
 function obRender(){
   const body=obBody(), step=OB_STEPS[OB.step], a=OB.answers, m=OB.meta;

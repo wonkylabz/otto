@@ -394,22 +394,25 @@ def _scope_needed(gate, cfg):
 
 
 def scope_catalog(identity=USER, cfg=None):
-    """[(scope, why)] this identity needs for what it is configured to watch — what the Events
-    setup guide tells the operator to add."""
+    """[(scope, why, optional)] this identity needs for what it is configured to watch, plus the
+    optional ones scope_gaps notes — what the Events setup guide tells the operator to add."""
     cfg = cfg if cfg is not None else load()
-    return [(s, why) for s, (why, gate) in sorted(_SCOPES.get(identity, {}).items())
-            if _scope_needed(gate, cfg)]
+    table, opt = _SCOPES.get(identity, {}), _OPTIONAL_SCOPES.get(identity, set())
+    out = [(s, why, s in opt) for s, (why, gate) in sorted(table.items()) if _scope_needed(gate, cfg)]
+    out += [(s, "private channels / group DMs", True) for s in sorted(opt - set(table))]
+    return out
 
 
-def scope_gaps(identity=USER, cfg=None):
+def scope_gaps(identity=USER, cfg=None, cached_only=False):
     """What this identity cannot do with the scopes it has, given what it's configured to watch.
 
     Returns {"missing": [(scope, why), …], "optional": [(scope, why), …], "known": bool}.
     `known` is False when the grant could not be read at all (no token, or Slack unreachable) —
     reporting "nothing missing" in that case would be the same silent lie this exists to end.
-    PURE apart from the cached `granted_scopes`."""
+    PURE apart from the cached `granted_scopes`; `cached_only` never probes Slack, reporting
+    `known: False` for a grant nobody has read yet."""
     cfg = cfg if cfg is not None else load()
-    granted = granted_scopes(identity)
+    granted = _GRANTED.get(identity, set()) if cached_only else granted_scopes(identity)
     if not granted:
         return {"missing": [], "optional": [], "known": False}
     missing, optional = [], []

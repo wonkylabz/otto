@@ -48,11 +48,10 @@ PROFILES = {
     },
     "economic": {
         "label": "Economic",
-        "blurb": "Fewer retries and review rounds, lower reasoning effort, a per-run spend "
-                 "ceiling. Cheapest runs; expect more answers that need a nudge.",
+        "blurb": "Fewer retries and review rounds, lower reasoning effort, and a run past $1 "
+                 "drops to a cheaper model. Never stops a run. Expect more answers that need a nudge.",
         "settings": {"max_attempts": 2, "max_review_rounds": 1, "max_qa_rounds": 1,
-                     "effort": "low", "supervise": False,
-                     "budget_soft_usd": 1.0, "budget_hard_usd": 3.0},
+                     "effort": "low", "supervise": False, "budget_soft_usd": 1.0},
     },
     "balanced": {
         "label": "Balanced",
@@ -158,8 +157,12 @@ def _settings_plan(profile):
 
 
 def _mcp_names(mcps):
-    return [f"{m.get('name', '')} {m.get('display', '')}".lower()
-            for m in mcps if m.get("enabled", True)]
+    """Servers a run can actually use: enabled, activated (an Otto-added def stays unspawned until
+    confirmed) and not last seen unhealthy."""
+    import policy               # noqa: PLC0415
+    return [f"{m.get('name', '')} {m.get('display', '')}".lower() for m in mcps
+            if m.get("enabled", True) and m.get("confirmed") is not False
+            and m.get("health") not in policy.UNHEALTHY]
 
 
 def _detect(key, mcps, connectors_checked=True):
@@ -178,6 +181,10 @@ def _detect(key, mcps, connectors_checked=True):
         live = [i for i in slack.enabled_identities(cfg)
                 if any(slack.allow_ids(cfg, k) for k in slack.allow_keys(i))
                 or (i == slack.USER and cfg.get("allow_self"))]
+        # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here.
+        short = [i for i in live if slack.scope_gaps(i, cfg, cached_only=True)["missing"]]
+        if short:
+            return False, f"listening {names[short[0]]}, but the token is missing scopes — see Events → Slack"
         if live:
             return True, "listening " + " and ".join(names[i] for i in live)
         if slack.enabled_identities(cfg):
@@ -187,11 +194,15 @@ def _detect(key, mcps, connectors_checked=True):
                        else "no Slack token")
     if key == "github":
         import pr_review        # noqa: PLC0415
-        import workspace        # noqa: PLC0415
+        import registry         # noqa: PLC0415
+        import repos as repos_  # noqa: PLC0415
         if not shutil.which("gh"):
             return False, "`gh` not on PATH"
-        # The CACHED login only: resolving it is a `gh api` call of up to 30s.
-        who, repos = pr_review.viewer_cached(), len(workspace.git_repos())
+        # The CACHED login only: resolving it is a `gh api` call of up to 30s. Repos are counted
+        # from the filesystem, no `git` spawned: a checkout, or a managed clone (maybe pending).
+        who = pr_review.viewer_cached()
+        repos = sum(1 for p in registry.projects()
+                    if os.path.isdir(os.path.join(p, ".git")) or repos_.is_managed(p))
         if who is None:
             return None, "sign-in not checked yet — the Events tab's GitHub card checks it"
         if not who:
@@ -281,11 +292,15 @@ def skip(answers=None):
         out = {**d, "version": VERSION, "skipped_at": now}
         # Keep only what was actually answered: a draft closed on the welcome step must not
         # store "personal" as a choice, nor [] as a deliberate "no integrations".
+        # The profile is never drafted: the stored one is what was last APPLIED, and the next
+        # Setup preselects it, so a draft would read as the active profile.
         if isinstance(answers, dict) and answers.get("usage") in USAGES:
             draft = normalize(answers)
+            draft.pop("profile")
             if not isinstance(answers.get("integrations"), list):
                 draft.pop("integrations")
-            out["answers"] = draft
+            prev = d.get("answers") if isinstance(d.get("answers"), dict) else {}
+            out["answers"] = {**({"profile": prev["profile"]} if "profile" in prev else {}), **draft}
         return out
     storage.mutate_json(_STATE, _mut, default={})
     return state()

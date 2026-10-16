@@ -11,6 +11,7 @@ function openFormModal(title){
   // The box is shared, so reset the widened variant the runbook editor opts into — otherwise the
   // next small form (an event rule, a param prompt) inherits its width and looks broken.
   m.querySelector(".modalBox").classList.remove("wideModalBox");
+  FORM_MODAL_THEN=null;   // a close hook belongs to the session it was armed in, never the next one
   m.hidden=false;
   return body;
 }
@@ -21,7 +22,8 @@ function closeFormModal(){
   if(then) setTimeout(then,0);   // after the closing form's own follow-up (its reload) has started
 }
 /* One-shot: run `fn` when the form open NOW closes, saved or cancelled — how a setup guide hands
-   off to a card's own configure form and comes back to re-check it. */
+   off to a card's own configure form and comes back to re-check it. Arm it AFTER the form opens:
+   any openFormModal clears it, so a form replaced by another never fires a stale hook. */
 let FORM_MODAL_THEN=null;
 function afterFormModal(fn){ FORM_MODAL_THEN=fn; }
 document.getElementById("formModalClose").addEventListener("click",closeFormModal);

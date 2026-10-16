@@ -1616,8 +1616,9 @@ class Handler(BaseHTTPRequestHandler):
             # Slack listener (a pull ingress). TWO identities share one poll schedule: the owner's
             # own account (user token) and the bot user (bot token) — each separately switchable,
             # so the UI needs a token/self pair for each.
+            scfg = slack.load()
             self._send(200, json.dumps({
-                "config": slack.load(),
+                "config": scfg,
                 "temporal": TEMPORAL_OK,             # the poller needs Temporal
                 "token_set": slack.token_set(),      # OTTO_SLACK_USER_TOKEN present?
                 "self": slack.whoami() if slack.token_set() else None,
@@ -1625,11 +1626,11 @@ class Handler(BaseHTTPRequestHandler):
                 "bot_self": slack.whoami(slack.BOT) if slack.token_set(slack.BOT) else None,
                 # A token missing a scope polls happily and answers nobody — the one setup
                 # failure with no symptom. Cached per process (one auth.test per identity).
-                "scopes": slack.scope_gaps(slack.USER),
-                "bot_scopes": slack.scope_gaps(slack.BOT),
+                "scopes": slack.scope_gaps(slack.USER, scfg),
+                "bot_scopes": slack.scope_gaps(slack.BOT, scfg),
                 # The scopes the setup guide tells the operator to add — served from the table
                 # scope_gaps checks against, so the guide can't drift from what is enforced.
-                "scope_catalog": {k: slack.scope_catalog(i) for k, i in
+                "scope_catalog": {k: slack.scope_catalog(i, scfg) for k, i in
                                   (("user", slack.USER), ("bot", slack.BOT))},
                 "socket": slack_socket.status(),   # instant delivery for the bot, if configured
                 "poll": slack.poll_status() if TEMPORAL_OK else {"exists": False},

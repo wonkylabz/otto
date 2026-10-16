@@ -23,7 +23,7 @@ const gMissing=sc=>(sc && sc.known && (sc.missing||[]).length)
 const gIds=a=>slackIds(a).length;
 
 // The scope list comes from the server (slack._SCOPES), the same table scope_gaps checks.
-const gScopes=(d,k)=>gInline(((d.scope_catalog||{})[k]||[]).map(([s,why])=>`<code title="${esc(why)}">${esc(s)}</code>`));
+const gScopes=(d,k)=>gInline(((d.scope_catalog||{})[k]||[]).map(([s,why,opt])=>`<code title="${esc(why)}${opt?" (optional)":""}">${esc(s)}${opt?" <i>optional</i>":""}</code>`));
 
 function slackSteps(d, ident){
   const c=d.config||{}, poll=d.poll||{};
@@ -159,10 +159,9 @@ function guideAction(a){
   if(a==="act"){
     const s=g.steps(GUIDE.ctx,GUIDE.choice)[GUIDE.step-1], key=GUIDE.key;
     closeFormModal();
-    // Armed BEFORE the form opens: an opener that throws part-way still leaves a way back.
-    if(!s.act.leaves) afterFormModal(()=>openGuide(key));   // resume on the first undone step
     try { s.act.run(); }
-    catch(e){ toast("couldn't open that form: "+e.message); closeFormModal(); }
+    catch(e){ toast("couldn't open that form: "+e.message); closeFormModal(); openGuide(key); return; }
+    if(!s.act.leaves) afterFormModal(()=>openGuide(key));   // armed after the form opened (modal.js)
   }
 }
 
