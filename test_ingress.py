@@ -9453,7 +9453,7 @@ class FactoryModeTests(unittest.TestCase):
         # Tickets pass the commands GOALS names; `make` only for a GOALS.md predating Commands.
         self.assertEqual(brief.count("`make test`"), 1)
         self.assertIn("no Commands section: `make test`", brief)
-        self.assertIn("the NEXT ticket", brief)       # a missing test runner is not left for later
+        self.assertIn("right\n   after the assessment, this same sprint", brief)  # a missing runner is not left for later
 
     def test_seeding_detects_code_and_fails_closed_on_an_unreadable_tree(self):
         f = self.factory

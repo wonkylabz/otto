@@ -97,12 +97,13 @@ end to end, never ask a question back.
    It reads the code, README, manifest and CI and rewrites Product as what exists (marked done)
    plus what the Seed still asks for; fills Commands with the repo's OWN run/test/lint commands
    (a missing one is written "none yet"); and ticks every Definition-of-Done item already met.
-   Never replace the repo's toolchain, layout or framework. Every other ticket waits for it, and
-   a test runner or linter it found missing is the NEXT ticket — until that merges, a ticket's
-   criteria name the tests it adds and how to run them instead.
-   **Spec before features.** If `{spec}` does not exist yet, the next ticket (right after the
-   foundation, assessment or missing-runner ticket — it needs a runner for its tests — or the
-   FIRST once those are merged) writes it, with two numbered
+   Never replace the repo's toolchain, layout or framework. Every other ticket waits for it. Check
+   the tree YOURSELF now: if it has no test runner or linter, ready the ticket adding them right
+   after the assessment, this same sprint — until it merges, a ticket's criteria name the tests
+   it adds and how to run them instead.
+   **Spec before features.** If `{spec}` does not exist yet, the next ticket (right after the LAST
+   of the foundation, assessment and missing-runner tickets that applies — its tests need a
+   runner — or the FIRST once those are merged) writes it, with two numbered
    sections: **Rules** (R1, R2…) — every domain rule the product must obey, taken from an
    authoritative source the ticket must find and cite (official rules, a standard, an RFC),
    stating explicitly what is ILLEGAL and when, never paraphrased from memory; and **UX**
