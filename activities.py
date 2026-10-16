@@ -184,6 +184,10 @@ def plan_task_steps(payload: dict) -> dict:
     list means 'not plan mode / not worth planning' and the workflow falls through to the normal
     verify ladder. The planner itself is pinned to Claude (engine.plan_steps)."""
     cap = _cap(payload["name"])
+    # A factory run never decomposes: the step runner carries neither its MCP allowlist nor its
+    # deny list, so an escalated step would inherit every server the operator has.
+    if payload.get("factory"):
+        return {"steps": []}
     if cap is None or not engine.plan_mode_active(cap, requested=payload.get("requested", False)):
         return {"steps": []}
     steps = engine.plan_steps(payload["request"], cap)
@@ -394,11 +398,21 @@ def classify_request(payload: dict) -> dict:
     return out
 
 
-def _mcp():
-    """Build the active MCP tool list + on-disk config (shared by every attempt)."""
+def _mcp(wid=None):
+    """Build the active MCP tool list + on-disk config (shared by every attempt). A factory
+    run (`factory.mcp_allow_for`) sees only the servers the operator ticked; `_mcp_denies`
+    denies the rest outright."""
+    import factory
     pol = policy.load()
-    mcp_tools = [f"mcp__{n}" for n in policy.enabled_mcps(pol)]
+    names = policy.enabled_mcps(pol)
     active = policy.active_mcp_config(pol)
+    allow = factory.mcp_allow_for(wid)
+    scoped = allow is not None
+    if scoped:
+        names = [n for n in names if n in allow]
+        kept = {n: d for n, d in ((active or {}).get("mcpServers") or {}).items() if n in allow}
+        active = {"mcpServers": kept} if kept else None
+    mcp_tools = [f"mcp__{n}" for n in names]
     mcp_path = None
     if active:
         # Fixed path shared by every concurrent run in this worker; the content is
@@ -410,9 +424,16 @@ def _mcp():
         # for Claude Code to expand — requires re-admitting that name to the CLI's whole
         # environment, which hands it to the run's own Bash too. `storage` writes through
         # `mkstemp`, so the file lands 0600, and `file_safety` read-denies it to every run.
-        mcp_path = config.mcp_config_path("active")
+        mcp_path = config.mcp_config_path("factory" if scoped else "active")
         storage.write_json(mcp_path, mcp_client.resolved_config(active))
     return mcp_tools, mcp_path
+
+
+def _mcp_denies(wid=None):
+    """Every MCP server a factory run may NOT use, as deny rules (None for any other run)."""
+    import factory
+    allow = factory.mcp_allow_for(wid)
+    return None if allow is None else mcp_client.server_denies(allow)
 
 
 @activity.defn
@@ -458,6 +479,7 @@ def finalize_workspace(payload: dict) -> dict:
                               # it must not close the issue while its siblings are still open.
                               close_issue=not _SWARM_CHILD_RE.search(payload["run_id"]),
                               asker_text=payload.get("asker_text"),
+                              issue=payload.get("issue"),
                               plan=payload.get("plan"), request=payload.get("request"),
                               cap=payload.get("cap"), concerns=payload.get("concerns"))
 
@@ -498,8 +520,14 @@ def resolve_pr_target(payload: dict) -> dict:
     overwhelmingly common case and the behaviour that predates this activity.
 
     An activity, not workflow code, because it shells out to `gh`: the answer depends on live
-    GitHub state and must be recorded once in history, not re-derived on every replay."""
+    GitHub state and must be recorded once in history, not re-derived on every replay.
+
+    `fresh` (factory mode) always branches off the default branch: a factory ticket re-run after
+    its PR went stale must build on what has merged since, and pushing that rebuilt history onto
+    the old PR's branch is refused as a non-fast-forward — the work then never leaves the clone."""
     import workspace
+    if payload.get("fresh"):
+        return {}
     return workspace.pr_target(payload.get("repo"), payload.get("request")) or {}
 
 
@@ -590,7 +618,7 @@ def run_capability(payload: dict) -> dict:
     if fast_lane is not None:
         live = set(policy.safe_tools())
         fast_lane = [t for t in fast_lane if t in live]
-    mcp_tools, mcp_path = _mcp()
+    mcp_tools, mcp_path = _mcp(payload.get("wid"))
     project = engine._resolve_project(cap, payload.get("repo"))   # issue #69
     _warm_conventions(project)
     atts = payload.get("attachments") or []
@@ -620,7 +648,8 @@ def run_capability(payload: dict) -> dict:
             discussion=discussion, fast_lane=fast_lane,
             supervise_enforce=payload.get("supervise_enforce", True),
             attachments=atts, frontman=bool(payload.get("frontman")),
-            external_text=payload.get("external_text"))
+            external_text=payload.get("external_text"),
+            deny_tools=_mcp_denies(payload.get("wid")))
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "session_id": att.get("session_id"), "attempt": att["attempt"],
@@ -717,6 +746,24 @@ _POST_PR = {
 }
 
 
+def _qa_checkout(payload):
+    """A throwaway clone of the PR's head branch for QA to run in, or None (QA then runs
+    without one, as before). Never raises: a missing checkout costs evidence, not the round."""
+    import workspace
+    run_id = f"{payload.get('wid') or 'qa'}-ws"
+    from ui import trace
+    try:
+        branch = workspace.pr_branch(payload.get("repo"), payload.get("pr_url"))
+        if not branch:
+            trace("QA", f"{payload.get('wid')}: no checkout — the PR's head branch did not resolve")
+            return {"error": "the PR's head branch could not be resolved"}
+        ws = workspace.provision(payload.get("repo"), run_id, from_branch=True, branch=branch)
+        return {"path": ws["path"], "run_id": run_id}
+    except Exception as e:  # noqa: BLE001 - see docstring
+        trace("QA", f"{payload.get('wid')}: no checkout — {str(e)[:200]}")
+        return {"error": f"the PR branch could not be cloned: {str(e)[:200]}"}
+
+
 def _post_pr_capability(kind, payload):
     """Run one post-PR loop's capability against an opened PR. PRE-AUTHORIZED: enabling the loop
     is the grant, so this runs without a gate. Returns the transcript + metadata, or
@@ -728,12 +775,28 @@ def _post_pr_capability(kind, payload):
         activity.logger.info(f"{spec['label']} requested but cap '{want}' is not "
                              "registered/enabled")
         return {"missing": True, spec["cap_field"]: want}
-    mcp_tools, mcp_path = _mcp()
-    req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
-                                           payload["request"])
+    mcp_tools, mcp_path = _mcp(payload.get("wid"))
     _warm_conventions(engine._resolve_project(None, payload.get("repo")))
-    att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
-                             mcp_config_path=mcp_path, wid=payload.get("wid"))
+    # QA proves the PR by RUNNING it, so it gets a clone of the PR's head as its cwd — with
+    # none it sat in Otto's checkout, where a clone elsewhere is refused and the registered
+    # checkout is write-denied, so `make test` never ran and every PR went INCONCLUSIVE.
+    ws = _qa_checkout(payload) if kind == "qa" else None
+    # A failed checkout is SAID in the request, so QA reports it and the judge's critique names
+    # the real cause rather than an unexplained INCONCLUSIVE.
+    extra = ({"checkout": ws["path"]} if ws and ws.get("path")
+             else {"checkout_error": ws["error"]} if ws else {})
+    ws = ws if ws and ws.get("path") else None
+    req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
+                                           payload["request"], **extra)
+    try:
+        att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
+                                 mcp_config_path=mcp_path, wid=payload.get("wid"),
+                                 cwd=ws["path"] if ws else None,
+                                 deny_tools=_mcp_denies(payload.get("wid")))
+    finally:
+        if ws:
+            import workspace
+            workspace.cleanup(ws["run_id"])
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
             "duration_s": att.get("duration_s"),
@@ -1011,7 +1074,7 @@ def record_skip(payload: dict) -> None:
 def poll_board(payload: dict) -> dict:
     """Poll the configured GitHub Projects board: pick up every issue parked in the Ready
     column as an unattended OttoWorkflow, claim it (move out of Ready), and return what was
-    picked. Idempotent — a deterministic `gh-issue-<n>` workflow id means re-polling a still-
+    picked. Idempotent — a deterministic `gh-issue-<n>[-rK]` workflow id means re-polling a still-
     Ready card never double-runs it. The result is delivered back to the issue by
     delivery._github_issue (see the `reply_to` enrichment below)."""
     import board
@@ -1023,13 +1086,45 @@ def poll_board(payload: dict) -> dict:
     cfg = board.load()
     if not board.enabled(cfg):
         return {"picked": [], "disabled": True}
-    meta = board.project_meta(cfg)
+    # GraphQL is rate-limited per user, and Otto's every `gh` call shares that budget. So a poll
+    # makes ONE board read (the Ready list and the factory's WIP count both come from it), fetches
+    # the cached ids only once a card will move, and reads an issue only for a card it will start.
+    # A failed read — a rate limit included — is reported as an error, never as an empty column.
+    data = board.item_list(cfg)
+    if data is None:
+        return {"picked": [], "skipped": [], "error": "board unreadable"}
     picked, skipped = [], []
-    for issue in board.list_ready(cfg):
-        n = issue.get("number")
+    stubs = board.ready_stubs(cfg, data)
+    if not stubs:
+        return {"picked": picked, "skipped": skipped}
+    meta = board.project_meta(cfg)
+    # Factory mode: its tickets run pre-authorized and merge themselves, so pickup is bounded by
+    # the factory's WIP cap, counted off the same board read.
+    import factory
+    fac = factory.load()
+    room = None
+    if factory.enabled(fac):
+        # A HELD card (the board's hold label) is a human's, outside the line: it neither fills
+        # the WIP cap nor stops the line from its review column (factory.apply).
+        counts = board.column_counts(cfg, repo=fac.get("slug"), data=data,
+                                     skip_label=cfg.get("hold_label"))
+        room, why = factory.pickup_room(fac, counts, cfg, meta)
+        if why:
+            activity.logger.info(f"board: factory pickup held — {why}")
+    for stub in stubs:
+        n = stub.get("number")
         if n is None:
             continue
+        owned = room is not None and factory.owns(stub, fac)
+        if owned and room <= 0:
+            skipped.append(n)
+            continue
+        issue = board.issue_details(stub)
+        if issue is None:
+            continue
         params = board.issue_to_request(issue, cfg)
+        if owned:
+            factory.apply(params, fac)
         # Resolve a pinned capability from the TRUSTED registry — never take risk from a label
         # (mirrors the event ingress in server._handle_event).
         if params.get("cap"):
@@ -1058,15 +1153,113 @@ def poll_board(payload: dict) -> dict:
             "done_col": (cfg.get("columns") or {}).get("done"),
             "blocked_col": (cfg.get("columns") or {}).get("blocked"),
         })
-        wid = f"gh-issue-{n}"
+        # A card re-readied after its run closed gets the next generation (board.next_run_id);
+        # None = a generation is still running, which is the old duplicate case.
+        wid = board.next_run_id(n)
+        if wid is None:
+            skipped.append(n)
+            continue
+        if owned:
+            # Claimed BEFORE it starts: an unclaimed factory run escapes the MCP allowlist and
+            # the budget, and the next poll sees it running and never retries the claim.
+            factory.claim(wid)
         if board.start_run(wid, params):
             board.set_status(cfg, meta, issue.get("item_id"), (cfg.get("columns") or {}).get("active"))
             picked.append(n)
+            if owned:
+                room -= 1
         else:
             skipped.append(n)
     if picked:
         activity.logger.info(f"board: picked up {len(picked)} issue(s): {picked}")
     return {"picked": picked, "skipped": skipped}
+
+
+@activity.defn
+def factory_gate(payload: dict) -> dict:
+    """One factory sprint tick: start a sprint, skip it (queue busy, paused) or stop the factory
+    (budget, stall). All IO lives in `factory.gate`, so FactorySprintWorkflow stays deterministic."""
+    import factory
+    return factory.gate()
+
+
+@activity.defn
+def factory_after_sprint(payload: dict) -> dict:
+    """Book a finished sprint — a DONE verdict stops the factory (`factory.after_sprint`)."""
+    import factory
+    return factory.after_sprint(payload)
+
+
+@activity.defn
+@_heartbeats("playtest")
+def factory_playtest(payload: dict) -> dict:
+    """Use the factory's product as a real user would, on a throwaway clone of the default
+    branch, and book the verdict (`factory.note_playtest`). Every ticket's QA proves its OWN
+    criteria; nothing else ever played a whole match, so wrong rules and an unreadable UI
+    shipped with every check green. Never raises — a failed playtest is a missing report."""
+    import factory
+    import workspace
+    s = factory.load()
+    wid = payload["wid"]
+    if not factory.enabled(s):
+        return {"verdict": "", "block": ""}
+
+    def skipped(why):
+        # Named in the factory log and handed to the PM, so a DONE refused for "not clean" is
+        # never a mystery: the playtest did not run, and this is why.
+        factory.note_playtest_skipped(why)
+        return {"verdict": "", "block": factory.playtest_block(
+            f"(the playtest could not run: {why} — no product evidence this sprint)")}
+    cap = _cap(config.QA_CAP)
+    if cap is None:
+        return skipped(f"the QA capability '{config.QA_CAP}' is not registered/enabled")
+    run_id = f"{wid}-ws"
+    try:
+        ws = workspace.provision(s["repo"], run_id)
+    except Exception as e:  # noqa: BLE001 - see docstring
+        return skipped(f"could not clone the default branch: {str(e)[:200]}")
+    req = factory.playtest_request(s)
+    try:
+        mcp_tools, mcp_path = _mcp(wid)
+        att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
+                                 mcp_config_path=mcp_path, wid=wid, cwd=ws["path"],
+                                 deny_tools=_mcp_denies(wid))
+        # Audited under a wid the factory owns (`factory._owned`): it counts against the budget.
+        engine.record_attempt(att["workflow"], f"[playtest] {s.get('slug')}", cap, att["result"],
+                              att["cost"], 1, None, tokens=att.get("tokens"),
+                              model=att.get("model"), repo=s["repo"],
+                              duration_s=att.get("duration_s"))
+    except Exception as e:  # noqa: BLE001 - see docstring
+        return skipped(f"{type(e).__name__}: {str(e)[:200]}")
+    finally:
+        workspace.cleanup(run_id)
+    return {"verdict": factory.note_playtest(att["result"]),
+            # The brief's appendix, built here: workflow code never imports factory (it does IO).
+            "block": factory.playtest_block(att["result"])}
+
+
+@activity.defn
+@_heartbeats("merge")
+def merge_pr(payload: dict) -> dict:
+    """Factory mode: mark the PR ready and squash-merge it. Reached only when review AND QA both
+    PASSED on a factory ticket (OttoWorkflow decides; this only acts). Never raises — a refusal
+    (conflict, branch protection, a required check) comes back as {merged: False, error}."""
+    import factory
+    pr_url = payload.get("pr_url") or ""
+    rc, _, err = workspace._run(["gh", "pr", "ready", pr_url], timeout=120)
+    if rc != 0 and "already" not in err.lower():
+        return {"merged": False, "error": f"could not mark the PR ready: {err[:300]}"}
+    rc, _, err = workspace._run(["gh", "pr", "merge", pr_url, "--squash", "--delete-branch"],
+                                timeout=300)
+    if rc != 0:
+        # A retried activity whose first try DID merge: the second `gh pr merge` refuses.
+        rc2, state, _ = workspace._run(["gh", "pr", "view", pr_url, "--json", "state",
+                                        "--jq", ".state"], timeout=60)
+        if not (rc2 == 0 and state.strip().upper() == "MERGED"):
+            return {"merged": False, "error": err[:300]}
+    if payload.get("factory"):
+        factory.note_merge(payload["factory"], pr_url)     # idempotent per PR url
+    return {"merged": True}
 
 
 @activity.defn
@@ -1518,7 +1711,7 @@ def reap_stuck(payload: dict) -> dict:
             n = stub.get("number")
             if n is None:
                 continue
-            wid = f"gh-issue-{n}"
+            wid = board.latest_run_id(n)
             state = _reap_state(wid)
             if state == "alive":
                 continue

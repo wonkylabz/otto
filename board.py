@@ -11,9 +11,10 @@ Design notes:
   * **Moving a card to Ready IS the human approval.** Board-sourced runs default to
     `approval="auto"` so a write (incl. a repo-edit that opens a draft PR) actually executes; a
     `hold` label flips it back to `"ask"` (surfaces on Otto's Board tab for a second gate).
-  * **Idempotency** has two guards: the run's workflow id is deterministic (`gh-issue-<n>`) so a
-    duplicate start is rejected by Temporal, and claiming (moving out of Ready) stops the next
-    poll from re-listing it. See `start_run` + the poll activity.
+  * **Idempotency** has two guards: the run's workflow id is deterministic (`gh-issue-<n>`, then
+    `-r1`, `-r2`… for a card re-readied after its run closed — `next_run_id`) so a duplicate start
+    is rejected by Temporal, and claiming (moving out of Ready) stops the next poll from
+    re-listing it. See `start_run` + the poll activity.
   * **`gh` is the transport** (same dependency as `workspace.py`'s draft-PR path). Every `gh`
     call goes through `_run` and never raises — a transient failure just retries next poll.
   * Config lives in `data/board.json` (hot-editable, like `event-rules.json`/`schedules.json`),
@@ -26,6 +27,7 @@ import json
 import os
 import re
 import subprocess
+import time
 
 import config
 import contracts
@@ -181,9 +183,37 @@ def _repo_slug(value):
 
 # --- project metadata (ids needed to move a card) --------------------------
 
+# project_meta is two GraphQL calls of ids that change only when someone edits the board's
+# fields, and the poll asked for them every interval. Cached per process for this long, keyed on
+# what selects them; only a COMPLETE answer is cached, so a failure is retried next time.
+META_TTL_S = 3600
+_META_CACHE = {}
+
+
+def _complete(meta, cfg):
+    """Ids resolved AND every configured column present on the board."""
+    want = {c for c in (cfg.get("columns") or {}).values() if c}
+    return bool(meta.get("project_id") and meta.get("status_field_id")
+                and want <= set(meta.get("options") or {}))
+
+
 def project_meta(cfg):
     """Resolve the ids needed to move cards: project id, the Status field id, and the
-    {column-name: option-id} map. Best-effort — returns empty ids on any gh failure."""
+    {column-name: option-id} map. Best-effort — returns empty ids on any gh failure.
+    Cached only once COMPLETE (`_complete`): a board missing a configured column is re-read
+    until the operator adds it — caching the gap hid a just-added Blocked for an hour, so
+    Factory's enable refused a board that had it and every move there went nowhere."""
+    key = (project_spec(cfg.get("project")), cfg.get("status_field"))
+    hit = _META_CACHE.get(key)
+    if hit and time.time() - hit[0] < META_TTL_S and _complete(hit[1], cfg):
+        return {**hit[1], "options": dict(hit[1]["options"])}
+    meta = _project_meta(cfg)
+    if _complete(meta, cfg):
+        _META_CACHE[key] = (time.time(), meta)
+    return meta
+
+
+def _project_meta(cfg):
     owner, num = _project_parts(cfg)
     meta = {"project_id": None, "status_field_id": None, "options": {}}
     if not owner:
@@ -206,6 +236,9 @@ def project_meta(cfg):
             meta["options"] = {o.get("name"): o.get("id")
                                for o in (status.get("options") or []) if o.get("name")}
     if not meta["project_id"] or not meta["status_field_id"]:
+        # Surfaced by callers that refuse on it (factory.enable): "missing required scopes
+        # [read:project]" names the fix, an anonymous "unreachable" does not.
+        meta["error"] = err[:300]
         trace("BOARD", f"could not resolve project/field ids for {cfg.get('project')} "
                        f"(card moves will be skipped): {err[:120]}")
     return meta
@@ -252,6 +285,30 @@ def _parse_items(data, cfg):
     return _parse_items_in(data, cfg, (cfg.get("columns") or {}).get("ready"))
 
 
+def item_list(cfg):
+    """The board's raw `gh project item-list` JSON, or None on any failure — the ONE GraphQL read
+    a poll makes; `list_ready`/`column_counts` take it as `data` instead of each re-fetching.
+    A rate-limited read is a failure, never an empty board."""
+    owner, num = _project_parts(cfg)
+    if not owner:
+        return None
+    rc, out, err = _run(["gh", "project", "item-list", num, "--owner", owner,
+                         "--format", "json", "-L", "200"])
+    if rc != 0:
+        trace("BOARD", f"item-list for {cfg.get('project')} failed: {err[:140]}")
+        return None
+    try:
+        return json.loads(out or "{}")
+    except ValueError:
+        return None
+
+
+def ready_stubs(cfg, data):
+    """Ready-column stubs from an `item_list` read, lowest issue number first — the factory PM
+    readies tickets in build order. Pure."""
+    return sorted(_parse_items(data, cfg), key=lambda i: i.get("number") or 0)
+
+
 def list_in_column(cfg, column_key):
     """Issue stubs [{item_id, number, repo, url}] currently in the column named by
     cfg['columns'][column_key]. Best-effort; [] on any gh failure. Used by the reaper to find
@@ -274,6 +331,46 @@ def list_in_column(cfg, column_key):
     return _parse_items_in(data, cfg, column_name)
 
 
+_NO_LABELS_WARNED = []
+
+
+def _warn_no_labels():
+    if not _NO_LABELS_WARNED:
+        _NO_LABELS_WARNED.append(True)
+        trace("BOARD", "`gh project item-list` returned no labels — held cards cannot be told "
+                       "apart and count toward the factory's WIP and stop-the-line (upgrade gh)")
+
+
+def column_counts(cfg, repo=None, data=None, skip_label=None):
+    """{column name: issue count} across the whole board, optionally only `repo`'s issues
+    ("owner/name"). None on any gh failure — unlike `list_in_column`'s [], because the caller
+    gates on it (factory WIP, sprint start) and an unreadable board must not read as empty.
+    Pass an `item_list` read as `data` to spend no further GraphQL."""
+    if data is None:
+        data = item_list(cfg)
+    if data is None:
+        return None
+    counts = {}
+    for item in (data or {}).get("items") or []:
+        content = item.get("content") or {}
+        if (content.get("type") or "").lower() != "issue":
+            continue
+        slug = _repo_slug(content.get("repository") or content.get("url")) or ""
+        if repo and slug.lower() != repo.lower():
+            continue
+        if skip_label:
+            if "labels" not in item:
+                # gh 2.93's item-list carries them; an older one may not, and then a held card
+                # counts like any other. Said, never silent — the line would just look stuck.
+                _warn_no_labels()
+            elif skip_label in (item.get("labels") or []):
+                continue
+        col = _item_status(item, cfg.get("status_field"))
+        if col:
+            counts[col] = counts.get(col, 0) + 1
+    return counts
+
+
 def _issue_details(stub, timeout=60):
     """Fetch title/body/labels for a Ready issue (item-list doesn't reliably carry labels)."""
     repo, number = stub.get("repo"), stub.get("number")
@@ -292,20 +389,18 @@ def _issue_details(stub, timeout=60):
             "labels": [l.get("name") for l in (data.get("labels") or []) if l.get("name")]}
 
 
+def issue_details(stub):
+    """A Ready stub plus its title/body/labels, or None when the issue can't be read."""
+    details = _issue_details(stub)
+    return {**stub, **details} if details else None
+
+
 def list_ready(cfg):
     """Return Ready-column issues with full details: [{item_id, number, repo, url, title, body,
-    labels}]. Best-effort — returns [] on any gh failure."""
-    owner, num = _project_parts(cfg)
-    if not owner:
-        return []
-    rc, out, err = _run(["gh", "project", "item-list", num, "--owner", owner,
-                         "--format", "json", "-L", "200"])
-    if rc != 0:
-        trace("BOARD", f"item-list for {cfg.get('project')} failed: {err[:140]}")
-        return []
-    try:
-        data = json.loads(out or "{}")
-    except ValueError:
+    labels}]. Best-effort — returns [] on any gh failure. The poll reads lazier than this (one
+    issue read per card it will START, see activities.poll_board)."""
+    data = item_list(cfg)
+    if data is None:
         return []
     issues = []
     for stub in _parse_items(data, cfg):
@@ -443,18 +538,84 @@ def has_comment_marker(repo, number, marker):
 
 def start_run(wid, params):
     """Start an unattended OttoWorkflow for a ticket. Deterministic id + REJECT_DUPLICATE so a
-    given issue runs at most once (ever). Returns True if newly started, False if it already
+    given run GENERATION starts at most once (`next_run_id` picks the generation). Returns True if newly started, False if it already
     exists (idempotent skip) or Temporal is unreachable. Never raises."""
     full = {"request": params["request"], "unattended": True,
             "cap": params.get("cap"), "repo": params.get("repo"),
             "repo_hint": params.get("repo_hint"),
             "approval": params.get("approval", "auto"), "qa": params.get("qa", False),
+            # Factory mode only (factory.apply, stamped by the poll activity, never a client).
+            "auto_merge": bool(params.get("auto_merge")), "factory": params.get("factory"),
+            "fresh_branch": bool(params.get("fresh_branch")),
             "clarify": params.get("clarify", False),
             "reply_to": params.get("reply_to"),
             "chat_key": params.get("chat_key"), "chat_title": params.get("chat_title"),
             "chat_labels": params.get("chat_labels")}
     return ingress.start_run(wid, full, estop_key="board",
                              trace_tag="BOARD") == ingress.STARTED
+
+
+# --- which run a card gets ---------------------------------------------------
+
+# A card can come BACK to Ready — a human (or the factory PM) re-readies a Blocked ticket after
+# rewriting it. Its first run already holds `gh-issue-<n>`, and REJECT_DUPLICATE refused every
+# re-run, so the card sat in Ready forever while every poll reported it skipped. So a card's run
+# is a GENERATION: the first free id in `gh-issue-<n>`, `-r1`, `-r2`, … A generation still running
+# is never doubled; a closed one makes room for the next. Also covers another repo's #n.
+MAX_GENERATIONS = 20
+
+
+def run_id(n, gen=0):
+    return f"gh-issue-{n}" if not gen else f"gh-issue-{n}-r{gen}"
+
+
+async def _run_states(n):
+    """[(wid, 'running'|'closed')] for every generation that exists, oldest first."""
+    import temporal_client as tc
+    from temporalio.service import RPCError, RPCStatusCode
+    c = await tc.client()
+    out = []
+    for gen in range(MAX_GENERATIONS):
+        wid = run_id(n, gen)
+        try:
+            desc = await c.get_workflow_handle(wid).describe()
+        except RPCError as e:
+            if e.status == RPCStatusCode.NOT_FOUND:
+                break
+            raise
+        name = desc.status.name if desc.status else "RUNNING"
+        out.append((wid, "running" if name == "RUNNING" else "closed"))
+    return out
+
+
+def _generations(n):
+    """`_run_states`, or None when Temporal can't be asked (the caller falls back)."""
+    import temporal_client as tc
+    if not tc.OK:
+        return None
+    try:
+        return tc.run(_run_states(n))
+    except Exception as e:  # noqa: BLE001 - Temporal unreachable / transient
+        trace("BOARD", f"run lookup for #{n} failed: {str(e)[:120]}")
+        return None
+
+
+def next_run_id(n):
+    """The id a Ready card #n should start under, or None when a generation is still RUNNING
+    (it is in flight — never doubled). Unknown (Temporal unreachable) falls back to the first
+    generation, whose REJECT_DUPLICATE keeps the old at-most-once behaviour."""
+    gens = _generations(n)
+    if gens is None:
+        return run_id(n)
+    if any(state == "running" for _, state in gens):
+        return None
+    return run_id(n, len(gens)) if len(gens) < MAX_GENERATIONS else None
+
+
+def latest_run_id(n):
+    """The newest generation's id — what the reaper must judge a stuck In-Progress card by."""
+    gens = _generations(n)
+    return gens[-1][0] if gens else run_id(n)
 
 
 # --- Temporal poll schedule ------------------------------------------------

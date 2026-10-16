@@ -176,7 +176,8 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                 repo=None, audience=None, approved_plan=None, grounding=None,
                 memory_enabled=True,
                 model_override=None, discussion=False, supervise_enforce=True, effort=None,
-                attachments=None, frontman=False, fast_lane=None, external_text=None):
+                attachments=None, frontman=False, fast_lane=None, external_text=None,
+                deny_tools=None):
     """One execution attempt via `claude -p`. Builds the invocation (folding in the
     previous critique on a retry) and picks the model (escalated on the final attempt).
     Returns the raw result + metadata; verification and auditing are separate steps so the
@@ -204,6 +205,9 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     mcp_config_path, cap_mcp_tools = _effective_mcp(cap, mcp_config_path)
     allowed += cap_mcp_tools
     disallowed, permission_mode = None, None   # None = _claude's default trim / the CLI's mode
+    if deny_tools:
+        # A scoped run (factory.mcp_allow_for): the default trim plus every server it may not use.
+        disallowed = config.DISALLOWED_TOOLS + list(deny_tools)
     if fast_lane is not None:
         allowed = list(fast_lane)
         disallowed = config.FAST_LANE_DISALLOWED_TOOLS + mcp_client.fast_lane_denies(fast_lane)

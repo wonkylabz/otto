@@ -89,6 +89,7 @@ async function loadAdmin(){
   SECRETS=(settings&&settings.secrets)||null;
   renderAdmin(data, models, el, (settings&&settings.settings)||{});
   restoreCapView(el, view);
+  loadFactory();
   refreshMcpHealth(data.mcps);
 }
 
@@ -1268,6 +1269,7 @@ function renderAdmin(data, models, el, settings){
     <div class="phead"><h1>Configuration</h1>
       <p class="sub"><b style="color:var(--accent)">Read</b> caps run on their own; <b style="color:var(--warn)">write</b> caps wait for approval — click a risk pill to flip it. Hover any control for what it does.</p>
       <span class="pside saved" id="saved">saved ✓</span></div>
+    <div id="factory-section"></div>
     ${appearanceSection()}
     ${modelsSection(models)}
     ${settingsSection(settings)}
@@ -1398,34 +1400,14 @@ ${sessionsSection()}
   }));
   // Section-level collapse: the title toggles its .asection.coll. Which sections you left open is
   // remembered, so Admin doesn't re-collapse everything on every reload/refresh.
-  const SECTS="otto.admin.sections";
-  const sread=()=>{try{return JSON.parse(localStorage.getItem(SECTS))||{};}catch(e){return{};}};
-  const swrite=st=>{try{localStorage.setItem(SECTS,JSON.stringify(st));}catch(e){}};
-  const remembered=sread();
-  el.querySelectorAll(".asection.coll[data-sect]").forEach(sec=>{
-    if(remembered[sec.dataset.sect]) sec.classList.remove("collapsed");
-  });
-  enhanceToggles(el,".secttoggle",".asection","collapsed");
-  el.querySelectorAll(".secttoggle").forEach(t=>t.addEventListener("click",()=>{
-    const sec=t.closest(".asection"), st=sread();
-    if(!sec.dataset.sect) return;
-    const open=!sec.classList.toggle("collapsed");
-    if(open) st[sec.dataset.sect]=1; else delete st[sec.dataset.sect];
-    swrite(st);
-  }));
-  el.querySelectorAll(".asection[data-sub] > h3 .secttoggle").forEach(t=>t.addEventListener("click",()=>{
-    const sec=t.closest(".asection"), k="otto.admin.subclosed";
-    let st={}; try{ st=JSON.parse(localStorage.getItem(k))||{}; }catch(e){}
-    if(sec.classList.toggle("collapsed")) st[sec.dataset.sub]=1; else delete st[sec.dataset.sub];
-    try{ localStorage.setItem(k,JSON.stringify(st)); }catch(e){}
-  }));
+  wireSections(el);
   // Every "+ Add" opens the shared modal now, but what it adds lands in THIS section's list, and
   // a recheck writes its result there too — so expand the section, or both read as no-ops.
   el.querySelectorAll(".asection.coll h3 .addbtn").forEach(b=>b.addEventListener("click",()=>{
     const sec=b.closest(".asection");
     if(!sec.classList.contains("collapsed")) return;
     sec.classList.remove("collapsed");
-    const st=sread(); st[sec.dataset.sect]=1; swrite(st);
+    const st=sectsRead(); st[sec.dataset.sect]=1; sectsWrite(st);
   }));
   const setAllCollapsed=v=>el.querySelectorAll("#cap-list .agroup, #cap-list .asub").forEach(g=>g.classList.toggle("collapsed",v));
   const exp=el.querySelector("#cap-expand"), col=el.querySelector("#cap-collapse");
@@ -1564,11 +1546,6 @@ async function removeItem(path, body){
 
 /* A form save that reports into the form's OWN error slot rather than the toast: the modal is
    still open and the typed values are still there, so that is where the reader is looking. */
-async function postForm(path, body, errEl){
-  try { await postJSON(path, body); return true; }
-  catch(e){ errEl.textContent=e.message; return false; }
-}
-
 function showCapForm(cap){
   const editing = !!(cap && cap.source==='otto');
   const c=openFormModal(editing?("<b>Edit capability</b><br>"+esc(cap.name))

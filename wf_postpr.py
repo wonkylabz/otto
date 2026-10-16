@@ -25,7 +25,7 @@ from wf_runtime import (_EXEC_CEILING, _FIX_NO_LADDER, _HEARTBEAT, _JUDGE_CEILIN
 with workflow.unsafe.imports_passed_through():
     import repo_checks
     from activities import (cleanup_workspace, finalize_workspace, judge_qa, judge_review,
-                            pr_head_branch, provision_workspace, qa_capability,
+                            merge_pr, pr_head_branch, provision_workspace, qa_capability,
                             record_attempt, review_capability, run_capability, run_repo_checks)
 
 
@@ -143,7 +143,7 @@ class PostPrMixin:
         res = str(fix.get("result") or "").strip() or "(no output)"
         return res[:300] + " […clipped]" if len(res) > 300 else res
 
-    async def _run_fix_loop(self, kind, request, cap, repo, pr_url):
+    async def _run_fix_loop(self, kind, request, cap, repo, pr_url, rounds=None, tag=""):
         """Judge the opened PR with `kind`'s capability; on an adverse verdict, fold its findings
         into a fix on the SAME branch and re-judge. Returns {state, rounds, <cap_field>,
         critique?} where state is pass | fail | inconclusive | unavailable.
@@ -154,7 +154,9 @@ class PostPrMixin:
         the reviewer is read-only, and each fix run reuses the already-approved write capability.
         """
         spec = _LOOPS[kind]
-        rounds = max(0, self._setting(spec["rounds_setting"]))
+        # `rounds`/`tag`: a judge-only pass (0 fix rounds) under ids of its own (`-rev` + tag),
+        # so its transcript and audit row never overwrite the first pass's.
+        rounds = max(0, self._setting(spec["rounds_setting"]) if rounds is None else rounds)
         run_id = workflow.info().workflow_id
         cap_field, cap_name = spec["cap_field"], None
         for rnd in range(rounds + 1):    # round 0 = the initial pass; then up to `rounds` fix+redo
@@ -164,7 +166,7 @@ class PostPrMixin:
             if workflow.patched("repo-checks"):
                 checks = await workflow.execute_activity(
                     run_repo_checks,
-                    {"repo": repo, "pr_url": pr_url, "run_id": f"{run_id}-chk{spec['wid']}{rnd}"},
+                    {"repo": repo, "pr_url": pr_url, "run_id": f"{run_id}-chk{spec['wid']}{tag}{rnd}"},
                     start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY)
             if checks.get("state") == "fail":
@@ -174,7 +176,7 @@ class PostPrMixin:
                 out = await workflow.execute_activity(
                     spec["capability"],
                     {"pr_url": pr_url, "repo": repo, "request": request,
-                     "wid": f"{run_id}-{spec['wid']}{rnd}"},
+                     "wid": f"{run_id}-{spec['wid']}{tag}{rnd}"},
                     start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY_EXEC)
                 if out.get("missing"):
@@ -265,6 +267,46 @@ class PostPrMixin:
                         "critique": f"{spec['unfinished_lead']} the fix round did not finish — "
                                     f"{self._fix_error(fix)}\n" + critique}
         return {"state": "fail", "rounds": rounds, cap_field: cap_name}
+
+    async def _auto_merge(self, params, pr, review, qa, notes, request=None, cap=None, repo=None):
+        """Factory mode (`factory.apply` sets `auto_merge`, only from the board poll activity):
+        merge the PR once BOTH loops PASSED — never on a skipped or inconclusive one. A refused
+        merge (conflict, branch protection) is a human's, routed to Blocked like a failed QA.
+        Returns whether it merged. Absent from every history recorded before it, so those replay
+        untouched."""
+        # A factory ticket's deliverable IS a merged PR. One that opened none (it reported a
+        # missing prerequisite, or found nothing to change) is Blocked for the PM, never Done.
+        # Patched: a run in flight across this change replays without the extra terminal row.
+        if (params.get("auto_merge") and not (pr and pr.get("pr_url")) and not self._needs_human
+                and workflow.patched("factory-no-pr")):
+            self._needs_human = {"reason": "factory_no_pr"}
+            return False
+        if not (params.get("auto_merge") and pr and pr.get("pr_url") and not self._needs_human
+                and (review or {}).get("state") == "pass" and (qa or {}).get("state") == "pass"):
+            return False
+        # Review ran BEFORE QA, so a QA fix round pushed commits no reviewer has read. Review the
+        # final tree once more; anything short of a clean pass with no fix of its own (which QA
+        # would then not have seen) is a human's. Patched: in-flight runs replay without it.
+        if ((qa or {}).get("rounds") and request is not None
+                and workflow.patched("factory-rereview")):
+            # Judge-only: a fix here would push commits QA never saw, so any finding is a human's.
+            again = await self._run_fix_loop("review", request, cap, repo, pr["pr_url"],
+                                             rounds=0, tag="re")
+            if again.get("state") != "pass":
+                self._needs_human = {"reason": "merge_unreviewed",
+                                     "detail": (again.get("critique") or "")[:500]}
+                return False
+        self._enter("MERGE")
+        out = await workflow.execute_activity(
+            merge_pr, {"pr_url": pr["pr_url"], "factory": params.get("factory")},
+            start_to_close_timeout=timedelta(minutes=10), heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY)
+        self._leave("MERGE")
+        if not out.get("merged"):
+            self._needs_human = {"reason": "merge_failed", "detail": out.get("error", "")}
+            return False
+        notes.append("\n\n_✅ Merged automatically (factory mode): review and QA both passed._")
+        return True
 
     async def _run_review_loop(self, request, cap, repo, pr_url):
         """Code-review the opened PR, fixing must/should-fix findings on the same branch.

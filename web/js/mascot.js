@@ -33,6 +33,7 @@ const MASCOT_STAGE={
   PR:       ["working",  "opening a pull request\u2026"],
   REVIEW:   ["working",  "reading back my own diff\u2026"],
   QA:       ["working",  "putting it to the test\u2026"],
+  MERGE:    ["working",  "merging it in\u2026"],
   DELIVER:  ["working",  "wrapping up\u2026"],
   AUDIT:    ["working",  "writing it all down\u2026"],
 };

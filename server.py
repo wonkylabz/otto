@@ -37,6 +37,7 @@ import audit          # stage_timings/run_times/STAGE_ORDER — off the facade (
 import engine
 import estop
 import events
+import factory
 import gateway
 import knowledge
 import local_runtime
@@ -1355,6 +1356,10 @@ class Handler(BaseHTTPRequestHandler):
                                         # 15s badge tick AND before every turn (refreshHealth), so
                                         # the pause reaches the header with no extra request.
                                         "estop": estop.status(),
+                                        # Same reasoning: one small file read, and the header's
+                                        # FACTORY chip must be visible from every tab.
+                                        "factory": {k: v for k, v in factory.load().items()
+                                                    if k in ("enabled", "repo", "slug")},
                                         "update": updater.summary(),
                                         "uptime_s": int(time.time() - _START_TIME)}))
         elif self.path == "/api/doctor":
@@ -1562,6 +1567,18 @@ class Handler(BaseHTTPRequestHandler):
                 "temporal": TEMPORAL_OK,             # the poller needs Temporal
                 "poll": board.poll_status() if TEMPORAL_OK else {"exists": False},
                 "caps": [c.name for c in CAPS if c.enabled],  # for the label->cap picker
+            }))
+        elif self.path == "/api/factory":
+            # Factory mode (factory.py): the one switch, its knobs and where the line stands.
+            st = factory.status()
+            self._send(200, json.dumps({
+                "state": st, "temporal": TEMPORAL_OK,
+                "repos": [r["name"] for r in workspace.git_repos()],
+                "board": board.project_url(board.load()),
+                # The allowlist's choices: enabled servers only, from the CACHED health read.
+                "mcps": [{"name": m["name"], "display": m.get("display") or m["name"],
+                          "source": m["source"]}
+                         for m in policy.all_mcps(policy.load()) if m["enabled"]],
             }))
         elif self.path == "/api/pr-review-config":
             # Auto-review of PRs assigned to the operator (the GitHub ingress's pull half).
@@ -2419,6 +2436,27 @@ class Handler(BaseHTTPRequestHandler):
         status = board.reconcile_schedule() if TEMPORAL_OK else "temporal unavailable"
         self._send(200, json.dumps({"ok": True, "config": saved, "schedule": status}))
 
+    def _post_factory_enable(self, body):
+        """POST /api/factory/enable — turn Factory mode on (or update its knobs). Everything that
+        runs unattended under it is derived here from the operator's own act, server-side;
+        nothing a later run does reads approval or merge from a client body."""
+        if not TEMPORAL_OK:
+            self._send(409, json.dumps({"error": "Factory mode needs Temporal"}))
+            return
+        try:
+            state = factory.enable(body)
+        except factory.Refused as e:
+            self._send(400, json.dumps({"error": str(e)}))
+            return
+        state.pop("prev_board", None)
+        self._send(200, json.dumps({"ok": True, "state": state}))
+
+    def _post_factory_disable(self, body):
+        """POST /api/factory/disable — back to Manual; restores the board config it changed."""
+        state = factory.disable("manual", "switched to Manual in Admin")
+        state.pop("prev_board", None)
+        self._send(200, json.dumps({"ok": True, "state": state}))
+
     def _post_pr_review_config(self, body):
         """POST /api/pr-review-config"""
         saved = pr_review.save(body.get("config", body))
@@ -2833,6 +2871,8 @@ _POST_ROUTES = {
     "/api/continue": Handler._post_continue,
     "/api/conventions/refresh": Handler._post_conventions_refresh,
     "/api/event-rules": Handler._post_event_rules,
+    "/api/factory/disable": Handler._post_factory_disable,
+    "/api/factory/enable": Handler._post_factory_enable,
     "/api/slack-triggers": Handler._post_slack_triggers,
     "/api/knowledge/add": Handler._post_knowledge_add,
     "/api/knowledge/clear": Handler._post_knowledge_clear,

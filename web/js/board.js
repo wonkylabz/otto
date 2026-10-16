@@ -35,6 +35,7 @@ async function pollAdminBadge(){
     // Same tick keeps the pause current, so a pause engaged from the CLI, another tab, or a
     // `touch data/ESTOP` shows up here within 15s without this page owning a poller.
     applyEstop(d.estop);
+    applyFactory(d.factory);
     applyUpdate(d.update);
   }catch(e){ return false; }   // `poll` backs off — a badge is not worth a toast
 }
@@ -64,7 +65,7 @@ pollBoardBadge();
 // its own (Retry/Dismiss are the only ways forward). Module-level (not just loadBoard-local)
 // so the card detail modal can reuse the same labels/hints.
 const NEEDS_LABEL={verify_exhausted:"unverified",published_unverified:"posted, unverified",qa_fail:"QA failed",qa_inconclusive:"QA inconclusive",
-                   review_fail:"review findings",review_inconclusive:"review inconclusive",
+                   review_fail:"review findings",review_inconclusive:"review inconclusive",merge_failed:"merge refused",factory_no_pr:"no PR",
                    budget_exceeded:"over budget",workflow_error:"run failed",delivery_failed:"delivery failed",
                    workflow_dead:"worker died",stuck_timeout:"timed out",
                    local_fallback_disabled:"model failed, no fallback",
@@ -75,6 +76,8 @@ const NEEDS_HINT={verify_exhausted:"Didn't pass automated verification after all
                   qa_inconclusive:"Post-PR QA couldn't reach a verdict — check the draft PR yourself.",
                   review_fail:"The PR code review still has unaddressed findings after all fix rounds — review the draft PR, then Retry.",
                   review_inconclusive:"The PR code review couldn't reach a verdict — check the draft PR yourself.",
+                  factory_no_pr:"Factory mode: the ticket ended without a pull request (usually a missing prerequisite). The line stops until the next sprint rewrites or re-orders it.",
+                  merge_failed:"Factory mode: review and QA passed but GitHub refused the merge (a conflict or a branch rule) — resolve it on the PR, then merge by hand.",
                   budget_exceeded:"Hit its cost/token ceiling before finishing — Retry to give it a fresh budget.",
                   workflow_error:"The run crashed — read the error below, then Retry.",
                   delivery_failed:"It finished but the result couldn't be delivered — check the target, then Retry.",
@@ -179,6 +182,7 @@ async function loadBoard(silent){
       PR:"pushing the branch and opening the draft PR",
       REVIEW:"reviewing the PR's diff, and fixing what the review asks for",
       QA:"empirically validating the PR, and fixing what QA finds",
+      MERGE:"factory mode: merging the PR now that review and QA both passed",
       DELIVER:"recording the run and delivering the result"};
     const stage=(it.status==="RUNNING"&&it.stage)
       ?`<span class="bchip stage s-${esc(it.stage.toLowerCase())}" title="${esc(STAGE_HELP[it.stage]||'current pipeline stage')}">${esc(it.stage.toLowerCase())}</span>`:'';

@@ -835,6 +835,18 @@ def tool_id(server, tool):
     return _spec_name(server, tool)
 
 
+def server_denies(allowed, pol=None):
+    """Deny rules for every MCP server NOT in `allowed` (names), whole-server — a deny beats any
+    `permissions.allow` in the operator's own settings, which `--allowedTools` alone does not."""
+    pol = policy.load() if pol is None else pol
+    allowed = set(allowed or [])
+    # allow_refresh: a cold status cache lists NO connectors, and an unlisted connector is an
+    # undenied one — the operator's own allow rules would then hand a factory run their Gmail.
+    names = ({m["name"] for m in policy.all_mcps(pol, allow_refresh=True)}
+             | set(catalogue(pol)))
+    return [tool_id(n, "").rstrip("_") for n in sorted(names) if n not in allowed]
+
+
 def fast_lane_denies(granted, pol=None):
     """Deny rules for every MCP tool a fast-lane grant does NOT name (issue #193).
 

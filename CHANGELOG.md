@@ -11,6 +11,35 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Factory mode** (Admin → Mode → Start factory). Point it at an empty registered repo with a
+  seed idea — or at one with code, saying what to finish or add — and a budget, and a PM plans tickets on your GitHub board, the worker builds
+  them one at a time, and a PR that passes review **and** QA merges itself. It writes a
+  `GOALS.md` and a cited `SPEC.md`, playtests `main` after each merge, and stops on its budget,
+  a stall or a clean DONE — notifying you each time. A spent Claude usage limit pauses it until
+  Claude answers again. **Before enabling:** your `gh` login needs the `project` scope
+  (`gh auth refresh -h github.com -s project`), the board needs Ready, In progress, In review,
+  Done and **Blocked** columns, and you choose which MCP servers its runs may use (none by
+  default). Back to Manual restores your board settings.
+
+### Changed
+
+- **A board card moved back to Ready runs again.** It used to sit in Ready forever after its
+  first run; each re-run is now a new generation (`gh-issue-N-r1`, `-r2`…).
+- **A PR built from a board ticket closes that issue when it merges.** Board PRs used to leave
+  their issue open.
+- **QA runs inside a fresh clone of the PR**, so it can run the repo's own tests and lint, and
+  its report lists every acceptance criterion with its evidence. PRs used to come back
+  INCONCLUSIVE for checks QA was never able to run, or simply didn't name.
+- **A criterion only CI can prove (e.g. "passes in CI") no longer makes QA inconclusive** when
+  QA ran the same commands locally and they passed.
+
+### Fixed
+
+- **A column added to the board is seen straight away.** The board's columns were cached for
+  an hour, so a column added after Otto first read the board stayed invisible to it.
+
 ### Security
 
 - **The API now requires a login.** Every `/api/*` route needs this install's token, so a run's

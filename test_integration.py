@@ -3999,7 +3999,7 @@ class FastLaneWorkflowTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [cap]
         self._patches = [mock.patch.object(policy, "safe_tools", lambda pol=None: list(self.SAFE)),
                          mock.patch.object(gateway, "backend_of", lambda e: "claude"),
-                         mock.patch.object(activities, "_mcp", lambda: ([], None))]
+                         mock.patch.object(activities, "_mcp", lambda *a: ([], None))]
         for p in self._patches:
             p.start()
         self.previews, self.grants, self.asked, self.audited = [], [], [], []
@@ -5983,6 +5983,206 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class WorkflowAutoMergeTests(WorkflowQALoopTests):
+    """Factory mode: a PR merges itself only when review AND QA both PASSED and the run carries
+    `auto_merge` (stamped by the board poll activity alone). A skipped loop is not a pass."""
+
+    def setUp(self):
+        super().setUp()
+        import config
+        review_cap = registry.Capability("skill", config.REVIEW_CAP, "reviews a PR")
+        review_cap.risk = "read"
+        self.activities._caps = self.activities._caps + [review_cap]
+        self._orig_jr = engine.judge_review
+        engine.judge_review = lambda request, result, project=None, checks="": {"verdict": "pass", "critique": ""}
+        self.addCleanup(setattr, engine, "judge_review", self._orig_jr)
+        self.verdicts = iter([{"verdict": "pass", "critique": ""}])     # QA passes first time
+        self._orig_dm = engine.distil_memory
+        engine.distil_memory = lambda *a, **k: None     # unattended runs learn; no tier call here
+        self.addCleanup(setattr, engine, "distil_memory", self._orig_dm)
+        self._orig_notify = delivery.notify
+        delivery.notify = lambda *a, **k: False
+        self.addCleanup(setattr, delivery, "notify", self._orig_notify)
+        self.merges = []
+        orig_run = self.workspace._run
+
+        def fake_run(args, cwd=None, timeout=600):
+            if args[:2] == ["gh", "pr"]:
+                self.merges.append(args[2])
+                return 0, "", ""
+            return orig_run(args, cwd=cwd, timeout=timeout)
+        self.workspace._run = fake_run
+        self.addCleanup(setattr, self.workspace, "_run", orig_run)
+
+    async def _run(self, params):
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (run_repo_checks, cleanup_workspace, clarify_request, classify_request,
+                                finalize_workspace, judge_qa, judge_review, merge_pr, merge_results,
+                                plan_capability, plan_swarm, pr_head_branch, provision_workspace,
+                                resolve_pr_target, check_grounding, qa_capability, record_attempt,
+                                record_skip, review_capability, route_request, snapshot_settings,
+                                run_capability, verify_capability, estop_check, distil_memory,
+                                finalize_terminal, notify_human)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                async with Worker(
+                    env.client, task_queue="amq", workflows=[OttoWorkflow],
+                    activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm,
+                                merge_results, clarify_request, classify_request, plan_capability,
+                                provision_workspace, resolve_pr_target, check_grounding,
+                                finalize_workspace, cleanup_workspace, run_capability,
+                                verify_capability, qa_capability, judge_qa, review_capability,
+                                judge_review, merge_pr, record_attempt, record_skip,
+                                pr_head_branch, estop_check, distil_memory, finalize_terminal,
+                                notify_human],
+                    activity_executor=ex,
+                ):
+                    return await env.client.execute_workflow(
+                        OttoWorkflow.run,
+                        {"request": "add muting rules", "repo": "myrepo", "qa": True,
+                         "approval": "auto", "unattended": True, **params},
+                        id="am-" + uuid.uuid4().hex[:8], task_queue="amq")
+
+    async def test_review_and_qa_pass_merges_the_pr(self):
+        out = await self._run({"auto_merge": True})
+        self.assertEqual(self.merges, ["ready", "merge"])
+        self.assertEqual((out["review"]["state"], out["qa"]["state"]), ("pass", "pass"))
+        self.assertIsNone(out["needs_human"])
+        self.assertIn("Merged automatically", out["result"])
+
+    async def test_without_auto_merge_or_with_review_skipped_nothing_merges(self):
+        await self._run({})
+        self.verdicts = iter([{"verdict": "pass", "critique": ""}])
+        await self._run({"auto_merge": True, "review": False})
+        self.assertEqual(self.merges, [])
+
+    async def test_a_factory_ticket_with_no_pr_is_blocked_not_done(self):
+        """The worker reporting a missing prerequisite opens no PR; under factory mode that is a
+        Blocked ticket, or the card closes as Done with nothing built."""
+        # No addCleanup: tearDown restores the REAL finalize, and a cleanup (which runs after it)
+        # would put setUp's fake back for every later test.
+        self.workspace.finalize = lambda run_id, **kw: {"branch": "otto/x", "pushed": False,
+                                                        "committed": False, "pr_url": None,
+                                                        "detail": "nothing to commit"}
+        out = await self._run({"auto_merge": True})
+        self.assertEqual(out["needs_human"]["reason"], "factory_no_pr")
+        self.assertEqual(self.merges, [])
+        self.verdicts = iter([{"verdict": "pass", "critique": ""}])
+        out = await self._run({})                     # outside factory mode: unchanged
+        self.assertIsNone(out["needs_human"])
+
+    async def test_a_refused_merge_needs_a_human(self):
+        self.workspace._run = lambda args, cwd=None, timeout=600: (
+            (1, "", "not mergeable: conflicts") if args[:3] == ["gh", "pr", "merge"]
+            else (0, "OPEN", ""))
+        out = await self._run({"auto_merge": True})
+        self.assertEqual(out["needs_human"]["reason"], "merge_failed")
+        self.assertIn("conflicts", out["needs_human"]["detail"])
+
+    async def test_qa_fail_then_fix_then_pass(self):
+        self.skipTest("covered by WorkflowQALoopTests")
+
+
+if _HAS_TEMPORAL:
+    from temporalio import workflow as _twf
+
+    @_twf.defn(name="OttoWorkflow")
+    class _FakeOttoForSprint:
+        """Stands in for the PM child run: same workflow TYPE name, a canned sprint reply."""
+        @_twf.run
+        async def run(self, params: dict) -> dict:
+            # The brief's tail rides back so a test can see what the PM was handed.
+            return {"result": (params.get("doc") or "")[-40:] + "\nplanned\nFACTORY: CONTINUE",
+                    "needs_human": None}
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    """The sprint workflow only sequences: gate -> one PM child run -> book its verdict. A closed
+    gate runs no child at all."""
+
+    async def _run(self, gate, play=None):
+        import uuid
+        import factory
+        from temporalio.worker import UnsandboxedWorkflowRunner
+        from workflows import FactorySprintWorkflow
+        import activities
+        from activities import factory_after_sprint, factory_gate
+        booked = []
+        played = []
+
+        def _play(payload):
+            played.append(payload["wid"])
+            return {"verdict": "defects", "block": "\nPLAYTEST REPORT: envido in hand 2"}
+        self._patch_activity(activities, "factory_playtest", play or _play)
+
+        orig = (factory.gate, factory.after_sprint)
+        factory.gate = lambda: gate
+        factory.after_sprint = lambda p: booked.append(p) or {"state": "continue"}
+        self.addCleanup(lambda: (setattr(factory, "gate", orig[0]),
+                                 setattr(factory, "after_sprint", orig[1])))
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(env.client, task_queue="fsq",
+                                  workflows=[FactorySprintWorkflow, _FakeOttoForSprint],
+                                  activities=[factory_gate, factory_after_sprint,
+                                              activities.factory_playtest],
+                                  activity_executor=ex,
+                                  # The fake child lives in this module, which the sandbox
+                                  # cannot re-import (it globs at import time).
+                                  workflow_runner=UnsandboxedWorkflowRunner()):
+                    out = await env.client.execute_workflow(
+                        FactorySprintWorkflow.run, id="fs-" + uuid.uuid4().hex[:8],
+                        task_queue="fsq")
+        self.played = played
+        return out, booked
+
+    def _patch_activity(self, mod, name, fn):
+        # The registered name must stay `factory_playtest`, so wrap a fake under that name.
+        from temporalio import activity as _act
+
+        @_act.defn(name=name)
+        def fake(payload: dict) -> dict:
+            return fn(payload)
+        orig = getattr(mod, name)
+        setattr(mod, name, fake)
+        self.addCleanup(setattr, mod, name, orig)
+
+    async def test_a_changed_product_is_playtested_and_the_pm_gets_the_report(self):
+        out, booked = await self._run({"go": True, "wid": "factory-x-s2", "playtest": True,
+                                       "params": {"request": "sprint", "doc": "BRIEF"}})
+        self.assertEqual(self.played, ["factory-x-s2-play"])
+        self.assertIn("envido in hand 2", booked[0]["result"])
+
+    async def test_an_unchanged_product_is_not_playtested_again(self):
+        out, booked = await self._run({"go": True, "wid": "factory-x-s3", "playtest": False,
+                                       "params": {"request": "sprint", "doc": "BRIEF"}})
+        self.assertEqual(self.played, [])
+        self.assertNotIn("PLAYTEST", booked[0]["result"])
+
+    async def test_a_crashed_sprint_is_still_booked(self):
+        # Unbooked, a sprint failing the same way every tick never trips the stall limit.
+        def _boom(payload):
+            raise RuntimeError("clone failed")
+        out, booked = await self._run({"go": True, "wid": "factory-x-s4", "playtest": True,
+                                       "params": {"request": "sprint", "doc": "BRIEF"}}, play=_boom)
+        self.assertEqual(booked[0]["needs_human"]["reason"], "sprint_error")
+
+    async def test_a_closed_gate_runs_no_sprint(self):
+        out, booked = await self._run({"go": False, "why": "budget"})
+        self.assertEqual(out, {"go": False, "why": "budget"})
+        self.assertEqual(booked, [])
+
+    async def test_an_open_gate_runs_the_pm_and_books_its_verdict(self):
+        out, booked = await self._run({"go": True, "wid": "factory-x-s1",
+                                       "params": {"request": "sprint"}})
+        self.assertEqual(out, {"state": "continue"})
+        self.assertEqual(booked[0]["wid"], "factory-x-s1")
+        self.assertTrue(booked[0]["result"].endswith("FACTORY: CONTINUE"))
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
 class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
     """Post-PR code-review loop: after the draft PR opens, the review cap reviews it; FAIL folds
     the findings into a fix on the SAME branch (from_branch provision + existing_pr finalize) and
@@ -7174,14 +7374,18 @@ class BoardPollPickupTests(unittest.TestCase):
                       "options": {"In Progress": "opt-ip", "Review": "opt-rv",
                                   "Done": "opt-dn", "Blocked": "opt-bl"}}
         self._orig = {n: getattr(board, n) for n in
-                      ("load", "enabled", "project_meta", "list_ready", "issue_to_request",
-                       "start_run", "set_status")}
+                      ("load", "enabled", "project_meta", "item_list", "ready_stubs",
+                       "issue_details", "issue_to_request", "start_run", "set_status",
+                       "next_run_id")}
+        board.next_run_id = lambda n: f"gh-issue-{n}"     # never ask the live Temporal
         board.load = lambda: self._cfg
         board.enabled = lambda cfg=None: True
         board.project_meta = lambda cfg: self._meta
-        board.list_ready = lambda cfg: [
+        board.item_list = lambda cfg: {"items": []}
+        board.ready_stubs = lambda cfg, data: [
             {"number": 41, "item_id": "IT41", "repo": "o/r", "title": "renew the cert"},
             {"number": 42, "item_id": "IT42", "repo": "o/r", "title": "already running"}]
+        board.issue_details = lambda stub: dict(stub)
 
         def fake_issue_to_request(issue, cfg):
             # `cap` is a plain NAME here (the label->cap mapping); poll_board resolves it against
@@ -7224,6 +7428,21 @@ class BoardPollPickupTests(unittest.TestCase):
         self.assertEqual(rt["done_col"], "Done")
         self.assertEqual(rt["blocked_col"], "Blocked")
 
+    def test_an_unreadable_board_is_an_error_not_an_empty_column(self):
+        """A rate-limited read used to come back as [] — "nothing Ready" — so a ticket sat
+        unpicked with every poll reporting success."""
+        self.board.item_list = lambda cfg: None
+        out = self.activities.poll_board({})
+        self.assertEqual(out["error"], "board unreadable")
+        self.assertEqual(self.started, [])
+
+    def test_an_empty_ready_column_spends_no_further_graphql(self):
+        calls = []
+        self.board.ready_stubs = lambda cfg, data: []
+        self.board.project_meta = lambda cfg: calls.append("meta") or self._meta
+        self.activities.poll_board({})
+        self.assertEqual(calls, [])
+
     def test_disabled_board_does_nothing(self):
         self.board.enabled = lambda cfg=None: False
         out = self.activities.poll_board({})
@@ -7249,8 +7468,9 @@ class ReaperSweepTests(unittest.TestCase):
                       "options": {"Blocked": "opt-bl"}}
         self._orig_board = {n: getattr(board, n) for n in
                             ("load", "enabled", "project_meta", "list_in_column",
-                             "set_status_raw", "add_label")}
+                             "set_status_raw", "add_label", "latest_run_id")}
         board.load = lambda: self._cfg
+        board.latest_run_id = lambda n: f"gh-issue-{n}"   # never ask the live Temporal
         board.enabled = lambda cfg=None: True
         board.project_meta = lambda cfg: self._meta
         board.list_in_column = lambda cfg, key: [

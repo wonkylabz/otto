@@ -47,6 +47,8 @@ Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver t
 
 `board.py` — Projects v2 as an async queue. Ready→In Progress on pickup, result comment + move to Review/Done. **Moving to Ready is approval** (`hold` flips to `ask`). Config `data/board.json`.
 
+- **A re-readied card runs again as the next GENERATION** (`board.next_run_id`: `-r1`, `-r2`…) — one fixed id under REJECT_DUPLICATE left it in Ready forever; a running generation is never doubled, the reaper judges the latest (`FactoryModeTests`).
+
 ## GitHub PR reviews
 
 `pr_review.py` — the GitHub ingress's PULL half. Polls `gh search prs --review-requested=@me`,
@@ -64,6 +66,19 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 - **Nit-level findings are stripped from the PUBLISHED body, never from the chat** (`strip_nitpicks`, `post_nitpicks`) — it parses model markdown, so it fails safe: a trim that loses the verdict or empties the review returns the original (`PrReviewPublishTests`).
 - **`auto_post` publishes only a reply that ENDS on a verdict** (`has_verdict`) — `ready` just means the run wrote something, and a crash writes something too; the human pressing the button has read it, the unattended paths have not (`PrReviewPublishTests`).
 - **A finished run delivers its OWN review** (`reply_to: github_pr`, set only when `auto_post` is on) — the poll sweep is the backstop for a failed post or a downtime gap, and riding it alone cost up to a full interval (`PrReviewPublishTests`).
+
+## Factory mode
+
+`factory.py` — one repo + the board as a self-driving loop: a PM sprint readies tickets, the worker builds them, a PR passing review AND QA merges itself. State `data/factory.json`, schedule `factory-sprint`.
+
+- **Only the board poll ACTIVITY stamps `auto_merge`, and only on the factory repo's tickets** (`factory.apply`) — the flag merges unread code, so no client body or other ingress may set it (`FactoryModeTests`).
+- **A skipped or inconclusive loop is never a pass** (`wf_postpr._auto_merge`) — merging needs review AND QA PASS; a refused merge is `merge_failed`, Blocked (`WorkflowAutoMergeTests`).
+- **Unmeasurable spend or an unreadable board starts nothing** (`factory.spent` → None, `board.column_counts` → None) — an empty-looking queue would start a sprint past the budget or the WIP cap (`FactoryModeTests`).
+- **DONE needs the CURRENT tree playtested clean** (`factory.playtest_clean`) — every ticket's QA proved its own criteria while the product shipped wrong rules and an unreadable UI; only a run that USED it can say done (`FactoryModeTests`).
+- **A factory run gets only the MCP servers the operator TICKED; the rest are DENIED** (`factory.mcp_allow_for`, keyed on the wid it owns) — an unattended, pre-approved run held the operator's mail, chat and home servers (`FactoryModeTests`).
+- **A Claude wall PAUSES the line, never stalls it** (`factory.pause`/`resume`) — a spent limit failed every sprint identically, so each counted idle and the factory stopped hours before the reset; a cheap probe resumes it and re-readies the walled cards (`FactoryModeTests`).
+- **A repo with code is ASSESSED, never scaffolded** (`factory._has_code` → `goals_text`) — a foundation ticket lays a Makefile and CI over a working toolchain; an unreadable tree refuses rather than guess "empty" (`FactoryModeTests`).
+- **Disable restores the board config enable changed, and every stop notifies** — an unattended loop that goes quiet reads as broken (`FactoryModeTests`).
 
 ## Runbooks / scheduler
 

@@ -56,6 +56,42 @@ function byData(root, attr, value, sel){
   return null;
 }
 
+/* Admin's collapsible sections: the title toggles its .asection.coll, and which ones you left
+   open is remembered, so Admin doesn't re-collapse everything on every reload. Shared because a
+   section rendered on its own (factory.js's Mode) lands after Admin's wiring ran. */
+const SECTS="otto.admin.sections";
+function sectsRead(){ try{ return JSON.parse(localStorage.getItem(SECTS))||{}; }catch(e){ return {}; } }
+function sectsWrite(st){ try{ localStorage.setItem(SECTS,JSON.stringify(st)); }catch(e){} }
+function wireSections(root){
+  const remembered=sectsRead();
+  root.querySelectorAll(".asection.coll[data-sect]").forEach(sec=>{
+    if(remembered[sec.dataset.sect]) sec.classList.remove("collapsed");
+  });
+  enhanceToggles(root,".secttoggle",".asection","collapsed");
+  root.querySelectorAll(".secttoggle").forEach(t=>{
+    if(t.dataset.sectWired) return;            // idempotent, like enhanceToggles
+    t.dataset.sectWired="1";
+    t.addEventListener("click",()=>{
+      const sec=t.closest(".asection"), st=sectsRead();
+      if(!sec.dataset.sect) return;
+      const open=!sec.classList.toggle("collapsed");
+      if(open) st[sec.dataset.sect]=1; else delete st[sec.dataset.sect];
+      sectsWrite(st);
+    });
+  });
+  // A subsection (data-sub) remembers the opposite: which ones you CLOSED, under its own key.
+  root.querySelectorAll(".asection[data-sub] > h3 .secttoggle").forEach(t=>{
+    if(t.dataset.subWired) return;
+    t.dataset.subWired="1";
+    t.addEventListener("click",()=>{
+      const sec=t.closest(".asection"), k="otto.admin.subclosed";
+      let st={}; try{ st=JSON.parse(localStorage.getItem(k))||{}; }catch(e){}
+      if(sec.classList.toggle("collapsed")) st[sec.dataset.sub]=1; else delete st[sec.dataset.sub];
+      try{ localStorage.setItem(k,JSON.stringify(st)); }catch(e){}
+    });
+  });
+}
+
 /* Make click-only toggles keyboard-operable, in ONE place rather than in the ~20 templates
    that emit them. A <span>/<div> with a click handler is unreachable by keyboard and announces
    as nothing, which is how every collapsible section header on Admin/Events/Jobs/Audit and the
@@ -180,6 +216,12 @@ function toast(msg, kind){
    say something only if it was refused. Returns true when the write landed, so a caller that
    must NOT re-render on failure can branch on it. `what` names the action in the message —
    "could not save the Slack config", not a bare status code. */
+/* A modal form's save: a refusal lands in the form's own error slot, which stays open. */
+async function postForm(path, body, errEl){
+  try { await postJSON(path, body); return true; }
+  catch(e){ errEl.textContent=e.message; return false; }
+}
+
 async function postOr(path, body, what){
   try { await postJSON(path, body); return true; }
   catch(e){ toast((what||"that action")+" failed: "+e.message); return false; }

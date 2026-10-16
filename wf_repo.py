@@ -138,7 +138,7 @@ class RepoFlowMixin:
                         pass          # keep the tree we had; the note below still warns the run
         return ws
 
-    async def _finalize_pr(self, ws, request, result, cap, repo, is_error=False):
+    async def _finalize_pr(self, ws, request, result, cap, repo, is_error=False, issue=None):
         """Repo-mode tail: push the branch, open (or update) the draft PR, tear the clone
         down, and fold the outcome into the report. Returns `(pr, result)` — extracted from
         `_run_impl` verbatim; the activity order it issues is part of the replay history."""
@@ -162,7 +162,10 @@ class RepoFlowMixin:
              # was approved next to the diff it produced. None for unattended `auto`
              # (no gate, no plan) — post_plan then posts nothing.
              "plan": self._plan, "request": request, "cap": cap["name"],
-             "concerns": self._plan_concerns, "asker_text": self._asker_text},
+             "concerns": self._plan_concerns, "asker_text": self._asker_text,
+             # A board ticket's run IS its issue: close it structurally, never by parsing a
+             # request that embeds the whole ticket body.
+             "issue": issue},
             start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
             retry_policy=_RETRY)
         await workflow.execute_activity(

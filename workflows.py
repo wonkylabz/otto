@@ -28,7 +28,9 @@ with workflow.unsafe.imports_passed_through():
     import contracts
     from activities import (clarify_request, classify_fast_lane, classify_followup, classify_request,
                             cleanup_workspace, deliver_result, detect_repo_changes,
-                            estop_check, execute_plan, finalize_terminal, finalize_workspace,
+                            estop_check, execute_plan, factory_after_sprint, factory_gate,
+                            factory_playtest,
+                            finalize_terminal, finalize_workspace,
                             resolve_pinned_cap,
                             notify_human, plan_capability, plan_swarm, open_chat,
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack,
@@ -1021,7 +1023,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # reuses it instead of asking again.
         if repo and not resume and not subtask:
             self._pr_target = await workflow.execute_activity(
-                resolve_pr_target, {"repo": repo, "request": request},
+                resolve_pr_target, {"repo": repo, "request": request,
+                                    "fresh": params.get("fresh_branch")},
                 start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY) or {}
 
         # Approval for writes. Unless the fast lane (issue #193) already decided it needs none.
@@ -1188,7 +1191,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         if _may_plan_steps(authored, self._setting("plan_mode"), repo, subtask, cap, self._fast_lane):
             sres = await workflow.execute_activity(
                 plan_task_steps,
-                {"request": request, "name": cap["name"], "requested": params.get("plan_mode", False)},
+                {"request": request, "name": cap["name"], "requested": params.get("plan_mode", False),
+                 "factory": params.get("factory")},
                 start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
             plan_list = sres.get("steps") or []
 
@@ -1216,7 +1220,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # even on a poor result — so clones don't leak; a stale-sweep backstops a hard failure).
         if ws:
             pr, result = await self._finalize_pr(ws, request, result, cap, repo,
-                                                 is_error=bool(out.get("is_error")))
+                                                 is_error=bool(out.get("is_error")),
+                                                 issue=params.get("reply_to"))
 
         # Post-PR code-review loop: get a strict Claude PR review, fold must/should-fix findings
         # into a fix on the SAME branch, re-review — bounded rounds (sre-minion's Phase 5-7,
@@ -1254,6 +1259,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # QA that didn't cleanly pass needs a human (PR stays draft) — same Blocked routing.
             if qa.get("state") in ("fail", "inconclusive"):
                 self._needs_human = {"reason": f"qa_{qa['state']}"}
+
+        # Factory mode: a PR that passed review AND QA merges itself (wf_postpr._auto_merge).
+        merged = await self._auto_merge(params, pr, review, qa, notes,
+                                        request=request, cap=cap, repo=repo)
 
         # Everything left is bookkeeping and delivery, but it is not instant — a Slack post that
         # retries, a needs-human finalize and an in-place-edit scan all happen here, and with no
@@ -1325,7 +1334,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # still routes to Review, and a label'd ticket that produced no PR doesn't); else Done.
             if isinstance(reply_to, dict) and reply_to.get("kind") == "github_issue":
                 reply_to = {**reply_to, "repo_edit": bool(pr and pr.get("pr_url")),
-                            "blocked": bool(self._needs_human)}
+                            "blocked": bool(self._needs_human),
+                            "merged": merged}
             delivered = await workflow.execute_activity(
                 deliver_result, {"reply_to": reply_to, "result": reply, "cap": cap,
                                  "run_id": workflow.info().workflow_id,
@@ -1812,6 +1822,45 @@ class BoardPollWorkflow:
         return await workflow.execute_activity(
             poll_board, {}, start_to_close_timeout=timedelta(minutes=10),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+
+
+@workflow.defn
+class FactorySprintWorkflow:
+    """Fired by the `factory-sprint` Schedule (factory.py): gate, then run ONE product-manager
+    sprint as a child OttoWorkflow, then book its verdict. Every decision — budget, stall, a busy
+    queue, the pause — is the `factory_gate` activity's, so this stays deterministic."""
+
+    @workflow.run
+    async def run(self) -> dict:
+        gate = await workflow.execute_activity(
+            factory_gate, {}, start_to_close_timeout=timedelta(minutes=5), retry_policy=_RETRY)
+        if not gate.get("go"):
+            return gate
+        params = gate["params"]
+        # A crashed playtest or PM run is still BOOKED: unbooked, it never counts idle, so a
+        # sprint failing the same way every tick never trips the stall limit, and nobody hears.
+        try:
+            # Playtest the product before the PM plans, and hand the PM the report (factory.py).
+            # Patched: a sprint recorded before this command must still replay.
+            if gate.get("playtest") and workflow.patched("factory-playtest"):
+                play = await workflow.execute_activity(
+                    factory_playtest, {"wid": f"{gate['wid']}-play"},
+                    start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+                    retry_policy=_RETRY_EXEC)
+                if play.get("block"):
+                    params = {**params, "doc": params["doc"] + play["block"]}
+            out = await workflow.execute_child_workflow(
+                OttoWorkflow.run, params, id=gate["wid"],
+                task_queue=workflow.info().task_queue)
+        except Exception as e:  # noqa: BLE001 - ActivityError / ChildWorkflowError; cancel is BaseException
+            cause = getattr(e, "cause", None) or e
+            out = {"result": "", "needs_human": {"reason": "sprint_error",
+                                                 "detail": f"{type(cause).__name__}: {cause}"[:300]}}
+        return await workflow.execute_activity(
+            factory_after_sprint,
+            {"wid": gate["wid"], "result": (out or {}).get("result") or "",
+             "needs_human": (out or {}).get("needs_human")},
+            start_to_close_timeout=timedelta(minutes=5), retry_policy=_RETRY)
 
 
 @workflow.defn

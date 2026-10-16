@@ -1396,6 +1396,49 @@ class QARequestTests(unittest.TestCase):
         self.assertIn("INCONCLUSIVE", req)
         self.assertIn("dev/staging", req)
 
+    def test_a_provisioned_checkout_is_where_qa_runs_the_suite(self):
+        # With no checkout QA sat in Otto's own cwd, a clone elsewhere was refused, and the
+        # repo's tests never ran: truco#30 went INCONCLUSIVE on an untested `make test`.
+        req = engine.qa_review_request("https://github.com/o/r/pull/7", "r", "x",
+                                       checkout="/w/qa0-ws")
+        self.assertIn("`/w/qa0-ws`", req)
+        self.assertIn("Never clone elsewhere", req)
+        self.assertNotIn("Never clone", engine.qa_review_request("https://github.com/o/r/pull/7",
+                                                                 "r", "x"))
+
+    def test_the_qa_round_runs_in_a_clone_of_the_prs_head_and_cleans_it_up(self):
+        import activities
+        import workspace
+        seen, cleaned = {}, []
+        import types
+        cap = types.SimpleNamespace(name="qa-tester", risk="write")
+        with mock.patch.object(activities, "_cap", return_value=cap), \
+             mock.patch.object(activities, "_mcp", return_value=([], None)), \
+             mock.patch.object(activities, "_warm_conventions"), \
+             mock.patch.object(workspace, "pr_branch", return_value="otto/gh-issue-29"), \
+             mock.patch.object(workspace, "provision", return_value={"path": "/w/x"}), \
+             mock.patch.object(workspace, "cleanup", side_effect=cleaned.append), \
+             mock.patch.object(engine, "run_attempt",
+                               side_effect=lambda req, c, **k: seen.update(k, req=req) or
+                               {"workflow": "w", "result": "PASS", "cost": 0}):
+            activities._post_pr_capability("qa", {"pr_url": "https://github.com/o/r/pull/7",
+                                                  "repo": "r", "request": "x", "wid": "w-qa0"})
+            self.assertEqual(seen["cwd"], "/w/x")
+            self.assertIn("`/w/x`", seen["req"])
+            self.assertEqual(cleaned, ["w-qa0-ws"])
+            # The reviewer reads the diff through gh, never a checkout.
+            seen.clear()
+            activities._post_pr_capability("review", {"pr_url": "https://github.com/o/r/pull/7",
+                                                      "repo": "r", "request": "x", "wid": "w-rev0"})
+            self.assertIsNone(seen["cwd"])
+
+    def test_qa_reports_every_acceptance_criterion_with_its_evidence(self):
+        # The judge reads only the report: a QA that checked everything but summarised by topic
+        # was INCONCLUSIVE for the criteria its summary never named (tarot#11).
+        req = engine.qa_review_request("https://github.com/o/r/pull/7", "r", "x")
+        self.assertIn("one line per criterion", req)
+        self.assertIn("Never leave a criterion out", req)
+
     def test_omits_repo_clause_when_none(self):
         req = engine.qa_review_request("https://github.com/o/r/pull/7", None, "do a thing")
         self.assertIn("pull/7", req)
@@ -3503,7 +3546,13 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # left a dead scheduled run Running for days, holding its schedule's SKIP overlap.
     # 92064 -> 92318: several registered repos named -> the worker picks the edit target, else the
     # run had no clone and nowhere to write.
-    MAX_RULES_BYTES = 92318   # fetched tier — bounded, but looser; it is not always loaded
+    # 92318 -> 93323: factory mode. Four rules, one per way an edit makes an unattended,
+    # self-merging loop unsafe: who may stamp auto-merge, what counts as a pass, failing
+    # closed on spend and WIP, and a stop that restores and notifies.
+    # 93323 -> 93619: factory mode. Four rules, one per way an edit makes an unattended,
+    # 92807 -> 93096: a re-readied board card runs again as the next run generation.
+    # 94372 -> 94612: a factory repo with code is assessed, never scaffolded over.
+    MAX_RULES_BYTES = 94612   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —
