@@ -1,6 +1,7 @@
 """Factory mode — a seeded, self-driving build loop over ONE repo and the board.
 
-The operator hands Otto an empty registered repo and a seed (the idea). From then on:
+The operator hands Otto a registered repo and a seed: the idea for an empty repo, or what to
+finish or add for one that already has code (`_seed_goals` picks the GOALS.md shape). Then:
 
     sprint (PM, auto) ──▶ tickets in Ready ──board poll──▶ worker (repo-mode, auto)
         ──▶ draft PR ──▶ review + QA loops ──both PASS──▶ auto-merge ──▶ card Done
@@ -83,12 +84,20 @@ end to end, never ask a question back.
    | base64 -d`). It holds the product vision and its Definition of Done — the only source of
    what "finished" means. Read the repo's current tree and the PRs merged so far
    (`gh pr list --repo {slug} --state merged`).
-   **Foundation first.** If the repo has no project manifest or no `Makefile`, or the Product
-   section of `{goals}` still says it is to be expanded, the FIRST ticket you ready must be the
-   foundation: scaffold the project (manifest, `Makefile` with `run`/`test`/`lint`, a GitHub
-   Actions workflow running lint + tests, a README skeleton) AND rewrite the Product section of
-   `{goals}` into a concrete feature list and interface for the seed. Every other ticket this
-   sprint depends on it, so give it the lowest number.
+   The test and lint commands every ticket must pass are the ones under Commands in `{goals}`.
+   **Foundation first.** If the Product section of `{goals}` still says it is to be expanded by
+   the foundation ticket, the FIRST ticket you ready must be the foundation: scaffold the project
+   (manifest, `Makefile` with `run`/`test`/`lint`, a GitHub Actions workflow running lint +
+   tests, a README skeleton) AND rewrite the Product section of `{goals}` into a concrete feature
+   list and interface for the seed. Every other ticket this sprint depends on it, so give it the
+   lowest number.
+   **Assessment first.** If it says instead that it is to be written by the assessment ticket,
+   the repo already had code: the FIRST ticket is the assessment, and it changes ONLY `{goals}`.
+   It reads the code, README, manifest and CI and rewrites Product as what exists (marked done)
+   plus what the Seed still asks for; fills Commands with the repo's OWN run/test/lint commands
+   (a missing one is written "none yet"); and ticks every Definition-of-Done item already met.
+   Never replace the repo's toolchain, layout or framework — a missing test runner, linter or
+   CI becomes its own later ticket. Every other ticket waits for it.
    **Spec before features.** If `{spec}` does not exist yet, the next ticket (right after the
    foundation, or the FIRST if the foundation is already merged) writes it, with two numbered
    sections: **Rules** (R1, R2…) — every domain rule the product must obey, taken from an
@@ -117,7 +126,7 @@ end to end, never ask a question back.
 3. Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
    Definition of Done and the Product section. Each must be one coherent PR, mergeable on top of
    the current default branch, and state its own acceptance criteria — including the tests it adds
-   and that `make test` and `make lint` pass LOCALLY. Every criterion must be checkable from a
+   and that the test and lint commands under Commands pass LOCALLY. Every criterion must be checkable from a
    clone of the PR branch: never "passes in CI" or anything only GitHub can observe — CI is a
    Definition-of-Done item YOU check (`gh run list --repo {slug}`), not a ticket's. Aim for a real product: a feature is done when a user
    can reach it from the interface, not when a function exists. Never duplicate an
@@ -168,6 +177,31 @@ PLAYTEST: CLEAN   (no BLOCKER or MAJOR defect)
 PLAYTEST: DEFECTS
 """
 
+_COMMANDS_NEW = """\
+## Commands
+<!-- What every ticket must pass. The foundation ticket creates them. -->
+- run: `make run`
+- test: `make test`
+- lint: `make lint`
+"""
+
+_COMMANDS_EXISTING = """\
+## Commands
+<!-- The repo's OWN commands, filled in by the assessment ticket. Every ticket must pass them. -->
+_To be filled in by the assessment ticket._
+"""
+
+_PRODUCT_NEW = """\
+<!-- Expanded by the FOUNDATION ticket: who it is for, the core loop, every feature the seed
+     implies, and the interface people use it through. Edit it any time to steer the line. -->
+_To be expanded by the foundation ticket._"""
+
+_PRODUCT_EXISTING = """\
+<!-- The repo already had code when the factory started, so the Seed says what to finish or add.
+     Written by the ASSESSMENT ticket: what exists (done), then what the Seed still asks for.
+     Edit it any time to steer the line. -->
+_To be written by the assessment ticket._"""
+
 GOALS_TEMPLATE = """\
 # Goals
 
@@ -175,17 +209,16 @@ GOALS_TEMPLATE = """\
 {seed}
 
 ## Product
-<!-- Expanded by the FOUNDATION ticket: who it is for, the core loop, every feature the seed
-     implies, and the interface people use it through. Edit it any time to steer the line. -->
-_To be expanded by the foundation ticket._
+{product}
 
+{commands}
 ## Definition of Done
 <!-- The factory stops when every item here is merged. -->
-- [ ] Runs from a fresh clone with one documented command (`make run`)
+- [ ] Runs from a fresh clone with one documented command (the run command under Commands)
 - [ ] A real user interface suited to the product (for a game: a playable web or rich terminal UI) — not just a library
 - [ ] Every feature listed under Product is implemented and reachable from that interface
-- [ ] `make test` runs the automated suite: core logic AND the interface's main flows
-- [ ] `make lint` passes, with a formatter and a linter configured
+- [ ] The test command runs the automated suite: core logic AND the interface's main flows
+- [ ] The lint command passes, with a formatter and a linter configured
 - [ ] CI (GitHub Actions) runs lint and tests on every pull request
 - [ ] A project manifest with pinned dependencies (e.g. `pyproject.toml`, `package.json`)
 - [ ] A README: what it is, how to install, run, test and use it
@@ -193,7 +226,7 @@ _To be expanded by the foundation ticket._
 - [ ] The latest playtest of the default branch reports no BLOCKER or MAJOR defect
 
 ## Quality bar (every PR)
-- New behaviour ships with tests; `make test` and `make lint` pass
+- New behaviour ships with tests; the test and lint commands pass
 - No placeholders, stubs or TODOs standing in for the feature the ticket asks for
 - One coherent, reviewable change
 """
@@ -531,6 +564,30 @@ def _repo_slug(name):
     return workspace.origin_slug(workspace._git_origin(r["path"]) or "")
 
 
+# Files a fresh GitHub repo can be created with: a root holding only these is still empty.
+_SCAFFOLD_ONLY = {GOALS_FILE.lower(), "readme", "readme.md", "license", "license.md", ".gitignore"}
+
+
+def _has_code(slug):
+    """True when the repo's root holds anything beyond what `gh repo create` adds. A repo with
+    no commits answers 404 "This repository is empty"; any other failure raises Refused —
+    guessing "empty" would scaffold a second toolchain over a real project."""
+    rc, out, err = _gh(["api", f"repos/{slug}/contents", "--jq", ".[].name"])
+    if rc != 0:
+        if "empty" in (err or "").lower():
+            return False
+        raise Refused(f"could not read {slug}'s files: {(err or '').strip()[:160]}")
+    return any(n.strip().lower() not in _SCAFFOLD_ONLY for n in out.splitlines() if n.strip())
+
+
+def goals_text(seed, existing):
+    """GOALS.md for a new project (the foundation ticket scaffolds it) or one that already has
+    code (the assessment ticket describes it and names its own commands)."""
+    return GOALS_TEMPLATE.format(
+        seed=seed.strip(), product=_PRODUCT_EXISTING if existing else _PRODUCT_NEW,
+        commands=_COMMANDS_EXISTING if existing else _COMMANDS_NEW)
+
+
 def _seed_goals(slug, seed):
     """Commit GOALS.md through the contents API — it works on a repo with NO commits, which a
     clone-and-push cannot. Skipped when the file is already there (re-enable, or the operator
@@ -538,13 +595,14 @@ def _seed_goals(slug, seed):
     rc, _, _ = _gh(["api", f"repos/{slug}/contents/{GOALS_FILE}", "--jq", ".sha"])
     if rc == 0:
         return "kept"
-    body = base64.b64encode(GOALS_TEMPLATE.format(seed=seed.strip()).encode()).decode()
+    existing = _has_code(slug)
+    body = base64.b64encode(goals_text(seed, existing).encode()).decode()
     rc, _, err = _gh(["api", "-X", "PUT", f"repos/{slug}/contents/{GOALS_FILE}",
                       "-f", "message=Seed the factory's goals",
                       "-f", f"content={body}"])
     if rc != 0:
         raise Refused(f"could not write {GOALS_FILE} to {slug}: {err[:160]}")
-    return "seeded"
+    return "seeded for an existing project" if existing else "seeded"
 
 
 def _int(v, lo, default):

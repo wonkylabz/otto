@@ -3551,7 +3551,8 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # closed on spend and WIP, and a stop that restores and notifies.
     # 93323 -> 93619: factory mode. Four rules, one per way an edit makes an unattended,
     # 92807 -> 93096: a re-readied board card runs again as the next run generation.
-    MAX_RULES_BYTES = 94372   # fetched tier — bounded, but looser; it is not always loaded
+    # 94372 -> 94612: a factory repo with code is assessed, never scaffolded over.
+    MAX_RULES_BYTES = 94612   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

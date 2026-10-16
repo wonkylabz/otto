@@ -61,9 +61,9 @@ function showFactoryForm(){
   f.innerHTML=`<div class="aform">
     <p class="sub">Unsafe by design: every ticket on this repo runs <b>without approval</b>, and a PR that passes review <b>and</b> QA is
       <b>merged automatically</b>. The board${FACTORY.board?` (<a href="${esc(FACTORY.board)}" target="_blank" rel="noopener">open</a>)`:''} must already be configured. The global Pause still stops it.</p>
-    <label>Repo &mdash; an EMPTY registered repo the factory owns</label>
+    <label>Repo &mdash; a registered repo the factory owns: empty to start a project, or with code to finish one</label>
     <select id="ff-repo" ${on?'disabled':''}>${opts||'<option value="">(register a repo in Project repos first)</option>'}</select>
-    <label>Seed &mdash; the idea; written to <code>GOALS.md</code> with a Definition of Done the PM refines</label>
+    <label>Seed &mdash; the idea, or for a repo with code what to finish or add; written to <code>GOALS.md</code> with a Definition of Done the PM refines</label>
     <textarea id="ff-seed" class="codearea" placeholder="A browser roguelike where you play a lighthouse keeper…"></textarea>
     <span class="sk-help">Required. An existing <code>GOALS.md</code> is kept as-is — edit that file any time to steer the line.</span>
     <div class="frow">

@@ -13,8 +13,8 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
-- **Factory mode** (Admin → Mode → Start factory). Point it at an empty registered repo, give
-  it a seed idea and a budget, and a PM plans tickets on your GitHub board, the worker builds
+- **Factory mode** (Admin → Mode → Start factory). Point it at an empty registered repo with a
+  seed idea — or at one with code, saying what to finish or add — and a budget, and a PM plans tickets on your GitHub board, the worker builds
   them one at a time, and a PR that passes review **and** QA merges itself. It writes a
   `GOALS.md` and a cited `SPEC.md`, playtests `main` after each merge, and stops on its budget,
   a stall or a clean DONE — notifying you each time. A spent Claude usage limit pauses it until

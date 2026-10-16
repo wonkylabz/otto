@@ -193,8 +193,9 @@ checkout. Otto pushes a branch, opens a draft PR, and tears the clone down after
 
 ## Factory mode
 
-Admin → Mode → **Start factory** points one empty registered repo and the GitHub board at a
-self-driving build loop, seeded with an idea:
+Admin → Mode → **Start factory** points one registered repo and the GitHub board at a
+self-driving build loop, seeded with an idea — or, for a repo that already has code, with what
+to finish or add:
 
 ```
 PM sprint ─▶ tickets in Ready ─▶ worker builds ─▶ draft PR ─▶ review + QA ─▶ auto-merge ─▶ Done
@@ -205,7 +206,10 @@ PM sprint ─▶ tickets in Ready ─▶ worker builds ─▶ draft PR ─▶ re
 - **It is unsafe by design, and the switch is the approval.** Tickets on that repo run without
   a gate, and a PR that passes review **and** QA merges itself. Every other ingress stays
   Manual, the header shows a FACTORY chip on every tab, and the global Pause still stops it.
-- **The seed becomes `GOALS.md`** (product + Definition of Done). The PM writes a `SPEC.md`
+- **The seed becomes `GOALS.md`** (product, commands, Definition of Done). An empty repo's
+  first ticket scaffolds the project; a repo with code gets an assessment ticket instead, which
+  describes what exists and adopts the repo's own run/test/lint commands — never a second
+  toolchain. The PM writes a `SPEC.md`
   first — domain rules cited from an authoritative source, legal and illegal cases, and a UX
   contract — and every later ticket cites the rules it implements, with a test per rule.
 - **Each sprint after a merge starts with a playtest**: QA uses `main` as a real user (headless

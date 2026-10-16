@@ -3,6 +3,7 @@
 Shared fixtures and the reason this suite is split by layer: test_support.py.
 """
 import ast
+import base64
 import asyncio
 import glob
 import contextlib
@@ -9432,12 +9433,53 @@ class FactoryModeTests(unittest.TestCase):
         self.assertEqual(m.call_count, 1)
 
     def test_goals_set_a_real_product_bar_and_sprint_one_builds_the_foundation(self):
-        goals = self.factory.GOALS_TEMPLATE.format(seed="a card game")
+        goals = self.factory.goals_text("a card game", existing=False)
         for item in ("make run", "make test", "make lint", "user interface", "CI", "manifest"):
             self.assertIn(item, goals)
         brief = self.factory.SPRINT_BRIEF
         self.assertIn("Foundation first", brief)
         self.assertIn("Product section", brief)
+
+    def test_a_repo_with_code_gets_an_assessment_not_a_second_toolchain(self):
+        f = self.factory
+        goals = f.goals_text("finish the multiplayer mode", existing=True)
+        self.assertIn("finish the multiplayer mode", goals)
+        self.assertIn("assessment ticket", goals)
+        self.assertNotIn("make test", goals)        # the repo's own commands, named by the assessment
+        self.assertNotIn("foundation ticket", goals)  # or the brief scaffolds a Makefile over it
+        brief = f.SPRINT_BRIEF
+        self.assertIn("Assessment first", brief)
+        self.assertIn("Never replace the repo's toolchain", brief)
+        self.assertNotIn("`make test`", brief)         # tickets pass the commands GOALS names
+
+    def test_seeding_detects_code_and_fails_closed_on_an_unreadable_tree(self):
+        f = self.factory
+        calls = []
+
+        def gh(answers):
+            def _gh(args, timeout=60):
+                calls.append(args)
+                return answers.pop(0)
+            return _gh
+        cases = [((1, "", "gh: This repository is empty. (HTTP 404)"), "seeded", "foundation"),
+                 ((0, "README.md\nLICENSE\n.gitignore", ""), "seeded", "foundation"),
+                 ((0, "README.md\npackage.json\nsrc", ""), "seeded for an existing project",
+                  "assessment")]
+        for listing, verdict, shape in cases:
+            with unittest.mock.patch.object(f, "_gh", gh([(1, "", "Not Found (HTTP 404)"),
+                                                          listing, (0, "", "")])):
+                calls.clear()
+                self.assertEqual(f._seed_goals("o/r", "an idea"), verdict)
+            content = next(a for a in calls[-1] if a.startswith("content="))[8:]
+            self.assertIn(f"{shape} ticket", base64.b64decode(content).decode())
+        with unittest.mock.patch.object(f, "_gh", gh([(1, "", "Not Found (HTTP 404)"),
+                                                      (1, "", "HTTP 502")])):
+            calls.clear()
+            with self.assertRaises(f.Refused):
+                f._seed_goals("o/r", "an idea")
+        self.assertEqual(len(calls), 2)                 # nothing written on a guess
+        with unittest.mock.patch.object(f, "_gh", gh([(0, "abc", "")])):
+            self.assertEqual(f._seed_goals("o/r", "an idea"), "kept")
 
     def test_a_blocked_card_stops_pickup_and_lets_the_sprint_run(self):
         import activities
