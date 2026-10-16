@@ -2538,6 +2538,49 @@ class OnboardingTests(unittest.TestCase):
         self.assertTrue(got["calendar"]["hint"])
         self.assertEqual(got["calendar"]["where"], {"tab": "admin", "sect": "mcp"})
 
+    def test_a_never_filled_connector_cache_is_unknown_not_missing(self):
+        got = self.ob.preview({"integrations": ["email"]}, [], connectors_checked=False)
+        self.assertIsNone(got["integrations"][0]["ready"])
+
+    def test_a_slack_tool_is_not_the_slack_listener(self):
+        import slack
+        mcps = [{"name": "slack-admin", "enabled": True}]
+        with mock.patch.object(slack, "token_set", return_value=False):
+            got = self.ob.preview({"integrations": ["slack"]}, mcps)["integrations"][0]
+        self.assertFalse(got["ready"])
+        with mock.patch.object(slack, "token_set", side_effect=lambda i=slack.USER: i == slack.USER), \
+                mock.patch.object(slack, "load", return_value={"enabled": True}):
+            got = self.ob.preview({"integrations": ["slack"]}, [])["integrations"][0]
+        self.assertTrue(got["ready"])
+
+    def test_github_needs_a_signed_in_gh_not_just_one_on_path(self):
+        import pr_review
+        with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
+                mock.patch.object(pr_review, "viewer", return_value=None), \
+                mock.patch.object(registry, "projects", return_value=["/r"]):
+            got = self.ob.preview({"integrations": ["github"]})["integrations"][0]
+        self.assertFalse(got["ready"])
+
+    def test_a_hosted_model_is_not_a_local_one(self):
+        pool = {"pool": [{"name": "gpt", "provider": "openai", "kind": "hosted",
+                          "base_url": "https://api.example.com/v1"}]}
+        with mock.patch.object(gateway, "load", return_value=pool):
+            got = self.ob.preview({"integrations": ["local"]})["integrations"][0]
+        self.assertFalse(got["ready"])
+
+    def test_a_dismissed_wizard_keeps_its_draft_answers(self):
+        self.ob.skip({"usage": "work", "profile": "economic", "integrations": "slack,email"})
+        st = self.ob.state()
+        self.assertFalse(st["auto_open"])
+        self.assertEqual(st["answers"]["profile"], "economic")
+        self.assertEqual(st["answers"]["integrations"], [], "a non-list never substring-matches")
+
+    def test_the_wizard_never_covers_a_push_deep_link(self):
+        init = ui_src()
+        init = init[init.index("async function initOnboarding"):]
+        init = init[:init.index("\n}")]
+        self.assertIn("#run=", init)
+
     def test_every_integration_points_at_a_section_the_ui_renders(self):
         src = ui_src()
         for key, spec in self.ob.INTEGRATIONS.items():
@@ -2577,6 +2620,11 @@ class EventsSetupGuideTests(unittest.TestCase):
         close = close[:close.index("\n}")]
         self.assertIn("FORM_MODAL_THEN", close, "the one-shot hook must fire on every close")
         self.assertIn("afterFormModal(()=>openGuide(key))", self.src)
+
+    def test_the_slack_scopes_come_from_the_table_scope_gaps_checks(self):
+        g = self.src[self.src.index("let GUIDE=null"):]
+        self.assertIn("scope_catalog", g)
+        self.assertNotIn('"im:history"', g, "a hand-kept scope list drifts from slack._SCOPES")
 
     def test_a_guide_never_writes_config_itself(self):
         g = self.src[self.src.index("let GUIDE=null"):]

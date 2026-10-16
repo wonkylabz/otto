@@ -17,15 +17,20 @@ async function initOnboarding(){
     status.insertBefore(b, upd);
   }
   let meta; try { meta=await getJSON("/api/onboarding"); } catch(e){ return; }
-  if(meta.auto_open) openOnboarding(meta);
+  // A push's deep link (#run=<wid>) lands on the run it is about; the wizard must not cover it.
+  if(meta.auto_open && !/^#run=/.test(location.hash)) openOnboarding(meta);
 }
 
 async function openOnboarding(meta){
   if(!meta){ try { meta=await getJSON("/api/onboarding"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
   const prev=meta.answers||{};
-  OB={meta, step:0, answers:{usage:prev.usage||"", profile:prev.profile||"balanced",
-                             integrations:prev.integrations||null}};
+  OB={meta, step:0, seq:0, done:false, answers:{usage:prev.usage||"", profile:prev.profile||"balanced",
+                                                 integrations:prev.integrations||null}};
   obRender();
+  // Any way out that isn't Apply — X, Esc, "Just the tour", an integration's Open — counts as
+  // dismissed, keeping the draft answers: otherwise every page load reopens it on someone who
+  // has already dealt with it. Setup in the header still runs it again.
+  afterFormModal(()=>{ if(OB && !OB.done) postOr("/api/onboarding/skip",{answers:OB.answers},"saving onboarding"); });
 }
 
 const OB_STEPS=["welcome","usage","profile","integrations","review"];
@@ -81,13 +86,14 @@ async function obAction(act){
   if(act==="next"){ OB.step++; obRender(); return; }
   if(act==="back"){ OB.step--; obRender(); return; }
   if(act==="tour"){ closeFormModal(); startTour(); return; }
-  if(act==="skip"){ if(await postOr("/api/onboarding/skip",{},"skipping onboarding")) closeFormModal(); return; }
+  if(act==="skip"){ closeFormModal(); return; }   // the close hook records the skip
   if(act==="apply"||act==="apply-tour"){
     const err=document.getElementById("ob-err");
     document.querySelectorAll('[data-ob^="apply"]').forEach(b=>b.disabled=true);
     let out;
     try { out=await postJSON("/api/onboarding/apply",{answers:OB.answers, expect:OB.fingerprint}); }
     catch(e){ err.textContent=e.message; obReview(); return; }   // 409: re-preview what changed
+    OB.done=true;
     const n=(out.applied||[]).length;
     toast(n?`Onboarding applied ${n} setting change${n>1?"s":""}`:"Onboarding saved — settings already matched","ok");
     closeFormModal();
@@ -99,17 +105,19 @@ async function obAction(act){
 function obFmt(v){ return v===true?"on":v===false?"off":v===0?"0 (off)":String(v); }
 
 async function obReview(){
-  const box=document.getElementById("ob-review"), err=document.getElementById("ob-err");
+  const box=document.getElementById("ob-review"), err=document.getElementById("ob-err"), seq=++OB.seq;
   let p;
   try { p=await postJSON("/api/onboarding/preview",{answers:OB.answers}); }
-  catch(e){ if(err) err.textContent=e.message; return; }
-  if(!box) return;   // closed while the preview was in flight
+  catch(e){ if(err && err.isConnected) err.textContent=e.message; return; }
+  // Superseded (Back → changed an answer → Next) or closed while in flight: a detached node is
+  // still truthy, so test the sequence and isConnected, never the reference.
+  if(seq!==OB.seq || !box.isConnected) return;
   OB.fingerprint=p.fingerprint;
   document.getElementById("ob-loading").textContent="Nothing is written until you apply. Applying the same answers again changes nothing.";
   const label={set:'<span class="obset">will change</span>',keep:'<span class="obkeep">already set</span>',
                pinned:'<span class="obpin">pinned by env</span>'};
   const rows=p.settings.map(s=>`<tr><td><code>${esc(s.name)}</code></td><td>${esc(obFmt(s.before))}</td><td>${esc(obFmt(s.after))}</td><td>${label[s.action]}${s.action==="pinned"?` <code>${esc(s.env)}</code>`:""}</td></tr>`).join("");
-  const ints=p.integrations.map(i=>`<div class="obint"><span class="obmark ${i.ready?'ok':'no'}">${i.ready?"&#10003;":"!"}</span>
+  const ints=p.integrations.map(i=>`<div class="obint"><span class="obmark ${i.ready?'ok':'no'}">${i.ready?"&#10003;":i.ready===null?"?":"!"}</span>
       <div class="obtext"><b>${esc(i.label)}</b> — ${esc(i.detail)}${i.hint?`<br>${esc(i.hint)}`:""}</div>
       <button class="btn sm revise" data-goto="${esc(i.where.tab)}" data-sect="${esc(i.where.sect)}">Open</button></div>`).join("");
   box.innerHTML=`<table class="obtable"><tr><th>Setting</th><th>Now</th><th>${esc(p.answers.profile)}</th><th></th></tr>${rows}</table>`+
@@ -129,7 +137,9 @@ function obGoto(tab, sect){
     const sec=[...document.querySelectorAll(".asection[data-sect]")].find(s=>s.dataset.sect===sect && s.offsetParent);
     if(!sec){ if(Date.now()-t0<5000) setTimeout(find,150); return; }
     sec.classList.remove("collapsed");
-    const st=sectsRead(); st[sect]=1; sectsWrite(st);
+    // Events and Admin remember sections in opposite stores (closed-set vs open-set).
+    if(tab==="events") evSetCollapsed(sect,false);
+    else { const st=sectsRead(); st[sect]=1; sectsWrite(st); }
     sec.scrollIntoView({behavior:"smooth", block:"start"});
     sec.classList.add("obflash"); setTimeout(()=>sec.classList.remove("obflash"),2400);
   };

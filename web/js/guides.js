@@ -22,8 +22,8 @@ const gMissing=sc=>(sc && sc.known && (sc.missing||[]).length)
   ? `<div class="obnote">The token is missing ${sc.missing.map(([s])=>gCode(s)).join(", ")}. Add the scope(s), <b>reinstall the app</b> (the old token never gains them), update the token and restart Otto.</div>` : "";
 const gIds=a=>slackIds(a).length;
 
-const SLACK_USER_SCOPES=["im:read","im:history","mpim:history","channels:history","groups:history","search:read","chat:write","reactions:write (optional)"];
-const SLACK_BOT_SCOPES=["app_mentions:read","channels:read","channels:history","im:read","im:history","chat:write","users:read","reactions:write (optional)"];
+// The scope list comes from the server (slack._SCOPES), the same table scope_gaps checks.
+const gScopes=(d,k)=>gInline(((d.scope_catalog||{})[k]||[]).map(([s,why])=>`<code title="${esc(why)}">${esc(s)}</code>`));
 
 function slackSteps(d, ident){
   const c=d.config||{}, poll=d.poll||{};
@@ -31,8 +31,8 @@ function slackSteps(d, ident){
   const both=ident==="both", user=ident!=="bot", bot=ident!=="user";
   out.push({t:"Create a Slack app", done:(!user||d.token_set)&&(!bot||d.bot_token_set),
     b:`At <a href="https://api.slack.com/apps" target="_blank" rel="noopener">api.slack.com/apps</a> choose <b>Create New App → From scratch</b> and pick your workspace${both?" — one app carries both tokens":""}. Under <b>OAuth &amp; Permissions → Scopes</b> add:`+
-      (user?`<p class="obsub"><b>User Token Scopes</b> (answering as you — a bot can never read your own DMs):</p>${gInline(SLACK_USER_SCOPES.map(gCode))}`:"")+
-      (bot?`<p class="obsub"><b>Bot Token Scopes</b> (answering as Otto). Slack splits listing a conversation from reading it, so both halves are needed:</p>${gInline(SLACK_BOT_SCOPES.map(gCode))}<p class="obsub">Under <b>App Home</b>, turn on the <b>Messages Tab</b> — otherwise nobody can DM the bot.</p>`:"")+
+      (user?`<p class="obsub"><b>User Token Scopes</b> (answering as you — a bot can never read your own DMs):</p>${gScopes(d,"user")}`:"")+
+      (bot?`<p class="obsub"><b>Bot Token Scopes</b> (answering as Otto). Slack splits listing a conversation from reading it, so both halves are needed:</p>${gScopes(d,"bot")}<p class="obsub">Under <b>App Home</b>, turn on the <b>Messages Tab</b> — otherwise nobody can DM the bot.</p>`:"")+
       `<p class="obsub">Then <b>Install to Workspace</b>.</p>`});
   const toks=[user&&["OTTO_SLACK_USER_TOKEN","xoxp-…","User OAuth Token",d.token_set,d.scopes],
               bot&&["OTTO_SLACK_BOT_TOKEN","xoxb-…","Bot User OAuth Token",d.bot_token_set,d.bot_scopes]].filter(Boolean);

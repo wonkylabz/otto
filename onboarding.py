@@ -121,20 +121,23 @@ def normalize(answers):
     a = answers if isinstance(answers, dict) else {}
     usage = a.get("usage") if a.get("usage") in USAGES else "personal"
     profile = a.get("profile") if a.get("profile") in PROFILES else "balanced"
-    wants = [k for k in INTEGRATIONS if k in (a.get("integrations") or [])]
+    picked = a.get("integrations")
+    picked = {x for x in picked if isinstance(x, str)} if isinstance(picked, list) else set()
+    wants = [k for k in INTEGRATIONS if k in picked]
     return {"usage": usage, "profile": profile, "integrations": wants}
 
 
-def profile_settings(profile):
+def profile_settings(profile, cur=None):
     """The full assignment a profile makes, every _PROFILE_KEYS key included."""
-    base = {k: config.settings_all()[k]["default"] for k in _PROFILE_KEYS}
+    cur = cur or config.settings_all()
+    base = {k: cur[k]["default"] for k in _PROFILE_KEYS}
     return {**base, **(PROFILES[profile]["settings"] or {})}
 
 
 def _settings_plan(profile):
     cur = config.settings_all()
     out = []
-    for name, target in profile_settings(profile).items():
+    for name, target in profile_settings(profile, cur).items():
         s = cur[name]
         out.append({"name": name, "before": s["value"], "after": target,
                     "pinned": s["env_pinned"], "env": s["env"],
@@ -148,47 +151,61 @@ def _mcp_names(mcps):
             for m in mcps if m.get("enabled", True)]
 
 
-def _detect(key, mcps):
-    """(ready, detail) for one integration. Reads cached state only — the preview sits behind a
-    spinner, so nothing here may shell out to `claude mcp list` or a live health check."""
+def _detect(key, mcps, connectors_checked=True):
+    """(ready, detail) for one integration; ready is None when it cannot be told yet. Never runs
+    `claude mcp list` — the preview sits behind a spinner — so a connector cache that has never
+    been filled is "not checked yet", not "missing": on a first run that is the usual state."""
     spec = INTEGRATIONS[key]
-    if spec.get("match"):
-        hits = [n.split()[0] for n in _mcp_names(mcps) if re.search(spec["match"], n)]
-    else:
-        hits = []
     if key == "slack":
+        # The INGRESS, not a tool: a Slack MCP server or connector lets a run post, but only a
+        # token plus a switched-on identity makes Otto answer anyone.
         import slack            # noqa: PLC0415 — slack pulls in Temporal-free but heavy imports
-        ids = [n for n, i in (("user token", slack.USER), ("bot token", slack.BOT))
-               if slack.token_set(i)]
-        found = ids + hits
-        return bool(found), (", ".join(found) if found else "no Slack token or server")
+        cfg = slack.load()
+        on = [n for n, i, flag in (("as you", slack.USER, "enabled"), ("as a bot", slack.BOT, "bot_enabled"))
+              if slack.token_set(i) and cfg.get(flag)]
+        if on:
+            return True, "listening " + " and ".join(on)
+        toks = [n for n, i in (("user", slack.USER), ("bot", slack.BOT)) if slack.token_set(i)]
+        return False, (f"{' and '.join(toks)} token set, listener off" if toks
+                       else "no Slack token")
     if key == "github":
+        import pr_review        # noqa: PLC0415
         import registry         # noqa: PLC0415
-        gh, repos = bool(shutil.which("gh")), len(registry.projects())
-        if gh and repos:
-            return True, f"`gh` installed, {repos} repo(s) registered"
-        return False, ("`gh` not on PATH" if not gh else "no project repo registered")
+        if not shutil.which("gh"):
+            return False, "`gh` not on PATH"
+        who, repos = pr_review.viewer(), len(registry.projects())
+        if not who:
+            return False, "`gh` is installed but not signed in"
+        if not repos:
+            return False, f"signed in as {who}, no project repo registered"
+        return True, f"signed in as {who}, {repos} repo(s) registered"
     if key == "push":
         ok = bool(config.secret("OTTO_NTFY_TOPIC"))
         return ok, ("OTTO_NTFY_TOPIC set" if ok else "OTTO_NTFY_TOPIC not set")
     if key == "local":
         import gateway          # noqa: PLC0415
-        local = [m["name"] for m in gateway.load().get("pool", []) if gateway.is_local(m)]
+        # CLASS, not transport: a hosted model on an OpenAI-compatible URL is not "your hardware".
+        local = [m["name"] for m in gateway.load().get("pool", []) if gateway.model_kind(m) == "local"]
         return bool(local), (", ".join(local) if local else "no local model configured")
-    return bool(hits), (", ".join(hits) if hits else "nothing connected")
+    hits = [n.split()[0] for n in _mcp_names(mcps) if re.search(spec["match"], n)]
+    if hits:
+        return True, ", ".join(hits)
+    if not connectors_checked:
+        return None, "not checked yet — Admin → MCP servers lists your claude.ai connectors"
+    return False, "nothing connected"
 
 
-def _integrations_plan(wants, mcps):
+def _integrations_plan(wants, mcps, connectors_checked=True):
     out = []
     for key in wants:
-        ready, detail = _detect(key, mcps)
+        ready, detail = _detect(key, mcps, connectors_checked)
         spec = INTEGRATIONS[key]
         out.append({"key": key, "label": spec["label"], "ready": ready, "detail": detail,
                     "hint": "" if ready else spec["hint"], "where": spec["where"]})
     return out
 
 
-def _plan(answers, mcps):
+def _plan(answers, mcps, connectors_checked=True):
     a = normalize(answers)
     settings = _settings_plan(a["profile"])
     changes = [{"name": s["name"], "after": s["after"]} for s in settings if s["action"] == "set"]
@@ -202,18 +219,19 @@ def _plan(answers, mcps):
         notes.append("Some settings are pinned by an environment variable and won't change until "
                      "it is removed from .env.")
     return {"answers": a, "fingerprint": fp, "settings": settings,
-            "integrations": _integrations_plan(a["integrations"], mcps), "notes": notes}
+            "integrations": _integrations_plan(a["integrations"], mcps, connectors_checked),
+            "notes": notes}
 
 
-def preview(answers, mcps=()):
+def preview(answers, mcps=(), connectors_checked=True):
     """Every change `apply` would make, plus the fingerprint it must be given back."""
-    return _plan(answers, list(mcps))
+    return _plan(answers, list(mcps), connectors_checked)
 
 
-def apply(answers, expect, mcps=()):
+def apply(answers, expect, mcps=(), connectors_checked=True):
     """Write the settings `preview` showed and record the answers. Raises StalePreview when the
     install changed in between."""
-    plan = _plan(answers, list(mcps))
+    plan = _plan(answers, list(mcps), connectors_checked)
     if plan["fingerprint"] != expect:
         raise StalePreview("settings changed since the preview — review again")
     changes = {s["name"]: s["after"] for s in plan["settings"] if s["action"] == "set"}
@@ -225,12 +243,16 @@ def apply(answers, expect, mcps=()):
     return {"applied": sorted(changes), "plan": plan}
 
 
-def skip():
-    """Remember the operator declined, so it stops opening by itself. Answers are kept."""
+def skip(answers=None):
+    """Remember the operator dismissed it, so it stops opening by itself. Draft `answers` (from a
+    wizard closed part-way) are kept to prefill the next run; without them the stored ones stay."""
     now = time.time()
 
     def _mut(d):
         d = d if isinstance(d, dict) else {}
-        return {**d, "version": VERSION, "skipped_at": now}
+        out = {**d, "version": VERSION, "skipped_at": now}
+        if answers is not None:
+            out["answers"] = normalize(answers)
+        return out
     storage.mutate_json(_STATE, _mut, default={})
     return state()

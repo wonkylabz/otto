@@ -1627,6 +1627,10 @@ class Handler(BaseHTTPRequestHandler):
                 # failure with no symptom. Cached per process (one auth.test per identity).
                 "scopes": slack.scope_gaps(slack.USER),
                 "bot_scopes": slack.scope_gaps(slack.BOT),
+                # The scopes the setup guide tells the operator to add — served from the table
+                # scope_gaps checks against, so the guide can't drift from what is enforced.
+                "scope_catalog": {k: [[sc, why] for sc, (why, _when) in slack._SCOPES[i].items()]
+                                  for k, i in (("user", slack.USER), ("bot", slack.BOT))},
                 "socket": slack_socket.status(),   # instant delivery for the bot, if configured
                 "poll": slack.poll_status() if TEMPORAL_OK else {"exists": False},
                 "caps": [c.name for c in CAPS if c.enabled],  # for the optional pinned-cap picker
@@ -2727,20 +2731,20 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/onboarding/preview — the settings diff + integration checklist for `answers`.
         MCPs are the CACHED listing: the wizard waits on this, so it must never shell out."""
         self._send(200, json.dumps({"ok": True, **onboarding.preview(
-            body.get("answers"), policy.all_mcps(POLICY))}))
+            body.get("answers"), policy.all_mcps(POLICY), _connectors_checked())}))
 
     def _post_onboarding_apply(self, body):
         """POST /api/onboarding/apply — applies only the plan its `expect` fingerprint names."""
         try:
             out = onboarding.apply(body.get("answers"), body.get("expect") or "",
-                                   policy.all_mcps(POLICY))
+                                   policy.all_mcps(POLICY), _connectors_checked())
         except onboarding.StalePreview as e:
             self._send(409, json.dumps({"error": str(e)})); return
         self._send(200, json.dumps({"ok": True, **out}))
 
     def _post_onboarding_skip(self, body):
         """POST /api/onboarding/skip"""
-        self._send(200, json.dumps({"ok": True, **onboarding.skip()}))
+        self._send(200, json.dumps({"ok": True, **onboarding.skip(body.get("answers"))}))
 
     def _post_settings(self, body):
         """POST /api/settings"""
@@ -2871,6 +2875,12 @@ class Handler(BaseHTTPRequestHandler):
 # POST dispatch. Built from Handler's methods rather than a 52-branch `elif` chain:
 # the chain was 193 branches in one function, and a route's position in it was load-
 # bearing (an exact match had to precede every prefix match). Exact wins, then prefix.
+def _connectors_checked():
+    """Whether `claude mcp list` has EVER filled the connector cache. Read, never refreshed: the
+    onboarding preview must not shell out, and an unfilled cache is "unknown", not "none"."""
+    return bool(policy._mcp_status().get("at"))
+
+
 _POST_ROUTES = {
     "/login": Handler._post_login,
     "/api/login-link": Handler._post_login_link,
