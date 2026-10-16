@@ -7519,7 +7519,10 @@ class UiAssetLayoutTests(unittest.TestCase):
     # -> 14_256 for the `#toasts` container (issue #48). It has to live in the SHELL, beside
     # the pause bar: every tab is a view swap inside <main>, so a notice docked in a view
     # unmounts exactly when someone switches away while waiting for a save.
-    INDEX_MAX = 14_256
+    # -> 14_328 for onboarding: its stylesheet and script tags. The Setup button is
+    # injected by onboarding.js, not written here, so the raise is the two tags and nothing else.
+    # -> 14_366 for the Events setup guides' script tag (guides.js).
+    INDEX_MAX = 14_366
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:

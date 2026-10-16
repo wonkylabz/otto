@@ -42,6 +42,7 @@ import gateway
 import knowledge
 import local_runtime
 import mcp_client
+import onboarding
 import policy
 import pr_review
 import registry
@@ -1461,6 +1462,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "router_model": config.ROUTER_MODEL,
                                         "health": health,
                                         "tasks": gateway.TASKS}))
+        elif self.path == "/api/onboarding":
+            self._send(200, json.dumps(onboarding.state()))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
             # env var + env_pinned so Admin can render an env-pinned knob as locked instead of
@@ -2720,6 +2723,25 @@ class Handler(BaseHTTPRequestHandler):
         overrides = gateway.set_cap_local_exec(body.get("name"), body.get("model") or None)
         self._send(200, json.dumps({"ok": True, "cap_local_exec": overrides}))
 
+    def _post_onboarding_preview(self, body):
+        """POST /api/onboarding/preview — the settings diff + integration checklist for `answers`.
+        MCPs are the CACHED listing: the wizard waits on this, so it must never shell out."""
+        self._send(200, json.dumps({"ok": True, **onboarding.preview(
+            body.get("answers"), policy.all_mcps(POLICY))}))
+
+    def _post_onboarding_apply(self, body):
+        """POST /api/onboarding/apply — applies only the plan its `expect` fingerprint names."""
+        try:
+            out = onboarding.apply(body.get("answers"), body.get("expect") or "",
+                                   policy.all_mcps(POLICY))
+        except onboarding.StalePreview as e:
+            self._send(409, json.dumps({"error": str(e)})); return
+        self._send(200, json.dumps({"ok": True, **out}))
+
+    def _post_onboarding_skip(self, body):
+        """POST /api/onboarding/skip"""
+        self._send(200, json.dumps({"ok": True, **onboarding.skip()}))
+
     def _post_settings(self, body):
         """POST /api/settings"""
         self._send(200, json.dumps(
@@ -2912,6 +2934,9 @@ _POST_ROUTES = {
     "/api/project/instructions": Handler._post_project_instructions,
     "/api/project/remove": Handler._post_project_remove,
     "/api/project/verify": Handler._post_project_verify,
+    "/api/onboarding/apply": Handler._post_onboarding_apply,
+    "/api/onboarding/preview": Handler._post_onboarding_preview,
+    "/api/onboarding/skip": Handler._post_onboarding_skip,
     "/api/settings": Handler._post_settings,
     "/api/pr-review-config": Handler._post_pr_review_config,
     "/api/pr-review/dismiss": Handler._post_pr_review_dismiss,

@@ -17,7 +17,13 @@ function openFormModal(title){
 function closeFormModal(){
   document.getElementById("formModal").hidden=true;
   document.getElementById("formModalBody").innerHTML="";   // drop stale inputs + their listeners
+  const then=FORM_MODAL_THEN; FORM_MODAL_THEN=null;
+  if(then) setTimeout(then,0);   // after the closing form's own follow-up (its reload) has started
 }
+/* One-shot: run `fn` when the form open NOW closes, saved or cancelled — how a setup guide hands
+   off to a card's own configure form and comes back to re-check it. */
+let FORM_MODAL_THEN=null;
+function afterFormModal(fn){ FORM_MODAL_THEN=fn; }
 document.getElementById("formModalClose").addEventListener("click",closeFormModal);
 document.getElementById("formModal").addEventListener("click",e=>{ if(e.target.id==="formModal") closeFormModal(); });
 document.addEventListener("keydown",e=>{ if(e.key==="Escape" && !document.getElementById("formModal").hidden) closeFormModal(); });

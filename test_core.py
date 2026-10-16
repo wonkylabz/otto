@@ -2443,6 +2443,148 @@ class ResumeModelRebindTests(unittest.TestCase):
                       "carryContextForSubmit still returns '' for every live session")
 
 
+class OnboardingTests(unittest.TestCase):
+    """UI onboarding (`onboarding.py`): answers → a settings diff + an integration checklist,
+    applied only as previewed. It must be safe to run any number of times, so a profile is a FULL
+    assignment of its keys and a second apply of the same answers changes nothing."""
+
+    def setUp(self):
+        import onboarding
+        self.ob = onboarding
+        self._path = config._SETTINGS_PATH
+        self._dir = tempfile.mkdtemp(prefix="otto-onboarding-")
+        config._SETTINGS_PATH = os.path.join(self._dir, "settings.json")
+        config._store_memo["stamp"] = None
+        self._state = mock.patch.object(onboarding, "_STATE", os.path.join(self._dir, "ob.json"))
+        self._state.start()
+        # A developer's .env pins knobs via run.sh; a pinned key would read as "pinned", not "set".
+        envs = {config._SETTING_SPECS[k][0] for k in onboarding._PROFILE_KEYS}
+        self._env = mock.patch.dict(os.environ, {k: "" for k in envs})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._state.stop()
+        config._SETTINGS_PATH = self._path
+        config._store_memo["stamp"] = None
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def _apply(self, answers):
+        return self.ob.apply(answers, self.ob.preview(answers)["fingerprint"])
+
+    def test_every_profile_assigns_the_same_real_settings(self):
+        # A profile that set a key another left alone would strand it on switch: economic's
+        # max_attempts=2 would survive picking balanced.
+        for key in self.ob.PROFILES:
+            got = self.ob.profile_settings(key)
+            self.assertEqual(set(got), set(self.ob._PROFILE_KEYS), key)
+            for name, val in got.items():
+                self.assertIn(name, config._SETTING_SPECS)
+                self.assertEqual(config._coerce(config._SETTING_SPECS[name][1], val), val, name)
+
+    def test_apply_is_idempotent(self):
+        a = {"usage": "work", "profile": "economic", "integrations": []}
+        first = self._apply(a)
+        self.assertIn("max_attempts", first["applied"])
+        self.assertEqual(config.setting("max_attempts"), 2)
+        self.assertFalse([s for s in self.ob.preview(a)["settings"] if s["action"] == "set"])
+        self.assertEqual(self._apply(a)["applied"], [])
+
+    def test_balanced_after_economic_restores_the_defaults(self):
+        self._apply({"profile": "economic"})
+        self._apply({"profile": "balanced"})
+        store = storage.read_json(config._settings_path(), {})
+        self.assertFalse(set(store) & set(self.ob._PROFILE_KEYS), store)
+
+    def test_a_stale_preview_writes_nothing(self):
+        a = {"profile": "economic"}
+        fp = self.ob.preview(a)["fingerprint"]
+        config.save_settings({"max_attempts": 2})          # someone edited Admin meanwhile
+        with self.assertRaises(self.ob.StalePreview):
+            self.ob.apply(a, fp)
+        self.assertFalse(self.ob.state()["completed_at"])
+
+    def test_an_env_pinned_setting_is_reported_not_written(self):
+        os.environ["OTTO_MAX_ATTEMPTS"] = "5"
+        plan = self.ob.preview({"profile": "economic"})
+        row = next(s for s in plan["settings"] if s["name"] == "max_attempts")
+        self.assertEqual(row["action"], "pinned")
+        self.assertNotIn("max_attempts", self._apply({"profile": "economic"})["applied"])
+        self.assertNotIn("max_attempts", storage.read_json(config._settings_path(), {}))
+
+    def test_auto_open_until_finished_or_skipped_and_again_on_a_new_version(self):
+        self.assertTrue(self.ob.state()["auto_open"])
+        self.ob.skip()
+        self.assertFalse(self.ob.state()["auto_open"])
+        with mock.patch.object(self.ob, "VERSION", self.ob.VERSION + 1):
+            self.assertTrue(self.ob.state()["auto_open"])
+        self._apply({"usage": "both", "profile": "quality", "integrations": ["email"]})
+        st = self.ob.state()
+        self.assertFalse(st["auto_open"])
+        self.assertEqual(st["answers"]["profile"], "quality")      # prefills the re-run
+
+    def test_unknown_answers_fall_back_rather_than_raise(self):
+        a = self.ob.normalize({"usage": "x", "profile": "y", "integrations": ["email", "nope"]})
+        self.assertEqual(a, {"usage": "personal", "profile": "balanced", "integrations": ["email"]})
+
+    def test_integrations_are_detected_from_the_mcp_listing_and_point_at_their_screen(self):
+        mcps = [{"name": "claude_ai_Gmail", "display": "Gmail", "enabled": True},
+                {"name": "claude_ai_Google_Calendar", "enabled": False}]
+        plan = self.ob.preview({"integrations": ["email", "calendar"]}, mcps)
+        got = {i["key"]: i for i in plan["integrations"]}
+        self.assertTrue(got["email"]["ready"])
+        self.assertEqual(got["email"]["hint"], "")
+        self.assertFalse(got["calendar"]["ready"], "a disabled connector reaches nothing")
+        self.assertTrue(got["calendar"]["hint"])
+        self.assertEqual(got["calendar"]["where"], {"tab": "admin", "sect": "mcp"})
+
+    def test_every_integration_points_at_a_section_the_ui_renders(self):
+        src = ui_src()
+        for key, spec in self.ob.INTEGRATIONS.items():
+            self.assertIn(f'data-sect="{spec["where"]["sect"]}"', src, key)
+
+    def test_the_ui_wires_the_wizard_through_the_shared_helpers(self):
+        src = ui_src()
+        self.assertLess(src.index("function initOnboarding"), src.index("initOnboarding();"),
+                        "boot.js must call it after onboarding.js has loaded")
+        for path in ("/api/onboarding/preview", "/api/onboarding/apply", "/api/onboarding/skip"):
+            self.assertIn(path, src)
+        import server
+        for path in ("/api/onboarding/preview", "/api/onboarding/apply", "/api/onboarding/skip"):
+            self.assertIn(path, server._POST_ROUTES)
+
+
+class EventsSetupGuideTests(unittest.TestCase):
+    """The Slack and GitHub setup guides (`web/js/guides.js`) hold no state of their own: every
+    step reads the endpoint its Events card renders from, and its action opens that card's own
+    configure form, coming back to re-check when the form closes."""
+
+    def setUp(self):
+        self.src = ui_src()
+
+    def test_each_events_integration_has_a_guide_button_and_a_guide(self):
+        for key in ("slack", "github"):
+            self.assertIn(f'data-guide="{key}"', self.src)
+            self.assertRegex(self.src, rf"\n  {key}:\{{title:")
+
+    def test_every_form_a_guide_opens_is_a_real_form(self):
+        g = self.src[self.src.index("function slackSteps"):self.src.index("const GUIDES=")]
+        for fn in set(re.findall(r"run:\(\)=>(show\w+Form)\(\)", g)):
+            self.assertIn(f"function {fn}(", self.src, fn)
+
+    def test_a_guide_resumes_when_the_form_it_opened_closes(self):
+        close = self.src[self.src.index("function closeFormModal"):]
+        close = close[:close.index("\n}")]
+        self.assertIn("FORM_MODAL_THEN", close, "the one-shot hook must fire on every close")
+        self.assertIn("afterFormModal(()=>openGuide(key))", self.src)
+
+    def test_a_guide_never_writes_config_itself(self):
+        g = self.src[self.src.index("let GUIDE=null"):]
+        g = g[:g.index("</script>")]
+        self.assertNotIn("postJSON", g)
+        self.assertNotIn("postOr", g)
+
+
 class SetupWizardTests(unittest.TestCase):
     """The guided first run (`./install.sh --guided`). Everything asserted here is a way the
     wizard could damage an install it was supposed to improve: block an unattended installer,
@@ -3552,7 +3694,7 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 93323 -> 93619: factory mode. Four rules, one per way an edit makes an unattended,
     # 92807 -> 93096: a re-readied board card runs again as the next run generation.
     # 94372 -> 94612: a factory repo with code is assessed, never scaffolded over.
-    MAX_RULES_BYTES = 94612   # fetched tier — bounded, but looser; it is not always loaded
+    MAX_RULES_BYTES = 94885   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

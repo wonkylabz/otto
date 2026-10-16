@@ -1,0 +1,57 @@
+/* Onboarding wizard (in the shared form modal) + the spotlight tour. Its own sheet so the
+   feature does not ratchet app.css; every colour is a token, so all five palettes hold. */
+  .obbtn { color: var(--text-2); }
+  /* .estop's hover is the pause's danger red; this button is not a stop. */
+  .obbtn:hover { color: var(--accent); border-color: var(--accent); }
+  .obsteps { display: flex; gap: 6px; margin-bottom: 14px; }
+  .obsteps i { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }
+  .obsteps i.on { background: var(--accent); }
+  .obq { font-size: 15px; font-weight: 600; color: var(--text); margin: 0 0 4px; }
+  .obsub { font-size: 12.5px; color: var(--text-2); margin: 0 0 14px; line-height: 1.5; }
+  .obopts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+  .obopt { display: block; border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px;
+    cursor: pointer; background: var(--surface-2); }
+  .obopt:hover { border-color: var(--accent-line); }
+  .obopt.sel { border-color: var(--accent); background: var(--accent-soft); }
+  .obopt input { margin: 0 6px 0 0; accent-color: var(--accent); }
+  .obopt b { font-size: 13px; color: var(--text); }
+  .obopt span { display: block; font-size: 12px; color: var(--text-2); margin-top: 4px; line-height: 1.45; }
+  .obnav { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
+  .obnav .obleft { margin-right: auto; }
+  .obtable { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 14px; }
+  .obtable td, .obtable th { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+  .obtable th { color: var(--dim); font-weight: 500; }
+  .obtable code { font-family: var(--mono); font-size: 12px; }
+  .obtable .obkeep { color: var(--dim); }
+  .obtable .obset { color: var(--accent); font-weight: 600; }
+  .obtable .obpin { color: var(--warn); }
+  .obint { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .obint .obmark { width: 18px; flex: none; font-weight: 700; }
+  .obint .obmark.ok { color: var(--ok); }
+  .obint .obmark.no { color: var(--warn); }
+  .obint .obtext { flex: 1; font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+  .obint .obtext b { color: var(--text); }
+  .obnote { font-size: 12.5px; color: var(--text-2); background: var(--warn-soft);
+    border: 1px solid var(--warn-line); border-radius: var(--r-sm); padding: 8px 10px; margin-top: 10px; }
+  .oberr { color: var(--danger); font-size: 12.5px; margin-top: 8px; }
+  /* The tour: one box whose enormous shadow IS the scrim, so the target stays lit and clickable
+     content behind it stays where it is. Above the modal (200) and the toasts. */
+  .obspot { position: fixed; z-index: 300; border-radius: var(--r-md); pointer-events: none;
+    box-shadow: 0 0 0 9999px var(--scrim); outline: 2px solid var(--accent); transition: all .2s; }
+  .obtip { position: fixed; z-index: 301; max-width: 340px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--r-lg); padding: 14px 16px;
+    box-shadow: 0 16px 48px var(--shadow); font-size: 13px; color: var(--text-2); line-height: 1.5; }
+  .obtip h4 { margin: 0 0 6px; font-size: 14px; color: var(--text); }
+  .obtip .obnav { margin-top: 12px; }
+  .obtip .obcount { font-size: 11.5px; color: var(--dim); margin-right: auto; align-self: center; }
+  .obflash { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--r-md); }
+  /* Setup guides (guides.js) reuse the wizard's pieces; these are the step-status bits. */
+  .gdbody { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+  .gdbody code { font-family: var(--mono); font-size: 12px; }
+  .gdlist { margin: 4px 0 10px 18px; padding: 0; }
+  .gdcodes { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 4px 0 10px; }
+  .gdcodes code { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 1px 6px; }
+  .gdok, .gdno { font-size: 11px; font-weight: 600; border-radius: var(--r-sm); padding: 1px 7px; margin-left: 6px; vertical-align: middle; }
+  .gdok { color: var(--ok); background: var(--ok-soft); }
+  .gdno { color: var(--warn); background: var(--warn-soft); }
+  .obsteps i.gdcur { outline: 2px solid var(--accent); outline-offset: 1px; }

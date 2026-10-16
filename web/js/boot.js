@@ -45,6 +45,7 @@ poll(()=>{
   // If a turn was still running when the page was last open, reattach to it — the workflow
   // kept going server-side. Open the most-recent chat that still has a live run_id.
   if(TEMPORAL) restoreLiveRun();
+  initOnboarding();   // the Setup button, and the wizard itself until finished or skipped
 })();
 
 async function restoreLiveRun(){
