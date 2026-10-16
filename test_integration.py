@@ -6108,8 +6108,8 @@ class FactorySprintWorkflowTests(unittest.IsolatedAsyncioTestCase):
         from temporalio.worker import UnsandboxedWorkflowRunner
         from workflows import FactorySprintWorkflow
         import activities
-        from activities import factory_after_sprint, factory_gate, factory_playtest
-        booked, children = [], []
+        from activities import factory_after_sprint, factory_gate
+        booked = []
         played = []
 
         def _play(payload):
