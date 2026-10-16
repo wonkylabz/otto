@@ -48,10 +48,11 @@ function slackSteps(d, ident){
     b:`List the channels the bot may answer in and the people who may DM it, tick <b>Enabled</b> and save. A listed channel still needs the bot <b>invited</b> to it: type ${gCode("/invite @Otto")} there.`+
       `<p class="obsub"><b>Approvers</b> are a separate list on purpose — who may ask is not who may approve a write.</p>`,
     act:{label:"Open Bot user settings", run:()=>{ gSlackSync(d); showSlackBotForm(); }}});
-  out.push({t:"Check it's listening", done:!!d.temporal && !!poll.exists && !poll.failing,
+  out.push({t:"Check it's listening", done:!!d.temporal && !!poll.exists && !poll.failing && !poll.paused,
     b:(!d.temporal?`<div class="obnote">Temporal isn't running — start Otto with ${gCode("./run.sh")}.</div>`:"")+
       (d.temporal && !poll.exists?`<div class="obnote">No poll schedule yet — restart Otto to create it.</div>`:"")+
       (poll.failing?`<div class="obnote">Every poll is failing — check the worker log for the traceback.</div>`:"")+
+      (poll.paused?`<div class="obnote">The poll schedule is paused — nothing is being read until it resumes.</div>`:"")+
       `<p class="obsub">Send a message from an allowlisted account${bot?" (or @-mention the bot in a listed channel)":""}. Otto reacts with 👀, then replies in the thread within one poll (${esc(""+(c.poll_seconds||60))}s).</p>`+
       (bot?`<p class="obsub">Optional: an app-level token in ${gCode("OTTO_SLACK_APP_TOKEN")} turns on Socket Mode, so the bot answers instantly instead of on the poll.</p>`:"")});
   return out;
@@ -83,9 +84,10 @@ function githubSteps(ctx, feats){
       ((repos||[]).length?`<p class="obsub">Registered: ${repos.map(r=>gCode(r.name)).join(", ")}.</p>`:""),
     act:{label:"Open Project repos", run:()=>obGoto("admin","projects"), leaves:true}});
   const polls=[feats.includes("board")&&bc.enabled&&board.poll, feats.includes("pr")&&pc.enabled&&pr.poll].filter(Boolean);
-  out.push({t:"Check it's running", done:!!pr.temporal && polls.every(p=>p.exists),
+  out.push({t:"Check it's running", done:!!pr.temporal && polls.every(p=>p.exists && !p.failing && !p.paused),
     b:(!pr.temporal?`<div class="obnote">Temporal isn't running — start Otto with ${gCode("./run.sh")}.</div>`:"")+
       (polls.some(p=>!p.exists)?`<div class="obnote">A poll schedule hasn't been created yet — restart Otto.</div>`:"")+
+      (polls.some(p=>p.paused)?`<div class="obnote">A poll schedule is paused — nothing runs until it resumes.</div>`:"")+
       `<p class="obsub">${feats.includes("board")?"Move a small ticket to <b>Ready</b>: Otto picks it up on the next poll, comments the result and moves the card. ":""}${feats.includes("pr")?"Ask Otto's account for review on a PR and watch the Events card's waiting count.":""}</p>`});
   return out;
 }
@@ -112,7 +114,11 @@ async function openGuide(key, keepStep){
   const g=GUIDES[key];
   // The GitHub checks can wait on `gh` the first time; say so instead of a dead click.
   openFormModal(`<b>${esc(g.title)}</b>`).innerHTML=`<p class="obsub">Checking this install…</p>`;
-  let ctx; try { ctx=await g.load(); } catch(e){ closeFormModal(); toast("couldn't load the "+key+" guide: "+e.message); return; }
+  const sess=FORM_MODAL_SESSION;
+  // Closed, or replaced by another form, while loading: the user moved on — never paint over it.
+  const gone=()=>sess!==FORM_MODAL_SESSION || document.getElementById("formModal").hidden;
+  let ctx; try { ctx=await g.load(); } catch(e){ if(!gone()){ closeFormModal(); toast("couldn't load the "+key+" guide: "+e.message); } return; }
+  if(gone()) return;
   let choice=(GUIDE&&GUIDE.key===key&&GUIDE.choice)||guideChoiceRead(key);
   if(Array.isArray(choice) && !choice.length) choice=null;   // nothing ticked is no choice yet
   GUIDE={key, ctx, choice, step:0};
@@ -134,7 +140,7 @@ function guideRender(){
       <div class="obnav"><button class="btn approve" data-gd="next"${(g.multi?(GUIDE.choice||[]).length:GUIDE.choice)?'':' disabled'}>Next</button></div>`;
     body.querySelectorAll('input[name="gd-pick"]').forEach(i=>i.addEventListener("change",()=>{
       GUIDE.choice = g.multi ? [...body.querySelectorAll('input[name="gd-pick"]:checked')].map(x=>x.value) : i.value;
-      guideChoiceWrite(GUIDE.key, GUIDE.choice); guideRender();
+      guideChoiceWrite(GUIDE.key, GUIDE.choice); guideRender(); refocusOption(i);
     }));
   } else {
     const steps=g.steps(GUIDE.ctx, GUIDE.choice), i=GUIDE.step-1, s=steps[i], last=i===steps.length-1;

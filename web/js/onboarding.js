@@ -7,10 +7,13 @@
    Nothing here runs at load except wiring its own button; boot.js calls initOnboarding(). */
 let OB=null;   // {meta, answers, step}
 
+/* Wired at load (its own button, its own file): live from first paint, and independent of
+   whatever boot.js does before it gets to initOnboarding. */
+(()=>{ const b=document.getElementById("ob-start"); if(b) b.addEventListener("click",()=>openOnboarding()); })();
+
 async function initOnboarding(){
-  const b=document.getElementById("ob-start");
-  if(b && !b.dataset.wired){ b.dataset.wired="1"; b.addEventListener("click",()=>openOnboarding()); }
   let meta; try { meta=await getJSON("/api/onboarding"); } catch(e){ return; }
+  if(!document.getElementById("formModal").hidden) return;   // the user already opened something
   // A push's deep link (#run=<wid>) lands on the run it is about; the wizard must not cover it.
   if(meta.auto_open && !/^#run=/.test(location.hash)) openOnboarding(meta);
 }
@@ -77,7 +80,7 @@ function obRender(){
     if(inp.name==="ob-usage"){ a.usage=inp.value; a.integrations=null; }
     if(inp.name==="ob-profile") a.profile=inp.value;
     if(inp.name==="ob-int") a.integrations=[...body.querySelectorAll('input[name="ob-int"]:checked')].map(x=>x.value);
-    obRender();
+    obRender(); refocusOption(inp);
   }));
   body.querySelectorAll("[data-ob]").forEach(b=>b.addEventListener("click",()=>obAction(b.dataset.ob)));
   if(step==="review") obReview();
@@ -103,13 +106,26 @@ async function obAction(act){
   }
 }
 
+/* A choice re-renders the whole step, which drops focus; put it back on the same option so a
+   keyboard user can keep walking the group with the arrow keys. Matched by dataset-free value
+   comparison — never a selector built from the value (ui.md, CSS.escape). */
+function refocusOption(prev){
+  const m=[...document.querySelectorAll(`#formModalBody input[name="${prev.name}"]`)].find(x=>x.value===prev.value);
+  if(m) m.focus();
+}
+
 function obFmt(v){ return v===true?"on":v===false?"off":v===0?"0 (off)":String(v); }
 
 async function obReview(){
   const box=document.getElementById("ob-review"), err=document.getElementById("ob-err"), seq=++OB.seq;
   let p;
   try { p=await postJSON("/api/onboarding/preview",{answers:OB.answers}); }
-  catch(e){ if(err && err.isConnected) err.textContent=e.message; return; }
+  catch(e){
+    if(!err || !err.isConnected || seq!==OB.seq) return;
+    err.innerHTML=`${esc(e.message)} <button class="btn sm revise" id="ob-retry">Retry</button>`;
+    document.getElementById("ob-retry").addEventListener("click",()=>{ err.textContent=""; obReview(); });
+    return;
+  }
   // Superseded (Back → changed an answer → Next) or closed while in flight: a detached node is
   // still truthy, so test the sequence and isConnected, never the reference.
   if(seq!==OB.seq || !box.isConnected) return;
@@ -130,7 +146,10 @@ async function obReview(){
 }
 
 /* Deep link into the section that sets an integration. Admin/Events render asynchronously after
-   activateTab, so wait for the section to exist; then open it (remembered, like a click) and show it. */
+   activateTab, so wait for the section to exist; then open it (remembered, like a click) and show it.
+   No stale match on an already-rendered Events tab: activateTab calls loadEvents(), whose FIRST,
+   synchronous statement replaces #eventsview with "loading…", so the old sections are gone before
+   find() runs and it polls until the new ones exist. */
 function obGoto(tab, sect){
   // From the wizard this is a detour, not a dismissal: nothing is applied yet, so park it and
   // say how to come back, rather than recording a skip that drops the chosen profile.

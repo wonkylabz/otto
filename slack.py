@@ -224,7 +224,7 @@ def answers_anyone(identity, cfg=None):
     nobody (allow_self counts for the owner's own identity). The ONE readiness rule — onboarding
     and the Events setup guide both read it, rather than each keeping a copy."""
     cfg = cfg if cfg is not None else load()
-    on = cfg.get("bot_enabled" if identity == BOT else "enabled")
+    on = identity_enabled(identity, cfg)          # the switch AND the token, like the poller
     listed = any(allow_ids(cfg, k) for k in allow_keys(identity))
     return bool(on and (listed or (identity == USER and cfg.get("allow_self"))))
 

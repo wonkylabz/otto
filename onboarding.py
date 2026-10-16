@@ -185,6 +185,11 @@ def _detect(key, mcps, connectors_checked=True):
         cfg = slack.load()
         names = {slack.USER: "as you", slack.BOT: "as a bot"}
         live = [i for i in slack.enabled_identities(cfg) if slack.answers_anyone(i, cfg)]
+        # Test mode alone answers only the owner's own self-DM — fine for trying it, not "set up".
+        listed = [i for i in live if any(slack.allow_ids(cfg, k) for k in slack.allow_keys(i))]
+        if live and not listed:
+            return False, "test mode only — it answers just your own self-DM; add an allowlist"
+        live = listed
         # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here;
         # a grant nobody has read yet is unknown, like the gh login and the connector cache.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
@@ -287,8 +292,13 @@ def apply(answers, expect):
     def _mut(d):
         d = d if isinstance(d, dict) else {}
         prev = d.get("answers") if isinstance(d.get("answers"), dict) else {}
-        # "keep" applies nothing, so it must not overwrite the record of what IS in force.
-        stored = {**a, "profile": prev["profile"]} if a["profile"] == "keep" and prev.get("profile") else a
+        # "keep" applies nothing, so it must not overwrite the record of what IS in force — nor,
+        # with nothing applied before, become a "last applied" profile itself.
+        stored = dict(a)
+        if a["profile"] == "keep":
+            stored.pop("profile")
+            if prev.get("profile"):
+                stored["profile"] = prev["profile"]
         return {"version": VERSION, "answers": stored, "completed_at": now}
     storage.mutate_json(_STATE, _mut, default={})
     return {"applied": sorted(changes)}
@@ -312,7 +322,7 @@ def skip(answers=None):
             if not isinstance(answers.get("integrations"), list):
                 draft.pop("integrations")
             prev = d.get("answers") if isinstance(d.get("answers"), dict) else {}
-            out["answers"] = {**({"profile": prev["profile"]} if "profile" in prev else {}), **draft}
+            out["answers"] = {**prev, **draft}      # unreached fields keep their stored value
         return out
     storage.mutate_json(_STATE, _mut, default={})
     return state()

@@ -2524,6 +2524,21 @@ class OnboardingTests(unittest.TestCase):
             got = self.ob.preview({"integrations": ["email"]}, [row])["integrations"][0]
             self.assertFalse(got["ready"], row)
 
+    def test_test_mode_alone_is_not_set_up(self):
+        import slack
+        self.assertFalse(self._slack({"enabled": True, "allow_self": True}, [slack.USER])["ready"])
+
+    def test_a_draft_keeps_the_stored_fields_it_never_reached(self):
+        self._apply({"usage": "work", "profile": "economic", "integrations": ["slack", "github"]})
+        self.ob.skip({"usage": "personal", "integrations": None})
+        st = self.ob.state()["answers"]
+        self.assertEqual(st["usage"], "personal")
+        self.assertEqual(st["integrations"], ["slack", "github"])
+
+    def test_keep_on_a_first_run_records_no_profile(self):
+        self._apply({"usage": "work", "profile": "keep"})
+        self.assertNotIn("profile", self.ob.state()["answers"])
+
     def test_a_listener_whose_token_lacks_a_scope_is_not_ready(self):
         import slack
         cfg = {"enabled": True, "allow_users": ["U1"]}
@@ -2589,10 +2604,14 @@ class OnboardingTests(unittest.TestCase):
 
     def test_slack_readiness_is_one_rule_in_slack(self):
         import slack
-        self.assertFalse(slack.answers_anyone(slack.USER, {"enabled": True}))
-        self.assertTrue(slack.answers_anyone(slack.USER, {"enabled": True, "allow_self": True}))
-        self.assertFalse(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "allow_self": True}))
-        self.assertTrue(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}))
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"), mock.patch.object(slack, "BOT_TOKEN", "xoxb-t"):
+            self.assertFalse(slack.answers_anyone(slack.USER, {"enabled": True}))
+            self.assertTrue(slack.answers_anyone(slack.USER, {"enabled": True, "allow_self": True}))
+            self.assertFalse(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "allow_self": True}))
+            self.assertTrue(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}))
+        with mock.patch.object(slack, "USER_TOKEN", ""):
+            self.assertFalse(slack.answers_anyone(slack.USER, {"enabled": True, "allow_users": ["U1"]}),
+                             "switched on without a token answers nobody")
         src = ui_src()
         self.assertIn("(d.answering||{}).user", src)
         self.assertNotIn("c.allow_self", src[src.index("let GUIDE=null"):], "a second copy of the rule")
@@ -2655,6 +2674,7 @@ class OnboardingTests(unittest.TestCase):
         with mock.patch.object(slack, "load", return_value=cfg), \
                 mock.patch.object(slack, "scope_gaps", return_value=gaps), \
                 mock.patch.object(slack, "enabled_identities", return_value=list(listening)), \
+                mock.patch.object(slack, "identity_enabled", side_effect=lambda i, c=None: i in listening), \
                 mock.patch.object(slack, "token_set", return_value=bool(listening)):
             return self.ob.preview({"integrations": ["slack"]},
                                    [{"name": "slack-admin", "enabled": True}])["integrations"][0]
@@ -2779,6 +2799,15 @@ class EventsSetupGuideTests(unittest.TestCase):
         for synced, form in (("gSlackSync(d)", "showSlackForm()"), ("BOARD_CFG=bc", "showBoardForm()"),
                              ("PRREV_CFG=pc", "showPrReviewForm()")):
             self.assertLess(g.index(synced), g.index(form), form)
+
+    def test_a_guide_closed_while_loading_stays_closed(self):
+        g = self.src[self.src.index("async function openGuide"):]
+        self.assertLess(g.index("if(gone()) return;"), g.index("guideRender()"))
+
+    def test_a_paused_poll_is_not_running(self):
+        g = self.src[self.src.index("function slackSteps"):self.src.index("const GUIDES=")]
+        self.assertIn("!poll.paused", g)
+        self.assertIn("!p.failing && !p.paused", g)
 
     def test_a_guide_never_writes_config_itself(self):
         g = self.src[self.src.index("let GUIDE=null"):]
