@@ -2542,24 +2542,52 @@ class OnboardingTests(unittest.TestCase):
         got = self.ob.preview({"integrations": ["email"]}, [], connectors_checked=False)
         self.assertIsNone(got["integrations"][0]["ready"])
 
-    def test_a_slack_tool_is_not_the_slack_listener(self):
+    def _slack(self, cfg, listening=()):
         import slack
-        mcps = [{"name": "slack-admin", "enabled": True}]
-        with mock.patch.object(slack, "token_set", return_value=False):
-            got = self.ob.preview({"integrations": ["slack"]}, mcps)["integrations"][0]
-        self.assertFalse(got["ready"])
-        with mock.patch.object(slack, "token_set", side_effect=lambda i=slack.USER: i == slack.USER), \
-                mock.patch.object(slack, "load", return_value={"enabled": True}):
-            got = self.ob.preview({"integrations": ["slack"]}, [])["integrations"][0]
-        self.assertTrue(got["ready"])
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "enabled_identities", return_value=list(listening)), \
+                mock.patch.object(slack, "token_set", return_value=bool(listening)):
+            return self.ob.preview({"integrations": ["slack"]},
+                                   [{"name": "slack-admin", "enabled": True}])["integrations"][0]
 
-    def test_github_needs_a_signed_in_gh_not_just_one_on_path(self):
+    def test_a_slack_tool_is_not_the_slack_listener(self):
+        self.assertFalse(self._slack({})["ready"], "an MCP server gives runs a tool, not an ingress")
+
+    def test_a_listener_with_an_empty_allowlist_answers_nobody(self):
+        import slack
+        self.assertFalse(self._slack({"enabled": True}, [slack.USER])["ready"])
+        self.assertTrue(self._slack({"enabled": True, "allow_users": ["U1 #me"]}, [slack.USER])["ready"])
+        self.assertTrue(self._slack({"bot_enabled": True, "bot_allow_channels": ["C1"]}, [slack.BOT])["ready"])
+
+    def _github(self, who):
         import pr_review
+        import workspace
         with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
-                mock.patch.object(pr_review, "viewer", return_value=None), \
-                mock.patch.object(registry, "projects", return_value=["/r"]):
-            got = self.ob.preview({"integrations": ["github"]})["integrations"][0]
-        self.assertFalse(got["ready"])
+                mock.patch.object(pr_review, "viewer_cached", return_value=who), \
+                mock.patch.object(pr_review, "viewer", side_effect=AssertionError("shells out")), \
+                mock.patch.object(workspace, "git_repos", return_value=[{"name": "r"}]):
+            return self.ob.preview({"integrations": ["github"]})["integrations"][0]
+
+    def test_github_needs_a_signed_in_gh_and_never_waits_on_one(self):
+        self.assertFalse(self._github("")["ready"])
+        self.assertIsNone(self._github(None)["ready"], "never asked yet is unknown, not missing")
+        self.assertTrue(self._github("octo")["ready"])
+
+    def test_apply_rederives_only_the_settings(self):
+        a = {"profile": "economic", "integrations": ["github", "slack"]}
+        fp = self.ob.preview({**a, "integrations": []})["fingerprint"]
+        with mock.patch.object(self.ob, "_detect", side_effect=AssertionError("apply detected")):
+            with self.assertRaises(self.ob.StalePreview):
+                self.ob.apply(a, fp)                   # answers are fingerprinted, detection isn't
+            self.ob.apply(a, self.ob._fingerprint(self.ob.normalize(a),
+                                                  self.ob._settings_plan("economic")))
+
+    def test_a_wizard_closed_before_answering_stores_no_choices(self):
+        self.ob.skip({"usage": "", "profile": "balanced", "integrations": None})
+        self.assertEqual(self.ob.state()["answers"], {})
+        self.ob.skip({"usage": "work", "profile": "economic", "integrations": None})
+        self.assertNotIn("integrations", self.ob.state()["answers"],
+                         "unreached integrations step must not read as 'none wanted'")
 
     def test_a_hosted_model_is_not_a_local_one(self):
         pool = {"pool": [{"name": "gpt", "provider": "openai", "kind": "hosted",
@@ -2569,11 +2597,13 @@ class OnboardingTests(unittest.TestCase):
         self.assertFalse(got["ready"])
 
     def test_a_dismissed_wizard_keeps_its_draft_answers(self):
-        self.ob.skip({"usage": "work", "profile": "economic", "integrations": "slack,email"})
+        self.ob.skip({"usage": "work", "profile": "economic", "integrations": ["slack"]})
         st = self.ob.state()
         self.assertFalse(st["auto_open"])
         self.assertEqual(st["answers"]["profile"], "economic")
-        self.assertEqual(st["answers"]["integrations"], [], "a non-list never substring-matches")
+        self.assertEqual(st["answers"]["integrations"], ["slack"])
+        self.assertEqual(self.ob.normalize({"integrations": "slack,email"})["integrations"], [],
+                         "a non-list never substring-matches")
 
     def test_the_wizard_never_covers_a_push_deep_link(self):
         init = ui_src()

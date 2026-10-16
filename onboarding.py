@@ -159,21 +159,30 @@ def _detect(key, mcps, connectors_checked=True):
     if key == "slack":
         # The INGRESS, not a tool: a Slack MCP server or connector lets a run post, but only a
         # token plus a switched-on identity makes Otto answer anyone.
+        # Slack's own rule for "listening", plus a non-empty allowlist: both lists empty means
+        # Otto answers nobody, which is "on" only on paper.
         import slack            # noqa: PLC0415 — slack pulls in Temporal-free but heavy imports
         cfg = slack.load()
-        on = [n for n, i, flag in (("as you", slack.USER, "enabled"), ("as a bot", slack.BOT, "bot_enabled"))
-              if slack.token_set(i) and cfg.get(flag)]
-        if on:
-            return True, "listening " + " and ".join(on)
+        names = {slack.USER: "as you", slack.BOT: "as a bot"}
+        live = [i for i in slack.enabled_identities(cfg)
+                if any(slack.allow_ids(cfg, k) for k in slack.allow_keys(i))
+                or (i == slack.USER and cfg.get("allow_self"))]
+        if live:
+            return True, "listening " + " and ".join(names[i] for i in live)
+        if slack.enabled_identities(cfg):
+            return False, "switched on, but its allowlist is empty — it answers nobody"
         toks = [n for n, i in (("user", slack.USER), ("bot", slack.BOT)) if slack.token_set(i)]
         return False, (f"{' and '.join(toks)} token set, listener off" if toks
                        else "no Slack token")
     if key == "github":
         import pr_review        # noqa: PLC0415
-        import registry         # noqa: PLC0415
+        import workspace        # noqa: PLC0415
         if not shutil.which("gh"):
             return False, "`gh` not on PATH"
-        who, repos = pr_review.viewer(), len(registry.projects())
+        # The CACHED login only: resolving it is a `gh api` call of up to 30s.
+        who, repos = pr_review.viewer_cached(), len(workspace.git_repos())
+        if who is None:
+            return None, "sign-in not checked yet — the Events tab's GitHub card checks it"
         if not who:
             return False, "`gh` is installed but not signed in"
         if not repos:
@@ -205,19 +214,24 @@ def _integrations_plan(wants, mcps, connectors_checked=True):
     return out
 
 
+def _fingerprint(a, settings):
+    changes = [{"name": s["name"], "after": s["after"]} for s in settings if s["action"] == "set"]
+    return hashlib.sha256(json.dumps({"answers": a, "changes": changes}, sort_keys=True,
+                                     default=str).encode()).hexdigest()[:16]
+
+
 def _plan(answers, mcps, connectors_checked=True):
     a = normalize(answers)
     settings = _settings_plan(a["profile"])
-    changes = [{"name": s["name"], "after": s["after"]} for s in settings if s["action"] == "set"]
-    fp = hashlib.sha256(json.dumps({"answers": a, "changes": changes}, sort_keys=True,
-                                   default=str).encode()).hexdigest()[:16]
+    fp = _fingerprint(a, settings)
     notes = []
     if a["profile"] == "economic":
         notes.append("Biggest further saving: route cheap phases (routing, clarify, memory) to a "
                      "smaller or local model in Admin → Models.")
     if any(s["action"] == "pinned" for s in settings):
-        notes.append("Some settings are pinned by an environment variable and won't change until "
-                     "it is removed from .env.")
+        notes.append("Some settings are pinned by an environment variable and keep that value. "
+                     "To use this profile's instead, remove them from .env, restart, and run "
+                     "Setup again.")
     return {"answers": a, "fingerprint": fp, "settings": settings,
             "integrations": _integrations_plan(a["integrations"], mcps, connectors_checked),
             "notes": notes}
@@ -228,19 +242,21 @@ def preview(answers, mcps=(), connectors_checked=True):
     return _plan(answers, list(mcps), connectors_checked)
 
 
-def apply(answers, expect, mcps=(), connectors_checked=True):
+def apply(answers, expect):
     """Write the settings `preview` showed and record the answers. Raises StalePreview when the
-    install changed in between."""
-    plan = _plan(answers, list(mcps), connectors_checked)
-    if plan["fingerprint"] != expect:
+    install changed in between. Only the SETTINGS are re-derived — the fingerprint covers nothing
+    else, so integration detection is the preview's alone."""
+    a = normalize(answers)
+    settings = _settings_plan(a["profile"])
+    if _fingerprint(a, settings) != expect:
         raise StalePreview("settings changed since the preview — review again")
-    changes = {s["name"]: s["after"] for s in plan["settings"] if s["action"] == "set"}
+    changes = {s["name"]: s["after"] for s in settings if s["action"] == "set"}
     if changes:
         config.save_settings(changes)
     now = time.time()
-    storage.mutate_json(_STATE, lambda d: {"version": VERSION, "answers": plan["answers"],
+    storage.mutate_json(_STATE, lambda d: {"version": VERSION, "answers": a,
                                            "completed_at": now}, default={})
-    return {"applied": sorted(changes), "plan": plan}
+    return {"applied": sorted(changes)}
 
 
 def skip(answers=None):
@@ -251,8 +267,13 @@ def skip(answers=None):
     def _mut(d):
         d = d if isinstance(d, dict) else {}
         out = {**d, "version": VERSION, "skipped_at": now}
-        if answers is not None:
-            out["answers"] = normalize(answers)
+        # Keep only what was actually answered: a draft closed on the welcome step must not
+        # store "personal" as a choice, nor [] as a deliberate "no integrations".
+        if isinstance(answers, dict) and answers.get("usage") in USAGES:
+            draft = normalize(answers)
+            if not isinstance(answers.get("integrations"), list):
+                draft.pop("integrations")
+            out["answers"] = draft
         return out
     storage.mutate_json(_STATE, _mut, default={})
     return state()

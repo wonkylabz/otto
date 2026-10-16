@@ -154,8 +154,10 @@ function guideAction(a){
   if(a==="act"){
     const s=g.steps(GUIDE.ctx,GUIDE.choice)[GUIDE.step-1], key=GUIDE.key;
     closeFormModal();
-    s.act.run();
+    // Armed BEFORE the form opens: an opener that throws part-way still leaves a way back.
     if(!s.act.leaves) afterFormModal(()=>openGuide(key));   // resume on the first undone step
+    try { s.act.run(); }
+    catch(e){ toast("couldn't open that form: "+e.message); closeFormModal(); }
   }
 }
 

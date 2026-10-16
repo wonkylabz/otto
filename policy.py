@@ -572,6 +572,12 @@ def _mcp_status(allow_refresh=False, force=False):
     return cached
 
 
+def connectors_polled():
+    """Whether `claude mcp list` has EVER filled the connector cache. Never refreshes it: an
+    unfilled cache means "not known yet", not "no connectors"."""
+    return bool(_mcp_status().get("at"))
+
+
 def discover_connectors(allow_refresh=False, force=False, status=None):
     """Connected claude.ai connectors (Gmail, Slack, Calendar, …). They live in the Claude
     account, NOT in ~/.claude.json, so `discover_mcps()` can't see them — only `claude mcp

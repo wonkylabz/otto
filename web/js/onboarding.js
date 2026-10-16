@@ -25,7 +25,7 @@ async function openOnboarding(meta){
   if(!meta){ try { meta=await getJSON("/api/onboarding"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
   const prev=meta.answers||{};
   OB={meta, step:0, seq:0, done:false, answers:{usage:prev.usage||"", profile:prev.profile||"balanced",
-                                                 integrations:prev.integrations||null}};
+                                                 integrations:Array.isArray(prev.integrations)?prev.integrations:null}};
   obRender();
   // Any way out that isn't Apply — X, Esc, "Just the tour", an integration's Open — counts as
   // dismissed, keeping the draft answers: otherwise every page load reopens it on someone who
@@ -176,9 +176,11 @@ function endTour(){
   document.removeEventListener("keydown", tourKey);
 }
 function tourKey(e){
+  // Arrow keys inside a field move its caret, not the tour.
+  const t=e.target; if(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
   if(e.key==="Escape") endTour();
-  else if(e.key==="ArrowRight") tourStep(1);
-  else if(e.key==="ArrowLeft") tourStep(-1);
+  else if(e.key==="ArrowRight"){ e.preventDefault(); tourStep(1); }
+  else if(e.key==="ArrowLeft"){ e.preventDefault(); tourStep(-1); }
 }
 // Skip a target that isn't on screen (a hidden mascot, a collapsed header at phone width).
 function tourVisible(s){ const el=document.querySelector(s.sel); return el && el.getClientRects().length && !el.closest("[hidden]") ? el : null; }
@@ -199,7 +201,9 @@ function tourPlace(){
   const r=el.getBoundingClientRect(), pad=6;
   Object.assign(spot.style,{left:(r.left-pad)+"px", top:(r.top-pad)+"px", width:(r.width+2*pad)+"px", height:(r.height+2*pad)+"px"});
   const last=!TOUR.slice(TOUR_I+1).some(tourVisible);
-  tip.innerHTML=`<h4>${esc(s.t)}</h4>${esc(s.b)}<div class="obnav"><span class="obcount">${TOUR_I+1} / ${TOUR.length}</span>
+  // Count only the steps this screen can show, so the tour ends on "N / N".
+  const shown=TOUR.filter(tourVisible), pos=shown.indexOf(s)+1;
+  tip.innerHTML=`<h4>${esc(s.t)}</h4>${esc(s.b)}<div class="obnav"><span class="obcount">${pos} / ${shown.length}</span>
     <button class="btn sm decline" data-t="end">${last?"Close":"Skip tour"}</button>${TOUR_I>0?'<button class="btn sm revise" data-t="back">Back</button>':""}
     ${last?"":'<button class="btn sm approve" data-t="next">Next</button>'}</div>`;
   tip.querySelectorAll("[data-t]").forEach(b=>b.addEventListener("click",()=>{

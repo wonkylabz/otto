@@ -196,6 +196,14 @@ def viewer():
     return viewer._cache or None
 
 
+def viewer_cached():
+    """The login `viewer()` has already resolved: the login, "" after a recent failure, or None
+    when it was never asked. Never runs `gh` — for a caller a spinner is waiting on."""
+    if getattr(viewer, "_cache", None):
+        return viewer._cache
+    return "" if time.time() - _viewer_failed < _VIEWER_RETRY_S else None
+
+
 def _parse_search(data, cfg, me=None):
     """Normalize `gh search prs --json …` output into [{repo, number, title, url, author,
     draft, updated}], applying the config's filters. Pure (unit-tested)."""

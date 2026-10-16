@@ -2731,13 +2731,12 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/onboarding/preview — the settings diff + integration checklist for `answers`.
         MCPs are the CACHED listing: the wizard waits on this, so it must never shell out."""
         self._send(200, json.dumps({"ok": True, **onboarding.preview(
-            body.get("answers"), policy.all_mcps(POLICY), _connectors_checked())}))
+            body.get("answers"), policy.all_mcps(POLICY), policy.connectors_polled())}))
 
     def _post_onboarding_apply(self, body):
         """POST /api/onboarding/apply — applies only the plan its `expect` fingerprint names."""
         try:
-            out = onboarding.apply(body.get("answers"), body.get("expect") or "",
-                                   policy.all_mcps(POLICY), _connectors_checked())
+            out = onboarding.apply(body.get("answers"), body.get("expect") or "")
         except onboarding.StalePreview as e:
             self._send(409, json.dumps({"error": str(e)})); return
         self._send(200, json.dumps({"ok": True, **out}))
@@ -2875,12 +2874,6 @@ class Handler(BaseHTTPRequestHandler):
 # POST dispatch. Built from Handler's methods rather than a 52-branch `elif` chain:
 # the chain was 193 branches in one function, and a route's position in it was load-
 # bearing (an exact match had to precede every prefix match). Exact wins, then prefix.
-def _connectors_checked():
-    """Whether `claude mcp list` has EVER filled the connector cache. Read, never refreshed: the
-    onboarding preview must not shell out, and an unfilled cache is "unknown", not "none"."""
-    return bool(policy._mcp_status().get("at"))
-
-
 _POST_ROUTES = {
     "/login": Handler._post_login,
     "/api/login-link": Handler._post_login_link,
