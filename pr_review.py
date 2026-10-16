@@ -186,13 +186,13 @@ def viewer():
     # up — returned None for the worker's whole life, and `_parse_search` needs a viewer to
     # apply `skip_own`: the toggle read as on and silently did nothing (#47).
     global _viewer_failed, _viewer_asked
-    _viewer_asked = True
     if getattr(viewer, "_cache", None):
         return viewer._cache
     if time.time() - _viewer_failed < _VIEWER_RETRY_S:
         return None
     rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
     viewer._cache = out.strip() if rc == 0 else ""
+    _viewer_asked = True       # only once ANSWERED: a lookup in flight is not a failed one
     if not viewer._cache:
         _viewer_failed = time.time()
     return viewer._cache or None

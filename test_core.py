@@ -2503,7 +2503,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(self.ob.normalize({})["profile"], "keep")
         self.assertEqual(self._apply({})["applied"], [])
         self.assertEqual(config.setting("max_attempts"), 5)
-        self.assertIn('profile:prev.profile||"keep"', ui_src())
+        self.assertIn('profile:"keep"', ui_src(), "a re-run must not preselect an old profile")
 
     def test_no_profile_turns_off_route_or_judge_resampling(self):
         for key in self.ob.PROFILES:
@@ -2526,9 +2526,31 @@ class OnboardingTests(unittest.TestCase):
 
     def test_a_listener_whose_token_lacks_a_scope_is_not_ready(self):
         import slack
-        with mock.patch.object(slack, "scope_gaps", return_value={"missing": [("im:history", "x")]}):
-            got = self._slack({"enabled": True, "allow_users": ["U1"]}, [slack.USER])
+        cfg = {"enabled": True, "allow_users": ["U1"]}
+        got = self._slack(cfg, [slack.USER], {"missing": [("im:history", "x")], "known": True})
         self.assertFalse(got["ready"])
+        got = self._slack(cfg, [slack.USER], {"missing": [], "known": False})
+        self.assertIsNone(got["ready"], "a grant nobody has read is unknown, not fine")
+
+    def test_documentation_lookup_servers_are_not_docs_or_mail(self):
+        for name, key in (("aws-docs", "docs"), ("claude_ai_Claude_Docs", "docs"), ("mailgun", "email")):
+            got = self.ob.preview({"integrations": [key]}, [{"name": name}])["integrations"][0]
+            self.assertFalse(got["ready"], name)
+        got = self.ob.preview({"integrations": ["docs"]}, [{"name": "claude_ai_Notion"}])
+        self.assertTrue(got["integrations"][0]["ready"])
+
+    def test_a_gh_lookup_in_flight_is_not_a_failed_one(self):
+        import pr_review
+        seen = []
+        def slow(*a, **k):
+            seen.append(pr_review.viewer_cached())
+            return 0, "octo\n", ""
+        with mock.patch.object(pr_review, "_run", side_effect=slow), \
+                mock.patch.object(pr_review, "_viewer_asked", False), \
+                mock.patch.object(pr_review, "_viewer_failed", 0.0), \
+                mock.patch.object(pr_review.viewer, "_cache", None, create=True):
+            self.assertEqual(pr_review.viewer(), "octo")
+        self.assertEqual(seen, [None])
 
     def test_a_failed_gh_lookup_stays_failed_after_its_retry_window(self):
         import pr_review
@@ -2588,9 +2610,11 @@ class OnboardingTests(unittest.TestCase):
         got = self.ob.preview({"integrations": ["email"]}, [], connectors_checked=False)
         self.assertIsNone(got["integrations"][0]["ready"])
 
-    def _slack(self, cfg, listening=()):
+    def _slack(self, cfg, listening=(), gaps=None):
         import slack
+        gaps = gaps or {"missing": [], "optional": [], "known": True}
         with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "scope_gaps", return_value=gaps), \
                 mock.patch.object(slack, "enabled_identities", return_value=list(listening)), \
                 mock.patch.object(slack, "token_set", return_value=bool(listening)):
             return self.ob.preview({"integrations": ["slack"]},
@@ -2701,6 +2725,8 @@ class EventsSetupGuideTests(unittest.TestCase):
         self.assertIn("FORM_MODAL_THEN", close, "the one-shot hook must fire on every close")
         opened = self.src[self.src.index("function openFormModal"):self.src.index("function closeFormModal")]
         self.assertIn("FORM_MODAL_THEN=null", opened, "a hook must not survive into the next modal")
+        self.assertIn("FORM_MODAL_SESSION++", opened)
+        self.assertIn("sess===FORM_MODAL_SESSION", close, "a modal opened meanwhile must win")
         self.assertIn("afterFormModal(()=>openGuide(key))", self.src)
 
     def test_the_slack_scopes_come_from_the_table_scope_gaps_checks(self):

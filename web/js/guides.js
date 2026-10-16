@@ -111,7 +111,9 @@ const GUIDES={
 
 async function openGuide(key, keepStep){
   const g=GUIDES[key];
-  let ctx; try { ctx=await g.load(); } catch(e){ toast("couldn't load the "+key+" guide: "+e.message); return; }
+  // The GitHub checks can wait on `gh` the first time; say so instead of a dead click.
+  openFormModal(`<b>${esc(g.title)}</b>`).innerHTML=`<p class="obsub">Checking this install…</p>`;
+  let ctx; try { ctx=await g.load(); } catch(e){ closeFormModal(); toast("couldn't load the "+key+" guide: "+e.message); return; }
   let choice=(GUIDE&&GUIDE.key===key&&GUIDE.choice)||guideChoiceRead(key);
   if(Array.isArray(choice) && !choice.length) choice=null;   // nothing ticked is no choice yet
   GUIDE={key, ctx, choice, step:0};

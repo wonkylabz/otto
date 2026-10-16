@@ -19,7 +19,9 @@ async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   if(!meta){ try { meta=await getJSON("/api/onboarding"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
   const prev=meta.answers||{};
-  OB={meta, step:0, seq:0, done:false, answers:{usage:prev.usage||"", profile:prev.profile||"keep",
+  // Always preselect "keep": a re-run (or a VERSION bump's auto-open) clicked straight through
+  // must not re-apply an old profile over what was tuned in Admin since. The last one is named.
+  OB={meta, step:0, seq:0, done:false, lastProfile:prev.profile||"", answers:{usage:prev.usage||"", profile:"keep",
                                                  integrations:Array.isArray(prev.integrations)?prev.integrations:null}};
   obRender();
 }
@@ -52,7 +54,8 @@ function obRender(){
     html=`<p class="obq">What will you use Otto for?</p><p class="obsub">This picks which integrations are suggested next. It never changes how a run behaves.</p>
       <div class="obopts">${m.usages.map(u=>opt("radio","ob-usage",u,u[0].toUpperCase()+u.slice(1),sub[u],a.usage===u)).join("")}</div>`;
   } else if(step==="profile"){
-    html=`<p class="obq">How should Otto trade cost against quality?</p><p class="obsub">Each profile sets the retry, second-opinion and effort knobs in Admin → Runtime settings. You can fine-tune them there later.</p>
+    const last=m.profiles.find(p=>p.key===OB.lastProfile);
+    html=`<p class="obq">How should Otto trade cost against quality?</p><p class="obsub">Each profile sets the retry, review and effort knobs in Admin → Runtime settings. You can fine-tune them there later.${last?` Last applied: <b>${esc(last.label)}</b>.`:""}</p>
       <div class="obopts">${m.profiles.map(p=>opt("radio","ob-profile",p.key,p.label,p.blurb,a.profile===p.key)).join("")}</div>`;
   } else if(step==="integrations"){
     if(!a.integrations) a.integrations=m.integrations.filter(i=>i.default_for.includes(a.usage)).map(i=>i.key);

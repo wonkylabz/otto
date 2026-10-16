@@ -68,19 +68,21 @@ PROFILES = {
 # What each use needs connected. `match` is tested against every MCP server/connector name Otto
 # can see; `where` is the screen that sets it ({tab, sect} → the UI's data-sect).
 INTEGRATIONS = {
+    # No `match`: a Slack MCP server gives runs a tool, never the ingress (see _detect).
     "slack":    {"label": "Slack", "default_for": ("work", "both"),
-                 "match": r"slack", "where": {"tab": "events", "sect": "ev-slack"},
+                 "where": {"tab": "events", "sect": "ev-slack"},
                  "hint": "Add a Slack user or bot token (setup_wizard.py or .env), then switch the "
                          "listener on in Events → Slack."},
     "email":    {"label": "Email", "default_for": ("personal", "work", "both"),
-                 "match": r"gmail|outlook|e-?mail|\bmail", "where": {"tab": "admin", "sect": "mcp"},
+                 "match": r"gmail|outlook|\be-?mail\b", "where": {"tab": "admin", "sect": "mcp"},
                  "hint": "Connect Gmail (or another mail connector) in claude.ai → Settings → "
                          "Connectors; Otto inherits it. Runs on a local model can't use it."},
     "calendar": {"label": "Calendar", "default_for": ("personal", "both"),
                  "match": r"calendar", "where": {"tab": "admin", "sect": "mcp"},
                  "hint": "Connect Google Calendar in claude.ai → Settings → Connectors."},
     "docs":     {"label": "Docs & notes", "default_for": (),
-                 "match": r"notion|drive|docs|confluence|obsidian",
+                 # Not bare "docs": that is every documentation-LOOKUP server (aws-docs, …).
+                 "match": r"notion|google.?(drive|docs)|\bdrive\b|confluence|obsidian",
                  "where": {"tab": "admin", "sect": "mcp"},
                  "hint": "Connect Notion/Drive in claude.ai, or add a stdio server in Admin → "
                          "MCP servers."},
@@ -181,12 +183,17 @@ def _detect(key, mcps, connectors_checked=True):
         live = [i for i in slack.enabled_identities(cfg)
                 if any(slack.allow_ids(cfg, k) for k in slack.allow_keys(i))
                 or (i == slack.USER and cfg.get("allow_self"))]
-        # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here.
-        short = [i for i in live if slack.scope_gaps(i, cfg, cached_only=True)["missing"]]
+        # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here;
+        # a grant nobody has read yet is unknown, like the gh login and the connector cache.
+        gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
+        short = [i for i in live if gaps[i]["missing"]]
         if short:
-            return False, f"listening {names[short[0]]}, but the token is missing scopes — see Events → Slack"
+            return False, f"set up {names[short[0]]}, but the token is missing scopes — see Events → Slack"
+        if any(not g["known"] for g in gaps.values()):
+            return None, "token scopes not checked yet — the Events tab's Slack card checks them"
         if live:
-            return True, "listening " + " and ".join(names[i] for i in live)
+            # Config, not liveness: whether the poll is running is the Events card's to say.
+            return True, "set up " + " and ".join(names[i] for i in live)
         if slack.enabled_identities(cfg):
             return False, "switched on, but its allowlist is empty — it answers nobody"
         toks = [n for n, i in (("user", slack.USER), ("bot", slack.BOT)) if slack.token_set(i)]
@@ -195,14 +202,12 @@ def _detect(key, mcps, connectors_checked=True):
     if key == "github":
         import pr_review        # noqa: PLC0415
         import registry         # noqa: PLC0415
-        import repos as repos_  # noqa: PLC0415
         if not shutil.which("gh"):
             return False, "`gh` not on PATH"
         # The CACHED login only: resolving it is a `gh api` call of up to 30s. Repos are counted
-        # from the filesystem, no `git` spawned: a checkout, or a managed clone (maybe pending).
+        # from the filesystem, no `git` spawned, by the same `.git` test workspace.git_repos uses.
         who = pr_review.viewer_cached()
-        repos = sum(1 for p in registry.projects()
-                    if os.path.isdir(os.path.join(p, ".git")) or repos_.is_managed(p))
+        repos = sum(1 for p in registry.projects() if os.path.isdir(os.path.join(p, ".git")))
         if who is None:
             return None, "sign-in not checked yet — the Events tab's GitHub card checks it"
         if not who:
