@@ -1629,8 +1629,8 @@ class Handler(BaseHTTPRequestHandler):
                 "bot_scopes": slack.scope_gaps(slack.BOT),
                 # The scopes the setup guide tells the operator to add — served from the table
                 # scope_gaps checks against, so the guide can't drift from what is enforced.
-                "scope_catalog": {k: [[sc, why] for sc, (why, _when) in slack._SCOPES[i].items()]
-                                  for k, i in (("user", slack.USER), ("bot", slack.BOT))},
+                "scope_catalog": {k: slack.scope_catalog(i) for k, i in
+                                  (("user", slack.USER), ("bot", slack.BOT))},
                 "socket": slack_socket.status(),   # instant delivery for the bot, if configured
                 "poll": slack.poll_status() if TEMPORAL_OK else {"exists": False},
                 "caps": [c.name for c in CAPS if c.enabled],  # for the optional pinned-cap picker
@@ -2731,7 +2731,7 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/onboarding/preview — the settings diff + integration checklist for `answers`.
         MCPs are the CACHED listing: the wizard waits on this, so it must never shell out."""
         self._send(200, json.dumps({"ok": True, **onboarding.preview(
-            body.get("answers"), policy.all_mcps(POLICY), policy.connectors_polled())}))
+            body.get("answers"), *_mcps_and_polled())}))
 
     def _post_onboarding_apply(self, body):
         """POST /api/onboarding/apply — applies only the plan its `expect` fingerprint names."""
@@ -2869,6 +2869,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass  # engine.trace() already prints a readable trace
+
+
+def _mcps_and_polled():
+    """The MCP listing and whether its connector half was ever polled, from ONE cache read — two
+    reads could straddle an Admin recheck and describe different listings."""
+    status = policy.mcp_status_cached()
+    return policy.all_mcps(POLICY, status=status), policy.connectors_polled(status)
 
 
 # POST dispatch. Built from Handler's methods rather than a 52-branch `elif` chain:

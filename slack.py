@@ -387,6 +387,20 @@ def granted_scopes(identity=USER, refresh=False):
     return out
 
 
+def _scope_needed(gate, cfg):
+    """A scope is needed unless the feature it serves is switched off. ONE rule for both what
+    scope_gaps reports and what the setup guide asks for, so the two can't disagree."""
+    return gate is True or cfg.get(gate) is not False
+
+
+def scope_catalog(identity=USER, cfg=None):
+    """[(scope, why)] this identity needs for what it is configured to watch — what the Events
+    setup guide tells the operator to add."""
+    cfg = cfg if cfg is not None else load()
+    return [(s, why) for s, (why, gate) in sorted(_SCOPES.get(identity, {}).items())
+            if _scope_needed(gate, cfg)]
+
+
 def scope_gaps(identity=USER, cfg=None):
     """What this identity cannot do with the scopes it has, given what it's configured to watch.
 
@@ -402,7 +416,7 @@ def scope_gaps(identity=USER, cfg=None):
     for scope, (why, gate) in sorted(_SCOPES.get(identity, {}).items()):
         if scope in granted:
             continue
-        if gate is not True and cfg.get(gate) is False:
+        if not _scope_needed(gate, cfg):
             continue                      # that feature is off, so the scope isn't needed
         (optional if scope in _OPTIONAL_SCOPES.get(identity, set()) else missing).append(
             (scope, why))
@@ -411,7 +425,7 @@ def scope_gaps(identity=USER, cfg=None):
         # A scope whose feature is switched off is not worth a note either — the same reason the
         # required loop skips it. Reported anyway, it is a line about a feature the operator has
         # already decided against, sitting next to the ones that matter.
-        if spec and spec[1] is not True and cfg.get(spec[1]) is False:
+        if spec and not _scope_needed(spec[1], cfg):
             continue
         why = (spec or ("private channels / group DMs",))[0]
         if (scope, why) not in optional and scope not in dict(missing):

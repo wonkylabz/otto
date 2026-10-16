@@ -44,11 +44,11 @@ function slackSteps(d, ident){
   if(user) out.push({t:"Choose who Otto answers as you", done:!!c.enabled && (gIds(c.allow_users)+gIds(c.allow_channels)>0 || !!c.allow_self),
     b:`Otto only answers people and channels on the allowlist — <b>both empty means nobody</b>. Add Slack member IDs (profile → ⋮ → <i>Copy member ID</i>) and/or channel IDs (the ${gCode("C…")} part of a channel link), tick <b>Enabled</b> and save. Writes still wait for your approval on the Board unless you change that.`+
       `<p class="obsub">Trying it alone? <b>Test mode</b> lets your own self-DM trigger a run — turn it off on a real workspace.</p>`,
-    act:{label:"Open Auto-answer settings", run:()=>showSlackForm()}});
+    act:{label:"Open Auto-answer settings", run:()=>{ gSlackSync(d); showSlackForm(); }}});
   if(bot) out.push({t:"Choose where the bot answers", done:!!c.bot_enabled && gIds(c.bot_allow_users)+gIds(c.bot_allow_channels)>0,
     b:`List the channels the bot may answer in and the people who may DM it, tick <b>Enabled</b> and save. A listed channel still needs the bot <b>invited</b> to it: type ${gCode("/invite @Otto")} there.`+
       `<p class="obsub"><b>Approvers</b> are a separate list on purpose — who may ask is not who may approve a write.</p>`,
-    act:{label:"Open Bot user settings", run:()=>showSlackBotForm()}});
+    act:{label:"Open Bot user settings", run:()=>{ gSlackSync(d); showSlackBotForm(); }}});
   out.push({t:"Check it's listening", done:!!d.temporal && !!poll.exists && !poll.failing,
     b:(!d.temporal?`<div class="obnote">Temporal isn't running — start Otto with ${gCode("./run.sh")}.</div>`:"")+
       (d.temporal && !poll.exists?`<div class="obnote">No poll schedule yet — restart Otto to create it.</div>`:"")+
@@ -58,23 +58,27 @@ function slackSteps(d, ident){
   return out;
 }
 
+/* The card forms save {...<their global>, ...their own fields}. Hand them the config THIS guide
+   just read, or a card that failed or is still loading posts {} and wipes the other identity's keys. */
+function gSlackSync(d){ SLACK_CFG=d.config||{}; SLACK_CAPS=d.caps||[]; }
+
 function githubSteps(ctx, feats){
   const {pr, board, repos}=ctx, bc=(board.config||{}), pc=(pr.config||{});
   const out=[{t:"Sign in the GitHub CLI", done:!!pr.viewer,
-    b:`Otto talks to GitHub through ${gCode("gh")}, as whoever it is logged in as. Install it and run ${gCode("gh auth login")} on the machine Otto runs on`+
-      (feats.includes("board")?`, then ${gCode("gh auth refresh -h github.com -s project")} — the board queue needs the ${gCode("project")} scope`:"")+`.`+
+    b:`Otto talks to GitHub through ${gCode("gh")}, as whoever it is logged in as. Install it and run ${gCode("gh auth login")} on the machine Otto runs on.`+
       (pr.viewer?`<p class="obsub">Signed in as <b>${esc(pr.viewer)}</b>.</p>`:`<p class="obsub">Restart Otto after signing in, then press Re-check.</p>`)}];
   if(feats.includes("board")){
     out.push({t:"Prepare a project board", done:!!bc.project,
-      b:`Create a GitHub <b>Project</b> (the new Projects, not classic) with a Status field holding the columns ${["Ready","In Progress","Review","Done","Blocked"].map(gCode).join(", ")}. Moving a card to <b>Ready</b> is what approves it to run, so only people you trust should be able to move cards there.`});
+      b:`Create a GitHub <b>Project</b> (the new Projects, not classic) with a Status field holding the columns ${["Ready","In Progress","Review","Done","Blocked"].map(gCode).join(", ")}. Moving a card to <b>Ready</b> is what approves it to run, so only people you trust should be able to move cards there.`+
+        `<p class="obsub">Reading a board needs the ${gCode("project")} scope, which ${gCode("gh auth login")} doesn't grant: run ${gCode("gh auth refresh -h github.com -s project")}. Otto can't see the scope without calling GitHub, so this step can't check it — if the Board queue card says the board is unreachable, this is why.</p>`});
     out.push({t:"Connect the board", done:!!bc.project && !!bc.enabled,
       b:`Paste the board's URL (${gCode("https://github.com/orgs/<org>/projects/<n>")}), check the column names match yours, tick <b>Enabled</b> and save.`+
         `<p class="obsub">Labels can pin a card to a capability; the <b>repo-edit</b> label makes it run in a clone and open a PR.</p>`,
-      act:{label:"Open Board queue settings", run:()=>showBoardForm()}});
+      act:{label:"Open Board queue settings", run:()=>{ BOARD_CFG=bc; BOARD_CAPS=board.caps||[]; BOARD_URL=board.url||""; showBoardForm(); }}});
   }
   if(feats.includes("pr")) out.push({t:"Review the PRs that ask for you", done:!!pc.enabled,
     b:`When a pull request requests <b>your</b> review, Otto reviews it read-only and parks the review in a chat thread for you to read. Nothing reaches GitHub until you press post${pc.auto_post?" — <b>auto-post is ON</b>, so reviews currently publish without a click":""}. Pick which repos it watches, tick <b>Enabled</b> and save.`,
-    act:{label:"Open PR review settings", run:()=>showPrReviewForm()}});
+    act:{label:"Open PR review settings", run:()=>{ PRREV_CFG=pc; PRREV_CAPS=pr.caps||[]; PRREV_REPOS=pr.known_repos||[]; showPrReviewForm(); }}});
   if(feats.includes("repos")) out.push({t:"Register the repos Otto may change", done:(repos||[]).length>0,
     b:`Board tickets and chat requests that edit code run in an isolated clone of a <b>registered</b> repo and come back as a draft PR. Register each repo in <b>Admin → Project repos</b>.`+
       ((repos||[]).length?`<p class="obsub">Registered: ${repos.map(r=>gCode(r.name)).join(", ")}.</p>`:""),
@@ -108,7 +112,8 @@ const GUIDES={
 async function openGuide(key, keepStep){
   const g=GUIDES[key];
   let ctx; try { ctx=await g.load(); } catch(e){ toast("couldn't load the "+key+" guide: "+e.message); return; }
-  const choice=(GUIDE&&GUIDE.key===key&&GUIDE.choice)||guideChoiceRead(key);
+  let choice=(GUIDE&&GUIDE.key===key&&GUIDE.choice)||guideChoiceRead(key);
+  if(Array.isArray(choice) && !choice.length) choice=null;   // nothing ticked is no choice yet
   GUIDE={key, ctx, choice, step:0};
   if(choice){
     // Resume where the work is: the first undone step (or stay put on a re-check).
@@ -121,7 +126,7 @@ async function openGuide(key, keepStep){
 function guideRender(){
   const g=GUIDES[GUIDE.key], body=openFormModal(`<b>${esc(g.title)}</b>`);
   body.closest(".modalBox").classList.add("wideModalBox");
-  if(GUIDE.step===0 || !GUIDE.choice){
+  if(GUIDE.step===0 || !GUIDE.choice || (g.multi && !GUIDE.choice.length)){
     const sel=v=>g.multi ? (GUIDE.choice||[]).includes(v) : GUIDE.choice===v;
     body.innerHTML=`<p class="obq">${esc(g.choices.q)}</p><p class="obsub">The guide checks each step against this install, so steps you've already done show as done.</p>
       <div class="obopts">${g.choices.opts.map(([v,l,s])=>`<label class="obopt${sel(v)?' sel':''}"><input type="${g.multi?'checkbox':'radio'}" name="gd-pick" value="${esc(v)}"${sel(v)?' checked':''}><b>${esc(l)}</b><span>${esc(s)}</span></label>`).join("")}</div>

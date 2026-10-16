@@ -22,9 +22,10 @@ async function initOnboarding(){
 }
 
 async function openOnboarding(meta){
+  endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   if(!meta){ try { meta=await getJSON("/api/onboarding"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
   const prev=meta.answers||{};
-  OB={meta, step:0, seq:0, done:false, answers:{usage:prev.usage||"", profile:prev.profile||"balanced",
+  OB={meta, step:0, seq:0, done:false, answers:{usage:prev.usage||"", profile:prev.profile||"keep",
                                                  integrations:Array.isArray(prev.integrations)?prev.integrations:null}};
   obRender();
   // Any way out that isn't Apply — X, Esc, "Just the tour", an integration's Open — counts as
@@ -119,8 +120,9 @@ async function obReview(){
   const rows=p.settings.map(s=>`<tr><td><code>${esc(s.name)}</code></td><td>${esc(obFmt(s.before))}</td><td>${esc(obFmt(s.after))}</td><td>${label[s.action]}${s.action==="pinned"?` <code>${esc(s.env)}</code>`:""}</td></tr>`).join("");
   const ints=p.integrations.map(i=>`<div class="obint"><span class="obmark ${i.ready?'ok':'no'}">${i.ready?"&#10003;":i.ready===null?"?":"!"}</span>
       <div class="obtext"><b>${esc(i.label)}</b> — ${esc(i.detail)}${i.hint?`<br>${esc(i.hint)}`:""}</div>
-      <button class="btn sm revise" data-goto="${esc(i.where.tab)}" data-sect="${esc(i.where.sect)}">Open</button></div>`).join("");
-  box.innerHTML=`<table class="obtable"><tr><th>Setting</th><th>Now</th><th>${esc(p.answers.profile)}</th><th></th></tr>${rows}</table>`+
+      ${i.where?`<button class="btn sm revise" data-goto="${esc(i.where.tab)}" data-sect="${esc(i.where.sect)}">Open</button>`:""}</div>`).join("");
+  box.innerHTML=(rows?`<table class="obtable"><tr><th>Setting</th><th>Now</th><th>${esc(p.answers.profile)}</th><th></th></tr>${rows}</table>`
+                     :`<p class="obsub">Your runtime settings stay exactly as they are.</p>`)+
     (ints?`<p class="obq">Integrations</p>${ints}`:`<p class="obsub">No integrations picked — Otto still works from chat with its built-in capabilities.</p>`)+
     p.notes.map(n=>`<div class="obnote">${esc(n)}</div>`).join("");
   box.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>obGoto(b.dataset.goto,b.dataset.sect)));

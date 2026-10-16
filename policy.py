@@ -572,10 +572,15 @@ def _mcp_status(allow_refresh=False, force=False):
     return cached
 
 
-def connectors_polled():
+def mcp_status_cached():
+    """The cached `claude mcp list` parse, never refreshed — for callers a spinner waits on."""
+    return _mcp_status()
+
+
+def connectors_polled(status=None):
     """Whether `claude mcp list` has EVER filled the connector cache. Never refreshes it: an
     unfilled cache means "not known yet", not "no connectors"."""
-    return bool(_mcp_status().get("at"))
+    return bool((_mcp_status() if status is None else status).get("at"))
 
 
 def discover_connectors(allow_refresh=False, force=False, status=None):
@@ -593,7 +598,7 @@ def mcp_health(allow_refresh=False, force=False, status=None):
     return status.get("health", {})
 
 
-def all_mcps(pol, allow_refresh=False, force=False):
+def all_mcps(pol, allow_refresh=False, force=False, status=None):
     """Discovered local stdio servers (from ~/.claude.json, read-only) + Otto-added servers
     + connected claude.ai connectors, each with its enabled state, source, and last-known
     `health` (None until polled). `allow_refresh` lets the Admin view re-poll `claude mcp
@@ -603,7 +608,8 @@ def all_mcps(pol, allow_refresh=False, force=False):
     # was free on the cached path (the first call rewrites the cache, so the second sees it fresh)
     # but ran the ~8s `claude mcp list` TWICE under `force` — the Recheck button paid it twice for
     # identical data.
-    status = _mcp_status(allow_refresh=allow_refresh, force=force)
+    if status is None:
+        status = _mcp_status(allow_refresh=allow_refresh, force=force)
     health = mcp_health(status=status)
 
     def note(n):

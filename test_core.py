@@ -2475,7 +2475,8 @@ class OnboardingTests(unittest.TestCase):
     def test_every_profile_assigns_the_same_real_settings(self):
         # A profile that set a key another left alone would strand it on switch: economic's
         # max_attempts=2 would survive picking balanced.
-        for key in self.ob.PROFILES:
+        self.assertEqual(self.ob.profile_settings("keep"), {})
+        for key in set(self.ob.PROFILES) - {"keep"}:
             got = self.ob.profile_settings(key)
             self.assertEqual(set(got), set(self.ob._PROFILE_KEYS), key)
             for name, val in got.items():
@@ -2495,6 +2496,26 @@ class OnboardingTests(unittest.TestCase):
         self._apply({"profile": "balanced"})
         store = storage.read_json(config._settings_path(), {})
         self.assertFalse(set(store) & set(self.ob._PROFILE_KEYS), store)
+
+    def test_the_default_pick_changes_nothing(self):
+        # The wizard opens by itself on upgraded installs; clicking through must not reset tuning.
+        config.save_settings({"max_attempts": 5, "budget_hard_usd": 4.0})
+        self.assertEqual(self.ob.normalize({})["profile"], "keep")
+        self.assertEqual(self._apply({})["applied"], [])
+        self.assertEqual(config.setting("max_attempts"), 5)
+        self.assertIn('profile:prev.profile||"keep"', ui_src())
+
+    def test_no_profile_turns_off_route_or_judge_resampling(self):
+        for key in self.ob.PROFILES:
+            got = self.ob.profile_settings(key)
+            self.assertNotIn("route_confirmations", got, key)
+            self.assertNotIn("judge_confirmations", got, key)
+
+    def test_the_guide_asks_for_the_scopes_scope_gaps_would_require(self):
+        import slack
+        names = [s for s, _ in slack.scope_catalog(slack.USER, {"watch_mentions": False})]
+        self.assertNotIn("search:read", names, "a switched-off feature's scope is over-granting")
+        self.assertIn("users:read", names)
 
     def test_a_stale_preview_writes_nothing(self):
         a = {"profile": "economic"}
@@ -2525,7 +2546,7 @@ class OnboardingTests(unittest.TestCase):
 
     def test_unknown_answers_fall_back_rather_than_raise(self):
         a = self.ob.normalize({"usage": "x", "profile": "y", "integrations": ["email", "nope"]})
-        self.assertEqual(a, {"usage": "personal", "profile": "balanced", "integrations": ["email"]})
+        self.assertEqual(a, {"usage": "personal", "profile": "keep", "integrations": ["email"]})
 
     def test_integrations_are_detected_from_the_mcp_listing_and_point_at_their_screen(self):
         mcps = [{"name": "claude_ai_Gmail", "display": "Gmail", "enabled": True},
@@ -2614,7 +2635,8 @@ class OnboardingTests(unittest.TestCase):
     def test_every_integration_points_at_a_section_the_ui_renders(self):
         src = ui_src()
         for key, spec in self.ob.INTEGRATIONS.items():
-            self.assertIn(f'data-sect="{spec["where"]["sect"]}"', src, key)
+            if spec["where"]:              # None = nothing on screen can set it; no Open button
+                self.assertIn(f'data-sect="{spec["where"]["sect"]}"', src, key)
 
     def test_the_ui_wires_the_wizard_through_the_shared_helpers(self):
         src = ui_src()
@@ -2655,6 +2677,13 @@ class EventsSetupGuideTests(unittest.TestCase):
         g = self.src[self.src.index("let GUIDE=null"):]
         self.assertIn("scope_catalog", g)
         self.assertNotIn('"im:history"', g, "a hand-kept scope list drifts from slack._SCOPES")
+
+    def test_a_guide_hands_its_own_config_to_the_form_it_opens(self):
+        # The card forms save {...GLOBAL, ...fields}; a card still loading would post {} otherwise.
+        g = self.src[self.src.index("let GUIDE=null"):]
+        for glob, form in (("gSlackSync(d)", "showSlackForm()"), ("BOARD_CFG=bc", "showBoardForm()"),
+                           ("PRREV_CFG=pc", "showPrReviewForm()")):
+            self.assertLess(g.index(glob), g.index(form), form)
 
     def test_a_guide_never_writes_config_itself(self):
         g = self.src[self.src.index("let GUIDE=null"):]

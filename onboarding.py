@@ -32,23 +32,31 @@ VERSION = 1
 
 USAGES = ("personal", "work", "both")
 
-# Every profile assigns the SAME keys, so switching profile never strands a value the previous one
-# set. "balanced" is the code defaults — `save_settings` then removes those keys from the store.
-_PROFILE_KEYS = ("max_attempts", "route_confirmations", "judge_confirmations",
-                 "max_review_rounds", "max_qa_rounds", "effort", "supervise",
+# Every profile but "keep" assigns the SAME keys, so switching profile never strands a value the
+# previous one set. "balanced" is the code defaults — `save_settings` then removes those keys.
+# Route and judge re-sampling are deliberately NOT here: one sample is a coin flip, and the cost
+# of a misroute or a false FAIL exceeds the samples saved (routing-capabilities.md, run-pipeline.md).
+_PROFILE_KEYS = ("max_attempts", "max_review_rounds", "max_qa_rounds", "effort", "supervise",
                  "budget_soft_usd", "budget_hard_usd")
 PROFILES = {
+    # The default pick: an install upgraded mid-life has tuned values, and a wizard that opens by
+    # itself must not reset them because someone clicked through it.
+    "keep": {
+        "label": "Keep my settings",
+        "blurb": "Change nothing. Admin → Runtime settings stays exactly as it is.",
+        "settings": {},
+    },
     "economic": {
         "label": "Economic",
-        "blurb": "Fewer retries and second opinions, lower reasoning effort, a per-run spend "
+        "blurb": "Fewer retries and review rounds, lower reasoning effort, a per-run spend "
                  "ceiling. Cheapest runs; expect more answers that need a nudge.",
-        "settings": {"max_attempts": 2, "route_confirmations": 1, "judge_confirmations": 1,
-                     "max_review_rounds": 1, "max_qa_rounds": 1, "effort": "low",
-                     "supervise": False, "budget_soft_usd": 1.0, "budget_hard_usd": 3.0},
+        "settings": {"max_attempts": 2, "max_review_rounds": 1, "max_qa_rounds": 1,
+                     "effort": "low", "supervise": False,
+                     "budget_soft_usd": 1.0, "budget_hard_usd": 3.0},
     },
     "balanced": {
         "label": "Balanced",
-        "blurb": "Otto's defaults: three attempts, re-sampled routing and judging, no spend cap.",
+        "blurb": "Reset to Otto's defaults: three attempts, full review rounds, no spend cap.",
         "settings": None,      # resolved to the code defaults at plan time
     },
     "quality": {
@@ -81,10 +89,10 @@ INTEGRATIONS = {
                  "where": {"tab": "admin", "sect": "projects"},
                  "hint": "Install `gh` and run `gh auth login`, then register a repo in Admin → "
                          "Project repos so Otto can open PRs from an isolated clone."},
-    "push":     {"label": "Phone notifications", "default_for": (),
-                 "where": {"tab": "admin", "sect": "settings"},
-                 "hint": "Set OTTO_NTFY_TOPIC (setup_wizard.py) so approvals and blocked runs "
-                         "reach your phone."},
+    # No `where`: OTTO_NTFY_TOPIC is a secret, settable from no screen — only setup_wizard/.env.
+    "push":     {"label": "Phone notifications", "default_for": (), "where": None,
+                 "hint": "Run ./.venv/bin/python setup_wizard.py (or set OTTO_NTFY_TOPIC in .env) "
+                         "and restart, so approvals and blocked runs reach your phone."},
     "local":    {"label": "Local models", "default_for": (),
                  "where": {"tab": "admin", "sect": "models"},
                  "hint": "Add an OpenAI-compatible endpoint in Admin → Models to run cheap tasks "
@@ -120,7 +128,7 @@ def normalize(answers):
     browser tab must still be able to finish onboarding."""
     a = answers if isinstance(answers, dict) else {}
     usage = a.get("usage") if a.get("usage") in USAGES else "personal"
-    profile = a.get("profile") if a.get("profile") in PROFILES else "balanced"
+    profile = a.get("profile") if a.get("profile") in PROFILES else "keep"
     picked = a.get("integrations")
     picked = {x for x in picked if isinstance(x, str)} if isinstance(picked, list) else set()
     wants = [k for k in INTEGRATIONS if k in picked]
@@ -128,7 +136,10 @@ def normalize(answers):
 
 
 def profile_settings(profile, cur=None):
-    """The full assignment a profile makes, every _PROFILE_KEYS key included."""
+    """The full assignment a profile makes, every _PROFILE_KEYS key included — or nothing, for
+    "keep"."""
+    if profile == "keep":
+        return {}
     cur = cur or config.settings_all()
     base = {k: cur[k]["default"] for k in _PROFILE_KEYS}
     return {**base, **(PROFILES[profile]["settings"] or {})}
@@ -184,7 +195,8 @@ def _detect(key, mcps, connectors_checked=True):
         if who is None:
             return None, "sign-in not checked yet — the Events tab's GitHub card checks it"
         if not who:
-            return False, "`gh` is installed but not signed in"
+            # "" is a FAILED lookup: signed out, or GitHub unreachable — `gh api` can't tell them.
+            return False, "couldn't confirm the `gh` sign-in — run `gh auth status`"
         if not repos:
             return False, f"signed in as {who}, no project repo registered"
         return True, f"signed in as {who}, {repos} repo(s) registered"
