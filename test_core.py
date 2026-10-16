@@ -2711,9 +2711,9 @@ class EventsSetupGuideTests(unittest.TestCase):
     def test_a_guide_hands_its_own_config_to_the_form_it_opens(self):
         # The card forms save {...GLOBAL, ...fields}; a card still loading would post {} otherwise.
         g = self.src[self.src.index("let GUIDE=null"):]
-        for glob, form in (("gSlackSync(d)", "showSlackForm()"), ("BOARD_CFG=bc", "showBoardForm()"),
-                           ("PRREV_CFG=pc", "showPrReviewForm()")):
-            self.assertLess(g.index(glob), g.index(form), form)
+        for synced, form in (("gSlackSync(d)", "showSlackForm()"), ("BOARD_CFG=bc", "showBoardForm()"),
+                             ("PRREV_CFG=pc", "showPrReviewForm()")):
+            self.assertLess(g.index(synced), g.index(form), form)
 
     def test_a_guide_never_writes_config_itself(self):
         g = self.src[self.src.index("let GUIDE=null"):]
