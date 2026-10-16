@@ -101,7 +101,8 @@ end to end, never ask a question back.
    a test runner or linter it found missing is the NEXT ticket — until that merges, a ticket's
    criteria name the tests it adds and how to run them instead.
    **Spec before features.** If `{spec}` does not exist yet, the next ticket (right after the
-   foundation or assessment ticket, or the FIRST once that is merged) writes it, with two numbered
+   foundation, assessment or missing-runner ticket — it needs a runner for its tests — or the
+   FIRST once those are merged) writes it, with two numbered
    sections: **Rules** (R1, R2…) — every domain rule the product must obey, taken from an
    authoritative source the ticket must find and cite (official rules, a standard, an RFC),
    stating explicitly what is ILLEGAL and when, never paraphrased from memory; and **UX**
