@@ -84,7 +84,8 @@ end to end, never ask a question back.
    | base64 -d`). It holds the product vision and its Definition of Done — the only source of
    what "finished" means. Read the repo's current tree and the PRs merged so far
    (`gh pr list --repo {slug} --state merged`).
-   The test and lint commands every ticket must pass are the ones under Commands in `{goals}`.
+   The test and lint commands every ticket must pass are the ones under Commands in `{goals}`
+   (no Commands section: `make test` and `make lint`).
    **Foundation first.** If the Product section of `{goals}` still says it is to be expanded by
    the foundation ticket, the FIRST ticket you ready must be the foundation: scaffold the project
    (manifest, `Makefile` with `run`/`test`/`lint`, a GitHub Actions workflow running lint +
@@ -96,10 +97,11 @@ end to end, never ask a question back.
    It reads the code, README, manifest and CI and rewrites Product as what exists (marked done)
    plus what the Seed still asks for; fills Commands with the repo's OWN run/test/lint commands
    (a missing one is written "none yet"); and ticks every Definition-of-Done item already met.
-   Never replace the repo's toolchain, layout or framework — a missing test runner, linter or
-   CI becomes its own later ticket. Every other ticket waits for it.
+   Never replace the repo's toolchain, layout or framework. Every other ticket waits for it, and
+   a test runner or linter it found missing is the NEXT ticket — until that merges, a ticket's
+   criteria name the tests it adds and how to run them instead.
    **Spec before features.** If `{spec}` does not exist yet, the next ticket (right after the
-   foundation, or the FIRST if the foundation is already merged) writes it, with two numbered
+   foundation or assessment ticket, or the FIRST once that is merged) writes it, with two numbered
    sections: **Rules** (R1, R2…) — every domain rule the product must obey, taken from an
    authoritative source the ticket must find and cite (official rules, a standard, an RFC),
    stating explicitly what is ILLEGAL and when, never paraphrased from memory; and **UX**
@@ -565,7 +567,8 @@ def _repo_slug(name):
 
 
 # Files a fresh GitHub repo can be created with: a root holding only these is still empty.
-_SCAFFOLD_ONLY = {GOALS_FILE.lower(), "readme", "readme.md", "license", "license.md", ".gitignore"}
+_SCAFFOLD_ONLY = {GOALS_FILE.lower(), "readme", "readme.md", "readme.rst", "readme.txt", "license",
+                  "license.md", "license.txt", "copying", ".gitignore", ".gitattributes"}
 
 
 def _has_code(slug):

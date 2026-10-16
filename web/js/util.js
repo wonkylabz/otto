@@ -56,17 +56,6 @@ function byData(root, attr, value, sel){
   return null;
 }
 
-/* Make click-only toggles keyboard-operable, in ONE place rather than in the ~20 templates
-   that emit them. A <span>/<div> with a click handler is unreachable by keyboard and announces
-   as nothing, which is how every collapsible section header on Admin/Events/Jobs/Audit and the
-   board's attempt headers were built. Rewriting each template to a <button> would fight the
-   flex layouts they sit in, so the affordance is added at bind time instead: role + tabindex
-   make it focusable and announced, and Enter/Space forward to the element's existing click
-   listeners (delegated ones included, since .click() bubbles).
-
-   `aria-expanded` is synced after the handlers run, not during: several of these toggles are
-   bound by delegation on an ancestor, so the class flip happens on the way up and reading it
-   inline would report the state the section just left. */
 /* Admin's collapsible sections: the title toggles its .asection.coll, and which ones you left
    open is remembered, so Admin doesn't re-collapse everything on every reload. Shared because a
    section rendered on its own (factory.js's Mode) lands after Admin's wiring ran. */
@@ -103,6 +92,17 @@ function wireSections(root){
   });
 }
 
+/* Make click-only toggles keyboard-operable, in ONE place rather than in the ~20 templates
+   that emit them. A <span>/<div> with a click handler is unreachable by keyboard and announces
+   as nothing, which is how every collapsible section header on Admin/Events/Jobs/Audit and the
+   board's attempt headers were built. Rewriting each template to a <button> would fight the
+   flex layouts they sit in, so the affordance is added at bind time instead: role + tabindex
+   make it focusable and announced, and Enter/Space forward to the element's existing click
+   listeners (delegated ones included, since .click() bubbles).
+
+   `aria-expanded` is synced after the handlers run, not during: several of these toggles are
+   bound by delegation on an ancestor, so the class flip happens on the way up and reading it
+   inline would report the state the section just left. */
 function enhanceToggles(root, sel, box, openClass){
   // `openClass` is the class on `box` meaning EXPANDED. The two conventions in the tree are
   // opposite spellings of one state — `.asection.collapsed` and `.dbgatt.open` — so the

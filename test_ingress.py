@@ -9450,7 +9450,10 @@ class FactoryModeTests(unittest.TestCase):
         brief = f.SPRINT_BRIEF
         self.assertIn("Assessment first", brief)
         self.assertIn("Never replace the repo's toolchain", brief)
-        self.assertNotIn("`make test`", brief)         # tickets pass the commands GOALS names
+        # Tickets pass the commands GOALS names; `make` only for a GOALS.md predating Commands.
+        self.assertEqual(brief.count("`make test`"), 1)
+        self.assertIn("no Commands section: `make test`", brief)
+        self.assertIn("the NEXT ticket", brief)       # a missing test runner is not left for later
 
     def test_seeding_detects_code_and_fails_closed_on_an_unreadable_tree(self):
         f = self.factory
