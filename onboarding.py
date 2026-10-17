@@ -37,10 +37,9 @@ DRAFT_TTL_S = 24 * 3600
 # previous one set. "balanced" is the code defaults — `save_settings` then removes those keys.
 # Route and judge re-sampling are deliberately NOT here: one sample is a coin flip, and the cost
 # of a misroute or a false FAIL exceeds the samples saved (routing-capabilities.md, run-pipeline.md).
-# The HARD spend caps are deliberately absent: they are a safety rail the operator set, and a
-# full assignment would make even "Economic" silently lift one. Soft caps only downshift a tier.
-_PROFILE_KEYS = ("max_attempts", "max_review_rounds", "max_qa_rounds", "effort", "supervise",
-                 "budget_soft_usd", "budget_soft_tokens")
+# NO budget cap, hard or soft, is here: each is a number the operator chose, and a full
+# assignment would make any profile — "Economic" included — silently switch one off.
+_PROFILE_KEYS = ("max_attempts", "max_review_rounds", "max_qa_rounds", "effort", "supervise")
 PROFILES = {
     # The default pick: an install upgraded mid-life has tuned values, and a wizard that opens by
     # itself must not reset them because someone clicked through it.
@@ -51,15 +50,15 @@ PROFILES = {
     },
     "economic": {
         "label": "Economic",
-        "blurb": "Fewer retries and review rounds, lower reasoning effort, and a run past $1 "
-                 "drops to a cheaper model. Never stops a run. Expect more answers that need a nudge.",
+        "blurb": "Fewer retries and review rounds, lower reasoning effort, no mid-run supervisor. "
+                 "Expect more answers that need a nudge. Spend caps you set are kept.",
         "settings": {"max_attempts": 2, "max_review_rounds": 1, "max_qa_rounds": 1,
-                     "effort": "low", "supervise": False, "budget_soft_usd": 1.0},
+                     "effort": "low", "supervise": False},
     },
     "balanced": {
         "label": "Balanced",
-        "blurb": "Reset to Otto's defaults: three attempts, full review rounds, no downshift. "
-                 "Hard spend caps you set are kept.",
+        "blurb": "Reset to Otto's defaults: three attempts, full review rounds. Spend caps you "
+                 "set are kept.",
         "settings": None,      # resolved to the code defaults at plan time
     },
     "quality": {
@@ -187,6 +186,15 @@ def _settings_plan(profile, cur=None):
     return out
 
 
+def _unusable_mcps(mcps):
+    """[(haystack, label)] for servers that EXIST but a run can't use — needing auth, failed,
+    pending, or never activated — so a row can say "reconnect it", not "connect one"."""
+    import policy               # noqa: PLC0415
+    return [(f"{m.get('name', '')} {m.get('display', '')}".lower(), m.get("display") or m.get("name", ""))
+            for m in mcps if m.get("enabled", True)
+            and (m.get("confirmed") is False or m.get("health") in policy.UNHEALTHY)]
+
+
 def _usable_mcps(mcps):
     """[(haystack, label)] for servers a run can actually use: enabled, activated (an Otto-added
     def stays unspawned until confirmed) and not last seen unhealthy. The label is what the rest
@@ -203,7 +211,7 @@ def _row(ready, detail, hint=None):
     return {"ready": ready, "detail": detail, "hint": hint}
 
 
-def _detect(key, usable, connectors_checked=True):
+def _detect(key, usable, connectors_checked=True, unusable=()):
     """(ready, detail) for one integration; ready is None when it cannot be told yet. Never runs
     `claude mcp list` — the preview sits behind a spinner — so a connector cache that has never
     been filled is "not checked yet", not "missing": on a first run that is the usual state."""
@@ -281,6 +289,10 @@ def _detect(key, usable, connectors_checked=True):
     hits = [label for hay, label in usable if re.search(spec["match"], hay)]
     if hits:
         return _row(True, ", ".join(hits))
+    sick = [label for hay, label in unusable if re.search(spec["match"], hay)]
+    if sick:
+        return _row(False, f"{sick[0]} is set up but can't be used right now — reconnect or "
+                    "re-authenticate it (claude.ai → Settings → Connectors, or Admin → MCP servers)", "")
     if not connectors_checked:
         return _row(None, "not checked yet — Admin → MCP servers lists your claude.ai connectors")
     return _row(False, "nothing connected")
@@ -288,10 +300,11 @@ def _detect(key, usable, connectors_checked=True):
 
 def _integrations_plan(wants, mcps, connectors_checked=True):
     out, usable = [], _usable_mcps(mcps)       # built once, shared by every MCP-matched row
+    unusable = _unusable_mcps(mcps)
     for key in wants:
         # An UNKNOWN row gets no hint: its detail says how to find out, and the generic "how to
         # set this up" would contradict a setup that may be complete.
-        r = _detect(key, usable, connectors_checked)
+        r = _detect(key, usable, connectors_checked, unusable)
         spec = INTEGRATIONS[key]
         hint = "" if r["ready"] or r["ready"] is None else (spec["hint"] if r["hint"] is None else r["hint"])
         out.append({"key": key, "label": spec["label"], "ready": r["ready"], "detail": r["detail"],
@@ -315,8 +328,9 @@ def preview(answers, mcps=(), connectors_checked=True):
     fp = _fingerprint(a, settings)
     notes = []
     if a["profile"] == "economic":
-        notes.append("Biggest further saving: route cheap phases (routing, clarify, memory) to a "
-                     "smaller or local model in Admin → Models.")
+        notes.append("Biggest further savings: route cheap phases (routing, clarify, memory) to a "
+                     "smaller or local model in Admin → Models, and set a per-run budget in "
+                     "Admin → Runtime settings.")
     if any(s["action"] == "skip" for s in settings):
         notes.append("Some settings have an unreadable value in .env (a typo?), so their default "
                      "can't be known and they were left alone — fix or remove them in .env.")

@@ -2782,8 +2782,7 @@ class OnboardingTests(unittest.TestCase):
     def test_no_profile_touches_a_hard_spend_cap(self):
         for key in self.ob.PROFILES:
             got = self.ob.profile_settings(key)
-            self.assertNotIn("budget_hard_usd", got, key)
-            self.assertNotIn("budget_hard_tokens", got, key)
+            self.assertFalse([k for k in got if k.startswith("budget_")], key)
 
     def test_an_unusable_env_value_is_not_a_pin(self):
         os.environ["OTTO_MAX_ATTEMPTS"] = "three"
@@ -2802,7 +2801,7 @@ class OnboardingTests(unittest.TestCase):
     def _warm(self, probes):
         import server
         server._WARM.update(job=None, at=0.0)
-        return server, mock.patch.object(server, "_warm_probes", side_effect=lambda m, r: probes(m))
+        return server, mock.patch.object(server, "_warm_probes", side_effect=lambda m, r, only=None: probes(m))
 
     def test_a_coalesced_recheck_reads_the_shared_result(self):
         import threading as th
@@ -2893,22 +2892,18 @@ class OnboardingTests(unittest.TestCase):
                 mock.patch.object(pr_review.viewer, "_cache", "alice", create=True):
             self.assertFalse(pr_review.refresh_viewer())
             self.assertEqual(pr_review.viewer_cached(), "alice")
-        with mock.patch.dict(slack._LAST_PROBE_OK, {}, clear=True), \
-                mock.patch.object(slack, "granted_scopes",
-                                  side_effect=lambda i, refresh=False: slack._LAST_PROBE_OK.__setitem__(i, True)):
-            self.assertTrue(slack.refresh_scopes(slack.USER))
-        with mock.patch.dict(slack._LAST_PROBE_OK, {}, clear=True), \
-                mock.patch.dict(slack._FAILED, {("scopes", slack.USER): 1.0}), \
-                mock.patch.object(slack, "granted_scopes",
-                                  side_effect=lambda i, refresh=False: slack._LAST_PROBE_OK.__setitem__(i, True)):
-            self.assertTrue(slack.refresh_scopes(slack.USER), "a stale shared stamp is not this probe's")
+        with mock.patch.object(slack, "_probe_scopes", return_value=True):
+            self.assertTrue(slack.refresh_scopes(slack.USER), "the probe's own return value")
+        with mock.patch.object(slack, "_probe_scopes", return_value=False):
+            self.assertFalse(slack.refresh_scopes(slack.USER))
 
     def test_a_refused_apply_keeps_saying_why(self):
         ui = ui_src()
         self.assertIn("obReview(e.message)", ui)
         self.assertIn('why+" — here is the current plan."', ui)
         self.assertIn('insertAdjacentText("beforeend"', ui, "a Re-check note never hides a preview failure")
-        self.assertIn('postJSON("/api/onboarding/recheck",{connectors:false})', ui)
+        self.assertIn('postJSON("/api/onboarding/recheck",{connectors:false, probes})', ui)
+        self.assertIn('obRender(); obRecheck(false);', ui, "a resume re-asks the cheap lookups only")
 
     def test_a_gh_less_install_never_reports_a_gh_failure(self):
         import server
@@ -2944,6 +2939,35 @@ class OnboardingTests(unittest.TestCase):
         ui = ui_src()
         park = ui[ui.index("if(!meta && OB && OB.parked){"):][:900]
         self.assertLess(park.index("obRender()"), park.index("obRecheck(false)"))
+
+    def test_gh_saying_nobody_is_signed_in_clears_the_login(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "alice", create=True), \
+                mock.patch.object(pr_review, "_run",
+                                  return_value=(4, "", "To get started with GitHub CLI, please run: gh auth login")):
+            self.assertFalse(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "", "logged out is not a blip")
+
+    def test_a_connector_needing_reauth_is_not_nothing_connected(self):
+        mcps = [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail", "health": "needs_auth"}]
+        got = self.ob.preview({"integrations": ["email"]}, mcps)["integrations"][0]
+        self.assertFalse(got["ready"])
+        self.assertIn("re-authenticate", got["detail"])
+        self.assertEqual(got["hint"], "", "never the generic 'connect one'")
+
+    def test_a_no_op_save_rewrites_nothing(self):
+        config.save_settings({"max_attempts": 5})
+        path = config._settings_path()
+        before = os.stat(path).st_mtime_ns
+        with mock.patch.object(storage, "_atomic_write", side_effect=AssertionError("rewrote")):
+            config.save_settings({"max_attempts": 5})
+        self.assertEqual(os.stat(path).st_mtime_ns, before)
+
+    def test_a_guide_recheck_asks_only_for_what_it_reads(self):
+        import server
+        names = [n for n, _ in server._warm_probes(False, True, only={"slack-scopes"})]
+        self.assertEqual(names, ["slack-scopes"])
+        self.assertIn('probes=key==="slack"?["slack-scopes"]:["gh-viewer"]', ui_src())
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack
@@ -3029,11 +3053,14 @@ class OnboardingTests(unittest.TestCase):
         self._apply({"usage": "work", "profile": "keep"})
         self.assertEqual(self.ob.state()["answers"]["profile"], "economic")
 
-    def test_balanced_resets_the_soft_caps_and_keeps_the_hard_ones(self):
-        config.save_settings({"budget_hard_tokens": 50000, "budget_soft_tokens": 20000})
-        self._apply({"profile": "balanced"})
-        self.assertEqual(config.setting("budget_soft_tokens"), config.BUDGET_SOFT_TOKENS)
-        self.assertEqual(config.setting("budget_hard_tokens"), 50000, "an operator's safety rail stays")
+    def test_no_profile_switches_off_a_cap_the_operator_set(self):
+        config.save_settings({"budget_hard_tokens": 50000, "budget_soft_tokens": 20000,
+                              "budget_soft_usd": 2.0})
+        for profile in ("economic", "balanced", "quality"):
+            self._apply({"profile": profile})
+            self.assertEqual(config.setting("budget_soft_tokens"), 20000, profile)
+            self.assertEqual(config.setting("budget_soft_usd"), 2.0, profile)
+            self.assertEqual(config.setting("budget_hard_tokens"), 50000, profile)
 
     def test_a_connector_is_named_as_the_ui_names_it(self):
         mcps = [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail"}]

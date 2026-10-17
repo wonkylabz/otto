@@ -7523,7 +7523,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # -> 14_366 for the Events setup guides' script tag (guides.js).
     # -> 14_516 for the header's Setup button: markup belongs in the shell (ui.md), and a button
     # injected by JS appeared only after boot's awaits and was invisible to every grep guard.
-    INDEX_MAX = 14_516
+    # -> 14_510: the Setup button drops the `.estop` class (its phone-width auto margin scattered
+    # the header row); onboarding.css styles it on its own.
+    INDEX_MAX = 14_510
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:

@@ -189,25 +189,35 @@ def viewer():
         return viewer._cache
     if time.time() - _viewer_failed < _VIEWER_RETRY_S:
         return None
-    rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
-    viewer._cache = out.strip() if rc == 0 else ""
-    if not viewer._cache:
-        _viewer_failed = time.time()
+    _lookup_login(keep_known=False)
     return viewer._cache or None
+
+
+# `gh`'s own words for "nobody is signed in" — a definite answer, unlike a network failure.
+_LOGGED_OUT = ("gh auth login", "not logged", "authentication required", "bad credentials")
+
+
+def _lookup_login(keep_known):
+    """The ONE `gh api user` lookup both viewer() and refresh_viewer() use: updates the cache and
+    the failure stamp, returns whether it succeeded. On failure a known login is kept only when
+    `keep_known` AND the failure was not gh saying nobody is signed in (`gh auth logout`)."""
+    global _viewer_failed
+    rc, out, err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
+    if rc == 0 and out.strip():
+        viewer._cache = out.strip()
+        return True
+    _viewer_failed = time.time()
+    logged_out = any(w in (err or "").lower() for w in _LOGGED_OUT)
+    if logged_out or not (keep_known and getattr(viewer, "_cache", None)):
+        viewer._cache = ""
+    return False
 
 
 def refresh_viewer():
     """Re-ask `gh` now — even a cached login (after `gh auth login`/`switch` it may differ) and
-    inside the failure window. True when THIS lookup succeeded; a failure keeps a known login."""
-    rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
-    if rc == 0 and out.strip():
-        viewer._cache = out.strip()
-        return True
-    global _viewer_failed
-    _viewer_failed = time.time()
-    if not getattr(viewer, "_cache", None):
-        viewer._cache = ""        # a known login survives a blip; none becomes a failed lookup
-    return False
+    inside the failure window. True when THIS lookup succeeded. A network blip keeps a known
+    login; gh saying nobody is signed in clears it."""
+    return _lookup_login(keep_known=True)
 
 
 def viewer_cached():

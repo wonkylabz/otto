@@ -1,7 +1,10 @@
 /* Onboarding wizard (in the shared form modal) + the spotlight tour. Its own sheet so the
    feature does not ratchet app.css; every colour is a token, so all five palettes hold. */
-  .obbtn { color: var(--text-2); }
-  /* .estop's hover is the pause's danger red; this button is not a stop. */
+  /* Sized like the header's .estop buttons but NOT one: app.css gives every .estop an auto left
+     margin at phone width (to push Pause right), which would scatter a third button along the row. */
+  .obbtn { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600;
+    color: var(--text-2); background: transparent; border: 1px solid var(--line);
+    padding: 5px 10px; border-radius: var(--r-md); cursor: pointer; white-space: nowrap; }
   .obbtn:hover { color: var(--accent); border-color: var(--accent); }
   .obsteps { display: flex; gap: 6px; margin-bottom: 14px; }
   .obsteps i { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }

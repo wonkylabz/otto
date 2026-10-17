@@ -2765,8 +2765,10 @@ class Handler(BaseHTTPRequestHandler):
         the gh login, the connector list) and answer when they are done. A POST: it spawns every
         stdio MCP server, so it sits behind _csrf_ok like any other side effect."""
         # `connectors:false` (a resume) re-asks the cheap lookups only — no MCP server spawn.
+        only = body.get("probes")
+        only = {p for p in only if isinstance(p, str)} if isinstance(only, list) else None
         out = _warm_onboarding_caches(force=True, mcp=body.get("connectors", True) is not False,
-                                      wait=_RECHECK_WAIT_S + 5, retry=True)
+                                      wait=_RECHECK_WAIT_S + 5, retry=True, only=only)
         self._send(200, json.dumps({"ok": True, **out}))
 
     def _post_onboarding_skip(self, body):
@@ -2907,7 +2909,7 @@ _WARM_LOCK = threading.Lock()
 _WARM = {"job": None, "at": 0.0}
 
 
-def _warm_probes(mcp, retry):
+def _warm_probes(mcp, retry, only=None):
     """[(name, fn)] — each fn RAISES when its own lookup failed, so the job can report it. A
     plain warm only fills what is missing (each lookup's own cache and backoff); a Re-check
     (`retry`) re-asks and judges by that call's own outcome."""
@@ -2938,7 +2940,8 @@ def _warm_probes(mcp, retry):
     if mcp:
         # Only on the operator's explicit Re-check — the same click-to-refresh Admin's Recheck is.
         probes.append(("mcp-list", mcp_list))
-    return probes
+    # `only`: a guide re-asks just what it reads — the Slack guide must not wait on `gh`.
+    return [p for p in probes if only is None or p[0] in only]
 
 
 def _warm_status(job):
@@ -2969,7 +2972,7 @@ def _run_warm(job, probes):
     job["done"].set()
 
 
-def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False):
+def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False, only=None):
     """Fill, in the background, the caches the onboarding review reads but never fills itself
     behind its spinner: Slack's granted scopes and the `gh` login — and, on the operator's
     explicit Re-check only (`mcp=True`), the connector list, since `claude mcp list` starts every
@@ -2982,15 +2985,18 @@ def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False):
     with _WARM_LOCK:
         job = _WARM["job"]
         running = job is not None and not job["done"].is_set()
-        k = job["kind"] if running else (False, False)
-        if not (running and (k[0] or not mcp) and (k[1] or not retry)):
+        probes = _warm_probes(mcp, retry, only)
+        want = frozenset(n for n, _ in probes)
+        k = job["kind"] if running else (frozenset(), False)
+        # Covered = the in-flight job runs every probe this caller wants, re-asking if it must.
+        if not (running and want <= k[0] and (k[1] or not retry)):
             if not running and not force and time.time() - _WARM["at"] < _WARM_EVERY_S:
                 return {"failed": [], "incomplete": []}
             _WARM["at"] = time.time()
-            job = {"kind": (mcp, retry), "done": threading.Event(), "result": None,
+            job = {"kind": (want, retry), "done": threading.Event(), "result": None,
                    "failed": [], "threads": []}
             _WARM["job"] = job
-            threading.Thread(target=_run_warm, args=(job, _warm_probes(mcp, retry)),
+            threading.Thread(target=_run_warm, args=(job, probes),
                              name="onboarding-warm", daemon=True).start()
     if not wait:
         return {"failed": [], "incomplete": []}

@@ -174,7 +174,9 @@ function guideAction(a){
     const key=GUIDE.key, step=GUIDE.step;
     openFormModal(`<b>${esc(g.title)}</b>`).innerHTML=`<p class="obsub">Checking again…</p>`;
     const sess=FORM_MODAL_SESSION;
-    postJSON("/api/onboarding/recheck",{connectors:false}).catch(()=>{}).finally(()=>{
+    // Only what THIS guide reads: the Slack guide never waits on `gh`, nor GitHub's on Slack.
+    const probes=key==="slack"?["slack-scopes"]:["gh-viewer"];
+    postJSON("/api/onboarding/recheck",{connectors:false, probes}).catch(()=>{}).finally(()=>{
       // Closed or replaced while it ran: the user moved on — never paint over it.
       if(sess===FORM_MODAL_SESSION && !document.getElementById("formModal").hidden) openGuide(key, step);
     });

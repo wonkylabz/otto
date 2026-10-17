@@ -298,7 +298,6 @@ _PROBE_RETRY_S = int(os.environ.get("OTTO_SLACK_SCOPE_RETRY_S") or 120)
 _ID_RETRY_S = int(os.environ.get("OTTO_SLACK_ID_RETRY_S") or 15)
 _FAILED = {}          # (probe, identity) -> when it last failed
 _REJECTED = {}        # identity -> Slack's own error for a token it refused (invalid_auth, …)
-_LAST_PROBE_OK = {}   # identity -> whether the most recent auth.test THIS process ran answered
 # Slack's auth errors that mean THIS TOKEN is dead — read from Slack's JSON reply, never inferred
 # from a missing header (a captive portal or proxy answers 200 with no header, and is transient).
 _TOKEN_DEAD = {"invalid_auth", "token_revoked", "token_expired", "account_inactive", "not_authed"}
@@ -400,6 +399,13 @@ def granted_scopes(identity=USER, refresh=False):
         return _GRANTED[identity]
     if _backing_off("scopes", identity):
         return set()                          # a recent probe failed; do not re-block the caller
+    _probe_scopes(identity)
+    return _GRANTED.get(identity, set())   # the last good answer, if any
+
+
+def _probe_scopes(identity):
+    """One auth.test: updates the grant / rejection caches and the failure stamp, and RETURNS
+    whether Slack answered — the caller's own outcome, never a global another probe can race."""
     token = _token(identity)
     out = set()
     if token:
@@ -425,23 +431,15 @@ def granted_scopes(identity=USER, refresh=False):
             # list` in `loadAdmin`). Short, because the fix for a real outage is a retry soon.
             trace("SLACK", f"scope check failed ({str(e)[:80]})")
             _FAILED[("scopes", identity)] = time.time()
-            _LAST_PROBE_OK[identity] = False
-            return _GRANTED.get(identity, set())   # the last good answer, if any
+            return False
     _GRANTED[identity] = out
-    _LAST_PROBE_OK[identity] = True
-    return out
+    return True
 
 
 def refresh_scopes(identity):
-    """Re-probe this identity's grant now and say whether the PROBE succeeded (Slack answered,
-    granting or refusing). The outcome is this call's own — never read back from a shared
-    failure stamp another lookup may have written."""
-    # The flag is set by the probe itself, just now, inside this call — a stamp another lookup
-    # wrote meanwhile cannot leak in. (A concurrent probe can still overwrite it a moment later;
-    # that probe's answer is then the newer truth anyway.)
-    _LAST_PROBE_OK.pop(identity, None)
-    granted_scopes(identity, refresh=True)
-    return _LAST_PROBE_OK.get(identity, False)
+    """Re-probe this identity's grant now; True when Slack answered (granting or refusing)."""
+    _FAILED.pop(("scopes", identity), None)
+    return _probe_scopes(identity)
 
 
 def _scope_needed(gate, cfg):

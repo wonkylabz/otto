@@ -707,12 +707,13 @@ def save_settings(updates):
         if not isinstance(d, dict):
             d = {}
         clean = _clean(updates(dict(d)) if callable(updates) else updates)
+        before = dict(d)
         for name, val in clean.items():
             if val == globals()[_SETTING_SPECS[name][2]]:
                 d.pop(name, None)
             else:
                 d[name] = val
-        return d
+        return d if d != before else storage.UNCHANGED   # a no-op save rewrites nothing
     storage.mutate_json(_settings_path(), _mut, default={})
     _store_memo["stamp"] = None      # force a re-read in THIS process
     return settings_all()

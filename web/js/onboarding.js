@@ -161,7 +161,7 @@ function refocusOption(prev){
   if(m) m.focus();
 }
 
-function obFmt(v){ return v===true?"on":v===false?"off":v===0?"0 (off)":String(v); }
+function obFmt(v){ return v==null?"—":v===true?"on":v===false?"off":v===0?"0 (off)":String(v); }
 
 async function obReview(why){
   const box=document.getElementById("ob-review"), err=document.getElementById("ob-err"), seq=++OB.seq;
