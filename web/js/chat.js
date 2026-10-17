@@ -215,7 +215,8 @@ async function watchLoop(wid, chatId, content, sess, flags){
       if(!decomposeDone && times.DECOMPOSE && times.DECOMPOSE.dur!=null){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE.dur}); decomposeDone=true; }
       if(times.ROUTER && times.ROUTER.start && times.ROUTER.dur==null) setNode("ROUTER","active","picking a capability…",{startMs:times.ROUTER.start});
     }
-    if(st.cap && !pickShown && !isSwarm){
+    // A delegated gate carries the CHILD's cap: the route this chat shows is the parent's.
+    if(st.cap && !pickShown && !isSwarm && !st.gate_wid){
       if(!decomposeDone){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE&&times.DECOMPOSE.dur}); decomposeDone=true; }
       pickShown=true; setNode("ROUTER","done","picked:",{durMs:times.ROUTER&&times.ROUTER.dur}); addPick(st.cap);
       if(!flags.quietPick){ content.innerHTML=`<p>I'll use <code>${esc(st.cap.name)}</code> <span class="badge ${st.cap.risk}">${st.cap.risk}</span></p>`; stampMsg(content); }
@@ -276,7 +277,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
         if(!alive()) return;
         // gate() already counted a clicked approval in the ledger; counting here doubled it.
         if(ok!==null) await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
-        setNode("GATE","done", ok===null?"decided elsewhere":(ok?"approved":"denied")); gateDone=true;
+        setNode("GATE","done", ok===null?"no longer waiting":(ok?"approved":"denied")); gateDone=true;
         // Decided elsewhere could be a decline — say nothing about running until the run does.
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
         else if(ok===null) showThinking(content,"Working…");
@@ -1415,7 +1416,7 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       const act=modal.querySelector(".actions"); if(act) act.remove();
       const rb=modal.querySelector(".revisebox"); if(rb) rb.remove();
       const r=document.createElement("div"); r.className="resolution "+(ok===null?"":ok?"ok":"no");
-      r.textContent= ok===null ? "decided elsewhere (Slack or the board)"
+      r.textContent= ok===null ? "no longer waiting here — decided in Slack or on the board, expired, or stopped"
                    : ok ? "✓ approved" : "✕ declined — nothing ran";
       modal.querySelector(".modalBody").appendChild(r);
       gateStatusEl.textContent = r.textContent;
@@ -1434,6 +1435,14 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
         try {
           const st=await Promise.race([getJSON("/api/wf?id="+encodeURIComponent(wid)), sleep(4000)]);
           if(st && st.state && st.state!=="awaiting_approval" && st.state!=="unreachable") return finish(null);
+          // Mid re-plan (another tab asked for changes): the plan on screen is not the one that
+          // would run, so this click approves nothing.
+          if(st && st.replanning){
+            for(const b of actionBtns()) b.disabled=false;
+            const n=modal.querySelector(".revisenote");
+            n.hidden=false; n.textContent="The plan is being revised — wait for the new one.";
+            return;
+          }
         } catch(e){ /* the click stands */ }
       }
       finish(ok);

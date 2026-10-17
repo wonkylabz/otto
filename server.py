@@ -209,11 +209,16 @@ async def _delegate_gate(c, cid):
     child we cannot read leaves the parent's own state standing."""
     try:
         h = c.get_workflow_handle(cid)
-        # Bounded: a stuck child must not stall the parent's own poll behind it.
-        desc = await asyncio.wait_for(h.describe(), 5)
-        if desc.status and desc.status.name != "RUNNING":
+
+        async def read():
+            desc = await h.describe()
+            if desc.status and desc.status.name != "RUNNING":
+                return None
+            return await h.query(OttoWorkflow.status)
+        # ONE bound over both calls: a stuck child must not stall the parent's own poll behind it.
+        st = await asyncio.wait_for(read(), 5)
+        if st is None:
             return None
-        st = await asyncio.wait_for(h.query(OttoWorkflow.status), 5)
     except Exception:  # noqa: BLE001
         return None
     return {**_gate_state(st), "gate_wid": cid} if st.get("awaiting_approval") else None

@@ -344,7 +344,7 @@ function showSlackBotForm(){
   document.getElementById("sb-channels").value=(c.bot_allow_channels||[]).join("\n");
   document.getElementById("sb-users").value=(c.bot_allow_users||[]).join("\n");
   document.getElementById("sb-approvers").value=(c.bot_approvers||[]).join("\n");
-  document.getElementById("sb-fastlane").value=(c.fast_lane_channels||[]).join("\n");
+  document.getElementById("sb-fastlane").value=(c.bot_fast_lane_channels||[]).join("\n");
   document.getElementById("sb-ack").value=c.bot_ack_template||"";
   document.getElementById("sb-hello").value=c.bot_greeting_template||"";
   document.getElementById("sb-cancel").onclick=closeFormModal;
@@ -365,7 +365,7 @@ function showSlackBotForm(){
       bot_watch_mentions:document.getElementById("sb-mentions").checked,
       bot_allow_users, bot_allow_channels,
       bot_approvers:lines("sb-approvers"),
-      fast_lane_channels:lines("sb-fastlane"),
+      bot_fast_lane_channels:lines("sb-fastlane"),
       bot_ack_template:document.getElementById("sb-ack").value,
       bot_greeting_template:document.getElementById("sb-hello").value};
     // The form is still open and owns an error slot, so a refusal belongs in it — closing

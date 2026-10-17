@@ -152,7 +152,7 @@ _DEFAULTS = {
     # Channels where the owner/an approver may take the BOT's fast lane (issue #193), as DMs do.
     # Opt-in per channel: a channel's context carries OTHER people's words into the frontman, so
     # list only one nobody else posts in. Empty (the default) = DMs only.
-    "fast_lane_channels": [],
+    "bot_fast_lane_channels": [],
     # Socket Mode (slack_socket.py): instant delivery for the bot. On by default because it is
     # inert without an app-level token, and it only makes the SAME poll run sooner — there is
     # nothing to be cautious about. Switch it off to force the poll-only path when debugging.
@@ -1168,13 +1168,16 @@ def may_fast_lane(cfg, user, identity, owner):
 def fast_lane_channel(cfg, channel, identity):
     """Whether a request in `channel` may take the fast lane at all. PURE.
 
-    A DM always may; a channel only when the operator listed it in `fast_lane_channels` — its
+    A DM always may; a channel only when the operator listed it in `bot_fast_lane_channels` — its
     context lines (and its session history) carry OTHER people's words, which would steer a run
     no human reviews on the trusted asker's credit, so the default stays DMs only. The list is
     the BOT's, like every per-channel grant on its form: it never widens the user token's."""
     channel = str(channel or "")
+    # Also one the bot READS: it never sees an unlisted channel, so the grant is bounded by that
+    # list whichever path stored it (form, API, snapshot import).
     return channel.startswith("D") or (identity == BOT
-                                       and channel in allow_ids(cfg, "fast_lane_channels"))
+                                       and channel in allow_ids(cfg, "bot_fast_lane_channels")
+                                       and channel in allow_ids(cfg, "bot_allow_channels"))
 
 
 # The decision vocabulary, exact and closed. A false APPROVE executes a write nobody reviewed, so

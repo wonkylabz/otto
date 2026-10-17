@@ -11135,12 +11135,15 @@ class FastLaneReviewRoundTwoTests(unittest.TestCase):
 
     def test_a_channel_takes_the_lane_only_when_listed(self):
         import slack
-        cfg = {"fast_lane_channels": ["C0SANDBOX #sandbox"]}
+        cfg = {"bot_fast_lane_channels": ["C0SANDBOX #sandbox", "C0UNREAD"],
+               "bot_allow_channels": ["C0SANDBOX", "C0GENERAL"]}
         self.assertTrue(slack.fast_lane_channel(cfg, "D0DM", slack.BOT))
         self.assertTrue(slack.fast_lane_channel(cfg, "D0DM", slack.USER))
         self.assertTrue(slack.fast_lane_channel(cfg, "C0SANDBOX", slack.BOT))
         self.assertFalse(slack.fast_lane_channel(cfg, "C0SANDBOX", slack.USER),
                          "the bot's list never widens the user token's grant")
         self.assertFalse(slack.fast_lane_channel(cfg, "C0GENERAL", slack.BOT))
+        self.assertFalse(slack.fast_lane_channel(cfg, "C0UNREAD", slack.BOT),
+                         "a channel the bot does not read grants nothing, however it was stored")
         self.assertFalse(slack.fast_lane_channel({}, "C0SANDBOX", slack.BOT), "default: DMs only")
         self.assertFalse(slack.fast_lane_channel(cfg, None, slack.BOT))
