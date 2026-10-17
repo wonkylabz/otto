@@ -9,7 +9,6 @@ import json
 import os
 import re
 import subprocess
-import threading
 import time
 
 import config
@@ -20,8 +19,7 @@ _CUSTOM = os.path.join(config.DATA_DIR, "capabilities.json")   # Otto-added capa
 _MCPDEF = os.path.join(config.DATA_DIR, "mcp-servers.json")    # Otto-added MCP servers
 _CONN_CACHE = os.path.join(config.DATA_DIR, "mcp-connectors-cache.json")  # claude.ai connectors
 _CONN_TTL = 3600   # connectors change rarely; the Admin view also force-refreshes on demand
-_CONN_FAIL_TTL = 300
-_LISTING_LOCK = threading.Lock()   # one `claude mcp list` at a time, for every caller   # a FAILED listing is retried much sooner — it is usually transient
+_CONN_FAIL_TTL = 300   # a FAILED listing is retried much sooner — it is usually transient
 
 
 def _read(path, default):
@@ -587,16 +585,26 @@ def _mcp_status(allow_refresh=False, force=False):
     now = time.time()
     fresh = (now - cached.get("at", 0)) < _CONN_TTL or (now - cached.get("failed_at", 0)) < _CONN_FAIL_TTL
     if allow_refresh and (force or not fresh):
-        cached, _ok = _refresh_listing(cached)
+        cached, _ok = _refresh_listing(cached, force=force)
     return cached
 
 
-def _refresh_listing(cached):
+def _refresh_listing(cached, force=True):
     """Run `claude mcp list` once: (the cache as it now stands, whether THIS listing succeeded).
-    EVERY caller — Admin's Recheck, the TTL refresh, onboarding — comes through here under one
-    lock, so two listings never start every stdio server at the same time. A caller that waited
-    still runs its OWN listing: the one it waited on began before its click."""
-    with _LISTING_LOCK:
+    EVERY caller, in EVERY process — Admin's Recheck, the TTL refresh, onboarding, the worker —
+    comes through here under one FILE lock, so two listings never start every stdio server at
+    the same time. Once it holds the lock, a TTL refresh (`force=False`) re-reads the cache and
+    skips its own listing when the one it waited behind just refreshed it; an explicit Recheck
+    (`force`) still runs its own, because the one it waited on began before its click."""
+    import fcntl
+    os.makedirs(os.path.dirname(_CONN_CACHE) or ".", exist_ok=True)
+    with open(_CONN_CACHE + ".listing.lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)          # released when the file closes
+        if not force:
+            now = _read(_CONN_CACHE, {})
+            now = now if isinstance(now, dict) else {}
+            if now.get("at", 0) > cached.get("at", 0) and time.time() - now["at"] < _CONN_TTL:
+                return now, True
         return _refresh_listing_locked(cached)
 
 

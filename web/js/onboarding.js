@@ -133,8 +133,8 @@ async function obAction(act){
    starts every stdio MCP server — only on the operator's own Re-check click. */
 async function obRecheck(connectors){
     // Awaited: the server re-runs the lookups (connectors included) and answers when they are
-    // done or after _RECHECK_WAIT_S (65s), so the preview reads the refreshed state, not a race.
-    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take up to a minute…</p>';
+    // done or after _RECHECK_WAIT_S (130s), so the preview reads the refreshed state, not a race.
+    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take a minute or two…</p>';
     document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
     const seq=++OB.seq;       // supersede any preview already in flight from the first render
     let failed=null, res=null;

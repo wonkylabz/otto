@@ -208,11 +208,12 @@ def _lookup_login(keep_known):
     rc, out, err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
     ok = rc == 0 and bool(out.strip())
     with _VIEWER_LOCK:
-        # A lookup that STARTED before the last write lost the race: a slow page-open warm must
-        # not overwrite the login a Re-check started later just resolved (nor its failure).
-        if started < getattr(viewer, "_at", 0.0):
+        # A lookup that STARTED before the last write lost the race — unless it SUCCEEDED over a
+        # newer failure: a resolved login is truth, a failure may be a blip. So a slow warm's
+        # failure never overwrites a Re-check's login, and a slow warm's login does undo a blip.
+        if started < getattr(viewer, "_at", 0.0) and not (ok and not getattr(viewer, "_cache", None)):
             return ok
-        viewer._at = started
+        viewer._at = max(started, getattr(viewer, "_at", 0.0))
         if ok:
             viewer._cache = out.strip()
             return True

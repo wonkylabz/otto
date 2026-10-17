@@ -2900,7 +2900,9 @@ class Handler(BaseHTTPRequestHandler):
         pass  # engine.trace() already prints a readable trace
 
 
-_RECHECK_WAIT_S = 65          # above `claude mcp list`'s own 60s timeout
+# Two of `claude mcp list`'s 60s timeouts and a margin: a Re-check may queue behind another
+# listing (listings are serialized) and then run its own.
+_RECHECK_WAIT_S = 130
 _WARM_EVERY_S = 60
 _WARM = {"at": 0.0, "threads": []}
 _WARM_LOCK = threading.Lock()
@@ -2952,8 +2954,10 @@ def _warm_onboarding_caches(force=False):
     network is up). Fills only what is missing: each lookup's own cache and backoff decide. One
     at a time, throttled unless `force`. Never `claude mcp list` (that is Re-check's)."""
     with _WARM_LOCK:
-        if any(t.is_alive() for t in _WARM["threads"]) or \
-                (not force and time.time() - _WARM["at"] < _WARM_EVERY_S):
+        # `force` (Setup) always re-fills: one hung lookup must not silence the rest. Each lookup
+        # guards its own races (gh's newer-answer rule, Slack's per-probe outcome).
+        if not force and (any(t.is_alive() for t in _WARM["threads"])
+                          or time.time() - _WARM["at"] < _WARM_EVERY_S):
             return
 
         def one(fn):

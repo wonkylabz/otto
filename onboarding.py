@@ -204,16 +204,20 @@ def _partition_mcps(mcps, health=None):
             unusable.append((hay, label, "can't be used right now — reconnect or re-authenticate it"))
         else:
             usable.append((hay, label))
-    why = {"needs_auth": "needs re-authentication — reconnect it in claude.ai → Settings → Connectors",
-           "failed": "failed to connect — check it in claude.ai → Settings → Connectors",
-           "pending": "is waiting for approval in claude.ai → Settings → Connectors"}
+    # Keyed off policy.UNHEALTHY, with a default, so a category added there is never dropped.
+    state = {"needs_auth": "needs re-authentication", "failed": "failed to connect",
+             "pending": "is waiting for approval"}
     for name, cat in (health or {}).items():
-        # Only claude.ai CONNECTORS lack a row (stdio and plugin servers always have one, under
-        # their own keys); the rest of the health map is not this loop's to judge.
-        if name in seen or not name.startswith("claude_ai_") or cat not in why:
+        # A server the listing reports but that has no row: a claude.ai connector not Connected
+        # (the parse keeps only those), or a project/local-scope server outside ~/.claude.json.
+        if name in seen or cat not in policy.UNHEALTHY:
             continue
-        label = "claude.ai " + name[len("claude_ai_"):].replace("_", " ")
-        unusable.append((name.lower(), label, why[cat]))
+        if name.startswith("claude_ai_"):
+            label = "claude.ai " + name[len("claude_ai_"):].replace("_", " ")
+            where = "reconnect it in claude.ai → Settings → Connectors"
+        else:
+            label, where = name, "check it with `claude mcp list` (it isn't one Otto manages)"
+        unusable.append((name.lower(), label, f"{state.get(cat, 'is unhealthy')} — {where}"))
     return usable, unusable
 
 

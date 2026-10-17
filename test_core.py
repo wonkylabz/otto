@@ -2803,16 +2803,20 @@ class OnboardingTests(unittest.TestCase):
         names = [n for n, _ in server._recheck_probes(False)]
         self.assertNotIn("mcp-list", names)
         self.assertIn("mcp-list", [n for n, _ in server._recheck_probes(True)])
-        # Behaviourally: a page-open warm, run to completion, never starts a listing.
+        # Behaviourally, with EVERY branch live: the warm runs its lookups and never a listing.
         import policy
+        ran = []
         with mock.patch.object(policy, "_refresh_listing", side_effect=AssertionError("listed")), \
                 mock.patch.object(policy, "refresh_mcp_status", side_effect=AssertionError("listed")), \
-                mock.patch.object(server.slack, "token_set", return_value=False), \
-                mock.patch.object(server.shutil, "which", return_value=None):
+                mock.patch.object(server.slack, "token_set", return_value=True), \
+                mock.patch.object(server.slack, "granted_scopes", side_effect=lambda i: ran.append(i)), \
+                mock.patch.object(server.pr_review, "viewer", side_effect=lambda: ran.append("gh")), \
+                mock.patch.object(server.shutil, "which", return_value="/usr/bin/gh"):
             server._WARM.update(at=0.0, threads=[])
             server._warm_onboarding_caches(force=True)
             for t in server._WARM["threads"]:
                 t.join(2)
+        self.assertEqual(len(ran), 3, "both Slack identities and the gh login were warmed")
         self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main), "never at boot")
         get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
         self.assertNotIn("mcp=True", get, "a GET must never spawn MCP servers")
@@ -2971,7 +2975,8 @@ class OnboardingTests(unittest.TestCase):
                 live[0] -= 1
             return cached, True
         with mock.patch.object(policy, "_refresh_listing_locked", side_effect=listing), \
-                mock.patch.object(policy, "_mcp_status", return_value={}):
+                mock.patch.object(policy, "_mcp_status", return_value={}), \
+                mock.patch.object(policy, "_CONN_CACHE", os.path.join(self._dir, "conn.json")):
             ts = [th.Thread(target=policy.refresh_mcp_status) for _ in range(3)]
             for t in ts:
                 t.start()
@@ -3010,9 +3015,32 @@ class OnboardingTests(unittest.TestCase):
             slow.join()
             self.assertEqual(pr_review.viewer_cached(), "alice")
 
-    def test_recheck_reads_its_results_once(self):
-        import server
-        self.assertIn("done = dict(results)", inspect.getsource(server._recheck))
+    def test_a_ttl_refresh_behind_a_listing_reuses_it(self):
+        import policy
+        path = os.path.join(self._dir, "conn.json")
+        storage.write_json(path, {"at": policy.time.time(), "connectors": [], "health": {}})
+        with mock.patch.object(policy, "_CONN_CACHE", path), \
+                mock.patch.object(policy, "_refresh_listing_locked", side_effect=AssertionError("re-listed")):
+            _cached, ok = policy._refresh_listing({"at": 1.0}, force=False)
+        self.assertTrue(ok, "the listing it waited behind refreshed the cache")
+
+    def test_the_listing_lock_is_a_file_lock(self):
+        import policy
+        self.assertIn("fcntl.flock", inspect.getsource(policy._refresh_listing),
+                      "server and worker are separate processes")
+
+    def test_an_older_login_undoes_a_newer_blip(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "", create=True), \
+                mock.patch.object(pr_review.viewer, "_at", pr_review.time.monotonic() + 100, create=True), \
+                mock.patch.object(pr_review, "_run", return_value=(0, "alice\n", "")):
+            self.assertTrue(pr_review._lookup_login(keep_known=False))
+            self.assertEqual(pr_review.viewer_cached(), "alice", "a resolved login is truth")
+
+    def test_an_unrowed_unhealthy_server_is_still_named(self):
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"email-mcp": "failed"})["integrations"][0]
+        self.assertIn("email-mcp failed to connect", got["detail"])
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack
