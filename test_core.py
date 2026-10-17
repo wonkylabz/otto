@@ -1998,6 +1998,30 @@ class ReleaseScriptTests(unittest.TestCase):
         self.assertIn("[0.2.0]: ", out, "the new section has no link definition, so it renders bare")
         self.assertIn("- a thing", out, "the entries were dropped instead of being released")
 
+    def test_a_released_section_rewritten_after_its_tag_is_caught(self):
+        """A branch merged after a release resolved its [Unreleased] entries INTO that
+        release's section — 0.3.0's changelog credited it with onboarding, which its tag lacks."""
+        shipped = "## [Unreleased]\n\n## [0.3.0] - 2026-10-17\n\n- factory\n"
+        now = ("## [Unreleased]\n\n## [0.3.0] - 2026-10-17\n\n- onboarding\n- factory\n\n"
+               "[Unreleased]: https://example.invalid/compare/v0.3.0...HEAD\n")
+        self.assertEqual(self.release.rewritten_sections(now, {"0.3.0": shipped}), ["0.3.0"])
+        self.assertEqual(self.release.rewritten_sections(
+            now.replace("- onboarding\n", ""), {"0.3.0": shipped}), [],
+            "the link block below the last section must not count as part of its body")
+        self.assertEqual(self.release.rewritten_sections(now, {"0.3.0": None}), [],
+                         "a version with no tag here has nothing to compare against")
+
+    def test_the_tag_is_cut_by_ci_on_the_landed_commit_never_locally(self):
+        """`main` squash-merges, so the commit release.py makes never lands: a local tag pointed
+        at an orphan and diverged `main` (v0.4.0). CI tags the commit that DID land."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "release.py")).read()
+        self.assertNotIn('"tag", "-a"', src, "release.py must not tag; the workflow does")
+        wf = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               ".github", "workflows", "release-tag.yml")).read()
+        self.assertIn("paths: [pyproject.toml]", wf)
+        self.assertIn('"$GITHUB_SHA"', wf, "the tag must go on the commit that landed")
+        self.assertIn("already tagged", wf, "a non-bump pyproject edit must be a no-op")
+
 
 class NotificationContentTests(unittest.TestCase):
     """The rule that request/ticket/message CONTENT reaches a push only through `detail` is

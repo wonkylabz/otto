@@ -1,0 +1,36 @@
+# Tags a release once its PR lands. `release.py` only opens the PR: `main` squash-merges, so
+# the commit the script made never reaches `main`, and a tag cut locally pointed at an orphan
+# (v0.4.0). Here the tag goes on the commit that actually landed, and only once.
+name: release-tag
+
+on:
+  push:
+    branches: [main]
+    paths: [pyproject.toml]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # A pyproject edit that is not a version bump (a dependency, a lint rule) finds its tag
+      # already there and does nothing; a bump with no dated changelog section is not a release.
+      - name: Tag the version if it is new
+        run: |
+          v=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "v$v already tagged"; exit 0
+          fi
+          grep -q "^## \[$v\] - " CHANGELOG.md || { echo "no dated [$v] section in CHANGELOG.md"; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$v" -m "Otto v$v" "$GITHUB_SHA"
+          git push origin "v$v"
