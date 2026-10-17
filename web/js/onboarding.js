@@ -30,7 +30,9 @@ async function openOnboarding(meta){
     // Resume on Review. The plain warm (Slack scopes, gh login) runs on this GET; the full
     // Re-check — `claude mcp list` starts every stdio server — stays the operator's click.
     OB.parked=false; OB.step=OB_STEPS.indexOf("review");
-    try { await getJSON("/api/onboarding?warm=1"); } catch(e){}
+    // Re-ask (and WAIT for) the cheap lookups the detour may have fixed — the gh login, Slack's
+    // scopes — but not the connector list: that spawns every stdio server, so it is Re-check's.
+    try { await postJSON("/api/onboarding/recheck",{connectors:false}); } catch(e){}
     obRender();
     return;
   }
@@ -128,7 +130,9 @@ async function obAction(act){
     const note=failed ? "Re-check: "+failed+" — showing the last known state for those." : "";
     document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
     await obReview();
-    const err=document.getElementById("ob-err"); if(note && err && err.isConnected) err.textContent=note;
+    // Appended, never replacing: a preview failure (and its Retry) above it must stay visible.
+    const err=document.getElementById("ob-err");
+    if(note && err && err.isConnected) err.insertAdjacentText("beforeend",(err.textContent?" ":"")+note);
     return;
   }
   if(act==="tour"){ closeFormModal(); startTour(); return; }
@@ -138,7 +142,7 @@ async function obAction(act){
     document.querySelectorAll('[data-ob^="apply"]').forEach(b=>b.disabled=true);
     let out;
     try { out=await postJSON("/api/onboarding/apply",{answers:OB.answers, expect:OB.fingerprint}); }
-    catch(e){ err.textContent=e.message; obReview(); return; }   // 409: re-preview what changed
+    catch(e){ obReview(e.message); return; }   // 409: re-preview what changed, and KEEP saying why
     OB.done=true;
     const n=(out.applied||[]).length;
     toast(n?`Onboarding applied ${n} setting change${n>1?"s":""}`:"Onboarding saved — settings already matched","ok");
@@ -158,7 +162,7 @@ function refocusOption(prev){
 
 function obFmt(v){ return v===true?"on":v===false?"off":v===0?"0 (off)":String(v); }
 
-async function obReview(){
+async function obReview(why){
   const box=document.getElementById("ob-review"), err=document.getElementById("ob-err"), seq=++OB.seq;
   let p;
   try { p=await postJSON("/api/onboarding/preview",{answers:OB.answers}); }
@@ -171,7 +175,8 @@ async function obReview(){
   // Superseded (Back → changed an answer → Next) or closed while in flight: a detached node is
   // still truthy, so test the sequence and isConnected, never the reference.
   if(seq!==OB.seq || !box || !box.isConnected) return;
-  if(err && err.isConnected) err.textContent="";     // a fresh plan supersedes the last error
+  // A fresh plan supersedes an old error — unless it is the reason this preview was asked for.
+  if(err && err.isConnected) err.textContent=why ? why+" — here is the current plan." : "";
   OB.fingerprint=p.fingerprint;
   document.getElementById("ob-loading").textContent="Nothing is written until you apply. Applying the same answers again changes nothing.";
   const label={set:'<span class="obset">will change</span>',keep:'<span class="obkeep">already set</span>',

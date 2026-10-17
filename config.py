@@ -3,7 +3,6 @@ import os
 import re
 import shlex
 import subprocess
-import threading
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -648,69 +647,74 @@ def _settings_store():
     return _store_memo["data"]
 
 
-def setting(name):
-    """Resolve one runtime setting: env > store > code default (the legacy module constant)."""
+def setting(name, store=None):
+    """Resolve one runtime setting: env > store > code default (the legacy module constant).
+    `store` resolves against a given store dict instead of the file — for a check that must run
+    inside save_settings' own file lock."""
     env_var, kind, const = _SETTING_SPECS[name]
     raw = os.environ.get(env_var)
     if raw is not None and raw != "":
         val = _coerce(kind, raw)
         if val is not None:
             return val
-    if name in _settings_store():
-        val = _coerce(kind, _settings_store()[name])
+    store = _settings_store() if store is None else store
+    if name in store:
+        val = _coerce(kind, store[name])
         if val is not None:
             return val
     return globals()[const]
 
 
-def settings_all():
+def settings_all(store=None):
     """Every setting resolved, plus where the value came from — Admin renders an env-pinned knob as
-    locked rather than offering a control whose clicks would be silently overridden."""
+    locked rather than offering a control whose clicks would be silently overridden. `store`: as
+    for setting()."""
+    st = _settings_store() if store is None else store
     out = {}
     for name, (env_var, kind, const) in _SETTING_SPECS.items():
         # Pinned only by a value setting() would actually USE: an env value that fails to coerce
         # is ignored there, so reporting it pinned would lock a knob the store still controls.
         raw = os.environ.get(env_var)
         pinned = raw not in (None, "") and _coerce(kind, raw) is not None
-        out[name] = {"value": setting(name), "kind": kind, "env": env_var,
+        out[name] = {"value": setting(name, st), "kind": kind, "env": env_var,
                      "env_pinned": pinned, "default": globals()[const],
-                     "stored": name in _settings_store()}
+                     "stored": name in st}
     return out
-
-
-# Held by save_settings, and by a caller that must CHECK the store and write it as one step
-# (onboarding.apply) — re-entrant so that caller can call save_settings inside it. In-PROCESS
-# only: it holds because every settings writer runs in server.py. A writer in another process
-# would need the check inside storage.mutate_json's file lock instead.
-SETTINGS_LOCK = threading.RLock()
 
 
 def save_settings(updates):
     """Merge UI edits into the store (validated + coerced; unknown keys and unusable values are
     dropped). A value equal to the code default is REMOVED rather than stored, so the store stays a
     diff against the defaults and a later default change isn't silently pinned. Returns the
-    resolved settings_all()."""
+    resolved settings_all().
+
+    `updates` may be a callable `(store) -> {name: value}`, run INSIDE the store's file lock: a
+    caller that must check the current store and write as one step (onboarding.apply) raises from
+    it to abort, and no writer in any process can land between its check and its write."""
     import storage
-    clean = {}
-    for name, raw in (updates or {}).items():
-        if name not in _SETTING_SPECS:
-            continue
-        val = _coerce(_SETTING_SPECS[name][1], raw)
-        if val is not None:
-            clean[name] = val
+
+    def _clean(updates):
+        out = {}
+        for name, raw in (updates or {}).items():
+            if name not in _SETTING_SPECS:
+                continue
+            val = _coerce(_SETTING_SPECS[name][1], raw)
+            if val is not None:
+                out[name] = val
+        return out
 
     def _mut(d):
         if not isinstance(d, dict):
             d = {}
+        clean = _clean(updates(dict(d)) if callable(updates) else updates)
         for name, val in clean.items():
             if val == globals()[_SETTING_SPECS[name][2]]:
                 d.pop(name, None)
             else:
                 d[name] = val
         return d
-    with SETTINGS_LOCK:
-        storage.mutate_json(_settings_path(), _mut, default={})
-        _store_memo["stamp"] = None      # force a re-read in THIS process
+    storage.mutate_json(_settings_path(), _mut, default={})
+    _store_memo["stamp"] = None      # force a re-read in THIS process
     return settings_all()
 
 

@@ -162,8 +162,8 @@ def profile_settings(profile, cur=None):
     return {**base, **(PROFILES[profile]["settings"] or {})}
 
 
-def _settings_plan(profile):
-    cur = config.settings_all()
+def _settings_plan(profile, cur=None):
+    cur = cur or config.settings_all()
     out = []
     for name, target in profile_settings(profile, cur).items():
         s = cur[name]
@@ -321,17 +321,21 @@ def apply(answers, expect):
     install changed in between. Only the SETTINGS are re-derived — the fingerprint covers nothing
     else, so integration detection is the preview's alone."""
     a = normalize(answers)
-    # Check and write as ONE step: an Admin save landing between them would be overwritten.
-    with config.SETTINGS_LOCK:
-        settings = _settings_plan(a["profile"])
+    planned = {}
+
+    def check(store):
+        # Runs INSIDE save_settings' file lock, against the store as it is NOW: a write from any
+        # process landing after the preview refuses here, instead of being overwritten.
+        settings = _settings_plan(a["profile"], config.settings_all(store=store))
         if _fingerprint(a, settings) != expect:
             raise StalePreview("settings changed since the preview — review again")
-        changes = {s["name"]: s["after"] for s in settings if s["action"] == "set"}
-        if changes:
-            config.save_settings(changes)
-        # Report what the store now HOLDS: save_settings silently drops a value its spec refuses.
-        changes = {k: v for k, v in changes.items() if config.setting(k) == v}
+        planned.update({s["name"]: s["after"] for s in settings if s["action"] == "set"})
+        return planned
+    config.save_settings(check)
+    # Report what the store now HOLDS: save_settings silently drops a value its spec refuses.
+    changes = {k: v for k, v in planned.items() if config.setting(k) == v}
     now = time.time()
+
     def _mut(d):
         d = d if isinstance(d, dict) else {}
         prev = d.get("answers") if isinstance(d.get("answers"), dict) else {}

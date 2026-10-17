@@ -428,6 +428,14 @@ def granted_scopes(identity=USER, refresh=False):
     return out
 
 
+def refresh_scopes(identity):
+    """Re-probe this identity's grant now and say whether the PROBE succeeded (Slack answered,
+    granting or refusing). The outcome is this call's own — never read back from a shared
+    failure stamp another lookup may have written."""
+    granted_scopes(identity, refresh=True)        # clears the stamp first, sets it on failure
+    return ("scopes", identity) not in _FAILED
+
+
 def _scope_needed(gate, cfg):
     """A scope is needed unless the feature it serves is switched off. ONE rule for both what
     scope_gaps reports and what the setup guide asks for, so the two can't disagree."""

@@ -203,6 +203,19 @@ def viewer(retry=False):
     return viewer._cache or None
 
 
+def refresh_viewer():
+    """Re-ask `gh` now; True when THIS lookup succeeded (its own outcome, not a shared stamp)."""
+    rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
+    if rc == 0 and out.strip():
+        viewer._cache = out.strip()
+        return True
+    global _viewer_failed
+    _viewer_failed = time.time()
+    if not getattr(viewer, "_cache", None):
+        viewer._cache = ""        # a known login survives a blip; none becomes a failed lookup
+    return False
+
+
 def viewer_cached():
     """The last ANSWER `viewer()` got: the login, "" if that lookup failed, or None before any
     lookup has returned (one in flight included). Never runs `gh` — for a caller a spinner is

@@ -604,6 +604,13 @@ def _mcp_status(allow_refresh=False, force=False):
     return cached
 
 
+def refresh_mcp_status():
+    """Run `claude mcp list` now (it starts every stdio server) and say whether THIS listing
+    succeeded. One cache refresh, no MCP row list built and thrown away."""
+    st = _mcp_status(allow_refresh=True, force=True)
+    return "failed_at" not in st or st.get("at", 0) >= st.get("failed_at", 0)
+
+
 def mcp_status_cached():
     """The cached `claude mcp list` parse, never refreshed — for callers a spinner waits on."""
     return _mcp_status()

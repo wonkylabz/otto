@@ -2639,8 +2639,10 @@ class OnboardingTests(unittest.TestCase):
 
     def test_applied_reports_only_what_the_store_holds(self):
         orig = config.save_settings
+        # The spec refuses one value: save_settings drops it, inside the same locked check.
         with mock.patch.object(config, "save_settings",
-                               side_effect=lambda ch: orig({k: v for k, v in ch.items() if k != "effort"})):
+                               side_effect=lambda ch: orig(lambda st: {k: v for k, v in ch(st).items()
+                                                                       if k != "effort"})):
             out = self._apply({"profile": "economic"})
         self.assertNotIn("effort", out["applied"])
         self.assertIn("max_attempts", out["applied"])
@@ -2799,7 +2801,7 @@ class OnboardingTests(unittest.TestCase):
     def _warm(self, probes):
         import server
         server._WARM.update(job=None, at=0.0)
-        return server, mock.patch.object(server, "_warm_probes", side_effect=lambda m, r, since: probes(m))
+        return server, mock.patch.object(server, "_warm_probes", side_effect=lambda m, r: probes(m))
 
     def test_a_coalesced_recheck_reads_the_shared_result(self):
         import threading as th
@@ -2842,9 +2844,9 @@ class OnboardingTests(unittest.TestCase):
 
     def test_the_mcp_list_runs_only_behind_an_explicit_recheck(self):
         import server
-        names = [n for n, _ in server._warm_probes(False, False, 0)]
+        names = [n for n, _ in server._warm_probes(False, False)]
         self.assertNotIn("mcp-list", names)
-        self.assertIn("mcp-list", [n for n, _ in server._warm_probes(True, True, 0)])
+        self.assertIn("mcp-list", [n for n, _ in server._warm_probes(True, True)])
         self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main), "never at boot")
         get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
         self.assertNotIn("mcp=True", get, "a GET must never spawn MCP servers")
@@ -2870,6 +2872,36 @@ class OnboardingTests(unittest.TestCase):
         with mock.patch.object(config, "EFFORT", "bogus"):
             self.assertNotIn("effort", self.ob.profile_settings("balanced"))
 
+    def test_a_timed_out_recheck_reports_what_is_actually_known(self):
+        import threading as th
+        gate = th.Event()
+        def fail():
+            raise RuntimeError("gh down")
+        server, patch = self._warm(lambda m: [("gh-viewer", fail), ("mcp-list", lambda: gate.wait(3))])
+        with patch:
+            out = server._warm_onboarding_caches(force=True, mcp=True, wait=0.3, retry=True)
+            gate.set()
+        self.assertEqual(out["failed"], ["gh-viewer"], "a finished failure is not 'still running'")
+        self.assertEqual(out["incomplete"], ["mcp-list"])
+
+    def test_refresh_lookups_report_their_own_outcome(self):
+        import pr_review
+        import slack
+        with mock.patch.object(pr_review, "_run", return_value=(1, "", "down")), \
+                mock.patch.object(pr_review.viewer, "_cache", "alice", create=True):
+            self.assertFalse(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "alice")
+        with mock.patch.dict(slack._FAILED, {}, clear=True), \
+                mock.patch.object(slack, "granted_scopes", side_effect=lambda i, refresh=False: None):
+            self.assertTrue(slack.refresh_scopes(slack.USER))
+
+    def test_a_refused_apply_keeps_saying_why(self):
+        ui = ui_src()
+        self.assertIn("obReview(e.message)", ui)
+        self.assertIn('why+" — here is the current plan."', ui)
+        self.assertIn('insertAdjacentText("beforeend"', ui, "a Re-check note never hides a preview failure")
+        self.assertIn('postJSON("/api/onboarding/recheck",{connectors:false})', ui)
+
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack
         got = self._slack({"enabled": True}, [slack.USER])
@@ -2883,10 +2915,19 @@ class OnboardingTests(unittest.TestCase):
         self._apply(st["draft"])
         self.assertIsNone(self.ob.state()["draft"])
 
-    def test_apply_checks_and_writes_under_the_settings_lock(self):
-        src = inspect.getsource(self.ob.apply)
-        self.assertLess(src.index("with config.SETTINGS_LOCK"), src.index("_fingerprint("))
-        self.assertIn("SETTINGS_LOCK", inspect.getsource(config.save_settings))
+    def test_apply_checks_inside_the_store_lock_against_the_store_as_it_is_now(self):
+        fp = self.ob.preview({"profile": "economic"})["fingerprint"]
+        real = storage.mutate_json
+
+        def racing(path, fn, default):
+            # Another PROCESS writes between the preview and apply's check: the check sees it.
+            if path == config._settings_path():
+                return real(path, lambda d: fn({**(d or {}), "max_attempts": 7}), default)
+            return real(path, fn, default)
+        with mock.patch.object(storage, "mutate_json", side_effect=racing):
+            with self.assertRaises(self.ob.StalePreview):
+                self.ob.apply({"profile": "economic"}, fp)
+        self.assertFalse(hasattr(config, "SETTINGS_LOCK"), "an in-process lock covers one process only")
 
     def test_keep_on_a_first_run_records_no_profile(self):
         self._apply({"usage": "work", "profile": "keep"})
