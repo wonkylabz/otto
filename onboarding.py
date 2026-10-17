@@ -14,8 +14,6 @@ fingerprint still matches, so it writes exactly what the operator read).
   * **UI/config only.** The answers prefill a re-run and pick the recommendations; nothing a run
     reads looks at them.
 """
-import hashlib
-import json
 import os
 import re
 import shutil
@@ -186,23 +184,31 @@ def _settings_plan(profile, cur=None):
     return out
 
 
-def _unusable_mcps(mcps):
-    """[(haystack, label)] for servers that EXIST but a run can't use — needing auth, failed,
-    pending, or never activated — so a row can say "reconnect it", not "connect one"."""
+def _partition_mcps(mcps, health=None):
+    """(usable, unusable) as [(haystack, label)] / [(haystack, label, why)], one pass. Usable =
+    enabled, activated (an Otto def stays unspawned until confirmed) and not last seen unhealthy.
+    Unusable keeps the REASON, so a row says "switch it on" or "re-authenticate it", never the
+    generic "connect one". `health` adds the connectors `claude mcp list` reported but that never
+    become rows: the listing keeps only Connected ones, so one needing auth exists only there."""
     import policy               # noqa: PLC0415
-    return [(f"{m.get('name', '')} {m.get('display', '')}".lower(), m.get("display") or m.get("name", ""))
-            for m in mcps if m.get("enabled", True)
-            and (m.get("confirmed") is False or m.get("health") in policy.UNHEALTHY)]
-
-
-def _usable_mcps(mcps):
-    """[(haystack, label)] for servers a run can actually use: enabled, activated (an Otto-added
-    def stays unspawned until confirmed) and not last seen unhealthy. The label is what the rest
-    of the UI shows — a connector's display name, never its tool-namespace id."""
-    import policy               # noqa: PLC0415
-    return [(f"{m.get('name', '')} {m.get('display', '')}".lower(), m.get("display") or m.get("name", ""))
-            for m in mcps if m.get("enabled", True) and m.get("confirmed") is not False
-            and m.get("health") not in policy.UNHEALTHY]
+    usable, unusable, seen = [], [], set()
+    for m in mcps:
+        name = m.get("name", "")
+        seen.add(name)
+        hay, label = f"{name} {m.get('display', '')}".lower(), m.get("display") or name
+        if not m.get("enabled", True):
+            unusable.append((hay, label, "is switched off in Admin → MCP servers — switch it on"))
+        elif m.get("confirmed") is False:
+            unusable.append((hay, label, "is registered but not activated — activate it in Admin → MCP servers"))
+        elif m.get("health") in policy.UNHEALTHY:
+            unusable.append((hay, label, "can't be used right now — reconnect or re-authenticate it"))
+        else:
+            usable.append((hay, label))
+    for name, cat in (health or {}).items():
+        if name not in seen and cat in policy.UNHEALTHY:
+            unusable.append((name.lower(), name.replace("_", " "),
+                             "needs re-authentication — reconnect it in claude.ai → Settings → Connectors"))
+    return usable, unusable
 
 
 def _row(ready, detail, hint=None):
@@ -289,18 +295,17 @@ def _detect(key, usable, connectors_checked=True, unusable=()):
     hits = [label for hay, label in usable if re.search(spec["match"], hay)]
     if hits:
         return _row(True, ", ".join(hits))
-    sick = [label for hay, label in unusable if re.search(spec["match"], hay)]
+    sick = [(label, why) for hay, label, why in unusable if re.search(spec["match"], hay)]
     if sick:
-        return _row(False, f"{sick[0]} is set up but can't be used right now — reconnect or "
-                    "re-authenticate it (claude.ai → Settings → Connectors, or Admin → MCP servers)", "")
+        return _row(False, f"{sick[0][0]} {sick[0][1]}", "")
     if not connectors_checked:
         return _row(None, "not checked yet — Admin → MCP servers lists your claude.ai connectors")
     return _row(False, "nothing connected")
 
 
-def _integrations_plan(wants, mcps, connectors_checked=True):
-    out, usable = [], _usable_mcps(mcps)       # built once, shared by every MCP-matched row
-    unusable = _unusable_mcps(mcps)
+def _integrations_plan(wants, mcps, connectors_checked=True, health=None):
+    out = []
+    usable, unusable = _partition_mcps(mcps, health)   # built once, shared by every MCP row
     for key in wants:
         # An UNKNOWN row gets no hint: its detail says how to find out, and the generic "how to
         # set this up" would contradict a setup that may be complete.
@@ -316,11 +321,11 @@ def _fingerprint(a, settings):
     # `before` too: an Admin edit between preview and apply must refuse, not be overwritten unseen.
     changes = [{"name": s["name"], "before": s["before"], "after": s["after"]}
                for s in settings if s["action"] == "set"]
-    return hashlib.sha256(json.dumps({"answers": a, "changes": changes}, sort_keys=True,
-                                     default=str).encode()).hexdigest()[:16]
+    import snapshot             # noqa: PLC0415 — the shared preview/apply token
+    return snapshot.fingerprint({"answers": a, "changes": changes})
 
 
-def preview(answers, mcps=(), connectors_checked=True):
+def preview(answers, mcps=(), connectors_checked=True, health=None):
     """Every change `apply` would make, plus the fingerprint it must be given back."""
     a = normalize(answers)
     mcps = list(mcps)
@@ -339,7 +344,7 @@ def preview(answers, mcps=(), connectors_checked=True):
                      "To use this profile's instead, remove them from .env, restart, and run "
                      "Setup again.")
     return {"answers": a, "fingerprint": fp, "settings": settings,
-            "integrations": _integrations_plan(a["integrations"], mcps, connectors_checked),
+            "integrations": _integrations_plan(a["integrations"], mcps, connectors_checked, health),
             "notes": notes}
 
 

@@ -2798,55 +2798,13 @@ class OnboardingTests(unittest.TestCase):
             self.assertTrue(pr_review.refresh_viewer())
             self.assertEqual(pr_review.viewer_cached(), "new")
 
-    def _warm(self, probes):
-        import server
-        server._WARM.update(job=None, at=0.0)
-        return server, mock.patch.object(server, "_warm_probes", side_effect=lambda m, r, only=None: probes(m))
-
-    def test_a_coalesced_recheck_reads_the_shared_result(self):
-        import threading as th
-        gate = th.Event()
-        def boom():
-            gate.wait(2)
-            raise RuntimeError("mcp list failed")
-        server, patch = self._warm(lambda m: [("mcp-list", boom)] if m else [])
-        with patch:
-            out = []
-            t = th.Thread(target=lambda: out.append(server._warm_onboarding_caches(force=True, mcp=True, wait=5, retry=True)))
-            t.start()
-            time_ = __import__("time"); time_.sleep(0.1)
-            t2 = th.Thread(target=lambda: out.append(server._warm_onboarding_caches(force=True, mcp=True, wait=5, retry=True)))
-            t2.start(); time_.sleep(0.1); gate.set(); t.join(); t2.join()
-        self.assertEqual([o["failed"] for o in out], [["mcp-list"], ["mcp-list"]],
-                         "the joiner reports the real outcome, not a clean refresh")
-
-    def test_a_plain_warm_never_lists_mcp_and_a_recheck_is_not_covered_by_it(self):
-        import threading as th
-        calls, gate = [], th.Event()
-        def probes(m):
-            calls.append(m)
-            return [("slack-scopes", lambda: gate.wait(2))]
-        server, patch = self._warm(probes)
-        with patch:
-            server._warm_onboarding_caches(force=True)                       # plain, in flight
-            server._warm_onboarding_caches(force=True, mcp=True, retry=True)  # NOT covered by it
-            gate.set()
-        self.assertEqual(calls, [False, True])
-
-    def test_a_recheck_that_runs_out_of_time_says_so(self):
-        import threading as th
-        gate = th.Event()
-        server, patch = self._warm(lambda m: [("gh-viewer", lambda: gate.wait(3))])
-        with patch:
-            out = server._warm_onboarding_caches(force=True, mcp=False, wait=0.2, retry=True)
-            gate.set()
-        self.assertIn("gh-viewer", out["incomplete"])
-
     def test_the_mcp_list_runs_only_behind_an_explicit_recheck(self):
         import server
-        names = [n for n, _ in server._warm_probes(False, False)]
+        names = [n for n, _ in server._recheck_probes(False)]
         self.assertNotIn("mcp-list", names)
-        self.assertIn("mcp-list", [n for n, _ in server._warm_probes(True, True)])
+        self.assertIn("mcp-list", [n for n, _ in server._recheck_probes(True)])
+        self.assertNotIn("mcp", inspect.getsource(server._warm_onboarding_caches).split('"""')[2],
+                         "the page-open warm never lists MCP servers")
         self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main), "never at boot")
         get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
         self.assertNotIn("mcp=True", get, "a GET must never spawn MCP servers")
@@ -2873,18 +2831,6 @@ class OnboardingTests(unittest.TestCase):
         with mock.patch.object(config, "EFFORT", "bogus"):
             self.assertNotIn("effort", self.ob.profile_settings("balanced"))
 
-    def test_a_timed_out_recheck_reports_what_is_actually_known(self):
-        import threading as th
-        gate = th.Event()
-        def fail():
-            raise RuntimeError("gh down")
-        server, patch = self._warm(lambda m: [("gh-viewer", fail), ("mcp-list", lambda: gate.wait(3))])
-        with patch:
-            out = server._warm_onboarding_caches(force=True, mcp=True, wait=0.3, retry=True)
-            gate.set()
-        self.assertEqual(out["failed"], ["gh-viewer"], "a finished failure is not 'still running'")
-        self.assertEqual(out["incomplete"], ["mcp-list"])
-
     def test_refresh_lookups_report_their_own_outcome(self):
         import pr_review
         import slack
@@ -2908,7 +2854,7 @@ class OnboardingTests(unittest.TestCase):
     def test_a_gh_less_install_never_reports_a_gh_failure(self):
         import server
         with mock.patch.object(server.shutil, "which", return_value=None):
-            names = [n for n, _ in server._warm_probes(True, True)]
+            names = [n for n, _ in server._recheck_probes(True)]
         self.assertNotIn("gh-viewer", names)
 
     def test_a_dm_id_is_never_a_mention_source(self):
@@ -2949,10 +2895,12 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(pr_review.viewer_cached(), "", "logged out is not a blip")
 
     def test_a_connector_needing_reauth_is_not_nothing_connected(self):
-        mcps = [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail", "health": "needs_auth"}]
-        got = self.ob.preview({"integrations": ["email"]}, mcps)["integrations"][0]
+        # As production builds it: the listing keeps only Connected connectors, so one needing auth
+        # is no ROW — it exists only in the health map.
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"claude_ai_Gmail": "needs_auth"})["integrations"][0]
         self.assertFalse(got["ready"])
-        self.assertIn("re-authenticate", got["detail"])
+        self.assertIn("re-authentication", got["detail"])
         self.assertEqual(got["hint"], "", "never the generic 'connect one'")
 
     def test_a_no_op_save_rewrites_nothing(self):
@@ -2965,9 +2913,62 @@ class OnboardingTests(unittest.TestCase):
 
     def test_a_guide_recheck_asks_only_for_what_it_reads(self):
         import server
-        names = [n for n, _ in server._warm_probes(False, True, only={"slack-scopes"})]
+        names = [n for n, _ in server._recheck_probes(False, only={"slack-scopes"})]
         self.assertEqual(names, ["slack-scopes"])
         self.assertIn('probes=key==="slack"?["slack-scopes"]:["gh-viewer"]', ui_src())
+
+    def test_a_recheck_reports_its_own_probes(self):
+        import server
+        import threading as th
+        gate = th.Event()
+        probes = [("gh-viewer", lambda: False), ("slack-scopes", lambda: True),
+                  ("mcp-list", lambda: gate.wait(3))]
+        with mock.patch.object(server, "_recheck_probes", return_value=probes):
+            out = server._recheck(mcp=True, wait=0.3)
+            gate.set()
+        self.assertEqual(out, {"failed": ["gh-viewer"], "incomplete": ["mcp-list"]})
+
+    def test_two_listings_never_run_at_once(self):
+        import policy
+        import threading as th
+        started, gate = [], th.Event()
+
+        def listing(cached):
+            started.append(1)
+            gate.wait(2)
+            return cached, True
+        with mock.patch.object(policy, "_refresh_listing", side_effect=listing), \
+                mock.patch.object(policy, "_mcp_status", return_value={}):
+            out = []
+            ts = [th.Thread(target=lambda: out.append(policy.refresh_mcp_status())) for _ in range(2)]
+            for t in ts:
+                t.start()
+            __import__("time").sleep(0.2)
+            gate.set()
+            for t in ts:
+                t.join()
+        self.assertEqual(len(started), 1, "the second caller reads the first's outcome")
+        self.assertEqual(out, [True, True])
+
+    def test_a_disabled_server_says_switch_it_on(self):
+        got = self.ob.preview({"integrations": ["email"]},
+                              [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail", "enabled": False}])
+        self.assertIn("switched off", got["integrations"][0]["detail"])
+
+    def test_an_unparseable_listing_keeps_the_last_good_one(self):
+        import policy
+        good = {"at": 1.0, "connectors": [{"name": "x"}], "health": {}}
+        with mock.patch.object(policy, "_run_mcp_list", return_value="weird"), \
+                mock.patch.object(policy, "_parse_connectors", side_effect=ValueError("bad")), \
+                mock.patch.object(policy, "_stamp_failed", return_value={**good, "failed_at": 2.0}):
+            cached, ok = policy._refresh_listing(dict(good))
+        self.assertFalse(ok)
+        self.assertEqual(cached["connectors"], good["connectors"])
+
+    def test_one_fingerprint_shape_for_every_preview_apply(self):
+        import snapshot
+        self.assertIn("snapshot.fingerprint(", inspect.getsource(self.ob._fingerprint))
+        self.assertEqual(len(snapshot.fingerprint({"a": 1})), 16)
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack
@@ -3132,7 +3133,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertTrue(got["email"]["ready"])
         self.assertEqual(got["email"]["hint"], "")
         self.assertFalse(got["calendar"]["ready"], "a disabled connector reaches nothing")
-        self.assertTrue(got["calendar"]["hint"])
+        self.assertIn("switched off", got["calendar"]["detail"], "named as off, not 'connect one'")
         self.assertEqual(got["calendar"]["where"], {"tab": "admin", "sect": "mcp"})
 
     def test_a_never_filled_connector_cache_is_unknown_not_missing(self):

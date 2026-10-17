@@ -116,7 +116,6 @@ async function obAction(act){
   if(act==="tour"){ closeFormModal(); startTour(); return; }
   if(act==="skip"){ closeFormModal(); return; }   // the close hook records the skip
   if(act==="apply"||act==="apply-tour"){
-    const err=document.getElementById("ob-err");
     document.querySelectorAll('[data-ob^="apply"]').forEach(b=>b.disabled=true);
     let out;
     try { out=await postJSON("/api/onboarding/apply",{answers:OB.answers, expect:OB.fingerprint}); }

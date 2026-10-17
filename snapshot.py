@@ -56,6 +56,12 @@ MODES = ("merge", "replace")
 _ENV_REF = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 
 
+def fingerprint(obj):
+    """The preview → apply(expect=) token: a short digest of exactly what apply would change.
+    ONE shape for every such contract (this import, onboarding.apply)."""
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
 class StaleSnapshotPreview(Exception):
     """The plan changed between preview and apply — nothing was written."""
 
@@ -777,7 +783,7 @@ def _plan(snap, mode):
                         for k, v in loc.items() if k not in items]
         secrets += sec.secrets(items, snap)
     applied = [c for c in changes if c["action"] != "keep"]
-    fp = hashlib.sha256(json.dumps(applied, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    fp = fingerprint(applied)
     return {"mode": mode, "fingerprint": fp, "changes": changes, "secrets": secrets,
             "warnings": ctx["warnings"] + list(snap.get("warnings") or [])}
 

@@ -2767,8 +2767,7 @@ class Handler(BaseHTTPRequestHandler):
         # `connectors:false` (a resume) re-asks the cheap lookups only — no MCP server spawn.
         only = body.get("probes")
         only = {p for p in only if isinstance(p, str)} if isinstance(only, list) else None
-        out = _warm_onboarding_caches(force=True, mcp=body.get("connectors", True) is not False,
-                                      wait=_RECHECK_WAIT_S + 5, retry=True, only=only)
+        out = _recheck(mcp=body.get("connectors", True) is not False, only=only)
         self._send(200, json.dumps({"ok": True, **out}))
 
     def _post_onboarding_skip(self, body):
@@ -2903,115 +2902,78 @@ class Handler(BaseHTTPRequestHandler):
 
 _RECHECK_WAIT_S = 65          # above `claude mcp list`'s own 60s timeout
 _WARM_EVERY_S = 60
+_WARM = {"at": 0.0, "thread": None}
 _WARM_LOCK = threading.Lock()
-# The one refresh in flight: {"kind": (mcp, retry), "done": Event, "result": {...}}. Every caller
-# that joins it reads the SAME result, so a coalesced Re-check reports the real outcome.
-_WARM = {"job": None, "at": 0.0}
 
 
-def _warm_probes(mcp, retry, only=None):
-    """[(name, fn)] — each fn RAISES when its own lookup failed, so the job can report it. A
-    plain warm only fills what is missing (each lookup's own cache and backoff); a Re-check
-    (`retry`) re-asks and judges by that call's own outcome."""
-    def slack_scopes():
-        ids = [i for i in (slack.USER, slack.BOT) if slack.token_set(i)]
-        if retry:
-            if not all([slack.refresh_scopes(i) for i in ids]):
-                raise RuntimeError("slack scope probe failed")
-        else:
-            for i in ids:
-                slack.granted_scopes(i)
-
-    def gh_viewer():
-        if retry:
-            if not pr_review.refresh_viewer():
-                raise RuntimeError("gh api user failed")
-        else:
-            pr_review.viewer()
-
-    def mcp_list():
-        if not policy.refresh_mcp_status():
-            raise RuntimeError("claude mcp list failed")
-    probes = [("slack-scopes", slack_scopes)]
+def _recheck_probes(mcp, only=None):
+    """[(name, fn)] for a Re-check — each fn re-asks NOW and returns whether THAT lookup
+    succeeded (its own outcome). `only`: a guide re-asks just what it reads."""
+    probes = [("slack-scopes", lambda: all([slack.refresh_scopes(i) for i in (slack.USER, slack.BOT)
+                                            if slack.token_set(i)]))]
     if shutil.which("gh"):
         # No `gh` is reported by onboarding itself ("`gh` not on PATH"); probing it would only
         # make every Re-check on a gh-less install say "the gh sign-in (failed)".
-        probes.append(("gh-viewer", gh_viewer))
+        probes.append(("gh-viewer", pr_review.refresh_viewer))
     if mcp:
-        # Only on the operator's explicit Re-check — the same click-to-refresh Admin's Recheck is.
-        probes.append(("mcp-list", mcp_list))
-    # `only`: a guide re-asks just what it reads — the Slack guide must not wait on `gh`.
+        # `claude mcp list` starts every stdio server: only on the operator's explicit Re-check.
+        # policy serializes listings, so two Re-checks never spawn the servers twice.
+        probes.append(("mcp-list", policy.refresh_mcp_status))
     return [p for p in probes if only is None or p[0] in only]
 
 
-def _warm_status(job):
-    """{failed, incomplete} for a job, finished or not — the ONE place probe names are read
-    back off their threads."""
-    pre = len("onboarding-warm-")
-    return {"failed": sorted(job["failed"]),
-            "incomplete": [t.name[pre:] for t in job["threads"] if t.is_alive()]}
-
-
-def _run_warm(job, probes):
-    failed = job["failed"]          # live: a caller that times out still sees what already failed
+def _recheck(mcp, only=None, wait=_RECHECK_WAIT_S):
+    """Run this request's OWN probes in parallel and report {failed, incomplete}. No shared job,
+    no coverage rules: every caller re-asks after its own click, so it can never read a result
+    from before the fix it just made, nor wait on a probe it didn't ask for. Each lookup's own
+    cache and backoff (and policy's listing lock) keep this from hammering anything."""
+    probes = _recheck_probes(mcp, only)
+    results = {}
 
     def run(name, fn):
         try:
-            fn()
-        except Exception:  # noqa: BLE001 — reported in the job's result, never raised further
-            failed.append(name)
-    threads = [threading.Thread(target=run, args=p, name=f"onboarding-warm-{p[0]}", daemon=True)
-               for p in probes]
-    job["threads"] = threads
+            results[name] = bool(fn())
+        except Exception:  # noqa: BLE001 — reported as failed, never raised further
+            results[name] = False
+    threads = [threading.Thread(target=run, args=p, daemon=True) for p in probes]
     for t in threads:
         t.start()
-    deadline = time.time() + _RECHECK_WAIT_S
+    deadline = time.time() + wait
     for t in threads:
         t.join(max(0.0, deadline - time.time()))
-    job["result"] = _warm_status(job)
-    job["done"].set()
+    return {"failed": sorted(n for n, ok in results.items() if not ok),
+            "incomplete": sorted(n for n, _ in probes if n not in results)}
 
 
-def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False, only=None):
-    """Fill, in the background, the caches the onboarding review reads but never fills itself
-    behind its spinner: Slack's granted scopes and the `gh` login — and, on the operator's
-    explicit Re-check only (`mcp=True`), the connector list, since `claude mcp list` starts every
-    stdio server. Lazily, on the wizard's own GET (a browser is open, so the network is up), and
-    throttled on a plain open; each lookup also backs off its own failures.
-
-    Single-flight: one refresh at a time. A caller whose needs the in-flight one already covers
-    JOINS it and reads its result; one it doesn't cover starts its own. `wait` bounds how long the
-    caller blocks; the returned {failed, incomplete} says what could not be refreshed."""
+def _warm_onboarding_caches(force=False):
+    """Fire-and-forget fill of the caches the wizard reads but never fills behind its spinner —
+    Slack's granted scopes, the `gh` login — on the wizard's own GET (a browser is open, so the
+    network is up). Fills only what is missing: each lookup's own cache and backoff decide. One
+    at a time, throttled unless `force`. Never `claude mcp list` (that is Re-check's)."""
     with _WARM_LOCK:
-        job = _WARM["job"]
-        running = job is not None and not job["done"].is_set()
-        probes = _warm_probes(mcp, retry, only)
-        want = frozenset(n for n, _ in probes)
-        k = job["kind"] if running else (frozenset(), False)
-        # Covered = the in-flight job runs every probe this caller wants, re-asking if it must.
-        if not (running and want <= k[0] and (k[1] or not retry)):
-            if not running and not force and time.time() - _WARM["at"] < _WARM_EVERY_S:
-                return {"failed": [], "incomplete": []}
-            _WARM["at"] = time.time()
-            job = {"kind": (want, retry), "done": threading.Event(), "result": None,
-                   "failed": [], "threads": []}
-            _WARM["job"] = job
-            threading.Thread(target=_run_warm, args=(job, probes),
-                             name="onboarding-warm", daemon=True).start()
-    if not wait:
-        return {"failed": [], "incomplete": []}
-    if job["done"].wait(wait):
-        return job["result"]
-    # Out of time: report what is actually known — the probes that failed, and only those still
-    # running as incomplete — never "everything still running".
-    return _warm_status(job)
+        t = _WARM["thread"]
+        if (t and t.is_alive()) or (not force and time.time() - _WARM["at"] < _WARM_EVERY_S):
+            return
+
+        def fill():
+            for fn in (lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT)
+                                if slack.token_set(i)],
+                       lambda: shutil.which("gh") and pr_review.viewer()):
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001 — a cold cache reads as "not checked yet"
+                    pass
+        _WARM["at"] = time.time()
+        _WARM["thread"] = threading.Thread(target=fill, name="onboarding-warm", daemon=True)
+        _WARM["thread"].start()
 
 
 def _mcps_and_polled():
     """The MCP listing and whether its connector half was ever polled, from ONE cache read — two
     reads could straddle an Admin recheck and describe different listings."""
     status = policy.mcp_status_cached()
-    return policy.all_mcps(POLICY, status=status), policy.connectors_polled(status)
+    return (policy.all_mcps(POLICY, status=status), policy.connectors_polled(status),
+            status.get("health") or {})
 
 
 # POST dispatch. Built from Handler's methods rather than a 52-branch `elif` chain:

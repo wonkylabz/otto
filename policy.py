@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 
 import config
@@ -593,11 +594,14 @@ def _refresh_listing(cached):
     """Run `claude mcp list` once: (the cache as it now stands, whether THIS listing succeeded)."""
     try:
         text = _run_mcp_list()
+        # Parsed INSIDE the guard: output the parser can't read is a failed listing too, never
+        # an error escaping into Admin's /api/policy instead of the last good listing.
+        parsed = None if text is None else {"connectors": _parse_connectors(text),
+                                            "health": _parse_health(text)}
     except Exception:  # noqa: BLE001 — a hang (TimeoutExpired) or a missing CLI is a failure too
-        text = None
-    if text is not None:
-        cached = {"at": time.time(), "connectors": _parse_connectors(text),
-                  "health": _parse_health(text)}
+        parsed = None
+    if parsed is not None:
+        cached = {"at": time.time(), **parsed}
         try:
             _write(_CONN_CACHE, cached)
         except Exception:  # noqa: BLE001 — a read-only data dir must not break the read
@@ -611,11 +615,23 @@ def _refresh_listing(cached):
     return cached, False
 
 
+_LISTING_LOCK = threading.Lock()
+_LISTING = {"ok": None}
+
+
 def refresh_mcp_status():
-    """Run `claude mcp list` now (it starts every stdio server) and say whether THIS listing
-    succeeded. One cache refresh, no MCP row list built and thrown away."""
-    _cached, ok = _refresh_listing(_mcp_status())
-    return ok
+    """Run `claude mcp list` now (it starts every stdio server) and say whether it succeeded.
+    One listing at a time: a caller arriving while one runs WAITS for it and reads its outcome
+    rather than spawning every server a second time for identical data."""
+    if not _LISTING_LOCK.acquire(blocking=False):
+        with _LISTING_LOCK:             # the one in flight finishes; its answer is ours
+            return bool(_LISTING["ok"])
+    try:
+        _cached, ok = _refresh_listing(_mcp_status())
+        _LISTING["ok"] = ok
+        return ok
+    finally:
+        _LISTING_LOCK.release()
 
 
 def mcp_status_cached():
