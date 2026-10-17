@@ -585,30 +585,37 @@ def _mcp_status(allow_refresh=False, force=False):
     now = time.time()
     fresh = (now - cached.get("at", 0)) < _CONN_TTL or (now - cached.get("failed_at", 0)) < _CONN_FAIL_TTL
     if allow_refresh and (force or not fresh):
-        try:
-            text = _run_mcp_list()
-            if text is not None:
-                cached = {"at": time.time(),
-                          "connectors": _parse_connectors(text),
-                          "health": _parse_health(text)}
-                _write(_CONN_CACHE, cached)
-            else:
-                cached = _stamp_failed()
-        except Exception:
-            # A hang (TimeoutExpired) or a missing CLI is a failed listing too — stamped, so the
-            # 60s spawn is not re-paid by every caller until the failure TTL.
-            try:
-                cached = _stamp_failed()
-            except Exception:  # noqa: BLE001 — a read-only data dir must not break the read
-                pass
+        cached, _ok = _refresh_listing(cached)
     return cached
+
+
+def _refresh_listing(cached):
+    """Run `claude mcp list` once: (the cache as it now stands, whether THIS listing succeeded)."""
+    try:
+        text = _run_mcp_list()
+    except Exception:  # noqa: BLE001 — a hang (TimeoutExpired) or a missing CLI is a failure too
+        text = None
+    if text is not None:
+        cached = {"at": time.time(), "connectors": _parse_connectors(text),
+                  "health": _parse_health(text)}
+        try:
+            _write(_CONN_CACHE, cached)
+        except Exception:  # noqa: BLE001 — a read-only data dir must not break the read
+            pass
+        return cached, True
+    # Stamped, so the 60s spawn is not re-paid by every caller until the failure TTL.
+    try:
+        cached = _stamp_failed()
+    except Exception:  # noqa: BLE001
+        pass
+    return cached, False
 
 
 def refresh_mcp_status():
     """Run `claude mcp list` now (it starts every stdio server) and say whether THIS listing
     succeeded. One cache refresh, no MCP row list built and thrown away."""
-    st = _mcp_status(allow_refresh=True, force=True)
-    return "failed_at" not in st or st.get("at", 0) >= st.get("failed_at", 0)
+    _cached, ok = _refresh_listing(_mcp_status())
+    return ok
 
 
 def mcp_status_cached():

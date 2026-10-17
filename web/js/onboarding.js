@@ -26,14 +26,14 @@ async function initOnboarding(){
 async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   // Parked by an integration's Open: resume exactly where it was, choices intact.
+  if(!document.getElementById("formModal").hidden && OB && !OB.parked && !OB.done) return;  // already open
   if(!meta && OB && OB.parked){
-    // Resume on Review. The plain warm (Slack scopes, gh login) runs on this GET; the full
-    // Re-check — `claude mcp list` starts every stdio server — stays the operator's click.
+    // Resume on Review AT ONCE (a silent wait would paint over whatever the user opened next),
+    // then re-ask the cheap lookups the detour may have fixed — the gh login, Slack's scopes —
+    // inside the wizard's own "checking" state. Not the connector list: that spawns every
+    // stdio server, so it stays Re-check's.
     OB.parked=false; OB.step=OB_STEPS.indexOf("review");
-    // Re-ask (and WAIT for) the cheap lookups the detour may have fixed — the gh login, Slack's
-    // scopes — but not the connector list: that spawns every stdio server, so it is Re-check's.
-    try { await postJSON("/api/onboarding/recheck",{connectors:false}); } catch(e){}
-    obRender();
+    obRender(); obRecheck(false);
     return;
   }
   if(!meta){ try { meta=await getJSON("/api/onboarding?warm=1"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
@@ -112,29 +112,7 @@ function obRender(){
 async function obAction(act){
   if(act==="next"){ OB.step++; obRender(); return; }
   if(act==="back"){ OB.step--; obRender(); return; }
-  if(act==="recheck"){
-    // Warm first: the checks a detour may have fixed (gh login, Slack scopes) refill in the
-    // background, so give them a moment before reading them back.
-    // Awaited: the server re-runs the lookups (connectors included) and answers when they are
-    // done or after _RECHECK_WAIT_S (65s), so the preview reads the refreshed state, not a race.
-    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take up to a minute…</p>';
-    document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
-    const seq=++OB.seq;       // supersede any preview already in flight from the first render
-    let failed=null, res=null;
-    try { res=await postJSON("/api/onboarding/recheck",{}); } catch(e){ failed=e.message; }
-    // Still on Review, in the same wizard? Otherwise the user moved on while it ran.
-    if(!box || !box.isConnected || OB_STEPS[OB.step]!=="review" || seq!==OB.seq) return;
-    const names={"mcp-list":"the connector list","gh-viewer":"the gh sign-in","slack-scopes":"Slack's token scopes"};
-    const part=res ? [...(res.failed||[]).map(n=>names[n]+" (failed)"), ...(res.incomplete||[]).map(n=>names[n]+" (still running)")] : [];
-    if(!failed && part.length) failed="couldn't refresh "+part.join(", ");
-    const note=failed ? "Re-check: "+failed+" — showing the last known state for those." : "";
-    document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
-    await obReview();
-    // Appended, never replacing: a preview failure (and its Retry) above it must stay visible.
-    const err=document.getElementById("ob-err");
-    if(note && err && err.isConnected) err.insertAdjacentText("beforeend",(err.textContent?" ":"")+note);
-    return;
-  }
+  if(act==="recheck"){ obRecheck(true); return; }
   if(act==="tour"){ closeFormModal(); startTour(); return; }
   if(act==="skip"){ closeFormModal(); return; }   // the close hook records the skip
   if(act==="apply"||act==="apply-tour"){
@@ -150,6 +128,29 @@ async function obAction(act){
     if(typeof adminLoaded!=="undefined" && adminLoaded) loadAdmin();   // the settings it shows just moved
     if(act==="apply-tour") startTour();
   }
+}
+
+/* Re-run the review's lookups and read them back. `connectors` adds the connector list, which
+   starts every stdio MCP server — only on the operator's own Re-check click. */
+async function obRecheck(connectors){
+    // Awaited: the server re-runs the lookups (connectors included) and answers when they are
+    // done or after _RECHECK_WAIT_S (65s), so the preview reads the refreshed state, not a race.
+    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take up to a minute…</p>';
+    document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
+    const seq=++OB.seq;       // supersede any preview already in flight from the first render
+    let failed=null, res=null;
+    try { res=await postJSON("/api/onboarding/recheck",{connectors}); } catch(e){ failed=e.message; }
+    // Still on Review, in the same wizard? Otherwise the user moved on while it ran.
+    if(!box || !box.isConnected || OB_STEPS[OB.step]!=="review" || seq!==OB.seq) return;
+    const names={"mcp-list":"the connector list","gh-viewer":"the gh sign-in","slack-scopes":"Slack's token scopes"};
+    const part=res ? [...(res.failed||[]).map(n=>names[n]+" (failed)"), ...(res.incomplete||[]).map(n=>names[n]+" (still running)")] : [];
+    if(!failed && part.length) failed="couldn't refresh "+part.join(", ");
+    const note=failed ? "Re-check: "+failed+" — showing the last known state for those." : "";
+    document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
+    await obReview();
+    // Appended, never replacing: a preview failure (and its Retry) above it must stay visible.
+    const err=document.getElementById("ob-err");
+    if(note && err && err.isConnected) err.insertAdjacentText("beforeend",(err.textContent?" ":"")+note);
 }
 
 /* A choice re-renders the whole step, which drops focus; put it back on the same option so a
@@ -180,7 +181,8 @@ async function obReview(why){
   OB.fingerprint=p.fingerprint;
   document.getElementById("ob-loading").textContent="Nothing is written until you apply. Applying the same answers again changes nothing.";
   const label={set:'<span class="obset">will change</span>',keep:'<span class="obkeep">already set</span>',
-               pinned:'<span class="obpin">pinned by env</span>'};
+               pinned:'<span class="obpin">pinned by env</span>',
+               skip:'<span class="obpin">left alone — unreadable .env value</span>'};
   const rows=p.settings.map(s=>`<tr><td><code>${esc(s.name)}</code></td><td>${esc(obFmt(s.before))}</td><td>${esc(obFmt(s.after))}</td><td>${label[s.action]}${s.action==="pinned"?` <code>${esc(s.env)}</code>`:""}</td></tr>`).join("");
   const ints=p.integrations.map(i=>`<div class="obint"><span class="obmark ${i.ready?'ok':'no'}">${i.ready?"&#10003;":i.ready===null?"?":"!"}</span>
       <div class="obtext"><b>${esc(i.label)}</b> — ${esc(i.detail)}${i.hint?`<br>${esc(i.hint)}`:""}</div>

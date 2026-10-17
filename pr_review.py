@@ -177,7 +177,7 @@ _VIEWER_RETRY_S = int(os.environ.get("OTTO_PR_VIEWER_RETRY_S") or 120)
 _viewer_failed = 0.0
 
 
-def viewer(retry=False):
+def viewer():
     """The `gh` login this Otto acts as, or None. Cached per process — it cannot change
     without a re-auth, and it is read on every poll."""
     # Only a RESOLVED login is cached. `_cache = ""` on failure read as "cached" to the old
@@ -185,26 +185,20 @@ def viewer(retry=False):
     # up — returned None for the worker's whole life, and `_parse_search` needs a viewer to
     # apply `skip_own`: the toggle read as on and silently did nothing (#47).
     global _viewer_failed
-    # `retry` re-asks even a cached login: after `gh auth login`/`switch` the account may differ.
-    if not retry and getattr(viewer, "_cache", None):
+    if getattr(viewer, "_cache", None):
         return viewer._cache
-    # `retry`: the operator just asked (Re-check after `gh auth login`) — skip the failure window.
-    if not retry and time.time() - _viewer_failed < _VIEWER_RETRY_S:
+    if time.time() - _viewer_failed < _VIEWER_RETRY_S:
         return None
     rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
-    prev = getattr(viewer, "_cache", None)
-    if rc == 0 and out.strip():
-        viewer._cache = out.strip()
-    else:
+    viewer._cache = out.strip() if rc == 0 else ""
+    if not viewer._cache:
         _viewer_failed = time.time()
-        # A failed RE-ask keeps the login it already had (as granted_scopes keeps its grant):
-        # one blip must not turn a known sign-in into "couldn't confirm" for the retry window.
-        viewer._cache = prev if (retry and prev) else ""
     return viewer._cache or None
 
 
 def refresh_viewer():
-    """Re-ask `gh` now; True when THIS lookup succeeded (its own outcome, not a shared stamp)."""
+    """Re-ask `gh` now — even a cached login (after `gh auth login`/`switch` it may differ) and
+    inside the failure window. True when THIS lookup succeeded; a failure keeps a known login."""
     rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
     if rc == 0 and out.strip():
         viewer._cache = out.strip()

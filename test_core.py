@@ -2776,7 +2776,7 @@ class OnboardingTests(unittest.TestCase):
         src = ui_src()
         draft = src[src.index("if(meta.draft){"):][:700]
         self.assertNotIn("recheckOnShow:true", draft, "a page load must not spawn every MCP server")
-        rc = src[src.index('if(act==="recheck")'):][:1400]
+        rc = src[src.index("async function obRecheck"):][:2000]
         self.assertIn('"Re-check: "+failed', rc, "a refused recheck must say so, not re-render stale")
 
     def test_no_profile_touches_a_hard_spend_cap(self):
@@ -2796,7 +2796,8 @@ class OnboardingTests(unittest.TestCase):
         with mock.patch.object(pr_review.viewer, "_cache", "old", create=True), \
                 mock.patch.object(pr_review, "_run", return_value=(0, "new\n", "")):
             self.assertEqual(pr_review.viewer(), "old")
-            self.assertEqual(pr_review.viewer(retry=True), "new")
+            self.assertTrue(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "new")
 
     def _warm(self, probes):
         import server
@@ -2855,7 +2856,8 @@ class OnboardingTests(unittest.TestCase):
         import pr_review
         with mock.patch.object(pr_review.viewer, "_cache", "alice", create=True), \
                 mock.patch.object(pr_review, "_run", return_value=(1, "", "offline")):
-            self.assertEqual(pr_review.viewer(retry=True), "alice")
+            self.assertFalse(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "alice")
 
     def test_a_failure_stamp_never_clobbers_a_newer_listing(self):
         import policy
@@ -2891,9 +2893,15 @@ class OnboardingTests(unittest.TestCase):
                 mock.patch.object(pr_review.viewer, "_cache", "alice", create=True):
             self.assertFalse(pr_review.refresh_viewer())
             self.assertEqual(pr_review.viewer_cached(), "alice")
-        with mock.patch.dict(slack._FAILED, {}, clear=True), \
-                mock.patch.object(slack, "granted_scopes", side_effect=lambda i, refresh=False: None):
+        with mock.patch.dict(slack._LAST_PROBE_OK, {}, clear=True), \
+                mock.patch.object(slack, "granted_scopes",
+                                  side_effect=lambda i, refresh=False: slack._LAST_PROBE_OK.__setitem__(i, True)):
             self.assertTrue(slack.refresh_scopes(slack.USER))
+        with mock.patch.dict(slack._LAST_PROBE_OK, {}, clear=True), \
+                mock.patch.dict(slack._FAILED, {("scopes", slack.USER): 1.0}), \
+                mock.patch.object(slack, "granted_scopes",
+                                  side_effect=lambda i, refresh=False: slack._LAST_PROBE_OK.__setitem__(i, True)):
+            self.assertTrue(slack.refresh_scopes(slack.USER), "a stale shared stamp is not this probe's")
 
     def test_a_refused_apply_keeps_saying_why(self):
         ui = ui_src()
@@ -2901,6 +2909,41 @@ class OnboardingTests(unittest.TestCase):
         self.assertIn('why+" — here is the current plan."', ui)
         self.assertIn('insertAdjacentText("beforeend"', ui, "a Re-check note never hides a preview failure")
         self.assertIn('postJSON("/api/onboarding/recheck",{connectors:false})', ui)
+
+    def test_a_gh_less_install_never_reports_a_gh_failure(self):
+        import server
+        with mock.patch.object(server.shutil, "which", return_value=None):
+            names = [n for n, _ in server._warm_probes(True, True)]
+        self.assertNotIn("gh-viewer", names)
+
+    def test_a_dm_id_is_never_a_mention_source(self):
+        import slack
+        with mock.patch.object(slack, "BOT_TOKEN", "xoxb-t"):
+            self.assertEqual(slack.answering_state(slack.BOT, {
+                "bot_enabled": True, "bot_allow_channels": ["D012345"],
+                "bot_watch_dms": False, "bot_watch_mentions": True}), "nobody")
+
+    def test_a_corrupt_draft_stamp_never_500s_the_wizard(self):
+        storage.write_json(self.ob._STATE, {"draft": {"usage": "work"}, "draft_at": "x"})
+        self.assertIsNone(self.ob.state()["draft"])
+
+    def test_an_unreadable_default_is_a_row_not_a_gap(self):
+        os.environ["OTTO_EFFORT"] = "hgih"
+        with mock.patch.object(config, "EFFORT", "hgih"):
+            rows = {r["name"]: r for r in self.ob.preview({"profile": "balanced"})["settings"]}
+        self.assertEqual(rows["effort"]["action"], "skip")
+
+    def test_mcp_refresh_reports_this_listings_outcome(self):
+        import policy
+        with mock.patch.object(policy, "_read", return_value={"at": 9e9, "connectors": []}), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=None), \
+                mock.patch.object(policy, "_stamp_failed", return_value={"at": 9e9, "failed_at": 1.0}):
+            self.assertFalse(policy.refresh_mcp_status(), "a newer `at` must not make a failure read ok")
+
+    def test_a_resume_renders_before_it_waits(self):
+        ui = ui_src()
+        park = ui[ui.index("if(!meta && OB && OB.parked){"):][:900]
+        self.assertLess(park.index("obRender()"), park.index("obRecheck(false)"))
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack
@@ -3212,7 +3255,9 @@ class EventsSetupGuideTests(unittest.TestCase):
     def test_a_guide_never_writes_config_itself(self):
         g = self.src[self.src.index("let GUIDE=null"):]
         g = g[:g.index("</script>")]
-        self.assertNotIn("postJSON", g)
+        posts = re.findall(r'post(?:JSON|Or|Form)\("([^"]+)"', g)
+        self.assertEqual(set(posts), {"/api/onboarding/recheck"},
+                         "the only POST a guide makes is the read-only Re-check")
         self.assertNotIn("postOr", g)
 
 

@@ -125,7 +125,9 @@ def state():
     done = d.get("version") == VERSION and (d.get("completed_at") or d.get("skipped_at"))
     # A detour's draft is for resuming THAT detour; a stale one would reopen Setup on an old
     # profile one click from re-applying over what was tuned since.
-    draft = d.get("draft") if time.time() - (d.get("draft_at") or 0) < DRAFT_TTL_S else None
+    at = d.get("draft_at")
+    at = at if isinstance(at, (int, float)) else 0     # a hand-edited file must not 500 every load
+    draft = d.get("draft") if time.time() - at < DRAFT_TTL_S else None
     return {"version": VERSION, "auto_open": not done, "answers": d.get("answers") or {},
             "draft": draft or None,
             "completed_at": d.get("completed_at"), "skipped_at": d.get("skipped_at"),
@@ -165,7 +167,16 @@ def profile_settings(profile, cur=None):
 def _settings_plan(profile, cur=None):
     cur = cur or config.settings_all()
     out = []
-    for name, target in profile_settings(profile, cur).items():
+    targets = profile_settings(profile, cur)
+    if profile != "keep":
+        # A key the profile WOULD assign but cannot (its default is an unusable env value): a
+        # row saying so, never a silent gap that reads as "already reset".
+        for name in _PROFILE_KEYS:
+            if name not in targets:
+                s = cur[name]
+                out.append({"name": name, "before": s["value"], "after": None, "pinned": False,
+                            "env": s["env"], "action": "skip"})
+    for name, target in targets.items():
         s = cur[name]
         # Pinned wins even when the values match: a pinned key's "default" IS the env value (the
         # config constant reads env at import), so "already set" would hide that nothing applies.
@@ -306,6 +317,9 @@ def preview(answers, mcps=(), connectors_checked=True):
     if a["profile"] == "economic":
         notes.append("Biggest further saving: route cheap phases (routing, clarify, memory) to a "
                      "smaller or local model in Admin → Models.")
+    if any(s["action"] == "skip" for s in settings):
+        notes.append("Some settings have an unreadable value in .env (a typo?), so their default "
+                     "can't be known and they were left alone — fix or remove them in .env.")
     if any(s["action"] == "pinned" for s in settings):
         notes.append("Some settings are pinned by an environment variable and keep that value. "
                      "To use this profile's instead, remove them from .env, restart, and run "

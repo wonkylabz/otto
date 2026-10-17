@@ -18,6 +18,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import socketserver
 import threading
 import time
@@ -2929,11 +2930,23 @@ def _warm_probes(mcp, retry):
     def mcp_list():
         if not policy.refresh_mcp_status():
             raise RuntimeError("claude mcp list failed")
-    probes = [("slack-scopes", slack_scopes), ("gh-viewer", gh_viewer)]
+    probes = [("slack-scopes", slack_scopes)]
+    if shutil.which("gh"):
+        # No `gh` is reported by onboarding itself ("`gh` not on PATH"); probing it would only
+        # make every Re-check on a gh-less install say "the gh sign-in (failed)".
+        probes.append(("gh-viewer", gh_viewer))
     if mcp:
         # Only on the operator's explicit Re-check — the same click-to-refresh Admin's Recheck is.
         probes.append(("mcp-list", mcp_list))
     return probes
+
+
+def _warm_status(job):
+    """{failed, incomplete} for a job, finished or not — the ONE place probe names are read
+    back off their threads."""
+    pre = len("onboarding-warm-")
+    return {"failed": sorted(job["failed"]),
+            "incomplete": [t.name[pre:] for t in job["threads"] if t.is_alive()]}
 
 
 def _run_warm(job, probes):
@@ -2952,8 +2965,7 @@ def _run_warm(job, probes):
     deadline = time.time() + _RECHECK_WAIT_S
     for t in threads:
         t.join(max(0.0, deadline - time.time()))
-    job["result"] = {"failed": sorted(failed),
-                     "incomplete": [t.name[len("onboarding-warm-"):] for t in threads if t.is_alive()]}
+    job["result"] = _warm_status(job)
     job["done"].set()
 
 
@@ -2986,9 +2998,7 @@ def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False):
         return job["result"]
     # Out of time: report what is actually known — the probes that failed, and only those still
     # running as incomplete — never "everything still running".
-    pre = len("onboarding-warm-")
-    return {"failed": sorted(job["failed"]),
-            "incomplete": [t.name[pre:] for t in job["threads"] if t.is_alive()]}
+    return _warm_status(job)
 
 
 def _mcps_and_polled():

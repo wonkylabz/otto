@@ -168,7 +168,18 @@ function guideAction(a){
   if(a==="next"){ GUIDE.step++; guideRender(); return; }
   if(a==="back"){ GUIDE.step=Math.max(0,GUIDE.step-1); guideRender(); return; }
   if(a==="done"){ closeFormModal(); return; }
-  if(a==="recheck"){ openGuide(GUIDE.key, GUIDE.step); return; }
+  if(a==="recheck"){
+    // Re-ask the gh login and Slack's scopes first (no connector list — no MCP spawn): the
+    // card endpoints the guide reads only ever serve the cached answer.
+    const key=GUIDE.key, step=GUIDE.step;
+    openFormModal(`<b>${esc(g.title)}</b>`).innerHTML=`<p class="obsub">Checking again…</p>`;
+    const sess=FORM_MODAL_SESSION;
+    postJSON("/api/onboarding/recheck",{connectors:false}).catch(()=>{}).finally(()=>{
+      // Closed or replaced while it ran: the user moved on — never paint over it.
+      if(sess===FORM_MODAL_SESSION && !document.getElementById("formModal").hidden) openGuide(key, step);
+    });
+    return;
+  }
   if(a==="act"){
     const s=g.steps(GUIDE.ctx,GUIDE.choice)[GUIDE.step-1], key=GUIDE.key;
     closeFormModal();
