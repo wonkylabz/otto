@@ -2556,6 +2556,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertNotIn("allow_refresh", src, "`claude mcp list` starts every server; Admin's to run")
         self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main),
                          "warmed lazily on the wizard's GET, never at boot")
+        self.assertNotIn('"done"', src, "a once-per-process flag never retries a failed warm")
 
     def test_a_deep_link_defers_the_wizard_once_not_forever(self):
         init = ui_src()
@@ -2570,21 +2571,53 @@ class OnboardingTests(unittest.TestCase):
         got = self.ob.preview({"integrations": ["docs"]}, [{"name": "overdrive"}])["integrations"][0]
         self.assertFalse(got["ready"], "no left boundary matched 'overdrive'")
 
-    def test_a_slack_row_past_the_token_names_its_own_fix(self):
+    def test_a_listed_channel_needs_the_mention_door(self):
         import slack
-        got = self._slack({"enabled": True}, [slack.USER])
-        self.assertNotIn("Add a Slack user or bot token", got["hint"])
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"):
+            self.assertEqual(slack.answering_state(slack.USER, {
+                "enabled": True, "allow_channels": ["C123"], "watch_mentions": False}), "nobody")
 
-    def test_a_failed_mcp_list_is_not_a_completed_poll(self):
+    def test_one_working_identity_is_a_working_slack(self):
+        import slack
+        cfg = {"enabled": True, "allow_users": ["U1"], "bot_enabled": True, "bot_allow_users": ["U2"]}
+        gaps = {slack.USER: {"missing": [("im:history", "x")], "known": True},
+                slack.BOT: {"missing": [], "known": True}}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertTrue(got["ready"])
+        self.assertIn("missing scopes", got["detail"])
+
+    def test_an_unknown_row_carries_no_setup_hint(self):
+        import slack
+        got = self._slack({"enabled": True, "allow_users": ["U1"]}, [slack.USER], {"missing": [], "known": False})
+        self.assertIsNone(got["ready"])
+        self.assertEqual(got["hint"], "")
+
+    def test_a_probed_empty_grant_is_a_broken_token_not_an_unread_one(self):
+        import slack
+        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True):
+            g = slack.scope_gaps(slack.USER, {}, cached_only=True)
+        self.assertTrue(g["known"])
+        self.assertTrue(g["missing"])
+
+    def test_a_failed_mcp_list_keeps_data_but_negatively_caches(self):
         import policy
-        good = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {}}
+        good = {"at": 1.0, "good_at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {}}
         with mock.patch.object(policy, "_read", return_value=dict(good)), \
                 mock.patch.object(policy, "_run_mcp_list", return_value=""), \
                 mock.patch.object(policy, "_write") as wrote:
             got = policy._mcp_status(allow_refresh=True, force=True)
-        wrote.assert_not_called()
-        self.assertEqual(got["connectors"], good["connectors"],
-                         "an empty listing must never wipe the connector guard's cache")
+        self.assertEqual(got["connectors"], good["connectors"])
+        self.assertGreater(wrote.call_args[0][1]["at"], 1.0, "stamped, so the retry waits the TTL")
+        self.assertTrue(policy.connectors_polled(got))
+        self.assertFalse(policy.connectors_polled({"at": 2.0, "ok": False}), "never good is not polled")
+
+    def test_a_slack_row_past_the_token_names_its_own_fix(self):
+        import slack
+        got = self._slack({"enabled": True}, [slack.USER])
+        self.assertNotIn("Add a Slack user or bot token", got["hint"])
 
     def test_a_detour_draft_survives_a_restart_and_apply_clears_it(self):
         self.ob.save_draft({"usage": "work", "profile": "economic", "integrations": ["slack"]})

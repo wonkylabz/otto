@@ -179,7 +179,5 @@ function guideAction(a){
    so they are bound by delegation once rather than per render. */
 document.addEventListener("click",e=>{
   const b=e.target.closest("[data-guide]");
-  if(!b) return;
-  e.stopPropagation();
-  openGuide(b.dataset.guide);
-}, true);
+  if(b) openGuide(b.dataset.guide);
+});

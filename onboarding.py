@@ -196,16 +196,19 @@ def _detect(key, mcps, connectors_checked=True):
             return False, "test mode only — it answers just your own self-DM; add an allowlist", ""
         # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here;
         # a grant nobody has read yet is unknown, like the gh login and the connector cache.
+        # Judged PER identity: one working identity is a working Slack, whatever the other's state.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
+        good = [i for i in live if gaps[i]["known"] and not gaps[i]["missing"]]
         short = [i for i in live if gaps[i]["missing"]]
-        if short:
-            return (False, f"set up {names[short[0]]}, but the token is missing scopes — add them, "
-                    "reinstall the Slack app and update the token", "")
-        if any(not g["known"] for g in gaps.values()):
-            return None, "token scopes not checked yet — the Events tab's Slack card checks them"
-        if live:
+        fix = ("add the missing scopes, reinstall the Slack app and update the token")
+        if good:
             # Config, not liveness: whether the poll is running is the Events card's to say.
-            return True, "set up " + " and ".join(names[i] for i in live)
+            extra = f"; {names[short[0]]}, the token is missing scopes — {fix}" if short else ""
+            return True, "set up " + " and ".join(names[i] for i in good) + extra
+        if short:
+            return False, f"set up {names[short[0]]}, but the token is missing scopes — {fix}", ""
+        if live:
+            return None, "token scopes not checked yet — the Events tab's Slack card checks them", ""
         if "nobody" in states.values():
             return (False, "switched on, but nobody is both allowlisted and watched — it answers "
                     "nobody; add people or channels in Events → Slack", "")
@@ -249,10 +252,12 @@ def _detect(key, mcps, connectors_checked=True):
 def _integrations_plan(wants, mcps, connectors_checked=True):
     out = []
     for key in wants:
-        # A detector may name its own fix (a third element), overriding the generic hint.
+        # A detector may name its own fix (a third element), overriding the generic hint. An
+        # UNKNOWN row gets none: its detail says how to find out, and the generic "how to set
+        # this up" would contradict a setup that may be complete.
         ready, detail, *own = _detect(key, mcps, connectors_checked)
         spec = INTEGRATIONS[key]
-        hint = "" if ready else (own[0] if own else spec["hint"])
+        hint = "" if ready or ready is None else (own[0] if own else spec["hint"])
         out.append({"key": key, "label": spec["label"], "ready": ready, "detail": detail,
                     "hint": hint, "where": spec["where"]})
     return out

@@ -211,12 +211,16 @@ function startTour(){
   activateTab("chat");          // the run options live in the chat view
   TOUR_I=-1; tourStep(1);
   window.addEventListener("resize", tourPlace);
+  // Capture: tabs scroll INSIDE their own panes (body is overflow:hidden), and a scroll event
+  // does not bubble — only a capturing listener on window sees them all.
+  window.addEventListener("scroll", tourPlace, true);
   document.addEventListener("keydown", tourKey);
 }
 function endTour(){
   TOUR_I=-1;
   document.querySelectorAll(".obspot,.obtip").forEach(e=>e.remove());
   window.removeEventListener("resize", tourPlace);
+  window.removeEventListener("scroll", tourPlace, true);
   document.removeEventListener("keydown", tourKey);
 }
 function tourKey(e){
@@ -234,6 +238,8 @@ function tourStep(dir){
   if(i<0) return;
   if(i>=TOUR.length){ endTour(); return; }
   TOUR_I=i; tourPlace();
+  // Focus on a STEP change only: tourPlace also runs on every scroll, and must not steal focus.
+  const nx=document.querySelector('.obtip [data-t="next"]')||document.querySelector('.obtip [data-t="end"]'); if(nx) nx.focus();
 }
 function tourPlace(){
   if(TOUR_I<0) return;
@@ -258,5 +264,4 @@ function tourPlace(){
   const top = r.bottom+pad+12+th < vh ? r.bottom+pad+12 : Math.max(12, r.top-pad-12-th);
   tip.style.top=top+"px";
   tip.style.left=Math.min(Math.max(12, r.left), vw-tw-12)+"px";
-  const nx=tip.querySelector('[data-t="next"]')||tip.querySelector('[data-t="end"]'); if(nx) nx.focus();
 }

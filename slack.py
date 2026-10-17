@@ -234,9 +234,10 @@ def answering_state(identity, cfg=None):
                      else ("watch_dms", "watch_mentions"))
     dm_on, mention_on = cfg.get(dms) is not False, cfg.get(mentions) is not False
     if identity == USER:
-        # The user token reads the owner's own DMs AND searches mentions, so a listed user or
-        # channel is reached through either door that is open.
-        if (dm_on or mention_on) and (allow_ids(cfg, users_key) or allow_ids(cfg, channels_key)):
+        # Mirrors the poller: a DM is matched on its AUTHOR (an IM id is never a listed channel),
+        # a mention on its author OR its channel. So a listed channel needs the mention door.
+        users, chans = allow_ids(cfg, users_key), allow_ids(cfg, channels_key)
+        if (dm_on and users) or (mention_on and (users or chans)):
             return "on"
         return "test" if dm_on and cfg.get("allow_self") else "nobody"
     if (allow_ids(cfg, users_key) and dm_on) or (allow_ids(cfg, channels_key) and mention_on):
@@ -439,6 +440,10 @@ def scope_gaps(identity=USER, cfg=None, cached_only=False):
     `known: False` for a grant nobody has read yet."""
     cfg = cfg if cfg is not None else load()
     granted = _GRANTED.get(identity, set()) if cached_only else granted_scopes(identity)
+    if not granted and cached_only and identity in _GRANTED:
+        # PROBED and came back empty: a rejected or revoked token, not an unread one.
+        return {"missing": [(s, why) for s, why, opt in scope_catalog(identity, cfg) if not opt],
+                "optional": [], "known": True}
     if not granted:
         return {"missing": [], "optional": [], "known": False}
     missing, optional = [], []

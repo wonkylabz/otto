@@ -563,14 +563,17 @@ def _mcp_status(allow_refresh=False, force=False):
     if allow_refresh and (force or not fresh):
         try:
             text = _run_mcp_list()
-            # An empty listing is a CLI that failed (not ready, logged out), never "no servers":
-            # writing it would wipe the good cache — and with it the connector guard on the run
-            # path — for the whole TTL. Keep what we had; the next refresh retries.
+            now = time.time()
             if text.strip():
-                cached = {"at": time.time(),
+                cached = {"at": now, "good_at": now,
                           "connectors": _parse_connectors(text),
                           "health": _parse_health(text)}
-                _write(_CONN_CACHE, cached)
+            else:
+                # An empty listing is a CLI that failed (not ready, logged out), never "no
+                # servers": keep the last good data — the run path's connector guard reads it —
+                # but stamp `at`, so the slow retry still waits out the TTL.
+                cached = {**cached, "at": now, "ok": False}
+            _write(_CONN_CACHE, cached)
         except Exception:
             pass
     return cached
@@ -584,7 +587,9 @@ def mcp_status_cached():
 def connectors_polled(status=None):
     """Whether `claude mcp list` has EVER filled the connector cache. Never refreshes it: an
     unfilled cache means "not known yet", not "no connectors"."""
-    return bool((mcp_status_cached() if status is None else status).get("at"))
+    st = mcp_status_cached() if status is None else status
+    # A good listing at some point (`good_at`), or a cache from before failures were marked.
+    return bool(st.get("good_at") or (st.get("at") and "ok" not in st))
 
 
 def discover_connectors(allow_refresh=False, force=False, status=None):

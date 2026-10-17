@@ -1463,10 +1463,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "health": health,
                                         "tasks": gateway.TASKS}))
         elif self.path == "/api/onboarding":
-            st = onboarding.state()
-            if st["auto_open"]:
-                _warm_onboarding_caches()       # by the time the Review step asks, they're filled
-            self._send(200, json.dumps(st))
+            _warm_onboarding_caches()           # by the time the Review step asks, they're filled
+            self._send(200, json.dumps(onboarding.state()))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
             # env var + env_pinned so Admin can render an env-pinned knob as locked instead of
@@ -2882,7 +2880,8 @@ class Handler(BaseHTTPRequestHandler):
         pass  # engine.trace() already prints a readable trace
 
 
-_WARMED = {"done": False}
+_WARMED = {"at": 0.0}
+_WARM_EVERY_S = 60
 
 
 def _warm_onboarding_caches():
@@ -2890,11 +2889,13 @@ def _warm_onboarding_caches():
     itself behind its spinner: Slack's granted scopes and the `gh` login. Lazily, on the wizard's
     own first GET — a browser is open, so the network is up (a boot-time lookup can fail before it
     is, and that failure would stick), and nothing runs on a restart nobody looks at. Never
-    `claude mcp list`: it starts every stdio server, and stays the Admin view's to run."""
+    `claude mcp list`: it starts every stdio server, and stays the Admin view's to run.
+    On EVERY wizard open, Setup re-runs included, throttled: both lookups cache a success and
+    back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
     import threading
-    if _WARMED["done"]:
+    if time.time() - _WARMED["at"] < _WARM_EVERY_S:
         return
-    _WARMED["done"] = True
+    _WARMED["at"] = time.time()
 
     def run(fn):
         try:
