@@ -2675,12 +2675,10 @@ class OnboardingTests(unittest.TestCase):
                 "enabled": True, "allow_channels": ["D0123"], "watch_mentions": False}), "on")
 
     def test_the_repo_count_never_spawns_git(self):
-        import pr_review
         import workspace
-        with mock.patch.object(registry, "projects", return_value=["/legacy"]), \
-                mock.patch.object(registry, "project_meta", return_value={}), \
+        with mock.patch.object(registry, "_project_entries", return_value=[{"url": "", "path": "/legacy"}]), \
                 mock.patch.object(workspace, "_git_origin", side_effect=AssertionError("spawned git")):
-            self.assertEqual(pr_review.known_repos(offline=True), [])
+            self.assertEqual(registry.registered_count(), 1)
 
     def test_an_empty_listing_replaces_a_stale_one(self):
         import policy
@@ -2779,6 +2777,31 @@ class OnboardingTests(unittest.TestCase):
                 mock.patch.object(policy, "_write"):
             policy._mcp_status(allow_refresh=True)
         ran.assert_called_once()
+
+    def test_an_unread_identity_outranks_a_refused_one(self):
+        import slack
+        cfg = {"enabled": True, "allow_users": ["U1"], "bot_enabled": True, "bot_allow_users": ["U2"]}
+        gaps = {slack.USER: {"missing": [], "known": False, "rejected": "invalid_auth"},
+                slack.BOT: {"missing": [], "known": False}}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertIsNone(got["ready"], "the unread bot may be the working one")
+        gaps[slack.BOT] = {"missing": [], "known": True}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertTrue(got["ready"])
+        self.assertIn("refused", got["detail"], "a working bot must not hide a dead user token")
+
+    def test_an_auto_open_never_fires_the_recheck(self):
+        src = ui_src()
+        draft = src[src.index("if(meta.draft){"):][:700]
+        self.assertNotIn("recheckOnShow:true", draft, "a page load must not spawn every MCP server")
+        rc = src[src.index('if(act==="recheck")'):][:1400]
+        self.assertIn("Re-check failed", rc, "a refused recheck must say so, not re-render stale")
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack

@@ -186,7 +186,7 @@ def _row(ready, detail, hint=None):
     return {"ready": ready, "detail": detail, "hint": hint}
 
 
-def _detect(key, mcps, connectors_checked=True):
+def _detect(key, usable, connectors_checked=True):
     """(ready, detail) for one integration; ready is None when it cannot be told yet. Never runs
     `claude mcp list` — the preview sits behind a spinner — so a connector cache that has never
     been filled is "not checked yet", not "missing": on a first run that is the usual state."""
@@ -217,14 +217,15 @@ def _detect(key, mcps, connectors_checked=True):
             # Config, not liveness: whether the poll is running is the Events card's to say.
             extra = f"; {names[short[0]]}, the token is missing scopes — {fix}" if short else ""
             extra += f"; {names[unknown[0]]}, scopes not checked yet" if unknown else ""
+            extra += f"; {names[dead[0]]}, Slack refused the token — replace it" if dead else ""
             return _row(True, "set up " + " and ".join(names[i] for i in good) + extra)
+        if unknown:
+            # The unread identity may be the working one: unknown, not a verdict from the other.
+            return _row(None, "token scopes not checked yet — the Events tab's Slack card checks them", "")
         if dead:
             return _row(False, f"set up {names[dead[0]]}, but Slack refused the token "
                         f"({gaps[dead[0]]['rejected']}) — copy a fresh one from the app's OAuth page "
                         "and restart Otto", "")
-        if unknown:
-            # The unread identity may be the working one: unknown, not a verdict from the other.
-            return _row(None, "token scopes not checked yet — the Events tab's Slack card checks them", "")
         if short:
             return _row(False, f"set up {names[short[0]]}, but the token is missing scopes — {fix}", "")
         if "nobody" in states.values():
@@ -260,7 +261,7 @@ def _detect(key, mcps, connectors_checked=True):
         # CLASS, not transport: a hosted model on an OpenAI-compatible URL is not "your hardware".
         local = [m["name"] for m in gateway.load().get("pool", []) if gateway.model_kind(m) == "local"]
         return _row(bool(local), (", ".join(local) if local else "no local model configured"))
-    hits = [label for hay, label in _usable_mcps(mcps) if re.search(spec["match"], hay)]
+    hits = [label for hay, label in usable if re.search(spec["match"], hay)]
     if hits:
         return _row(True, ", ".join(hits))
     if not connectors_checked:
@@ -269,11 +270,11 @@ def _detect(key, mcps, connectors_checked=True):
 
 
 def _integrations_plan(wants, mcps, connectors_checked=True):
-    out = []
+    out, usable = [], _usable_mcps(mcps)       # built once, shared by every MCP-matched row
     for key in wants:
         # An UNKNOWN row gets no hint: its detail says how to find out, and the generic "how to
         # set this up" would contradict a setup that may be complete.
-        r = _detect(key, mcps, connectors_checked)
+        r = _detect(key, usable, connectors_checked)
         spec = INTEGRATIONS[key]
         hint = "" if r["ready"] or r["ready"] is None else (spec["hint"] if r["hint"] is None else r["hint"])
         out.append({"key": key, "label": spec["label"], "ready": r["ready"], "detail": r["detail"],

@@ -17,8 +17,9 @@ async function initOnboarding(){
   // A push's deep link (#run=<wid>) lands on the run it is about; the wizard must not cover it.
   // Deferred ONCE per tab: openDeepLink leaves the hash, so a reload would defer it forever.
   if(!meta.auto_open) return;
-  let deferred=false; try { deferred=sessionStorage.getItem("ottoObDeferred")==="1"; } catch(e){}
-  if(/^#run=/.test(location.hash) && !deferred){ try { sessionStorage.setItem("ottoObDeferred","1"); } catch(e){} return; }
+  // Keyed to the LINK: each new push's run is protected once; a reload of the same one is not.
+  let deferred=""; try { deferred=sessionStorage.getItem("ottoObDeferred")||""; } catch(e){}
+  if(/^#run=/.test(location.hash) && deferred!==location.hash){ try { sessionStorage.setItem("ottoObDeferred",location.hash); } catch(e){} return; }
   openOnboarding(meta);
 }
 
@@ -35,7 +36,9 @@ async function openOnboarding(meta){
   if(meta.draft){
     const d=meta.draft;
     OB={meta, step:OB_STEPS.indexOf("review"), seq:0, done:false, parked:false, lastProfile:(meta.answers||{}).profile||"",
-        answers:{usage:d.usage, profile:d.profile, integrations:d.integrations}, recheckOnShow:true};
+        // Review from the CACHED state: an auto-open must never fire the recheck (it spawns
+        // every stdio MCP server); the operator's own Re-check click does that.
+        answers:{usage:d.usage, profile:d.profile, integrations:d.integrations}};
     obRender(); return;
   }
   const prev=meta.answers||{};
@@ -114,9 +117,11 @@ async function obAction(act){
     // done or after _RECHECK_WAIT_S (65s), so the preview reads the refreshed state, not a race.
     const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take up to a minute…</p>';
     document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
-    try { await postJSON("/api/onboarding/recheck",{}); } catch(e){}
+    let failed=null;
+    try { await postJSON("/api/onboarding/recheck",{}); } catch(e){ failed=e; }
     // Still on Review, in the same wizard? Otherwise the user moved on while it ran.
     if(!box || !box.isConnected || OB_STEPS[OB.step]!=="review") return;
+    if(failed){ const err=document.getElementById("ob-err"); if(err) err.textContent="Re-check failed: "+failed.message+" — showing the last known state."; }
     document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
     obReview(); return;
   }

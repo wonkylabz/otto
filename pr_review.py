@@ -141,7 +141,7 @@ def repo_slug(value):
     return f"{owner}/{repo}" if owner and repo else ""
 
 
-def known_repos(cfg=None, offline=False):
+def known_repos(cfg=None):
     """The repos the config form ticks: every project registered in Admin → Project repos whose
     remote is on github.com, as `[{slug, name}]`, deduped and sorted.
 
@@ -158,9 +158,7 @@ def known_repos(cfg=None, offline=False):
     seen = {}
     for path in registry.projects():
         meta = registry.project_meta(path)
-        # `offline` skips the legacy origin lookup (a `git` spawn) — for a caller a spinner waits
-        # on; startup's backfill_project_urls stores those URLs, so it rarely matters.
-        slug = repo_slug(meta.get("url")) or (None if offline else repo_slug(workspace._git_origin(path)))
+        slug = repo_slug(meta.get("url")) or repo_slug(workspace._git_origin(path))
         if not slug or slug in seen:
             continue
         # The name the operator recognizes: their own checkout's directory, else the repo.
