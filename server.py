@@ -177,17 +177,13 @@ async def _wf_state(wid):
                 "times": st.get("times") or {}}
     # A Slack frontman parks on its delegated `-d1` child, and THAT child holds the gate — but the
     # conversation's chat thread is bound to the parent, so reopening it showed a run "running"
-    # with no plan to read, approve or revise. Surface the child's wait as this run's, naming
-    # `gate_wid` so every decision is signalled to the run that holds it. Delegation only: a
-    # swarm's children render as their own rows.
-    if not st.get("swarm"):
-        for child in st.get("children") or []:
-            cid = child.get("id") if isinstance(child, dict) else None
-            if not cid or cid == wid:
-                continue
-            cst = await _wf_state(cid)
-            if cst.get("state") in ("awaiting_approval", "awaiting_clarification"):
-                return {**cst, "gate_wid": cst.get("gate_wid") or cid}
+    # with no plan to read, approve or revise. Surface the child's gate as this run's, naming
+    # `gate_wid` so every decision is signalled to the run that holds it. Only the delegate, and
+    # only while it RUNS: this rides every chat poll, so a finished child's history is never read.
+    if any(isinstance(ch, dict) and ch.get("id") == f"{wid}-d1" for ch in st.get("children") or []):
+        cst = await _delegate_gate(c, f"{wid}-d1")
+        if cst:
+            return cst
     return {"state": "running", "cap": st.get("cap"),
             "swarm": st.get("swarm", False), "children": st.get("children") or [],
             # A follow-up this run re-read as a QUESTION: no gate, no plan preview, read tools
@@ -196,6 +192,22 @@ async def _wf_state(wid):
             # otherwise a user who expected the gate reads its absence as the gate having broken.
             "discussion": bool(st.get("discussion")),
             "times": st.get("times") or {}, "attempt": st.get("attempt")}
+
+
+async def _delegate_gate(c, cid):
+    """A RUNNING delegate's gate as `_wf_state`'s awaiting_approval shape plus `gate_wid`, else
+    None. Never raises: a child we cannot read leaves the parent's own state standing."""
+    try:
+        h = c.get_workflow_handle(cid)
+        desc = await h.describe()
+        if desc.status and desc.status.name != "RUNNING":
+            return None
+        if not (await h.query(OttoWorkflow.status)).get("awaiting_approval"):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    cst = await _wf_state(cid)
+    return {**cst, "gate_wid": cid} if cst.get("state") == "awaiting_approval" else None
 
 
 async def _wf_origin_chat_key(wid):

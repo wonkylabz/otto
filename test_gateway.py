@@ -11131,13 +11131,16 @@ class FastLaneReviewRoundTwoTests(unittest.TestCase):
     def test_slack_takes_the_lane_in_dms_and_opted_in_channels_only(self):
         src = inspect.getsource(__import__("activities").poll_slack)
         i = src.index('params["trusted_asker"]')
-        self.assertIn('slack.fast_lane_channel(cfg, msg.get("channel"))', src[i:i + 300])
+        self.assertIn('slack.fast_lane_channel(cfg, msg.get("channel"), identity)', src[i:i + 300])
 
     def test_a_channel_takes_the_lane_only_when_listed(self):
         import slack
         cfg = {"fast_lane_channels": ["C0SANDBOX #sandbox"]}
-        self.assertTrue(slack.fast_lane_channel(cfg, "D0DM"))
-        self.assertTrue(slack.fast_lane_channel(cfg, "C0SANDBOX"))
-        self.assertFalse(slack.fast_lane_channel(cfg, "C0GENERAL"))
-        self.assertFalse(slack.fast_lane_channel({}, "C0SANDBOX"), "the default is DMs only")
-        self.assertFalse(slack.fast_lane_channel(cfg, None))
+        self.assertTrue(slack.fast_lane_channel(cfg, "D0DM", slack.BOT))
+        self.assertTrue(slack.fast_lane_channel(cfg, "D0DM", slack.USER))
+        self.assertTrue(slack.fast_lane_channel(cfg, "C0SANDBOX", slack.BOT))
+        self.assertFalse(slack.fast_lane_channel(cfg, "C0SANDBOX", slack.USER),
+                         "the bot's list never widens the user token's grant")
+        self.assertFalse(slack.fast_lane_channel(cfg, "C0GENERAL", slack.BOT))
+        self.assertFalse(slack.fast_lane_channel({}, "C0SANDBOX", slack.BOT), "default: DMs only")
+        self.assertFalse(slack.fast_lane_channel(cfg, None, slack.BOT))

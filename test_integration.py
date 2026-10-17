@@ -3271,20 +3271,26 @@ class DelegatedGateChatTests(unittest.TestCase):
     or revise (slack-b-C0BAQSJHFSP-1792275792-937829). `_wf_state` surfaces the child's gate as the
     parent's, naming `gate_wid`, and the chat signals that id."""
 
-    def _state(self, statuses, wid="slack-b-C1-1-1"):
+    def _state(self, statuses, wid="slack-b-C1-1-1", finished=()):
         import asyncio
         import server
         import temporal_client as tc
+        self.results = []
 
         class FakeHandle:
             def __init__(self, wid):
                 self.wid = wid
 
             async def describe(self):
-                return types.SimpleNamespace(status=None)
+                name = "COMPLETED" if self.wid in finished else "RUNNING"
+                return types.SimpleNamespace(status=types.SimpleNamespace(name=name))
 
             async def query(self, _q):
                 return statuses[self.wid]
+
+            async def result(self_):
+                self.results.append(self_.wid)
+                return {"result": "done"}
 
         class FakeClient:
             def get_workflow_handle(self, wid):
@@ -3317,6 +3323,13 @@ class DelegatedGateChatTests(unittest.TestCase):
         self.assertEqual(st["state"], "running")
         self.assertNotIn("gate_wid", st)
 
+    def test_a_finished_delegate_is_never_read_on_a_poll(self):
+        # The lookup rides every chat poll (450ms): a finished child's history must not be.
+        st = self._state({"slack-b-C1-1-1": {"children": [{"id": "slack-b-C1-1-1-d1"}]}},
+                         finished=("slack-b-C1-1-1-d1",))
+        self.assertEqual(st["state"], "running")
+        self.assertEqual(self.results, [])
+
     def test_a_swarm_child_gate_is_not_lifted_onto_the_parent(self):
         st = self._state({
             "slack-b-C1-1-1": {"swarm": True, "children": [{"id": "slack-b-C1-1-1-s1"}]},
@@ -3327,7 +3340,6 @@ class DelegatedGateChatTests(unittest.TestCase):
         html = ui_src()
         self.assertIn("const gateWid=st.gate_wid||wid;", html)
         self.assertIn('{id:gateWid,signal:"approve"', html)
-        self.assertIn('{id:st.gate_wid||wid,signal:"clarify"', html)
 
 
 class WfTerminateAuditTests(unittest.TestCase):

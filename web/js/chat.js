@@ -239,7 +239,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
       setNode("CLARIFY","gatehold","waiting for your answer",{startMs:times.CLARIFY&&times.CLARIFY.start}); clearThinking(content);
       const ans=await clarifyTurn(content, st.question);
       if(!alive()) return;
-      await api("/api/wf/signal",{id:st.gate_wid||wid,signal:"clarify",value:ans});
+      await api("/api/wf/signal",{id:wid,signal:"clarify",value:ans});
       setNode("CLARIFY","done","answered"); clarDone=true; showThinking(content,"Working…");
     }
     else if(st.state==="awaiting_approval"){
