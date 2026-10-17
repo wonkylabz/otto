@@ -3265,6 +3265,71 @@ class WfStateTransientFailureTests(unittest.TestCase):
         self.assertNotIn("clearRun", branch)
 
 
+class DelegatedGateChatTests(unittest.TestCase):
+    """A Slack frontman parks on its `-d1` child, and the child holds the gate — but the chat
+    thread is bound to the PARENT, so reopening it showed "running" with no plan to read, approve
+    or revise (slack-b-C0BAQSJHFSP-1792275792-937829). `_wf_state` surfaces the child's gate as the
+    parent's, naming `gate_wid`, and the chat signals that id."""
+
+    def _state(self, statuses, wid="slack-b-C1-1-1"):
+        import asyncio
+        import server
+        import temporal_client as tc
+
+        class FakeHandle:
+            def __init__(self, wid):
+                self.wid = wid
+
+            async def describe(self):
+                return types.SimpleNamespace(status=None)
+
+            async def query(self, _q):
+                return statuses[self.wid]
+
+        class FakeClient:
+            def get_workflow_handle(self, wid):
+                return FakeHandle(wid)
+
+        orig = tc.client
+        async def fake_client():
+            return FakeClient()
+        tc.client = fake_client
+        try:
+            return asyncio.run(server._wf_state(wid))
+        finally:
+            tc.client = orig
+
+    def test_a_gated_delegate_surfaces_its_plan_on_the_parent(self):
+        st = self._state({
+            "slack-b-C1-1-1": {"cap": {"name": "assistant"}, "swarm": False,
+                               "children": [{"id": "slack-b-C1-1-1-d1", "cap": "(routed)"}]},
+            "slack-b-C1-1-1-d1": {"awaiting_approval": True, "cap": {"name": "doer"},
+                                  "plan": "play the Aspen playlist", "max_plan_revisions": 3}})
+        self.assertEqual(st["state"], "awaiting_approval")
+        self.assertEqual(st["plan"], "play the Aspen playlist")
+        self.assertEqual(st["gate_wid"], "slack-b-C1-1-1-d1")
+
+    def test_a_running_delegate_leaves_the_parent_running(self):
+        st = self._state({
+            "slack-b-C1-1-1": {"cap": {"name": "assistant"},
+                               "children": [{"id": "slack-b-C1-1-1-d1"}]},
+            "slack-b-C1-1-1-d1": {"cap": {"name": "doer"}}})
+        self.assertEqual(st["state"], "running")
+        self.assertNotIn("gate_wid", st)
+
+    def test_a_swarm_child_gate_is_not_lifted_onto_the_parent(self):
+        st = self._state({
+            "slack-b-C1-1-1": {"swarm": True, "children": [{"id": "slack-b-C1-1-1-s1"}]},
+            "slack-b-C1-1-1-s1": {"awaiting_approval": True, "plan": "x"}})
+        self.assertEqual(st["state"], "running")
+
+    def test_the_chat_signals_the_run_holding_the_gate(self):
+        html = ui_src()
+        self.assertIn("const gateWid=st.gate_wid||wid;", html)
+        self.assertIn('{id:gateWid,signal:"approve"', html)
+        self.assertIn('{id:st.gate_wid||wid,signal:"clarify"', html)
+
+
 class WfTerminateAuditTests(unittest.TestCase):
     """A Temporal TERMINATE delivers no exception into the workflow, so OttoWorkflow's own
     except-and-finalize (which normally writes a terminal audit row) never runs — a killed run

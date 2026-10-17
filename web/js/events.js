@@ -320,6 +320,12 @@ function showSlackBotForm(){
     </div>
 
     <div class="sk-sec">
+      <div class="sk-sectitle">Skip approval in these channels <span class="sk-opt">&mdash; optional</span></div>
+      <p class="sk-help">A request from you or an approver that needs only tools you ticked <b>safe</b> runs without a gate in a DM. List a channel here to allow the same there. <b>Only list channels nobody else posts in</b> &mdash; Otto reads the channel's recent messages, so anyone posting there can steer a run nobody approves.</p>
+      <textarea id="sb-fastlane" class="sk-mono" placeholder="C01ABCDEF #sandbox"></textarea>
+    </div>
+
+    <div class="sk-sec">
       <div class="sk-sectitle">Interim reply</div>
       <span class="sk-help">posted the moment a message arrives, before Otto works on the real answer. The bot speaks for itself &mdash; it isn't standing in for you.</span>
       <textarea id="sb-ack" class="sk-ack"></textarea>
@@ -338,6 +344,7 @@ function showSlackBotForm(){
   document.getElementById("sb-channels").value=(c.bot_allow_channels||[]).join("\n");
   document.getElementById("sb-users").value=(c.bot_allow_users||[]).join("\n");
   document.getElementById("sb-approvers").value=(c.bot_approvers||[]).join("\n");
+  document.getElementById("sb-fastlane").value=(c.fast_lane_channels||[]).join("\n");
   document.getElementById("sb-ack").value=c.bot_ack_template||"";
   document.getElementById("sb-hello").value=c.bot_greeting_template||"";
   document.getElementById("sb-cancel").onclick=closeFormModal;
@@ -353,6 +360,7 @@ function showSlackBotForm(){
       bot_watch_mentions:document.getElementById("sb-mentions").checked,
       bot_allow_users, bot_allow_channels,
       bot_approvers:lines("sb-approvers"),
+      fast_lane_channels:lines("sb-fastlane"),
       bot_ack_template:document.getElementById("sb-ack").value,
       bot_greeting_template:document.getElementById("sb-hello").value};
     // The form is still open and owns an error slot, so a refusal belongs in it — closing

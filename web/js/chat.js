@@ -239,7 +239,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
       setNode("CLARIFY","gatehold","waiting for your answer",{startMs:times.CLARIFY&&times.CLARIFY.start}); clearThinking(content);
       const ans=await clarifyTurn(content, st.question);
       if(!alive()) return;
-      await api("/api/wf/signal",{id:wid,signal:"clarify",value:ans});
+      await api("/api/wf/signal",{id:st.gate_wid||wid,signal:"clarify",value:ans});
       setNode("CLARIFY","done","answered"); clarDone=true; showThinking(content,"Working…");
     }
     else if(st.state==="awaiting_approval"){
@@ -247,6 +247,9 @@ async function watchLoop(wid, chatId, content, sess, flags){
       if(!previewDone){ setNode("PLAN","done","previewed",{durMs:times.PLAN&&times.PLAN.dur}); previewDone=true; }
       if(!gateDone){
         const cap=capOf(st);
+        // A delegated run's gate lives on its child (`gate_wid`, server._wf_state): plan, revise
+        // and decision all go there, while this loop keeps watching the parent it belongs to.
+        const gateWid=st.gate_wid||wid;
         setNode("GATE","gatehold","waiting for your approval",{startMs:times.GATE&&times.GATE.start}); clearThinking(content);
         // A "request changes" round re-runs PLAN and re-enters GATE, but the loop is parked inside
         // gate() for the whole round, so the diagram would sit on "waiting for your approval" —
@@ -266,9 +269,9 @@ async function watchLoop(wid, chatId, content, sess, flags){
           }
         };
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
-        const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, wid, onReplan, st.plan_model);
+        const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        await api("/api/wf/signal",{id:wid,signal:"approve",value:ok});
+        await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
         setNode("GATE","done", ok?"approved":"denied"); gateDone=true;
         if(ok){ led.appr++; render(); }
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");

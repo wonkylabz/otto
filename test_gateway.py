@@ -11128,7 +11128,16 @@ class FastLaneReviewRoundTwoTests(unittest.TestCase):
                       inspect.getsource(judging.verify))
 
     @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
-    def test_slack_takes_the_lane_in_dms_only(self):
+    def test_slack_takes_the_lane_in_dms_and_opted_in_channels_only(self):
         src = inspect.getsource(__import__("activities").poll_slack)
         i = src.index('params["trusted_asker"]')
-        self.assertIn('startswith("D")', src[i:i + 300])
+        self.assertIn('slack.fast_lane_channel(cfg, msg.get("channel"))', src[i:i + 300])
+
+    def test_a_channel_takes_the_lane_only_when_listed(self):
+        import slack
+        cfg = {"fast_lane_channels": ["C0SANDBOX #sandbox"]}
+        self.assertTrue(slack.fast_lane_channel(cfg, "D0DM"))
+        self.assertTrue(slack.fast_lane_channel(cfg, "C0SANDBOX"))
+        self.assertFalse(slack.fast_lane_channel(cfg, "C0GENERAL"))
+        self.assertFalse(slack.fast_lane_channel({}, "C0SANDBOX"), "the default is DMs only")
+        self.assertFalse(slack.fast_lane_channel(cfg, None))

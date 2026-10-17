@@ -175,6 +175,19 @@ async def _wf_state(wid):
                 "max_plan_revisions": st.get("max_plan_revisions") or 0,
                 "repo": st.get("repo"), "risk_reason": st.get("risk_reason"),
                 "times": st.get("times") or {}}
+    # A Slack frontman parks on its delegated `-d1` child, and THAT child holds the gate — but the
+    # conversation's chat thread is bound to the parent, so reopening it showed a run "running"
+    # with no plan to read, approve or revise. Surface the child's wait as this run's, naming
+    # `gate_wid` so every decision is signalled to the run that holds it. Delegation only: a
+    # swarm's children render as their own rows.
+    if not st.get("swarm"):
+        for child in st.get("children") or []:
+            cid = child.get("id") if isinstance(child, dict) else None
+            if not cid or cid == wid:
+                continue
+            cst = await _wf_state(cid)
+            if cst.get("state") in ("awaiting_approval", "awaiting_clarification"):
+                return {**cst, "gate_wid": cst.get("gate_wid") or cid}
     return {"state": "running", "cap": st.get("cap"),
             "swarm": st.get("swarm", False), "children": st.get("children") or [],
             # A follow-up this run re-read as a QUESTION: no gate, no plan preview, read tools

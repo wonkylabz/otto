@@ -149,6 +149,10 @@ _DEFAULTS = {
     # Otto editing a repo. Empty (the default) means nobody, i.e. the feature is off and every
     # gate is cleared from the board as before.
     "bot_approvers": [],
+    # Channels where the owner/an approver may take the fast lane (issue #193), as DMs always do.
+    # Opt-in per channel: a channel's context carries OTHER people's words into the frontman, so
+    # list only one nobody else posts in. Empty (the default) = DMs only.
+    "fast_lane_channels": [],
     # Socket Mode (slack_socket.py): instant delivery for the bot. On by default because it is
     # inert without an app-level token, and it only makes the SAME poll run sooner — there is
     # nothing to be cautious about. Switch it off to force the poll-only path when debugging.
@@ -1159,6 +1163,17 @@ def may_fast_lane(cfg, user, identity, owner):
     if not user:
         return False
     return bool((owner and user == owner) or may_approve(cfg, user, identity))
+
+
+def fast_lane_channel(cfg, channel):
+    """Whether a request in `channel` may take the fast lane at all. PURE.
+
+    A DM always may; a channel only when the operator listed it in `fast_lane_channels` — its
+    context lines (and its session history) carry OTHER people's words, which would steer a run
+    no human reviews on the trusted asker's credit, so the default stays DMs only."""
+    channel = str(channel or "")
+    return channel.startswith("D") or (bool(channel)
+                                       and channel in allow_ids(cfg, "fast_lane_channels"))
 
 
 # The decision vocabulary, exact and closed. A false APPROVE executes a write nobody reviewed, so
