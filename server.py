@@ -2763,8 +2763,8 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/onboarding/recheck — re-run every lookup the review reads (Slack scopes,
         the gh login, the connector list) and answer when they are done. A POST: it spawns every
         stdio MCP server, so it sits behind _csrf_ok like any other side effect."""
-        _warm_onboarding_caches(force=True, mcp=True, wait=_RECHECK_WAIT_S, retry=True)
-        self._send(200, json.dumps({"ok": True}))
+        out = _warm_onboarding_caches(force=True, mcp=True, wait=_RECHECK_WAIT_S, retry=True) or {}
+        self._send(200, json.dumps({"ok": True, **out}))
 
     def _post_onboarding_skip(self, body):
         """POST /api/onboarding/skip"""
@@ -2911,45 +2911,63 @@ def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False):
     Re-check (`mcp=True`) — the same click Admin's Recheck is — never on an open.
     On every wizard open (auto, or Setup's ?warm=1), throttled: both lookups cache a success and
     back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
-    def run(fn):
+    failed = []
+
+    def run(name, fn):
         try:
             fn()
         except Exception:  # noqa: BLE001 — a cache left cold reads as "not checked yet"
-            pass
+            failed.append(name)
     probes = [("slack-scopes", lambda: [slack.granted_scopes(i, refresh=retry)
                                         for i in (slack.USER, slack.BOT) if slack.token_set(i)]),
               ("gh-viewer", lambda: pr_review.viewer(retry=retry))]
     if mcp:
         # Only on the operator's explicit Re-check — the same click-to-refresh Admin's Recheck is.
-        probes.append(("mcp-list", lambda: policy.all_mcps(policy.load(), allow_refresh=True, force=True)))
+        def mcp_list():
+            st = policy.mcp_status_cached()
+            before = st.get("failed_at", 0)
+            policy.all_mcps(policy.load(), allow_refresh=True, force=True)
+            if policy.mcp_status_cached().get("failed_at", 0) > before:
+                raise RuntimeError("claude mcp list failed")      # stamped, never raised
+        probes.append(("mcp-list", mcp_list))
     deadline = time.time() + wait
     while True:
         with _WARM_LOCK:
             # Decide AND start under the lock, storing the threads before releasing it: two
             # callers can never both see "nothing in flight" and spawn two `claude mcp list`s.
             live = [t for t in _WARMED["threads"] if t.is_alive()]
+            k = _WARMED.get("kind", (False, False))      # (mcp, retry) of the refresh in flight
+            covers = (k[0] or not mcp) and (k[1] or not retry)
             if not live:
                 if not force and time.time() - _WARMED["at"] < _WARM_EVERY_S:
-                    return
+                    return {"incomplete": [], "failed": []}
                 _WARMED["at"] = time.time()
-                mine = [threading.Thread(target=run, args=(fn,), name=f"onboarding-warm-{n}",
+                mine = [threading.Thread(target=run, args=(n, fn), name=f"onboarding-warm-{n}",
                                          daemon=True) for n, fn in probes]
                 for t in mine:
                     t.start()
-                _WARMED["threads"] = mine
+                _WARMED["threads"], _WARMED["kind"] = mine, (mcp, retry)
                 break
         # Something is already in flight, outside the lock so no request is held. A plain warm
         # is satisfied by it. A Re-check is NOT — that refresh may lack the connector list and the
         # failure-window skip — so it waits for it to finish and then starts its own.
         if not (mcp or retry):
-            return
+            return {"incomplete": [], "failed": []}
         for t in live:
             t.join(max(0.0, deadline - time.time()))
         if any(t.is_alive() for t in live):
-            return                    # out of time; the caller reads what there is
+            return {"incomplete": [t.name for t in live if t.is_alive()], "failed": []}
+        if covers:
+            # The refresh just finished asked for everything this one would: reuse it, never a
+            # second `claude mcp list` spawning every server again for identical data.
+            return {"incomplete": [], "failed": []}
+        deadline = time.time() + wait          # its OWN probes get the full budget
     for t in mine:
         # Re-check WAITS (bounded), so what it reads back is the refreshed answer, not a race.
         t.join(max(0.0, deadline - time.time()))
+    # Said plainly, so the UI can tell "rechecked" from "tried and couldn't".
+    return {"incomplete": [t.name.replace("onboarding-warm-", "") for t in mine if t.is_alive()],
+            "failed": sorted(failed)}
 
 
 def _mcps_and_polled():

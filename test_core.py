@@ -2755,7 +2755,7 @@ class OnboardingTests(unittest.TestCase):
     def test_a_recheck_never_settles_for_a_plain_warm_in_flight(self):
         import server
         src = inspect.getsource(server._warm_onboarding_caches)
-        self.assertIn('_WARMED["threads"] = mine', src[:src.index("break")],
+        self.assertIn('_WARMED["threads"], _WARMED["kind"] = mine', src[:src.index("break\n")],
                       "threads are stored before the lock is released")
         self.assertIn("if not (mcp or retry):", src)
 
@@ -2801,7 +2801,37 @@ class OnboardingTests(unittest.TestCase):
         draft = src[src.index("if(meta.draft){"):][:700]
         self.assertNotIn("recheckOnShow:true", draft, "a page load must not spawn every MCP server")
         rc = src[src.index('if(act==="recheck")'):][:1400]
-        self.assertIn("Re-check failed", rc, "a refused recheck must say so, not re-render stale")
+        self.assertIn('"Re-check: "+failed', rc, "a refused recheck must say so, not re-render stale")
+
+    def test_no_profile_touches_a_hard_spend_cap(self):
+        for key in self.ob.PROFILES:
+            got = self.ob.profile_settings(key)
+            self.assertNotIn("budget_hard_usd", got, key)
+            self.assertNotIn("budget_hard_tokens", got, key)
+
+    def test_an_unusable_env_value_is_not_a_pin(self):
+        os.environ["OTTO_MAX_ATTEMPTS"] = "three"
+        self.assertFalse(config.settings_all()["max_attempts"]["env_pinned"])
+        row = next(s for s in self.ob.preview({"profile": "economic"})["settings"] if s["name"] == "max_attempts")
+        self.assertEqual(row["action"], "set")
+
+    def test_a_retry_reasks_even_a_cached_login(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "old", create=True), \
+                mock.patch.object(pr_review, "_run", return_value=(0, "new\n", "")):
+            self.assertEqual(pr_review.viewer(), "old")
+            self.assertEqual(pr_review.viewer(retry=True), "new")
+
+    def test_recheck_reports_what_it_could_not_refresh(self):
+        import server
+        src = inspect.getsource(server._warm_onboarding_caches)
+        self.assertIn('"incomplete"', src)
+        self.assertIn('"failed": sorted(failed)', src)
+        self.assertIn("deadline = time.time() + wait          # its OWN probes", src)
+        self.assertIn("if covers:", src)
+        ui = ui_src()
+        rc = ui[ui.index('if(act==="recheck")'):][:1600]
+        self.assertIn("++OB.seq", rc, "an in-flight first preview must not overwrite the recheck")
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack
@@ -2878,10 +2908,11 @@ class OnboardingTests(unittest.TestCase):
         self._apply({"usage": "work", "profile": "keep"})
         self.assertEqual(self.ob.state()["answers"]["profile"], "economic")
 
-    def test_balanced_resets_token_caps_too(self):
-        config.save_settings({"budget_hard_tokens": 50000})
+    def test_balanced_resets_the_soft_caps_and_keeps_the_hard_ones(self):
+        config.save_settings({"budget_hard_tokens": 50000, "budget_soft_tokens": 20000})
         self._apply({"profile": "balanced"})
-        self.assertEqual(config.setting("budget_hard_tokens"), config.BUDGET_HARD_TOKENS)
+        self.assertEqual(config.setting("budget_soft_tokens"), config.BUDGET_SOFT_TOKENS)
+        self.assertEqual(config.setting("budget_hard_tokens"), 50000, "an operator's safety rail stays")
 
     def test_a_connector_is_named_as_the_ui_names_it(self):
         mcps = [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail"}]

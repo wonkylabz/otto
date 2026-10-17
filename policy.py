@@ -600,10 +600,10 @@ def mcp_status_cached():
     return _mcp_status()
 
 
-def connectors_polled(status=None):
+def connectors_polled(status):
     """Whether `claude mcp list` has EVER filled the connector cache. Never refreshes it: an
     unfilled cache means "not known yet", not "no connectors"."""
-    return bool((mcp_status_cached() if status is None else status).get("at"))
+    return bool(status.get("at"))      # ONE read, the caller's — never a second cache read
 
 
 def discover_connectors(allow_refresh=False, force=False, status=None):

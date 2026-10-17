@@ -232,8 +232,8 @@ def answering_state(identity, cfg=None):
     users_key, channels_key = allow_keys(identity)
     dms, mentions = (("bot_watch_dms", "bot_watch_mentions") if identity == BOT
                      else ("watch_dms", "watch_mentions"))
-    # The poller's own test (truthiness, defaults filled by load()), so a stored 0 or "" reads
-    # as off here exactly as it does there.
+    # The poller's own test: truthiness over a cfg from load(), which fills every watch_* key
+    # from _DEFAULTS (all True), so the `True` fallback here only covers a hand-built dict.
     dm_on, mention_on = bool(cfg.get(dms, True)), bool(cfg.get(mentions, True))
     # Mirrors the poller: a DM is matched on its author or its (D…) channel id; a mention on its
     # channel — and, for the USER token, which finds mentions by search anywhere, its author too.

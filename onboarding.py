@@ -37,8 +37,10 @@ DRAFT_TTL_S = 24 * 3600
 # previous one set. "balanced" is the code defaults — `save_settings` then removes those keys.
 # Route and judge re-sampling are deliberately NOT here: one sample is a coin flip, and the cost
 # of a misroute or a false FAIL exceeds the samples saved (routing-capabilities.md, run-pipeline.md).
+# The HARD spend caps are deliberately absent: they are a safety rail the operator set, and a
+# full assignment would make even "Economic" silently lift one. Soft caps only downshift a tier.
 _PROFILE_KEYS = ("max_attempts", "max_review_rounds", "max_qa_rounds", "effort", "supervise",
-                 "budget_soft_usd", "budget_hard_usd", "budget_soft_tokens", "budget_hard_tokens")
+                 "budget_soft_usd", "budget_soft_tokens")
 PROFILES = {
     # The default pick: an install upgraded mid-life has tuned values, and a wizard that opens by
     # itself must not reset them because someone clicked through it.
@@ -56,7 +58,8 @@ PROFILES = {
     },
     "balanced": {
         "label": "Balanced",
-        "blurb": "Reset to Otto's defaults: three attempts, full review rounds, no spend cap.",
+        "blurb": "Reset to Otto's defaults: three attempts, full review rounds, no downshift. "
+                 "Hard spend caps you set are kept.",
         "settings": None,      # resolved to the code defaults at plan time
     },
     "quality": {

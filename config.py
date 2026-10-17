@@ -668,7 +668,10 @@ def settings_all():
     locked rather than offering a control whose clicks would be silently overridden."""
     out = {}
     for name, (env_var, kind, const) in _SETTING_SPECS.items():
-        pinned = os.environ.get(env_var) not in (None, "")
+        # Pinned only by a value setting() would actually USE: an env value that fails to coerce
+        # is ignored there, so reporting it pinned would lock a knob the store still controls.
+        raw = os.environ.get(env_var)
+        pinned = raw not in (None, "") and _coerce(kind, raw) is not None
         out[name] = {"value": setting(name), "kind": kind, "env": env_var,
                      "env_pinned": pinned, "default": globals()[const],
                      "stored": name in _settings_store()}

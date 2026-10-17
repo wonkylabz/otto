@@ -117,13 +117,19 @@ async function obAction(act){
     // done or after _RECHECK_WAIT_S (65s), so the preview reads the refreshed state, not a race.
     const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take up to a minute…</p>';
     document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
-    let failed=null;
-    try { await postJSON("/api/onboarding/recheck",{}); } catch(e){ failed=e; }
+    const seq=++OB.seq;       // supersede any preview already in flight from the first render
+    let failed=null, res=null;
+    try { res=await postJSON("/api/onboarding/recheck",{}); } catch(e){ failed=e.message; }
     // Still on Review, in the same wizard? Otherwise the user moved on while it ran.
-    if(!box || !box.isConnected || OB_STEPS[OB.step]!=="review") return;
-    if(failed){ const err=document.getElementById("ob-err"); if(err) err.textContent="Re-check failed: "+failed.message+" — showing the last known state."; }
+    if(!box || !box.isConnected || OB_STEPS[OB.step]!=="review" || seq!==OB.seq) return;
+    const names={"mcp-list":"the connector list","gh-viewer":"the gh sign-in","slack-scopes":"Slack's token scopes"};
+    const part=res ? [...(res.failed||[]).map(n=>names[n]+" (failed)"), ...(res.incomplete||[]).map(n=>names[n]+" (still running)")] : [];
+    if(!failed && part.length) failed="couldn't refresh "+part.join(", ");
+    const note=failed ? "Re-check: "+failed+" — showing the last known state for those." : "";
     document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
-    obReview(); return;
+    await obReview();
+    const err=document.getElementById("ob-err"); if(note && err && err.isConnected && !err.textContent) err.textContent=note;
+    return;
   }
   if(act==="tour"){ closeFormModal(); startTour(); return; }
   if(act==="skip"){ closeFormModal(); return; }   // the close hook records the skip

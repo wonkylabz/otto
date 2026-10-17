@@ -185,7 +185,8 @@ def viewer(retry=False):
     # up — returned None for the worker's whole life, and `_parse_search` needs a viewer to
     # apply `skip_own`: the toggle read as on and silently did nothing (#47).
     global _viewer_failed
-    if getattr(viewer, "_cache", None):
+    # `retry` re-asks even a cached login: after `gh auth login`/`switch` the account may differ.
+    if not retry and getattr(viewer, "_cache", None):
         return viewer._cache
     # `retry`: the operator just asked (Re-check after `gh auth login`) — skip the failure window.
     if not retry and time.time() - _viewer_failed < _VIEWER_RETRY_S:
