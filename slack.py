@@ -232,10 +232,6 @@ def answering_state(identity, cfg=None):
     return "test" if identity == USER and cfg.get("allow_self") else "nobody"
 
 
-def answers_anyone(identity, cfg=None):
-    """Switched on and answering someone, test mode included — what may start a poll."""
-    return answering_state(identity, cfg) in ("on", "test")
-
 
 def enabled_identities(cfg=None):
     """The identities currently listening, user first. Used for status and for the pollers."""

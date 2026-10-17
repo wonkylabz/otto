@@ -2745,6 +2745,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(409, json.dumps({"error": str(e)})); return
         self._send(200, json.dumps({"ok": True, **out}))
 
+    def _post_onboarding_draft(self, body):
+        """POST /api/onboarding/draft — park the wizard's answers (an integration detour)."""
+        self._send(200, json.dumps({"ok": True, **onboarding.save_draft(body.get("answers"))}))
+
     def _post_onboarding_skip(self, body):
         """POST /api/onboarding/skip"""
         self._send(200, json.dumps({"ok": True, **onboarding.skip(body.get("answers"))}))
@@ -2878,18 +2882,23 @@ class Handler(BaseHTTPRequestHandler):
 def _warm_onboarding_caches():
     """Fill, in the background, the caches onboarding reads but never fills itself (it may not
     shell out behind its spinner): Slack's granted scopes, the `gh` login and the connector list.
-    Without this the wizard opens at boot before any of them exist and every row reads "?"."""
+    Without this the wizard opens at boot before any of them exist and every row reads "?".
+    Only while the wizard would open by itself, and each probe on its own thread: they are slow
+    (an auth.test, `gh api`, `claude mcp list`) and none should wait behind another."""
     import threading
+    if not onboarding.state()["auto_open"]:
+        return
 
-    def warm():
-        for fn in (lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT) if slack.token_set(i)],
-                   pr_review.viewer,
-                   lambda: policy.all_mcps(policy.load(), allow_refresh=True)):
-            try:
-                fn()
-            except Exception:  # noqa: BLE001 — a cache left cold reads as "not checked yet"
-                pass
-    threading.Thread(target=warm, name="onboarding-warm", daemon=True).start()
+    def run(fn):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 — a cache left cold reads as "not checked yet"
+            pass
+    for name, fn in (("slack-scopes", lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT)
+                                              if slack.token_set(i)]),
+                     ("gh-viewer", pr_review.viewer),
+                     ("mcp-list", lambda: policy.all_mcps(policy.load(), allow_refresh=True))):
+        threading.Thread(target=run, args=(fn,), name=f"onboarding-warm-{name}", daemon=True).start()
 
 
 def _mcps_and_polled():
@@ -2966,6 +2975,7 @@ _POST_ROUTES = {
     "/api/project/remove": Handler._post_project_remove,
     "/api/project/verify": Handler._post_project_verify,
     "/api/onboarding/apply": Handler._post_onboarding_apply,
+    "/api/onboarding/draft": Handler._post_onboarding_draft,
     "/api/onboarding/preview": Handler._post_onboarding_preview,
     "/api/onboarding/skip": Handler._post_onboarding_skip,
     "/api/settings": Handler._post_settings,

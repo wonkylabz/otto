@@ -67,7 +67,7 @@ function githubSteps(ctx, feats){
   const {pr, board, repos}=ctx, bc=(board.config||{}), pc=(pr.config||{});
   const out=[{t:"Sign in the GitHub CLI", done:!!pr.viewer,
     b:`Otto talks to GitHub through ${gCode("gh")}, as whoever it is logged in as. Install it and run ${gCode("gh auth login")} on the machine Otto runs on.`+
-      (pr.viewer?`<p class="obsub">Signed in as <b>${esc(pr.viewer)}</b>.</p>`:`<p class="obsub">Restart Otto after signing in, then press Re-check.</p>`)}];
+      (pr.viewer?`<p class="obsub">Signed in as <b>${esc(pr.viewer)}</b>.</p>`:`<p class="obsub">After signing in, press Re-check — no restart needed. A failed check is retried after two minutes, so give it a moment if it still says to do.</p>`)}];
   if(feats.includes("board")){
     out.push({t:"Prepare a project board", done:!!bc.project,
       b:`Create a GitHub <b>Project</b> (the new Projects, not classic) with a Status field holding the columns ${["Ready","In Progress","Review","Done","Blocked"].map(gCode).join(", ")}. Moving a card to <b>Ready</b> is what approves it to run, so only people you trust should be able to move cards there.`+

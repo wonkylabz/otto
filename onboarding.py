@@ -74,7 +74,8 @@ INTEGRATIONS = {
                  "hint": "Add a Slack user or bot token (setup_wizard.py or .env), then switch the "
                          "listener on in Events → Slack."},
     "email":    {"label": "Email", "default_for": ("personal", "work", "both"),
-                 "match": r"gmail|outlook|\be-?mail\b", "where": {"tab": "admin", "sect": "mcp"},
+                 "match": r"gmail|outlook|(?<![a-z0-9])e-?mail(?![a-z0-9])",
+                 "where": {"tab": "admin", "sect": "mcp"},
                  "hint": "Connect Gmail (or another mail connector) in claude.ai → Settings → "
                          "Connectors; Otto inherits it. Runs on a local model can't use it."},
     "calendar": {"label": "Calendar", "default_for": ("personal", "both"),
@@ -82,7 +83,8 @@ INTEGRATIONS = {
                  "hint": "Connect Google Calendar in claude.ai → Settings → Connectors."},
     "docs":     {"label": "Docs & notes", "default_for": (),
                  # Not bare "docs": that is every documentation-LOOKUP server (aws-docs, …).
-                 "match": r"notion|google.?(drive|docs)|\bdrive\b|confluence|obsidian",
+                 # Boundaries are alnum-only, not \b: "_" is a separator in server names.
+                 "match": r"notion|google.?(drive|docs)|g?drive(?![a-z0-9])|confluence|obsidian",
                  "where": {"tab": "admin", "sect": "mcp"},
                  "hint": "Connect Notion/Drive in claude.ai, or add a stdio server in Admin → "
                          "MCP servers."},
@@ -116,6 +118,7 @@ def state():
     d = _load()
     done = d.get("version") == VERSION and (d.get("completed_at") or d.get("skipped_at"))
     return {"version": VERSION, "auto_open": not done, "answers": d.get("answers") or {},
+            "draft": d.get("draft") or None,
             "completed_at": d.get("completed_at"), "skipped_at": d.get("skipped_at"),
             "usages": list(USAGES),
             "profiles": [{"key": k, "label": p["label"], "blurb": p["blurb"]}
@@ -282,12 +285,14 @@ def apply(answers, expect):
     install changed in between. Only the SETTINGS are re-derived — the fingerprint covers nothing
     else, so integration detection is the preview's alone."""
     a = normalize(answers)
-    settings = _settings_plan(a["profile"])
-    if _fingerprint(a, settings) != expect:
-        raise StalePreview("settings changed since the preview — review again")
-    changes = {s["name"]: s["after"] for s in settings if s["action"] == "set"}
-    if changes:
-        config.save_settings(changes)
+    # Check and write as ONE step: an Admin save landing between them would be overwritten.
+    with config.SETTINGS_LOCK:
+        settings = _settings_plan(a["profile"])
+        if _fingerprint(a, settings) != expect:
+            raise StalePreview("settings changed since the preview — review again")
+        changes = {s["name"]: s["after"] for s in settings if s["action"] == "set"}
+        if changes:
+            config.save_settings(changes)
     now = time.time()
     def _mut(d):
         d = d if isinstance(d, dict) else {}
@@ -299,9 +304,22 @@ def apply(answers, expect):
             stored.pop("profile")
             if prev.get("profile"):
                 stored["profile"] = prev["profile"]
-        return {"version": VERSION, "answers": stored, "completed_at": now}
+        return {"version": VERSION, "answers": stored, "completed_at": now}   # drops any draft
     storage.mutate_json(_STATE, _mut, default={})
     return {"applied": sorted(changes)}
+
+
+def save_draft(answers):
+    """Park the wizard's answers while the operator goes to connect something — the hints there
+    say "restart Otto", so in-memory state would not survive. Neither completes nor skips: it
+    still opens by itself, resuming from the draft. Apply and skip clear it."""
+    draft = normalize(answers)
+
+    def _mut(d):
+        d = d if isinstance(d, dict) else {}
+        return {**d, "draft": draft}
+    storage.mutate_json(_STATE, _mut, default={})
+    return state()
 
 
 def skip(answers=None):
@@ -312,6 +330,7 @@ def skip(answers=None):
     def _mut(d):
         d = d if isinstance(d, dict) else {}
         out = {**d, "version": VERSION, "skipped_at": now}
+        out.pop("draft", None)
         # Keep only what was actually answered: a draft closed on the welcome step must not
         # store "personal" as a choice, nor [] as a deliberate "no integrations".
         # The profile is never drafted: the stored one is what was last APPLIED, and the next

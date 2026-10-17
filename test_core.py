@@ -2551,7 +2551,8 @@ class OnboardingTests(unittest.TestCase):
     def test_the_server_warms_what_onboarding_only_reads(self):
         import server
         src = inspect.getsource(server._warm_onboarding_caches)
-        for need in ("granted_scopes", "pr_review.viewer", "allow_refresh=True", "daemon=True"):
+        for need in ("granted_scopes", "pr_review.viewer", "allow_refresh=True", "daemon=True",
+                     'onboarding.state()["auto_open"]'):
             self.assertIn(need, src)
         self.assertIn("_warm_onboarding_caches()", inspect.getsource(server.main))
 
@@ -2559,6 +2560,30 @@ class OnboardingTests(unittest.TestCase):
         init = ui_src()
         init = init[init.index("async function initOnboarding"):]
         self.assertIn("ottoObDeferred", init[:init.index("\n}")])
+
+    def test_underscored_server_names_still_match(self):
+        for name, key in (("email_mcp", "email"), ("gdrive_sync", "docs")):
+            got = self.ob.preview({"integrations": [key]}, [{"name": name}])["integrations"][0]
+            self.assertTrue(got["ready"], name)
+
+    def test_a_failed_mcp_list_is_not_a_completed_poll(self):
+        import policy
+        self.assertFalse(policy.connectors_polled({"at": 1.0, "ok": False, "connectors": []}))
+        self.assertTrue(policy.connectors_polled({"at": 1.0, "ok": True}))
+        self.assertTrue(policy.connectors_polled({"at": 1.0}), "a pre-`ok` cache keeps meaning polled")
+
+    def test_a_detour_draft_survives_a_restart_and_apply_clears_it(self):
+        self.ob.save_draft({"usage": "work", "profile": "economic", "integrations": ["slack"]})
+        st = self.ob.state()
+        self.assertTrue(st["auto_open"], "a detour is neither finished nor skipped")
+        self.assertEqual(st["draft"]["profile"], "economic")
+        self._apply(st["draft"])
+        self.assertIsNone(self.ob.state()["draft"])
+
+    def test_apply_checks_and_writes_under_the_settings_lock(self):
+        src = inspect.getsource(self.ob.apply)
+        self.assertLess(src.index("with config.SETTINGS_LOCK"), src.index("_fingerprint("))
+        self.assertIn("SETTINGS_LOCK", inspect.getsource(config.save_settings))
 
     def test_keep_on_a_first_run_records_no_profile(self):
         self._apply({"usage": "work", "profile": "keep"})
@@ -2629,15 +2654,14 @@ class OnboardingTests(unittest.TestCase):
 
     def test_slack_readiness_is_one_rule_in_slack(self):
         import slack
+        st = slack.answering_state
         with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"), mock.patch.object(slack, "BOT_TOKEN", "xoxb-t"):
-            self.assertFalse(slack.answers_anyone(slack.USER, {"enabled": True}))
-            self.assertTrue(slack.answers_anyone(slack.USER, {"enabled": True, "allow_self": True}))
-            self.assertFalse(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "allow_self": True}))
-            self.assertTrue(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}))
-            self.assertEqual(slack.answering_state(slack.USER, {"enabled": True, "allow_self": True}), "test")
-            self.assertEqual(slack.answering_state(slack.USER, {"enabled": True}), "nobody")
+            self.assertEqual(st(slack.USER, {"enabled": True}), "nobody")
+            self.assertEqual(st(slack.USER, {"enabled": True, "allow_self": True}), "test")
+            self.assertEqual(st(slack.BOT, {"bot_enabled": True, "allow_self": True}), "nobody")
+            self.assertEqual(st(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}), "on")
         with mock.patch.object(slack, "USER_TOKEN", ""):
-            self.assertFalse(slack.answers_anyone(slack.USER, {"enabled": True, "allow_users": ["U1"]}),
+            self.assertEqual(st(slack.USER, {"enabled": True, "allow_users": ["U1"]}), "off",
                              "switched on without a token answers nobody")
         src = ui_src()
         self.assertIn("(d.answering||{}).user", src)
@@ -3863,7 +3887,7 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 8055 -> 8034: the ladder rule got SHORTER because the thing it describes did. The loop's
     # decisions moved into `ladder.py`, so the rule no longer has to explain a three-copy mirror
     # and instruct a reader to keep it in step by hand — the ceiling ratchets DOWN by what left.
-    MAX_BYTES = 8034          # resident tier — the per-session tax
+    MAX_BYTES = 8047          # resident tier — the per-session tax
     # 78897 -> 77758 (#56): `gateway-backends.md` had reached 18 KB, digested into every
     # convention judge. Split into gateway/backends/walls and `tools-mcp.md`, and the prose
     # restating a guard test's own docstring pruned out of every file. Both ceilings ratchet

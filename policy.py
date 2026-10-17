@@ -477,7 +477,8 @@ def discover_mcps():
 
 def _run_mcp_list():
     """Raw `claude mcp list` text. Health-checks every server (slow, with network timeouts) —
-    keep this OFF the per-run hot path; only the Admin view triggers it.
+    keep this OFF the per-run hot path; the Admin view triggers it, and so does server startup
+    while onboarding is pending (`server._warm_onboarding_caches`, in the background).
 
     The health check STARTS each stdio server, so this is one of the doors issue #72 is
     about: same narrowed environment as a run (`claude_cli.child_env`), or a panel load hands
@@ -563,7 +564,9 @@ def _mcp_status(allow_refresh=False, force=False):
     if allow_refresh and (force or not fresh):
         try:
             text = _run_mcp_list()
-            cached = {"at": time.time(),
+            # `ok`: an empty listing is a CLI that failed (not ready, logged out), not "no
+            # connectors" — so it must not read as a completed poll (`connectors_polled`).
+            cached = {"at": time.time(), "ok": bool(text.strip()),
                       "connectors": _parse_connectors(text),
                       "health": _parse_health(text)}
             _write(_CONN_CACHE, cached)
@@ -580,7 +583,8 @@ def mcp_status_cached():
 def connectors_polled(status=None):
     """Whether `claude mcp list` has EVER filled the connector cache. Never refreshes it: an
     unfilled cache means "not known yet", not "no connectors"."""
-    return bool((mcp_status_cached() if status is None else status).get("at"))
+    st = mcp_status_cached() if status is None else status
+    return bool(st.get("at")) and st.get("ok", True) is not False
 
 
 def discover_connectors(allow_refresh=False, force=False, status=None):

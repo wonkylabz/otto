@@ -674,6 +674,11 @@ def settings_all():
     return out
 
 
+# Held by save_settings, and by a caller that must CHECK the store and write it as one step
+# (onboarding.apply) — re-entrant so that caller can call save_settings inside it.
+SETTINGS_LOCK = __import__("threading").RLock()
+
+
 def save_settings(updates):
     """Merge UI edits into the store (validated + coerced; unknown keys and unusable values are
     dropped). A value equal to the code default is REMOVED rather than stored, so the store stays a
@@ -697,8 +702,9 @@ def save_settings(updates):
             else:
                 d[name] = val
         return d
-    storage.mutate_json(_settings_path(), _mut, default={})
-    _store_memo["stamp"] = None      # force a re-read in THIS process
+    with SETTINGS_LOCK:
+        storage.mutate_json(_settings_path(), _mut, default={})
+        _store_memo["stamp"] = None      # force a re-read in THIS process
     return settings_all()
 
 

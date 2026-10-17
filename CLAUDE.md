@@ -43,7 +43,7 @@ Read the layer's rules file before editing it — each carries the invariants th
 | Gateway, backends, walls | `gateway.py`, `local_runtime.py`, `error_classifier.py` | `.claude/rules/gateway-backends.md` |
 | Tool grants, MCP, file safety, sandbox | `mcp_client.py`, `policy.py`, `claude_cli.py`, `file_safety.py` | `.claude/rules/tools-mcp.md` |
 | Engine facade + audit store | `engine.py`, `audit.py`, and the modules split out of them | `.claude/rules/engine-core.md` |
-| UI | `web/index.html` + `web/css/`, `web/js/` | `.claude/rules/ui.md` |
+| UI | `web/index.html` + `web/css/`, `web/js/`, `onboarding.py` | `.claude/rules/ui.md` |
 
 Two cross-layer invariants that don't live in any one of them:
 

@@ -27,6 +27,13 @@ async function openOnboarding(meta){
   // Parked by an integration's Open: resume exactly where it was, choices intact.
   if(!meta && OB && OB.parked){ OB.parked=false; obRender(); return; }
   if(!meta){ try { meta=await getJSON("/api/onboarding"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
+  // A detour that outlived the page (the hints say "restart Otto") resumes from its saved draft.
+  if(meta.draft){
+    const d=meta.draft;
+    OB={meta, step:OB_STEPS.indexOf("review"), seq:0, done:false, parked:false, lastProfile:(meta.answers||{}).profile||"",
+        answers:{usage:d.usage, profile:d.profile, integrations:d.integrations}};
+    obRender(); return;
+  }
   const prev=meta.answers||{};
   // Always preselect "keep": a re-run (or a VERSION bump's auto-open) clicked straight through
   // must not re-apply an old profile over what was tuned in Admin since. The last one is named.
@@ -159,13 +166,20 @@ function obGoto(tab, sect){
   // say how to come back, rather than recording a skip that drops the chosen profile.
   if(OB && !OB.done && !document.getElementById("formModal").hidden){
     OB.parked=true; toast("Onboarding is paused — press Setup to finish applying your choices","ok");
+    postOr("/api/onboarding/draft",{answers:OB.answers},"saving your onboarding answers");
   }
   closeFormModal(); endTour();
   activateTab(tab);
+  /* A bounded one-off wait for a render, not a repeating poller — util.poll's backoff and
+     hidden-tab pause are for timers that live as long as the page. Gives up out loud. */
   const t0=Date.now();
   const find=()=>{
     const sec=[...document.querySelectorAll(".asection[data-sect]")].find(s=>s.dataset.sect===sect && s.offsetParent);
-    if(!sec){ if(Date.now()-t0<5000) setTimeout(find,150); return; }
+    if(!sec){
+      if(Date.now()-t0<10000) setTimeout(find,150);
+      else toast("That section is still loading — it's on this tab once it appears");
+      return;
+    }
     sec.classList.remove("collapsed");
     // Events and Admin remember sections in opposite stores (closed-set vs open-set).
     if(tab==="events") evSetCollapsed(sect,false);
