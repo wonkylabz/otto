@@ -1,6 +1,6 @@
 # Tags a release once its PR lands. `release.py` only opens the PR: `main` squash-merges, so
 # the commit the script made never reaches `main`, and a tag cut locally pointed at an orphan
-# (v0.4.0). Here the tag goes on the commit that actually landed, and only once.
+# and diverged `main`. Here the tag goes on the commit that actually landed, and only once.
 name: release-tag
 
 on:
