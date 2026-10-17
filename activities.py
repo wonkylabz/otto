@@ -1493,10 +1493,10 @@ def poll_slack(payload: dict) -> dict:
                 params["chat_key"] = rec["wid"]         # same conversation, new session
         wid = slack.wid_for(msg)
         # The fast lane follows the ASKER (issue #193): the owner, or a listed approver. Decided
-        # here, from the message's own author — never from anything in its text. DMs only: a
-        # channel's context lines (and its session history) carry OTHER people's words, which
-        # would steer a run no human reviews on the trusted asker's credit.
-        params["trusted_asker"] = (str(msg.get("channel") or "").startswith("D") and
+        # here, from the message's own author — never from anything in its text. DMs, plus the
+        # channels the operator opted in (`slack.fast_lane_channel`): a channel's context lines
+        # carry OTHER people's words, which would steer a run no human reviews.
+        params["trusted_asker"] = (slack.fast_lane_channel(cfg, msg.get("channel"), identity) and
                                    slack.may_fast_lane(cfg, msg.get("user"), identity,
                                                        slack.whoami(slack.USER)))
         if params["trusted_asker"]:

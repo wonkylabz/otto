@@ -169,6 +169,8 @@ async function watchLoop(wid, chatId, content, sess, flags){
   const myWatch = ++liveWatch;
   flags = flags || {};
   let pickShown=!!flags.pickShown, clarDone=!!flags.clarDone, gateDone=!!flags.gateDone, runActive=false;
+  // A frontman reaches RUN (so gateDone) BEFORE its delegate gates: that gate is a second one.
+  let delegateGateShown=false;
   // `decomposeDone` tracks the early fan-out CHECK (plan_swarm — is this really several
   // independent tasks?); `previewDone` tracks the separate, later PLAN node — the read-only dry
   // run that shows the human the actual operations at the approval gate. Two different passes
@@ -213,7 +215,8 @@ async function watchLoop(wid, chatId, content, sess, flags){
       if(!decomposeDone && times.DECOMPOSE && times.DECOMPOSE.dur!=null){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE.dur}); decomposeDone=true; }
       if(times.ROUTER && times.ROUTER.start && times.ROUTER.dur==null) setNode("ROUTER","active","picking a capability…",{startMs:times.ROUTER.start});
     }
-    if(st.cap && !pickShown && !isSwarm){
+    // A delegated gate carries the CHILD's cap: the route this chat shows is the parent's.
+    if(st.cap && !pickShown && !isSwarm && !st.gate_wid){
       if(!decomposeDone){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE&&times.DECOMPOSE.dur}); decomposeDone=true; }
       pickShown=true; setNode("ROUTER","done","picked:",{durMs:times.ROUTER&&times.ROUTER.dur}); addPick(st.cap);
       if(!flags.quietPick){ content.innerHTML=`<p>I'll use <code>${esc(st.cap.name)}</code> <span class="badge ${st.cap.risk}">${st.cap.risk}</span></p>`; stampMsg(content); }
@@ -245,8 +248,12 @@ async function watchLoop(wid, chatId, content, sess, flags){
     else if(st.state==="awaiting_approval"){
       if(!clarDone){ setNode("CLARIFY","done","no questions",{durMs:times.CLARIFY&&times.CLARIFY.dur}); clarDone=true; }
       if(!previewDone){ setNode("PLAN","done","previewed",{durMs:times.PLAN&&times.PLAN.dur}); previewDone=true; }
-      if(!gateDone){
+      if(!gateDone || (st.gate_wid && !delegateGateShown)){
+        if(st.gate_wid) delegateGateShown=true;
         const cap=capOf(st);
+        // A delegated run's gate lives on its child (`gate_wid`, server._wf_state): plan, revise
+        // and decision all go there, while this loop keeps watching the parent it belongs to.
+        const gateWid=st.gate_wid||wid;
         setNode("GATE","gatehold","waiting for your approval",{startMs:times.GATE&&times.GATE.start}); clearThinking(content);
         // A "request changes" round re-runs PLAN and re-enters GATE, but the loop is parked inside
         // gate() for the whole round, so the diagram would sit on "waiting for your approval" —
@@ -266,12 +273,14 @@ async function watchLoop(wid, chatId, content, sess, flags){
           }
         };
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
-        const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, wid, onReplan, st.plan_model);
+        const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        await api("/api/wf/signal",{id:wid,signal:"approve",value:ok});
-        setNode("GATE","done", ok?"approved":"denied"); gateDone=true;
-        if(ok){ led.appr++; render(); }
+        // gate() already counted a clicked approval in the ledger; counting here doubled it.
+        if(ok!==null) await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
+        setNode("GATE","done", ok===null?"no longer waiting":(ok?"approved":"denied")); gateDone=true;
+        // Decided elsewhere could be a decline — say nothing about running until the run does.
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
+        else if(ok===null) showThinking(content,"Working…");
       }
     }
     else if(st.state==="done"){
@@ -303,7 +312,11 @@ async function watchLoop(wid, chatId, content, sess, flags){
       // restart mid-poll). Treat it as weather, not a verdict: leave every node exactly as it is,
       // say so on screen, and keep polling — a transient blip used to arrive as state "failed"
       // and paint a dead pipeline over a run that then executed happily for another 15 minutes.
-      showThinking(content, "\u26a0 lost contact with Temporal \u2014 the run is still going, retrying\u2026");
+      // `unread`: Temporal answered but the run's status query did not (worker down, a failing
+      // workflow task) — a different fault, so a different sentence.
+      showThinking(content, st.unread
+        ? "\u26a0 can't read this run's status right now (is the worker up?) \u2014 retrying\u2026"
+        : "\u26a0 lost contact with Temporal \u2014 the run is still going, retrying\u2026");
       await sleep(2000);
       continue;
     }
@@ -1395,21 +1408,59 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
     paint(plan, concerns);
     content.appendChild(card); scroll();
     const actionBtns=()=>modal.querySelectorAll(".approve, .decline, .revise");
+    let stopWatch=null;
     const finish=(ok)=>{
+      if(card.classList.contains("resolved")) return;
+      if(stopWatch) stopWatch();
       card.classList.add("resolved");
       const act=modal.querySelector(".actions"); if(act) act.remove();
       const rb=modal.querySelector(".revisebox"); if(rb) rb.remove();
-      const r=document.createElement("div"); r.className="resolution "+(ok?"ok":"no");
-      r.textContent= ok ? "✓ approved" : "✕ declined — nothing ran";
+      const r=document.createElement("div"); r.className="resolution "+(ok===null?"":ok?"ok":"no");
+      r.textContent= ok===null ? "no longer waiting here — decided in Slack or on the board, expired, or stopped"
+                   : ok ? "✓ approved" : "✕ declined — nothing ran";
       modal.querySelector(".modalBody").appendChild(r);
       gateStatusEl.textContent = r.textContent;
-      gateStatusEl.className = "gatestatus resolution "+(ok?"ok":"no");
+      gateStatusEl.className = "gatestatus resolution "+(ok===null?"":ok?"ok":"no");
       seeplanBtn.textContent = "View plan";
       closeGateModal();
       document.removeEventListener("keydown", escHandler);
       if(ok){ led.appr++; render(); } resolve(ok); };
-    modal.querySelector(".approve").addEventListener("click",()=>finish(true));
-    modal.querySelector(".decline").addEventListener("click",()=>finish(false));
+    // A click re-reads the gate first: decided in Slack or on the board since the last watch
+    // tick, a late Decline would paint "nothing ran" over a write already executing.
+    // Unreadable (an error, a timeout, `unreachable`) never discards the click: it stands, and
+    // the workflow keeps the FIRST decision, so a stale one changes nothing.
+    const decide=async ok=>{
+      if(wid){
+        for(const b of actionBtns()) b.disabled=true;
+        try {
+          const st=await Promise.race([getJSON("/api/wf?id="+encodeURIComponent(wid)), sleep(4000)]);
+          if(st && st.state && st.state!=="awaiting_approval" && st.state!=="unreachable") return finish(null);
+          // Mid re-plan (another tab asked for changes): the plan on screen is not the one that
+          // would run, so this click approves nothing.
+          if(st && st.replanning){
+            for(const b of actionBtns()) b.disabled=false;
+            const n=modal.querySelector(".revisenote");
+            n.hidden=false; n.textContent="The plan is being revised — wait for the new one.";
+            return;
+          }
+        } catch(e){ /* the click stands */ }
+      }
+      finish(ok);
+    };
+    modal.querySelector(".approve").addEventListener("click",()=>decide(true));
+    modal.querySelector(".decline").addEventListener("click",()=>decide(false));
+    // The same gate can be cleared from Slack or the board — a delegated one mostly is. Without
+    // this the card waited on a click forever, and a late Decline painted "nothing ran" over a
+    // write already executing. `null` = decided elsewhere: the caller signals nothing.
+    // getJSON THROWS on an HTTP error, so only a state the server actually read moves the card;
+    // a card no longer on screen (chat switched) stops its own watch.
+    if(wid) stopWatch=poll(async()=>{
+      if(!card.isConnected){ stopWatch(); return POLL_SKIP; }
+      // A revision round runs its own (faster) poll; the gate is still standing meanwhile.
+      if(!modal.querySelector(".replanbar").hidden) return POLL_SKIP;
+      const st=await getJSON("/api/wf?id="+encodeURIComponent(wid));
+      if(st.state!=="awaiting_approval" && st.state!=="unreachable") finish(null);
+    }, 3000);
 
     // Request changes: free-text feedback instead of a decision. The workflow folds it into
     // the request and re-runs the plan preview + critic; THIS modal stays open and repaints
@@ -1484,6 +1535,7 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
           let st;
           try { st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json(); }
           catch(e){ continue; }
+          if(st.state==="unreachable") continue;   // an unread status is not "moved on"
           if(st.state!=="awaiting_approval"){
             stopReplan();
             note.hidden=false;

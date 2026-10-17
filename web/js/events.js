@@ -320,6 +320,12 @@ function showSlackBotForm(){
     </div>
 
     <div class="sk-sec">
+      <div class="sk-sectitle">Skip approval in these channels <span class="sk-opt">&mdash; optional</span></div>
+      <p class="sk-help">A request from you or an approver that needs only tools you ticked <b>safe</b> runs without a gate in a DM. List a channel here to allow the same there. <b>Only list channels nobody else posts in</b> &mdash; no colleagues, guests, bots or integrations &mdash; Otto reads the channel's recent messages, so anyone posting there can steer a run nobody approves.</p>
+      <textarea id="sb-fastlane" class="sk-mono" placeholder="C01ABCDEF #sandbox"></textarea>
+    </div>
+
+    <div class="sk-sec">
       <div class="sk-sectitle">Interim reply</div>
       <span class="sk-help">posted the moment a message arrives, before Otto works on the real answer. The bot speaks for itself &mdash; it isn't standing in for you.</span>
       <textarea id="sb-ack" class="sk-ack"></textarea>
@@ -338,12 +344,18 @@ function showSlackBotForm(){
   document.getElementById("sb-channels").value=(c.bot_allow_channels||[]).join("\n");
   document.getElementById("sb-users").value=(c.bot_allow_users||[]).join("\n");
   document.getElementById("sb-approvers").value=(c.bot_approvers||[]).join("\n");
+  document.getElementById("sb-fastlane").value=(c.bot_fast_lane_channels||[]).join("\n");
   document.getElementById("sb-ack").value=c.bot_ack_template||"";
   document.getElementById("sb-hello").value=c.bot_greeting_template||"";
   document.getElementById("sb-cancel").onclick=closeFormModal;
   document.getElementById("sb-save").onclick=async()=>{
     const lines=id=>document.getElementById(id).value.split("\n").map(s=>s.trim()).filter(Boolean);
     const bot_allow_users=lines("sb-users"), bot_allow_channels=lines("sb-channels");
+    // The bot never reads a channel it isn't allowed in, so a fast-lane entry outside that list
+    // would be a setting that silently does nothing.
+    const unread=slackIds(lines("sb-fastlane")).filter(id=>!slackIds(bot_allow_channels).includes(id));
+    if(unread.length){
+      document.getElementById("sb-err").textContent="add "+unread.join(", ")+" to Allowed channels too — the bot never reads a channel outside that list"; return; }
     if(document.getElementById("sb-enabled").checked && !slackIds(bot_allow_users).length
        && !slackIds(bot_allow_channels).length){
       document.getElementById("sb-err").textContent="add at least one allowed channel or DM user ID (a #comment alone isn't one) before enabling"; return; }
@@ -353,6 +365,7 @@ function showSlackBotForm(){
       bot_watch_mentions:document.getElementById("sb-mentions").checked,
       bot_allow_users, bot_allow_channels,
       bot_approvers:lines("sb-approvers"),
+      bot_fast_lane_channels:lines("sb-fastlane"),
       bot_ack_template:document.getElementById("sb-ack").value,
       bot_greeting_template:document.getElementById("sb-hello").value};
     // The form is still open and owns an error slot, so a refusal belongs in it — closing

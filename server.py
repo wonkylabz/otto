@@ -14,6 +14,7 @@ workflow — the browser only watches state and sends signals. Temporal is requi
 
     ./run.sh               # temporal + worker + this server; open http://localhost:8765
 """
+import asyncio
 import datetime
 import json
 import os
@@ -154,27 +155,25 @@ async def _wf_state(wid):
         return {"state": "failed", "result": f"workflow {name.lower()}", "terminal_status": name}
     try:
         st = await h.query(OttoWorkflow.status)
-    except Exception:  # noqa: BLE001
-        st = {}
+    except Exception as e:  # noqa: BLE001
+        # Not "running": a client watching for a transition (the gate card's watch, a revision
+        # poll) read an unread status as "the gate cleared" and let go of a parked run.
+        return {"state": "unreachable", "unread": True,
+                "result": str(e)[:200] or "status query failed"}
     if st.get("awaiting_clarification"):
         return {"state": "awaiting_clarification", "question": st.get("question"), "cap": st.get("cap"),
                 "times": st.get("times") or {}}
     if st.get("awaiting_approval"):
-        # NOTE: this is a WHITELIST, not a passthrough — a field added to OttoWorkflow.status is
-        # invisible to the gate until it is named here too. plan_concerns was silently dropped
-        # exactly this way on its first live run: the critic ran, the workflow held the findings,
-        # and the browser got a gate with no warning block. Guarded by
-        # test_core.GateStateForwardingTests.
-        return {"state": "awaiting_approval", "cap": st.get("cap"), "plan": st.get("plan"),
-                "plan_concerns": st.get("plan_concerns") or [],
-                # WHICH model wrote this plan. Approving one without being told who authored it
-                # is how a silent downgrade to the cheapest Claude tier went unnoticed.
-                "plan_model": st.get("plan_model"),
-                "plan_revisions": st.get("plan_revisions") or 0,
-                "replanning": bool(st.get("replanning")),
-                "max_plan_revisions": st.get("max_plan_revisions") or 0,
-                "repo": st.get("repo"), "risk_reason": st.get("risk_reason"),
-                "times": st.get("times") or {}}
+        return _gate_state(st)
+    # A Slack frontman parks on its delegated child, and THAT child holds the gate — but the
+    # conversation's chat thread is bound to the parent, so reopening it showed a run "running"
+    # with no plan to read, approve or revise. Surface the child's gate as this run's, naming
+    # `gate_wid` so every decision is signalled to the run that holds it.
+    for ch in st.get("children") or []:
+        if isinstance(ch, dict) and ch.get("delegated") and not ch.get("done") and ch.get("id"):
+            cst = await _delegate_gate(c, ch["id"])
+            if cst:
+                return cst
     return {"state": "running", "cap": st.get("cap"),
             "swarm": st.get("swarm", False), "children": st.get("children") or [],
             # A follow-up this run re-read as a QUESTION: no gate, no plan preview, read tools
@@ -183,6 +182,46 @@ async def _wf_state(wid):
             # otherwise a user who expected the gate reads its absence as the gate having broken.
             "discussion": bool(st.get("discussion")),
             "times": st.get("times") or {}, "attempt": st.get("attempt")}
+
+
+def _gate_state(st):
+    """`OttoWorkflow.status` at a gate, in the shape the chat's gate card reads."""
+    # NOTE: this is a WHITELIST, not a passthrough — a field added to OttoWorkflow.status is
+    # invisible to the gate until it is named here too. plan_concerns was silently dropped
+    # exactly this way on its first live run: the critic ran, the workflow held the findings,
+    # and the browser got a gate with no warning block. Guarded by
+    # test_core.GateStateForwardingTests.
+    return {"state": "awaiting_approval", "cap": st.get("cap"), "plan": st.get("plan"),
+            "plan_concerns": st.get("plan_concerns") or [],
+            # WHICH model wrote this plan. Approving one without being told who authored it
+            # is how a silent downgrade to the cheapest Claude tier went unnoticed.
+            "plan_model": st.get("plan_model"),
+            "plan_revisions": st.get("plan_revisions") or 0,
+            "replanning": bool(st.get("replanning")),
+            "max_plan_revisions": st.get("max_plan_revisions") or 0,
+            "repo": st.get("repo"), "risk_reason": st.get("risk_reason"),
+            "times": st.get("times") or {}}
+
+
+async def _delegate_gate(c, cid):
+    """A RUNNING delegate's gate as `_gate_state` plus `gate_wid`, else None. This rides every chat
+    poll, so it is one describe + one query, never a finished child's history. Never raises: a
+    child we cannot read leaves the parent's own state standing."""
+    try:
+        h = c.get_workflow_handle(cid)
+
+        async def read():
+            desc = await h.describe()
+            if desc.status and desc.status.name != "RUNNING":
+                return None
+            return await h.query(OttoWorkflow.status)
+        # ONE bound over both calls: a stuck child must not stall the parent's own poll behind it.
+        st = await asyncio.wait_for(read(), 5)
+        if st is None:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return {**_gate_state(st), "gate_wid": cid} if st.get("awaiting_approval") else None
 
 
 async def _wf_origin_chat_key(wid):
