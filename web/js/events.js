@@ -72,11 +72,13 @@ async function loadEvents(){
     <div class="phead sec"><h2>Integrations</h2>
       <p class="sub">Slack, GitHub, and inbound webhooks &mdash; each connects, configures, and toggles independently below.</p></div>
     <div class="asection coll${closed['ev-slack']?' collapsed':''}" data-sect="ev-slack">
-      <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Slack<span class="badge off" id="slack-badge">off</span></span></h3>
+      <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Slack<span class="badge off" id="slack-badge">off</span></span>
+        <button class="addbtn" data-guide="slack" title="Step-by-step: create the Slack app, add the token, choose who Otto answers">setup guide</button></h3>
       <div class="asection-body"><div id="slack-section"></div><div id="slacktrig-section"></div></div>
     </div>
     <div class="asection coll${closed['ev-github']?' collapsed':''}" data-sect="ev-github">
-      <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>GitHub<span class="badge off" id="github-badge">off</span></span></h3>
+      <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>GitHub<span class="badge off" id="github-badge">off</span></span>
+        <button class="addbtn" data-guide="github" title="Step-by-step: sign in gh, connect a project board, review PRs, register repos">setup guide</button></h3>
       <div class="asection-body"><div id="board-queue-section"></div><div id="pr-review-section"></div></div>
     </div>
     <div class="asection coll${closed['ev-webhooks']?' collapsed':''}" data-sect="ev-webhooks">
@@ -180,6 +182,7 @@ async function loadSlackConfig(){
    inbound paths are dead. Found on the first real install. Rendered ABOVE the status line, because
    it is the reason the status line is lying. */
 function scopeWarning(g){
+  if(g && g.rejected) return `<div class="jstatus"><span class="warn">Slack refused this token (${esc(String(g.rejected))})</span> &mdash; it is revoked, expired or mistyped. Copy a fresh one from the app's <b>OAuth &amp; Permissions</b> page and restart Otto.</div>`;
   if(!g || !g.known || !g.missing || !g.missing.length) return "";
   const rows=g.missing.map(([s,why])=>`<code>${esc(s)}</code> &mdash; ${esc(why)}`).join("<br>");
   return `<div class="jstatus"><span class="warn">missing Slack scope(s)</span> &mdash; it polls but

@@ -2443,6 +2443,924 @@ class ResumeModelRebindTests(unittest.TestCase):
                       "carryContextForSubmit still returns '' for every live session")
 
 
+class OnboardingTests(unittest.TestCase):
+    """UI onboarding (`onboarding.py`): answers → a settings diff + an integration checklist,
+    applied only as previewed. It must be safe to run any number of times, so a profile is a FULL
+    assignment of its keys and a second apply of the same answers changes nothing."""
+
+    def setUp(self):
+        import onboarding
+        self.ob = onboarding
+        self._path = config._SETTINGS_PATH
+        self._dir = tempfile.mkdtemp(prefix="otto-onboarding-")
+        config._SETTINGS_PATH = os.path.join(self._dir, "settings.json")
+        config._store_memo["stamp"] = None
+        self._state = mock.patch.object(onboarding, "_STATE", os.path.join(self._dir, "ob.json"))
+        self._state.start()
+        # A developer's .env pins knobs via run.sh; a pinned key would read as "pinned", not "set".
+        envs = {config._SETTING_SPECS[k][0] for k in onboarding._PROFILE_KEYS}
+        self._env = mock.patch.dict(os.environ, {k: "" for k in envs})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._state.stop()
+        config._SETTINGS_PATH = self._path
+        config._store_memo["stamp"] = None
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+    def _apply(self, answers):
+        return self.ob.apply(answers, self.ob.preview(answers)["fingerprint"])
+
+    def test_every_profile_assigns_the_same_real_settings(self):
+        # A profile that set a key another left alone would strand it on switch: economic's
+        # max_attempts=2 would survive picking balanced.
+        self.assertEqual(self.ob.profile_settings("keep"), {})
+        for key in set(self.ob.PROFILES) - {"keep"}:
+            got = self.ob.profile_settings(key)
+            self.assertEqual(set(got), set(self.ob._PROFILE_KEYS), key)
+            for name, val in got.items():
+                self.assertIn(name, config._SETTING_SPECS)
+                self.assertEqual(config._coerce(config._SETTING_SPECS[name][1], val), val, name)
+
+    def test_apply_is_idempotent(self):
+        a = {"usage": "work", "profile": "economic", "integrations": []}
+        first = self._apply(a)
+        self.assertIn("max_attempts", first["applied"])
+        self.assertEqual(config.setting("max_attempts"), 2)
+        self.assertFalse([s for s in self.ob.preview(a)["settings"] if s["action"] == "set"])
+        self.assertEqual(self._apply(a)["applied"], [])
+
+    def test_balanced_after_economic_restores_the_defaults(self):
+        self._apply({"profile": "economic"})
+        self._apply({"profile": "balanced"})
+        store = storage.read_json(config._settings_path(), {})
+        self.assertFalse(set(store) & set(self.ob._PROFILE_KEYS), store)
+
+    def test_the_default_pick_changes_nothing(self):
+        # The wizard opens by itself on upgraded installs; clicking through must not reset tuning.
+        config.save_settings({"max_attempts": 5, "budget_hard_usd": 4.0})
+        self.assertEqual(self.ob.normalize({})["profile"], "keep")
+        self.assertEqual(self._apply({})["applied"], [])
+        self.assertEqual(config.setting("max_attempts"), 5)
+        self.assertIn('profile:"keep"', ui_src(), "a re-run must not preselect an old profile")
+
+    def test_no_profile_turns_off_route_or_judge_resampling(self):
+        for key in self.ob.PROFILES:
+            got = self.ob.profile_settings(key)
+            self.assertNotIn("route_confirmations", got, key)
+            self.assertNotIn("judge_confirmations", got, key)
+
+    def test_the_guide_asks_for_the_scopes_scope_gaps_would_require(self):
+        import slack
+        names = [s for s, _w, _o in slack.scope_catalog(slack.USER, {"watch_mentions": False})]
+        self.assertNotIn("search:read", names, "a switched-off feature's scope is over-granting")
+        self.assertIn("users:read", names)
+        bot = {s: o for s, _w, o in slack.scope_catalog(slack.BOT, {})}
+        self.assertIs(bot.get("groups:read"), True, "optional private-channel scopes are asked for too")
+
+    def test_an_unusable_mcp_server_is_not_an_integration(self):
+        for row in ({"name": "gmail", "confirmed": False}, {"name": "gmail", "health": "failed"}):
+            got = self.ob.preview({"integrations": ["email"]}, [row])["integrations"][0]
+            self.assertFalse(got["ready"], row)
+
+    def test_test_mode_alone_is_not_set_up(self):
+        import slack
+        self.assertFalse(self._slack({"enabled": True, "allow_self": True}, [slack.USER])["ready"])
+
+    def test_a_draft_keeps_the_stored_fields_it_never_reached(self):
+        self._apply({"usage": "work", "profile": "economic", "integrations": ["slack", "github"]})
+        self.ob.skip({"usage": "work", "integrations": None})
+        st = self.ob.state()["answers"]
+        self.assertEqual(st["profile"], "economic")
+        self.assertEqual(st["integrations"], ["slack", "github"])
+
+    def test_an_admin_edit_between_preview_and_apply_refuses(self):
+        config.save_settings({"max_attempts": 5})
+        fp = self.ob.preview({"profile": "balanced"})["fingerprint"]
+        config.save_settings({"max_attempts": 7})          # target is still 3: same "after"
+        with self.assertRaises(self.ob.StalePreview):
+            self.ob.apply({"profile": "balanced"}, fp)
+        self.assertEqual(config.setting("max_attempts"), 7)
+
+    def test_a_usage_change_drops_the_old_usages_picks(self):
+        self._apply({"usage": "work", "profile": "keep", "integrations": ["slack", "github"]})
+        self.ob.skip({"usage": "personal", "integrations": None})
+        self.assertNotIn("integrations", self.ob.state()["answers"])
+
+    def test_a_deep_link_defers_the_wizard_once_not_forever(self):
+        init = ui_src()
+        init = init[init.index("async function initOnboarding"):]
+        self.assertIn("ottoObDeferred", init[:init.index("\n}")])
+
+    def test_underscored_server_names_still_match(self):
+        for name, key in (("email_mcp", "email"), ("gdrive_sync", "docs"), ("fastmail", "email"),
+                          ("protonmail-mcp", "email"), ("apple-mail", "email")):
+            got = self.ob.preview({"integrations": [key]}, [{"name": name}])["integrations"][0]
+            self.assertTrue(got["ready"], name)
+        got = self.ob.preview({"integrations": ["docs"]}, [{"name": "overdrive"}])["integrations"][0]
+        self.assertFalse(got["ready"], "no left boundary matched 'overdrive'")
+
+    def test_a_listed_channel_needs_the_mention_door(self):
+        import slack
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"):
+            self.assertEqual(slack.answering_state(slack.USER, {
+                "enabled": True, "allow_channels": ["C123"], "watch_mentions": False}), "nobody")
+
+    def test_one_working_identity_is_a_working_slack(self):
+        import slack
+        cfg = {"enabled": True, "allow_users": ["U1"], "bot_enabled": True, "bot_allow_users": ["U2"]}
+        gaps = {slack.USER: {"missing": [("im:history", "x")], "known": True},
+                slack.BOT: {"missing": [], "known": True}}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertTrue(got["ready"])
+        self.assertIn("missing scopes", got["detail"])
+
+    def test_an_unknown_row_carries_no_setup_hint(self):
+        import slack
+        got = self._slack({"enabled": True, "allow_users": ["U1"]}, [slack.USER], {"missing": [], "known": False})
+        self.assertIsNone(got["ready"])
+        self.assertEqual(got["hint"], "")
+
+    def test_a_failed_mcp_list_keeps_data_but_negatively_caches(self):
+        import policy
+        good = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {"gmail": "connected"}}
+        stamp = lambda path, fn, default: fn(dict(good))    # noqa: E731 — the store holds `good`
+        with mock.patch.object(policy, "_read", return_value=dict(good)), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=None), \
+                mock.patch.object(policy.storage, "mutate_json", side_effect=stamp) as wrote:
+            got = policy._mcp_status(allow_refresh=True, force=True)
+        self.assertEqual({k: got[k] for k in good}, good, "data AND its `at` untouched")
+        self.assertGreater(got["failed_at"], 1.0, "its own stamp holds the retry")
+        wrote.assert_called_once()
+        self.assertTrue(policy.connectors_polled(got))
+        self.assertFalse(policy.connectors_polled({"failed_at": 2.0}), "never good is not polled")
+        with mock.patch.object(policy, "_read", return_value={**good, "at": 0.0, "failed_at": policy.time.time()}), \
+                mock.patch.object(policy, "_run_mcp_list", side_effect=AssertionError("retried")):
+            policy._mcp_status(allow_refresh=True)          # a fresh failure waits out the TTL
+
+    def test_a_url_only_repo_counts_as_registered(self):
+        import pr_review
+        with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
+                mock.patch.object(pr_review, "viewer_cached", return_value="octo"), \
+                mock.patch.object(registry, "registered_count", return_value=1):
+            got = self.ob.preview({"integrations": ["github"]})["integrations"][0]
+        self.assertTrue(got["ready"])
+        self.assertIn("registered_repos", ui_src()[ui_src().index("github:{title:"):][:900])
+
+    def test_a_nonzero_mcp_list_exit_is_a_failed_listing(self):
+        import policy
+        res = mock.Mock(returncode=1, stdout="Checking MCP server health...\n")
+        with mock.patch.object(policy.subprocess, "run", return_value=res):
+            self.assertIsNone(policy._run_mcp_list(), "non-zero and nothing listed: failed")
+        res = mock.Mock(returncode=0, stdout="Checking MCP server health...\n")
+        with mock.patch.object(policy.subprocess, "run", return_value=res):
+            self.assertEqual(policy._run_mcp_list(), res.stdout,
+                             "exit 0 listing nothing is a real empty setup, never a failure")
+        listed = "Checking MCP server health...\n\ngmail: npx gmail - ✓ Connected\n"
+        with mock.patch.object(policy.subprocess, "run", return_value=mock.Mock(returncode=1, stdout=listed)), \
+                mock.patch.object(policy, "_parse_health", return_value={"gmail": "connected"}):
+            self.assertEqual(policy._run_mcp_list(), listed, "a listing that parses is kept")
+
+    def test_a_falsy_stored_watch_switch_is_off(self):
+        import slack
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"):
+            self.assertEqual(slack.answering_state(slack.USER, {
+                "enabled": True, "allow_users": ["U1"], "watch_dms": 0, "watch_mentions": ""}), "nobody")
+
+    def test_a_stale_draft_expires(self):
+        self.ob.save_draft({"usage": "work", "profile": "economic"})
+        self.assertIsNotNone(self.ob.state()["draft"])
+        with mock.patch.object(self.ob.time, "time", return_value=self.ob.time.time() + self.ob.DRAFT_TTL_S + 1):
+            self.assertIsNone(self.ob.state()["draft"])
+
+    def test_applied_reports_only_what_the_store_holds(self):
+        orig = config.save_settings
+        # The spec refuses one value: save_settings drops it, inside the same locked check.
+        with mock.patch.object(config, "save_settings",
+                               side_effect=lambda ch: orig(lambda st: {k: v for k, v in ch(st).items()
+                                                                       if k != "effort"})):
+            out = self._apply({"profile": "economic"})
+        self.assertNotIn("effort", out["applied"])
+        self.assertIn("max_attempts", out["applied"])
+
+    def test_a_finished_install_is_not_probed_on_every_page_load(self):
+        import server
+        src = inspect.getsource(server)
+        block = src[src.index('self.path.startswith("/api/onboarding?")'):][:600]
+        self.assertIn('st["auto_open"] or "warm=1"', block)
+        self.assertIn("/api/onboarding?warm=1", ui_src())
+
+    def test_scrolling_the_tour_never_rebuilds_its_buttons(self):
+        src = ui_src()
+        place = src[src.index("function tourPlace"):]
+        place = place[:place.index("\n}")]
+        self.assertNotIn("innerHTML", place)
+
+    def test_a_listed_dm_channel_reaches_through_the_dm_door(self):
+        import slack
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"):
+            self.assertEqual(slack.answering_state(slack.USER, {
+                "enabled": True, "allow_channels": ["D0123"], "watch_mentions": False}), "on")
+
+    def test_the_repo_count_never_spawns_git(self):
+        import workspace
+        with mock.patch.object(registry, "_project_entries", return_value=[{"url": "", "path": "/legacy"}]), \
+                mock.patch.object(workspace, "_git_origin", side_effect=AssertionError("spawned git")):
+            self.assertEqual(registry.registered_count(), 1)
+
+    def test_an_empty_listing_replaces_a_stale_one(self):
+        import policy
+        stale = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {"g": "connected"}}
+        with mock.patch.object(policy, "_read", return_value=dict(stale)), \
+                mock.patch.object(policy, "_run_mcp_list", return_value="Checking MCP server health...\n"), \
+                mock.patch.object(policy, "_write"):
+            got = policy._mcp_status(allow_refresh=True, force=True)
+        self.assertEqual(got["connectors"], [], "removed connectors must stop reading as present")
+
+    def test_an_unread_identity_is_unknown_not_judged_by_the_other(self):
+        import slack
+        cfg = {"enabled": True, "allow_users": ["U1"], "bot_enabled": True, "bot_allow_users": ["U2"]}
+        gaps = {slack.USER: {"missing": [("search:read", "x")], "known": True},
+                slack.BOT: {"missing": [], "known": False}}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertIsNone(got["ready"])
+
+    def test_a_token_slack_refuses_is_named_not_left_unknown(self):
+        import slack
+        ok = mock.MagicMock()
+        ok.__enter__.return_value.headers = {}
+        ok.__enter__.return_value.read.return_value = b'{"ok": false, "error": "invalid_auth"}'
+        with mock.patch.dict(slack._GRANTED, {}, clear=True), mock.patch.dict(slack._REJECTED, {}, clear=True), \
+                mock.patch.dict(slack._FAILED, {}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-dead"), \
+                mock.patch.object(slack.urllib.request, "urlopen", return_value=ok):
+            g = slack.scope_gaps(slack.USER, {})
+            self.assertEqual(g["rejected"], "invalid_auth")
+            self.assertFalse(g["known"])
+            self.assertEqual(slack.scope_gaps(slack.USER, {}, cached_only=True), g, "both paths agree")
+        self.assertIn("g.rejected", ui_src(), "the Events card says so")
+
+    def test_a_captive_portal_is_transient_not_a_rejection(self):
+        import slack
+        page = mock.MagicMock()
+        page.__enter__.return_value.headers = {}
+        page.__enter__.return_value.read.return_value = b"<html>log in to the wifi</html>"
+        with mock.patch.dict(slack._GRANTED, {}, clear=True), mock.patch.dict(slack._REJECTED, {}, clear=True), \
+                mock.patch.dict(slack._FAILED, {}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-fine"), \
+                mock.patch.object(slack.urllib.request, "urlopen", return_value=page):
+            g = slack.scope_gaps(slack.USER, {})
+            self.assertNotIn("rejected", g)
+            self.assertNotIn(slack.USER, slack._GRANTED, "never cached: retried after the backoff")
+
+    def test_a_hung_mcp_list_is_negatively_cached(self):
+        import policy
+        held = {"at": 1.0, "connectors": [], "health": {}}
+        with mock.patch.object(policy, "_read", return_value=dict(held)), \
+                mock.patch.object(policy, "_run_mcp_list", side_effect=TimeoutError("hung")), \
+                mock.patch.object(policy.storage, "mutate_json",
+                                  side_effect=lambda path, fn, default: fn(dict(held))):
+            got = policy._mcp_status(allow_refresh=True, force=True)
+        self.assertIn("failed_at", got)
+
+    def test_any_forge_and_url_only_repos_count(self):
+        with mock.patch.object(registry, "_project_entries", return_value=[
+                {"url": "https://gitlab.com/o/x", "path": ""}, {"url": "", "path": "/legacy"}]):
+            self.assertEqual(registry.registered_count(), 2)
+
+    def test_a_failed_refresh_keeps_the_last_good_grant(self):
+        import slack
+        with mock.patch.dict(slack._GRANTED, {slack.USER: {"chat:write"}}, clear=True), \
+                mock.patch.dict(slack._FAILED, {}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-t"), \
+                mock.patch.object(slack.urllib.request, "urlopen", side_effect=OSError("blip")):
+            self.assertEqual(slack.granted_scopes(slack.USER, refresh=True), {"chat:write"})
+            self.assertEqual(slack._GRANTED[slack.USER], {"chat:write"})
+
+    def test_a_failed_listing_is_retried_sooner_than_a_good_one(self):
+        import policy
+        self.assertLess(policy._CONN_FAIL_TTL, policy._CONN_TTL)
+        old = policy.time.time() - policy._CONN_FAIL_TTL - 1
+        with mock.patch.object(policy, "_read", return_value={"at": 1.0, "failed_at": old}), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=None) as ran, \
+                mock.patch.object(policy, "_write"):
+            policy._mcp_status(allow_refresh=True)
+        ran.assert_called_once()
+
+    def test_an_unread_identity_outranks_a_refused_one(self):
+        import slack
+        cfg = {"enabled": True, "allow_users": ["U1"], "bot_enabled": True, "bot_allow_users": ["U2"]}
+        gaps = {slack.USER: {"missing": [], "known": False, "rejected": "invalid_auth"},
+                slack.BOT: {"missing": [], "known": False}}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertIsNone(got["ready"], "the unread bot may be the working one")
+        gaps[slack.BOT] = {"missing": [], "known": True}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertTrue(got["ready"])
+        self.assertIn("refused", got["detail"], "a working bot must not hide a dead user token")
+
+    def test_an_auto_open_never_fires_the_recheck(self):
+        src = ui_src()
+        draft = src[src.index("if(meta.draft){"):][:700]
+        self.assertNotIn("recheckOnShow:true", draft, "a page load must not spawn every MCP server")
+        rc = src[src.index("async function obRecheck"):][:2000]
+        self.assertIn('"Re-check: "+failed', rc, "a refused recheck must say so, not re-render stale")
+
+    def test_no_profile_touches_a_hard_spend_cap(self):
+        for key in self.ob.PROFILES:
+            got = self.ob.profile_settings(key)
+            self.assertFalse([k for k in got if k.startswith("budget_")], key)
+
+    def test_an_unusable_env_value_is_not_a_pin(self):
+        os.environ["OTTO_MAX_ATTEMPTS"] = "three"
+        self.assertFalse(config.settings_all()["max_attempts"]["env_pinned"])
+        row = next(s for s in self.ob.preview({"profile": "economic"})["settings"] if s["name"] == "max_attempts")
+        self.assertEqual(row["action"], "set")
+
+    def test_a_retry_reasks_even_a_cached_login(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "old", create=True), \
+                mock.patch.object(pr_review, "_run", return_value=(0, "new\n", "")):
+            self.assertEqual(pr_review.viewer(), "old")
+            self.assertTrue(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "new")
+
+    def test_the_mcp_list_runs_only_behind_an_explicit_recheck(self):
+        import server
+        names = [n for n, _ in server._recheck_probes(False)]
+        self.assertNotIn("mcp-list", names)
+        self.assertIn("mcp-list", [n for n, _ in server._recheck_probes(True)])
+        # Behaviourally, with EVERY branch live: the warm runs its lookups and never a listing.
+        import policy
+        ran = []
+        with mock.patch.object(policy, "_refresh_listing", side_effect=AssertionError("listed")), \
+                mock.patch.object(policy, "refresh_mcp_status", side_effect=AssertionError("listed")), \
+                mock.patch.object(server.slack, "token_set", return_value=True), \
+                mock.patch.object(server.slack, "granted_scopes", side_effect=lambda i: ran.append(i)), \
+                mock.patch.object(server.pr_review, "viewer", side_effect=lambda: ran.append("gh")), \
+                mock.patch.object(server.shutil, "which", return_value="/usr/bin/gh"):
+            server._WARM.update(at=0.0, threads=[])
+            server._warm_onboarding_caches(force=True)
+            for t in server._WARM["threads"]:
+                t.join(2)
+        self.assertEqual(len(ran), 3, "both Slack identities and the gh login were warmed")
+        self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main), "never at boot")
+        get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
+        self.assertNotIn("mcp=True", get, "a GET must never spawn MCP servers")
+
+    def test_a_failed_reask_keeps_the_resolved_login(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "alice", create=True), \
+                mock.patch.object(pr_review, "_run", return_value=(1, "", "offline")):
+            self.assertFalse(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "alice")
+
+    def test_a_failure_stamp_never_clobbers_a_newer_listing(self):
+        import policy
+        fresh = {"at": 99.0, "connectors": [{"name": "new"}], "health": {}}
+        with mock.patch.object(policy.storage, "read_json", return_value=dict(fresh)), \
+                mock.patch.object(policy.storage, "mutate_json",
+                                  side_effect=lambda path, fn, default: fn(dict(fresh))):
+            got = policy._stamp_failed()
+        self.assertEqual(got["connectors"], fresh["connectors"])
+        self.assertIn("failed_at", got)
+
+    def test_an_unusable_env_default_is_never_a_profile_target(self):
+        os.environ["OTTO_EFFORT"] = "bogus"
+        with mock.patch.object(config, "EFFORT", "bogus"):
+            self.assertNotIn("effort", self.ob.profile_settings("balanced"))
+
+    def test_refresh_lookups_report_their_own_outcome(self):
+        import pr_review
+        import slack
+        with mock.patch.object(pr_review, "_run", return_value=(1, "", "down")), \
+                mock.patch.object(pr_review.viewer, "_cache", "alice", create=True):
+            self.assertFalse(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "alice")
+        with mock.patch.object(slack, "_probe_scopes", return_value=True):
+            self.assertTrue(slack.refresh_scopes(slack.USER), "the probe's own return value")
+        with mock.patch.object(slack, "_probe_scopes", return_value=False):
+            self.assertFalse(slack.refresh_scopes(slack.USER))
+
+    def test_a_refused_apply_keeps_saying_why(self):
+        ui = ui_src()
+        self.assertIn("obReview(e.message)", ui)
+        self.assertIn('why+" — here is the current plan."', ui)
+        self.assertIn('insertAdjacentText("beforeend"', ui, "a Re-check note never hides a preview failure")
+        self.assertIn('postJSON("/api/onboarding/recheck",{connectors:false, probes})', ui)
+        self.assertIn('obRender(); obRecheck(false);', ui, "a resume re-asks the cheap lookups only")
+
+    def test_a_gh_less_install_never_reports_a_gh_failure(self):
+        import server
+        with mock.patch.object(server.shutil, "which", return_value=None):
+            names = [n for n, _ in server._recheck_probes(True)]
+        self.assertNotIn("gh-viewer", names)
+
+    def test_a_dm_id_is_never_a_mention_source(self):
+        import slack
+        with mock.patch.object(slack, "BOT_TOKEN", "xoxb-t"):
+            self.assertEqual(slack.answering_state(slack.BOT, {
+                "bot_enabled": True, "bot_allow_channels": ["D012345"],
+                "bot_watch_dms": False, "bot_watch_mentions": True}), "nobody")
+
+    def test_a_corrupt_draft_stamp_never_500s_the_wizard(self):
+        storage.write_json(self.ob._STATE, {"draft": {"usage": "work"}, "draft_at": "x"})
+        self.assertIsNone(self.ob.state()["draft"])
+
+    def test_an_unreadable_default_is_a_row_not_a_gap(self):
+        os.environ["OTTO_EFFORT"] = "hgih"
+        with mock.patch.object(config, "EFFORT", "hgih"):
+            rows = {r["name"]: r for r in self.ob.preview({"profile": "balanced"})["settings"]}
+        self.assertEqual(rows["effort"]["action"], "skip")
+
+    def test_mcp_refresh_reports_this_listings_outcome(self):
+        import policy
+        with mock.patch.object(policy, "_read", return_value={"at": 9e9, "connectors": []}), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=None), \
+                mock.patch.object(policy, "_stamp_failed", return_value={"at": 9e9, "failed_at": 1.0}):
+            self.assertFalse(policy.refresh_mcp_status(), "a newer `at` must not make a failure read ok")
+
+    def test_a_resume_renders_before_it_waits(self):
+        ui = ui_src()
+        park = ui[ui.index("if(!meta && OB && OB.parked){"):][:900]
+        self.assertLess(park.index("obRender()"), park.index("obRecheck(false)"))
+
+    def test_gh_saying_nobody_is_signed_in_clears_the_login(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "alice", create=True), \
+                mock.patch.object(pr_review, "_run",
+                                  return_value=(4, "", "To get started with GitHub CLI, please run: gh auth login")):
+            self.assertFalse(pr_review.refresh_viewer())
+            self.assertEqual(pr_review.viewer_cached(), "", "logged out is not a blip")
+
+    def test_a_connector_needing_reauth_is_not_nothing_connected(self):
+        # As production builds it: the listing keeps only Connected connectors, so one needing auth
+        # is no ROW — it exists only in the health map.
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"claude_ai_Gmail": "needs_auth"})["integrations"][0]
+        self.assertFalse(got["ready"])
+        self.assertIn("re-authentication", got["detail"])
+        self.assertEqual(got["hint"], "", "never the generic 'connect one'")
+
+    def test_a_no_op_save_rewrites_nothing(self):
+        config.save_settings({"max_attempts": 5})
+        path = config._settings_path()
+        before = os.stat(path).st_mtime_ns
+        with mock.patch.object(storage, "_atomic_write", side_effect=AssertionError("rewrote")):
+            config.save_settings({"max_attempts": 5})
+        self.assertEqual(os.stat(path).st_mtime_ns, before)
+
+    def test_a_guide_recheck_asks_only_for_what_it_reads(self):
+        import server
+        names = [n for n, _ in server._recheck_probes(False, only={"slack-scopes"})]
+        self.assertEqual(names, ["slack-scopes"])
+        self.assertIn('probes=key==="slack"?["slack-scopes"]:["gh-viewer"]', ui_src())
+
+    def test_a_recheck_reports_its_own_probes(self):
+        import server
+        import threading as th
+        gate = th.Event()
+        probes = [("gh-viewer", lambda: False), ("slack-scopes", lambda: True),
+                  ("mcp-list", lambda: gate.wait(3))]
+        with mock.patch.object(server, "_recheck_probes", return_value=probes):
+            out = server._recheck(mcp=True, wait=0.3)
+            gate.set()
+        self.assertEqual(out, {"failed": ["gh-viewer"], "incomplete": ["mcp-list"]})
+
+    def test_a_disabled_server_says_switch_it_on(self):
+        got = self.ob.preview({"integrations": ["email"]},
+                              [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail", "enabled": False}])
+        self.assertIn("switched off", got["integrations"][0]["detail"])
+
+    def test_an_unparseable_listing_keeps_the_last_good_one(self):
+        import policy
+        good = {"at": 1.0, "connectors": [{"name": "x"}], "health": {}}
+        with mock.patch.object(policy, "_run_mcp_list", return_value="weird"), \
+                mock.patch.object(policy, "_parse_connectors", side_effect=ValueError("bad")), \
+                mock.patch.object(policy, "_stamp_failed", return_value={**good, "failed_at": 2.0}):
+            cached, ok = policy._refresh_listing(dict(good))
+        self.assertFalse(ok)
+        self.assertEqual(cached["connectors"], good["connectors"])
+
+    def test_one_fingerprint_shape_for_every_preview_apply(self):
+        import snapshot
+        self.assertIn("snapshot.fingerprint(", inspect.getsource(self.ob._fingerprint))
+        self.assertEqual(len(snapshot.fingerprint({"a": 1})), 16)
+
+    def test_listings_never_overlap_and_a_waiter_runs_its_own(self):
+        import policy
+        import threading as th
+        live, peak, runs, lock = [0], [0], [0], th.Lock()
+
+        def listing(cached):
+            with lock:
+                live[0] += 1
+                runs[0] += 1
+                peak[0] = max(peak[0], live[0])
+            __import__("time").sleep(0.05)
+            with lock:
+                live[0] -= 1
+            return cached, True
+        with mock.patch.object(policy, "_refresh_listing_locked", side_effect=listing), \
+                mock.patch.object(policy, "_mcp_status", return_value={}), \
+                mock.patch.object(policy, "_CONN_CACHE", os.path.join(self._dir, "conn.json")):
+            ts = [th.Thread(target=policy.refresh_mcp_status) for _ in range(3)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        self.assertEqual(peak[0], 1, "never two `claude mcp list`s at once")
+        self.assertEqual(runs[0], 3, "a waiter's listing began after its own click, not before")
+
+    def test_a_health_only_entry_is_named_by_its_real_state(self):
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"claude_ai_Gmail": "failed"})["integrations"][0]
+        self.assertIn("claude.ai Gmail failed to connect", got["detail"])
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"plugin:mail:inbox": "pending"})["integrations"][0]
+        self.assertNotIn("claude.ai", got["detail"], "a plugin/stdio key never gets connector advice")
+
+    def test_an_older_gh_lookup_never_overwrites_a_newer_answer(self):
+        import pr_review
+        import threading as th
+        gate, started = th.Event(), th.Event()
+
+        def run(argv, timeout=30):
+            if th.current_thread().name == "slow-warm":
+                started.set()
+                gate.wait(2)
+                return 1, "", "network down"
+            return 0, "alice\n", ""
+        with mock.patch.object(pr_review, "_run", side_effect=run), \
+                mock.patch.object(pr_review.viewer, "_cache", None, create=True), \
+                mock.patch.object(pr_review.viewer, "_at", 0.0, create=True):
+            slow = th.Thread(target=lambda: pr_review._lookup_login(keep_known=False), name="slow-warm")
+            slow.start()
+            started.wait(2)              # the slow lookup has STARTED before the Re-check
+            self.assertTrue(pr_review.refresh_viewer())
+            gate.set()
+            slow.join()
+            self.assertEqual(pr_review.viewer_cached(), "alice")
+
+    def test_a_ttl_refresh_behind_a_listing_reuses_it(self):
+        import policy
+        path = os.path.join(self._dir, "conn.json")
+        storage.write_json(path, {"at": policy.time.time(), "connectors": [], "health": {}})
+        with mock.patch.object(policy, "_CONN_CACHE", path), \
+                mock.patch.object(policy, "_refresh_listing_locked", side_effect=AssertionError("re-listed")):
+            _cached, ok = policy._refresh_listing({"at": 1.0}, force=False)
+        self.assertTrue(ok, "the listing it waited behind refreshed the cache")
+
+    def test_the_listing_lock_is_a_file_lock(self):
+        import policy
+        self.assertIn("fcntl.flock", inspect.getsource(policy._refresh_listing),
+                      "server and worker are separate processes")
+
+    def test_an_older_login_undoes_a_newer_blip(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "", create=True), \
+                mock.patch.object(pr_review.viewer, "_at", pr_review.time.monotonic() + 100, create=True), \
+                mock.patch.object(pr_review, "_run", return_value=(0, "alice\n", "")):
+            self.assertTrue(pr_review._lookup_login(keep_known=False))
+            self.assertEqual(pr_review.viewer_cached(), "alice", "a resolved login is truth")
+
+    def test_an_unrowed_unhealthy_server_is_still_named(self):
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"email-mcp": "failed"})["integrations"][0]
+        self.assertIn("email-mcp failed to connect", got["detail"])
+
+    def test_a_slack_row_past_the_token_names_its_own_fix(self):
+        import slack
+        got = self._slack({"enabled": True}, [slack.USER])
+        self.assertNotIn("Add a Slack user or bot token", got["hint"])
+
+    def test_a_detour_draft_survives_a_restart_and_apply_clears_it(self):
+        self.ob.save_draft({"usage": "work", "profile": "economic", "integrations": ["slack"]})
+        st = self.ob.state()
+        self.assertTrue(st["auto_open"], "a detour is neither finished nor skipped")
+        self.assertEqual(st["draft"]["profile"], "economic")
+        self._apply(st["draft"])
+        self.assertIsNone(self.ob.state()["draft"])
+
+    def test_apply_checks_inside_the_store_lock_against_the_store_as_it_is_now(self):
+        fp = self.ob.preview({"profile": "economic"})["fingerprint"]
+        real = storage.mutate_json
+
+        def racing(path, fn, default):
+            # Another PROCESS writes between the preview and apply's check: the check sees it.
+            if path == config._settings_path():
+                return real(path, lambda d: fn({**(d or {}), "max_attempts": 7}), default)
+            return real(path, fn, default)
+        with mock.patch.object(storage, "mutate_json", side_effect=racing):
+            with self.assertRaises(self.ob.StalePreview):
+                self.ob.apply({"profile": "economic"}, fp)
+        self.assertFalse(hasattr(config, "SETTINGS_LOCK"), "an in-process lock covers one process only")
+
+    def test_keep_on_a_first_run_records_no_profile(self):
+        self._apply({"usage": "work", "profile": "keep"})
+        self.assertNotIn("profile", self.ob.state()["answers"])
+
+    def test_a_listener_whose_token_lacks_a_scope_is_not_ready(self):
+        import slack
+        cfg = {"enabled": True, "allow_users": ["U1"]}
+        got = self._slack(cfg, [slack.USER], {"missing": [("im:history", "x")], "known": True})
+        self.assertFalse(got["ready"])
+        got = self._slack(cfg, [slack.USER], {"missing": [], "known": False})
+        self.assertIsNone(got["ready"], "a grant nobody has read is unknown, not fine")
+
+    def test_documentation_lookup_servers_are_not_docs_or_mail(self):
+        for name, key in (("aws-docs", "docs"), ("claude_ai_Claude_Docs", "docs"), ("mailgun", "email")):
+            got = self.ob.preview({"integrations": [key]}, [{"name": name}])["integrations"][0]
+            self.assertFalse(got["ready"], name)
+        got = self.ob.preview({"integrations": ["docs"]}, [{"name": "claude_ai_Notion"}])
+        self.assertTrue(got["integrations"][0]["ready"])
+
+    def test_a_gh_lookup_in_flight_is_not_a_failed_one(self):
+        import pr_review
+        seen = []
+        def slow(*a, **k):
+            seen.append(pr_review.viewer_cached())
+            return 0, "octo\n", ""
+        with mock.patch.object(pr_review, "_run", side_effect=slow), \
+                mock.patch.object(pr_review, "_viewer_failed", 0.0), \
+                mock.patch.object(pr_review.viewer, "_cache", None, create=True):
+            self.assertEqual(pr_review.viewer(), "octo")
+        self.assertEqual(seen, [None])
+
+    def test_a_failed_gh_lookup_stays_failed_after_its_retry_window(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "", create=True), \
+                mock.patch.object(pr_review, "_viewer_failed", 0.0):
+            self.assertEqual(pr_review.viewer_cached(), "")
+
+    def test_a_draft_never_replaces_the_applied_profile(self):
+        self._apply({"usage": "work", "profile": "quality"})
+        self.ob.skip({"usage": "work", "profile": "economic", "integrations": None})
+        self.assertEqual(self.ob.state()["answers"]["profile"], "quality")
+
+    def test_unhashable_answers_fall_back_rather_than_raise(self):
+        self.assertEqual(self.ob.normalize({"profile": [], "usage": {}})["profile"], "keep")
+
+    def test_an_env_pinned_key_reads_pinned_even_when_it_matches(self):
+        # A pinned key's config "default" IS the env value, so value == target proves nothing.
+        os.environ["OTTO_MAX_ATTEMPTS"] = "3"
+        row = next(s for s in self.ob.preview({"profile": "balanced"})["settings"]
+                   if s["name"] == "max_attempts")
+        self.assertEqual(row["action"], "pinned")
+
+    def test_applying_keep_keeps_the_record_of_the_profile_in_force(self):
+        self._apply({"usage": "work", "profile": "economic"})
+        self._apply({"usage": "work", "profile": "keep"})
+        self.assertEqual(self.ob.state()["answers"]["profile"], "economic")
+
+    def test_no_profile_switches_off_a_cap_the_operator_set(self):
+        config.save_settings({"budget_hard_tokens": 50000, "budget_soft_tokens": 20000,
+                              "budget_soft_usd": 2.0})
+        for profile in ("economic", "balanced", "quality"):
+            self._apply({"profile": profile})
+            self.assertEqual(config.setting("budget_soft_tokens"), 20000, profile)
+            self.assertEqual(config.setting("budget_soft_usd"), 2.0, profile)
+            self.assertEqual(config.setting("budget_hard_tokens"), 50000, profile)
+
+    def test_a_connector_is_named_as_the_ui_names_it(self):
+        mcps = [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail"}]
+        got = self.ob.preview({"integrations": ["email"]}, mcps)["integrations"][0]
+        self.assertEqual(got["detail"], "claude.ai Gmail")
+
+    def test_slack_readiness_is_one_rule_in_slack(self):
+        import slack
+        st = slack.answering_state
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"), mock.patch.object(slack, "BOT_TOKEN", "xoxb-t"):
+            self.assertEqual(st(slack.USER, {"enabled": True}), "nobody")
+            self.assertEqual(st(slack.USER, {"enabled": True, "allow_self": True}), "test")
+            self.assertEqual(st(slack.BOT, {"bot_enabled": True, "allow_self": True}), "nobody")
+            self.assertEqual(st(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}), "on")
+            self.assertEqual(st(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1"],
+                                            "bot_watch_dms": False}), "nobody",
+                             "listed users reach the bot only by DM")
+            self.assertEqual(st(slack.USER, {"enabled": True, "allow_users": ["U1"],
+                                             "watch_dms": False, "watch_mentions": False}), "nobody")
+        with mock.patch.object(slack, "USER_TOKEN", ""):
+            self.assertEqual(st(slack.USER, {"enabled": True, "allow_users": ["U1"]}), "off",
+                             "switched on without a token answers nobody")
+        src = ui_src()
+        self.assertIn("(d.answering||{}).user", src)
+        self.assertNotIn("c.allow_self", src[src.index("let GUIDE=null"):], "a second copy of the rule")
+
+    def test_an_integration_detour_parks_the_wizard_instead_of_skipping(self):
+        src = ui_src()
+        go = src[src.index("function obGoto"):]
+        self.assertLess(go.index("OB.parked=true"), go.index("closeFormModal()"))
+        self.assertIn("!OB.parked", src[src.index("function obDismissed"):][:200])
+
+    def test_a_stale_preview_writes_nothing(self):
+        a = {"profile": "economic"}
+        fp = self.ob.preview(a)["fingerprint"]
+        config.save_settings({"max_attempts": 2})          # someone edited Admin meanwhile
+        with self.assertRaises(self.ob.StalePreview):
+            self.ob.apply(a, fp)
+        self.assertFalse(self.ob.state()["completed_at"])
+
+    def test_an_env_pinned_setting_is_reported_not_written(self):
+        os.environ["OTTO_MAX_ATTEMPTS"] = "5"
+        plan = self.ob.preview({"profile": "economic"})
+        row = next(s for s in plan["settings"] if s["name"] == "max_attempts")
+        self.assertEqual(row["action"], "pinned")
+        self.assertNotIn("max_attempts", self._apply({"profile": "economic"})["applied"])
+        self.assertNotIn("max_attempts", storage.read_json(config._settings_path(), {}))
+
+    def test_auto_open_until_finished_or_skipped_and_again_on_a_new_version(self):
+        self.assertTrue(self.ob.state()["auto_open"])
+        self.ob.skip()
+        self.assertFalse(self.ob.state()["auto_open"])
+        with mock.patch.object(self.ob, "VERSION", self.ob.VERSION + 1):
+            self.assertTrue(self.ob.state()["auto_open"])
+        self._apply({"usage": "both", "profile": "quality", "integrations": ["email"]})
+        st = self.ob.state()
+        self.assertFalse(st["auto_open"])
+        self.assertEqual(st["answers"]["profile"], "quality")      # prefills the re-run
+
+    def test_unknown_answers_fall_back_rather_than_raise(self):
+        a = self.ob.normalize({"usage": "x", "profile": "y", "integrations": ["email", "nope"]})
+        self.assertEqual(a, {"usage": "personal", "profile": "keep", "integrations": ["email"]})
+
+    def test_integrations_are_detected_from_the_mcp_listing_and_point_at_their_screen(self):
+        mcps = [{"name": "claude_ai_Gmail", "display": "Gmail", "enabled": True},
+                {"name": "claude_ai_Google_Calendar", "enabled": False}]
+        plan = self.ob.preview({"integrations": ["email", "calendar"]}, mcps)
+        got = {i["key"]: i for i in plan["integrations"]}
+        self.assertTrue(got["email"]["ready"])
+        self.assertEqual(got["email"]["hint"], "")
+        self.assertFalse(got["calendar"]["ready"], "a disabled connector reaches nothing")
+        self.assertIn("switched off", got["calendar"]["detail"], "named as off, not 'connect one'")
+        self.assertEqual(got["calendar"]["where"], {"tab": "admin", "sect": "mcp"})
+
+    def test_a_never_filled_connector_cache_is_unknown_not_missing(self):
+        got = self.ob.preview({"integrations": ["email"]}, [], connectors_checked=False)
+        self.assertIsNone(got["integrations"][0]["ready"])
+
+    def _slack(self, cfg, listening=(), gaps=None):
+        import slack
+        gaps = gaps or {"missing": [], "optional": [], "known": True}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "scope_gaps", return_value=gaps), \
+                mock.patch.object(slack, "enabled_identities", return_value=list(listening)), \
+                mock.patch.object(slack, "identity_enabled", side_effect=lambda i, c=None: i in listening), \
+                mock.patch.object(slack, "token_set", return_value=bool(listening)):
+            return self.ob.preview({"integrations": ["slack"]},
+                                   [{"name": "slack-admin", "enabled": True}])["integrations"][0]
+
+    def test_a_slack_tool_is_not_the_slack_listener(self):
+        self.assertFalse(self._slack({})["ready"], "an MCP server gives runs a tool, not an ingress")
+
+    def test_a_listener_with_an_empty_allowlist_answers_nobody(self):
+        import slack
+        self.assertFalse(self._slack({"enabled": True}, [slack.USER])["ready"])
+        self.assertTrue(self._slack({"enabled": True, "allow_users": ["U1 #me"]}, [slack.USER])["ready"])
+        self.assertTrue(self._slack({"bot_enabled": True, "bot_allow_channels": ["C1"]}, [slack.BOT])["ready"])
+
+    def _github(self, who):
+        import pr_review
+        import workspace
+        with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
+                mock.patch.object(pr_review, "viewer_cached", return_value=who), \
+                mock.patch.object(pr_review, "viewer", side_effect=AssertionError("shells out")), \
+                mock.patch.object(workspace, "git_repos", side_effect=AssertionError("spawns git")), \
+                mock.patch.object(registry, "registered_count", return_value=1):
+            return self.ob.preview({"integrations": ["github"]})["integrations"][0]
+
+    def test_github_needs_a_signed_in_gh_and_never_waits_on_one(self):
+        self.assertFalse(self._github("")["ready"])
+        self.assertIsNone(self._github(None)["ready"], "never asked yet is unknown, not missing")
+        self.assertTrue(self._github("octo")["ready"])
+
+    def test_apply_rederives_only_the_settings(self):
+        a = {"profile": "economic", "integrations": ["github", "slack"]}
+        fp = self.ob.preview({**a, "integrations": []})["fingerprint"]
+        with mock.patch.object(self.ob, "_detect", side_effect=AssertionError("apply detected")):
+            with self.assertRaises(self.ob.StalePreview):
+                self.ob.apply(a, fp)                   # answers are fingerprinted, detection isn't
+            self.ob.apply(a, self.ob._fingerprint(self.ob.normalize(a),
+                                                  self.ob._settings_plan("economic")))
+
+    def test_a_wizard_closed_before_answering_stores_no_choices(self):
+        self.ob.skip({"usage": "", "profile": "balanced", "integrations": None})
+        self.assertEqual(self.ob.state()["answers"], {})
+        self.ob.skip({"usage": "work", "profile": "economic", "integrations": None})
+        self.assertNotIn("integrations", self.ob.state()["answers"],
+                         "unreached integrations step must not read as 'none wanted'")
+
+    def test_a_hosted_model_is_not_a_local_one(self):
+        pool = {"pool": [{"name": "gpt", "provider": "openai", "kind": "hosted",
+                          "base_url": "https://api.example.com/v1"}]}
+        with mock.patch.object(gateway, "load", return_value=pool):
+            got = self.ob.preview({"integrations": ["local"]})["integrations"][0]
+        self.assertFalse(got["ready"])
+
+    def test_a_dismissed_wizard_keeps_its_draft_answers(self):
+        self.ob.skip({"usage": "work", "profile": "economic", "integrations": ["slack"]})
+        st = self.ob.state()
+        self.assertFalse(st["auto_open"])
+        self.assertNotIn("profile", st["answers"], "an unapplied profile is never stored")
+        self.assertEqual(st["answers"]["integrations"], ["slack"])
+        self.assertEqual(self.ob.normalize({"integrations": "slack,email"})["integrations"], [],
+                         "a non-list never substring-matches")
+
+    def test_the_wizard_never_covers_a_push_deep_link(self):
+        init = ui_src()
+        init = init[init.index("async function initOnboarding"):]
+        init = init[:init.index("\n}")]
+        self.assertIn("#run=", init)
+
+    def test_every_integration_points_at_a_section_the_ui_renders(self):
+        src = ui_src()
+        for key, spec in self.ob.INTEGRATIONS.items():
+            if spec["where"]:              # None = nothing on screen can set it; no Open button
+                self.assertIn(f'data-sect="{spec["where"]["sect"]}"', src, key)
+
+    def test_the_ui_wires_the_wizard_through_the_shared_helpers(self):
+        src = ui_src()
+        self.assertLess(src.index("function initOnboarding"), src.index("initOnboarding();"),
+                        "boot.js must call it after onboarding.js has loaded")
+        for path in ("/api/onboarding/preview", "/api/onboarding/apply", "/api/onboarding/skip"):
+            self.assertIn(path, src)
+        import server
+        for path in ("/api/onboarding/preview", "/api/onboarding/apply", "/api/onboarding/skip"):
+            self.assertIn(path, server._POST_ROUTES)
+
+
+class EventsSetupGuideTests(unittest.TestCase):
+    """The Slack and GitHub setup guides (`web/js/guides.js`) hold no state of their own: every
+    step reads the endpoint its Events card renders from, and its action opens that card's own
+    configure form, coming back to re-check when the form closes."""
+
+    def setUp(self):
+        self.src = ui_src()
+
+    def test_each_events_integration_has_a_guide_button_and_a_guide(self):
+        for key in ("slack", "github"):
+            self.assertIn(f'data-guide="{key}"', self.src)
+            self.assertRegex(self.src, rf"\n  {key}:\{{title:")
+
+    def test_every_form_a_guide_opens_is_a_real_form(self):
+        g = self.src[self.src.index("function slackSteps"):self.src.index("const GUIDES=")]
+        for fn in set(re.findall(r"run:\(\)=>(show\w+Form)\(\)", g)):
+            self.assertIn(f"function {fn}(", self.src, fn)
+
+    def test_a_guide_resumes_when_the_form_it_opened_closes(self):
+        close = self.src[self.src.index("function closeFormModal"):]
+        close = close[:close.index("\n}")]
+        self.assertIn("FORM_MODAL_THEN", close, "the one-shot hook must fire on every close")
+        opened = self.src[self.src.index("function openFormModal"):self.src.index("function closeFormModal")]
+        self.assertIn("FORM_MODAL_THEN=null", opened, "a hook must not survive into the next modal")
+        self.assertIn("FORM_MODAL_SESSION++", opened)
+        self.assertIn("sess===FORM_MODAL_SESSION", close, "a modal opened meanwhile must win")
+        self.assertIn("afterFormModal(()=>openGuide(key))", self.src)
+
+    def test_the_slack_scopes_come_from_the_table_scope_gaps_checks(self):
+        g = self.src[self.src.index("let GUIDE=null"):]
+        self.assertIn("scope_catalog", g)
+        self.assertNotIn('"im:history"', g, "a hand-kept scope list drifts from slack._SCOPES")
+
+    def test_a_guide_hands_its_own_config_to_the_form_it_opens(self):
+        # The card forms save {...GLOBAL, ...fields}; a card still loading would post {} otherwise.
+        g = self.src[self.src.index("let GUIDE=null"):]
+        for synced, form in (("gSlackSync(d)", "showSlackForm()"), ("BOARD_CFG=bc", "showBoardForm()"),
+                             ("PRREV_CFG=pc", "showPrReviewForm()")):
+            self.assertLess(g.index(synced), g.index(form), form)
+
+    def test_a_guide_closed_while_loading_stays_closed(self):
+        g = self.src[self.src.index("async function openGuide"):]
+        self.assertLess(g.index("if(gone()) return;"), g.index("guideRender()"))
+
+    def test_a_paused_poll_is_not_running(self):
+        g = self.src[self.src.index("function slackSteps"):self.src.index("const GUIDES=")]
+        self.assertIn("!poll.paused", g)
+        self.assertIn("p.exists && !p.paused", g)
+        self.assertNotIn("p.failing", g, "board/PR polls have no failing key — a dead check reads as done")
+
+    def test_a_guide_never_writes_config_itself(self):
+        g = self.src[self.src.index("let GUIDE=null"):]
+        g = g[:g.index("</script>")]
+        posts = re.findall(r'post(?:JSON|Or|Form)\("([^"]+)"', g)
+        self.assertEqual(set(posts), {"/api/onboarding/recheck"},
+                         "the only POST a guide makes is the read-only Re-check")
+        self.assertNotIn("postOr", g)
+
+
 class SetupWizardTests(unittest.TestCase):
     """The guided first run (`./install.sh --guided`). Everything asserted here is a way the
     wizard could damage an install it was supposed to improve: block an unattended installer,
@@ -3462,7 +4380,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 8055 -> 8034: the ladder rule got SHORTER because the thing it describes did. The loop's
     # decisions moved into `ladder.py`, so the rule no longer has to explain a three-copy mirror
     # and instruct a reader to keep it in step by hand — the ceiling ratchets DOWN by what left.
-    MAX_BYTES = 8034          # resident tier — the per-session tax
+    # 8034 -> 8047: `onboarding.py` joins the UI row of the layer table, so a session editing it
+    # is routed to ui.md, which carries its apply rule.
+    MAX_BYTES = 8047          # resident tier — the per-session tax
     # 78897 -> 77758 (#56): `gateway-backends.md` had reached 18 KB, digested into every
     # convention judge. Split into gateway/backends/walls and `tools-mcp.md`, and the prose
     # restating a guard test's own docstring pruned out of every file. Both ceilings ratchet
@@ -3552,7 +4472,8 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 93323 -> 93619: factory mode. Four rules, one per way an edit makes an unattended,
     # 92807 -> 93096: a re-readied board card runs again as the next run generation.
     # 94372 -> 94612: a factory repo with code is assessed, never scaffolded over.
-    MAX_RULES_BYTES = 94612   # fetched tier — bounded, but looser; it is not always loaded
+    # 94612 -> 94885: onboarding applies a profile as a full assignment, only as previewed.
+    MAX_RULES_BYTES = 94885   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

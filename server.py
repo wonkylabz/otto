@@ -18,7 +18,9 @@ import datetime
 import json
 import os
 import re
+import shutil
 import socketserver
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
@@ -42,6 +44,7 @@ import gateway
 import knowledge
 import local_runtime
 import mcp_client
+import onboarding
 import policy
 import pr_review
 import registry
@@ -1461,6 +1464,16 @@ class Handler(BaseHTTPRequestHandler):
                                         "router_model": config.ROUTER_MODEL,
                                         "health": health,
                                         "tasks": gateway.TASKS}))
+        elif self.path == "/api/onboarding" or self.path.startswith("/api/onboarding?"):
+            st = onboarding.state()
+            # Only when a wizard is about to show: it opens by itself, or Setup asked (?warm=1).
+            # Every page load GETs this, and a finished install must not probe Slack/gh each time.
+            if st["auto_open"] or "warm=1" in self.path:
+                # An explicit ask (Setup) skips the throttle; each lookup still backs off its own
+                # failures, so this cannot hammer Slack or GitHub. Nothing here spawns MCP
+                # servers — that is the POST /api/onboarding/recheck, behind the origin check.
+                _warm_onboarding_caches(force="warm=1" in self.path)
+            self._send(200, json.dumps(st))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
             # env var + env_pinned so Admin can render an env-pinned knob as locked instead of
@@ -1595,6 +1608,7 @@ class Handler(BaseHTTPRequestHandler):
                 # The registered project repos, so the config form ticks boxes instead of
                 # asking the operator to retype slugs Otto already holds.
                 "known_repos": pr_review.known_repos(),
+                "registered_repos": registry.registered_count(),   # any forge — the guide's count
                 "caps": [c.name for c in CAPS if c.enabled],
             }))
         elif self.path.startswith("/api/pr-review/chat"):
@@ -1613,8 +1627,9 @@ class Handler(BaseHTTPRequestHandler):
             # Slack listener (a pull ingress). TWO identities share one poll schedule: the owner's
             # own account (user token) and the bot user (bot token) — each separately switchable,
             # so the UI needs a token/self pair for each.
+            scfg = slack.load()
             self._send(200, json.dumps({
-                "config": slack.load(),
+                "config": scfg,
                 "temporal": TEMPORAL_OK,             # the poller needs Temporal
                 "token_set": slack.token_set(),      # OTTO_SLACK_USER_TOKEN present?
                 "self": slack.whoami() if slack.token_set() else None,
@@ -1622,8 +1637,15 @@ class Handler(BaseHTTPRequestHandler):
                 "bot_self": slack.whoami(slack.BOT) if slack.token_set(slack.BOT) else None,
                 # A token missing a scope polls happily and answers nobody — the one setup
                 # failure with no symptom. Cached per process (one auth.test per identity).
-                "scopes": slack.scope_gaps(slack.USER),
-                "bot_scopes": slack.scope_gaps(slack.BOT),
+                "scopes": slack.scope_gaps(slack.USER, scfg),
+                "bot_scopes": slack.scope_gaps(slack.BOT, scfg),
+                # The scopes the setup guide tells the operator to add — served from the table
+                # scope_gaps checks against, so the guide can't drift from what is enforced.
+                "scope_catalog": {k: slack.scope_catalog(i, scfg) for k, i in
+                                  (("user", slack.USER), ("bot", slack.BOT))},
+                # off|nobody|test|on per identity — the setup guide's "done", by slack's rule.
+                "answering": {k: slack.answering_state(i, scfg) for k, i in
+                              (("user", slack.USER), ("bot", slack.BOT))},
                 "socket": slack_socket.status(),   # instant delivery for the bot, if configured
                 "poll": slack.poll_status() if TEMPORAL_OK else {"exists": False},
                 "caps": [c.name for c in CAPS if c.enabled],  # for the optional pinned-cap picker
@@ -2720,6 +2742,38 @@ class Handler(BaseHTTPRequestHandler):
         overrides = gateway.set_cap_local_exec(body.get("name"), body.get("model") or None)
         self._send(200, json.dumps({"ok": True, "cap_local_exec": overrides}))
 
+    def _post_onboarding_preview(self, body):
+        """POST /api/onboarding/preview — the settings diff + integration checklist for `answers`.
+        MCPs are the CACHED listing: the wizard waits on this, so it must never shell out."""
+        self._send(200, json.dumps({"ok": True, **onboarding.preview(
+            body.get("answers"), **_mcp_view())}))
+
+    def _post_onboarding_apply(self, body):
+        """POST /api/onboarding/apply — applies only the plan its `expect` fingerprint names."""
+        try:
+            out = onboarding.apply(body.get("answers"), body.get("expect") or "")
+        except onboarding.StalePreview as e:
+            self._send(409, json.dumps({"error": str(e)})); return
+        self._send(200, json.dumps({"ok": True, **out}))
+
+    def _post_onboarding_draft(self, body):
+        """POST /api/onboarding/draft — park the wizard's answers (an integration detour)."""
+        self._send(200, json.dumps({"ok": True, **onboarding.save_draft(body.get("answers"))}))
+
+    def _post_onboarding_recheck(self, body):
+        """POST /api/onboarding/recheck — re-run every lookup the review reads (Slack scopes,
+        the gh login, the connector list) and answer when they are done. A POST: it spawns every
+        stdio MCP server, so it sits behind _csrf_ok like any other side effect."""
+        # `connectors:false` (a resume) re-asks the cheap lookups only — no MCP server spawn.
+        only = body.get("probes")
+        only = {p for p in only if isinstance(p, str)} if isinstance(only, list) else None
+        out = _recheck(mcp=body.get("connectors", True) is not False, only=only)
+        self._send(200, json.dumps({"ok": True, **out}))
+
+    def _post_onboarding_skip(self, body):
+        """POST /api/onboarding/skip"""
+        self._send(200, json.dumps({"ok": True, **onboarding.skip(body.get("answers"))}))
+
     def _post_settings(self, body):
         """POST /api/settings"""
         self._send(200, json.dumps(
@@ -2846,6 +2900,92 @@ class Handler(BaseHTTPRequestHandler):
         pass  # engine.trace() already prints a readable trace
 
 
+# Two of `claude mcp list`'s 60s timeouts and a margin: a Re-check may queue behind another
+# listing (listings are serialized) and then run its own.
+_RECHECK_WAIT_S = 130
+_WARM_EVERY_S = 60
+_WARM = {"at": 0.0, "threads": []}
+_WARM_LOCK = threading.Lock()
+
+
+def _recheck_probes(mcp, only=None):
+    """[(name, fn)] for a Re-check — each fn re-asks NOW and returns whether THAT lookup
+    succeeded (its own outcome). `only`: a guide re-asks just what it reads."""
+    probes = [("slack-scopes", lambda: all([slack.refresh_scopes(i) for i in (slack.USER, slack.BOT)
+                                            if slack.token_set(i)]))]
+    if shutil.which("gh"):
+        # No `gh` is reported by onboarding itself ("`gh` not on PATH"); probing it would only
+        # make every Re-check on a gh-less install say "the gh sign-in (failed)".
+        probes.append(("gh-viewer", pr_review.refresh_viewer))
+    if mcp:
+        # `claude mcp list` starts every stdio server: only on the operator's explicit Re-check.
+        # policy serializes listings, so two Re-checks never spawn the servers twice.
+        probes.append(("mcp-list", policy.refresh_mcp_status))
+    return [p for p in probes if only is None or p[0] in only]
+
+
+def _recheck(mcp, only=None, wait=_RECHECK_WAIT_S):
+    """Run this request's OWN probes in parallel and report {failed, incomplete}. No shared job,
+    no coverage rules: every caller re-asks after its own click, so it can never read a result
+    from before the fix it just made, nor wait on a probe it didn't ask for. Each lookup's own
+    cache and backoff (and policy's listing lock) keep this from hammering anything."""
+    probes = _recheck_probes(mcp, only)
+    results = {}
+
+    def run(name, fn):
+        try:
+            results[name] = bool(fn())
+        except Exception:  # noqa: BLE001 — reported as failed, never raised further
+            results[name] = False
+    threads = [threading.Thread(target=run, args=p, daemon=True) for p in probes]
+    for t in threads:
+        t.start()
+    deadline = time.time() + wait
+    for t in threads:
+        t.join(max(0.0, deadline - time.time()))
+    done = dict(results)       # ONE snapshot: a late probe may still be writing
+    return {"failed": sorted(n for n, ok in done.items() if not ok),
+            "incomplete": sorted(n for n, _ in probes if n not in done)}
+
+
+def _warm_onboarding_caches(force=False):
+    """Fire-and-forget fill of the caches the wizard reads but never fills behind its spinner —
+    Slack's granted scopes, the `gh` login — on the wizard's own GET (a browser is open, so the
+    network is up). Fills only what is missing: each lookup's own cache and backoff decide. One
+    at a time, throttled unless `force`. Never `claude mcp list` (that is Re-check's)."""
+    with _WARM_LOCK:
+        # `force` (Setup) always re-fills: one hung lookup must not silence the rest. Each lookup
+        # guards its own races (gh's newer-answer rule, Slack's per-probe outcome).
+        if not force and (any(t.is_alive() for t in _WARM["threads"])
+                          or time.time() - _WARM["at"] < _WARM_EVERY_S):
+            return
+
+        def one(fn):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 — a cold cache reads as "not checked yet"
+                pass
+        # One thread PER lookup: a slow Slack must not hold up the gh login, nor one identity
+        # the other.
+        fills = [lambda i=i: slack.granted_scopes(i) for i in (slack.USER, slack.BOT) if slack.token_set(i)]
+        if shutil.which("gh"):
+            fills.append(pr_review.viewer)
+        threads = [threading.Thread(target=one, args=(fn,), name="onboarding-warm", daemon=True)
+                   for fn in fills]
+        for t in threads:
+            t.start()
+        _WARM["at"], _WARM["threads"] = time.time(), threads
+
+
+def _mcp_view():
+    """{mcps, connectors_checked, health} from ONE cache read — two reads could straddle an
+    Admin recheck and describe different listings. Named, for onboarding.preview's kwargs."""
+    status = policy.mcp_status_cached()
+    return {"mcps": policy.all_mcps(POLICY, status=status),
+            "connectors_checked": policy.connectors_polled(status),
+            "health": policy.mcp_health(status=status)}
+
+
 # POST dispatch. Built from Handler's methods rather than a 52-branch `elif` chain:
 # the chain was 193 branches in one function, and a route's position in it was load-
 # bearing (an exact match had to precede every prefix match). Exact wins, then prefix.
@@ -2912,6 +3052,11 @@ _POST_ROUTES = {
     "/api/project/instructions": Handler._post_project_instructions,
     "/api/project/remove": Handler._post_project_remove,
     "/api/project/verify": Handler._post_project_verify,
+    "/api/onboarding/apply": Handler._post_onboarding_apply,
+    "/api/onboarding/draft": Handler._post_onboarding_draft,
+    "/api/onboarding/preview": Handler._post_onboarding_preview,
+    "/api/onboarding/recheck": Handler._post_onboarding_recheck,
+    "/api/onboarding/skip": Handler._post_onboarding_skip,
     "/api/settings": Handler._post_settings,
     "/api/pr-review-config": Handler._post_pr_review_config,
     "/api/pr-review/dismiss": Handler._post_pr_review_dismiss,

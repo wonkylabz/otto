@@ -219,6 +219,35 @@ def any_enabled(cfg=None):
     return enabled(cfg) or bot_enabled(cfg)
 
 
+def answering_state(identity, cfg=None):
+    """`off` | `nobody` | `test` | `on` — whether `identity` is switched on (switch AND token, like
+    the poller) and who it would answer: both allowlists empty is nobody; the owner's test mode
+    alone is `test` (their own self-DM only). The ONE readiness rule: onboarding and the Events
+    setup guide both read it, and both count only `on` as set up."""
+    cfg = cfg if cfg is not None else load()
+    if not identity_enabled(identity, cfg):
+        return "off"
+    # A listed audience only counts through a door that is being WATCHED: listed users reach
+    # Otto by DM, listed channels by @-mention, and a door switched off reads nothing.
+    users_key, channels_key = allow_keys(identity)
+    dms, mentions = (("bot_watch_dms", "bot_watch_mentions") if identity == BOT
+                     else ("watch_dms", "watch_mentions"))
+    # The poller's own test: truthiness over a cfg from load(), which fills every watch_* key
+    # from _DEFAULTS (all True), so the `True` fallback here only covers a hand-built dict.
+    dm_on, mention_on = bool(cfg.get(dms, True)), bool(cfg.get(mentions, True))
+    # Mirrors the poller: a DM is matched on its author or its (D…) channel id; a mention on its
+    # channel — and, for the USER token, which finds mentions by search anywhere, its author too.
+    # The bot reads only listed channels, so a listed user alone never reaches it by mention.
+    users, chans = allow_ids(cfg, users_key), allow_ids(cfg, channels_key)
+    dm_ids = {c for c in chans if c.startswith("D")}
+    # A D… id is a DM, reached only through the DM door — never a mention source.
+    by_mention = (chans - dm_ids) or (users if identity == USER else set())
+    if (dm_on and (users or dm_ids)) or (mention_on and by_mention):
+        return "on"
+    return "test" if identity == USER and dm_on and cfg.get("allow_self") else "nobody"
+
+
+
 def enabled_identities(cfg=None):
     """The identities currently listening, user first. Used for status and for the pollers."""
     cfg = cfg if cfg is not None else load()
@@ -268,6 +297,10 @@ _PROBE_RETRY_S = int(os.environ.get("OTTO_SLACK_SCOPE_RETRY_S") or 120)
 # re-probes and only a BURST inside one page load is collapsed (`SlackReviewFixTests`).
 _ID_RETRY_S = int(os.environ.get("OTTO_SLACK_ID_RETRY_S") or 15)
 _FAILED = {}          # (probe, identity) -> when it last failed
+_REJECTED = {}        # identity -> Slack's own error for a token it refused (invalid_auth, …)
+# Slack's auth errors that mean THIS TOKEN is dead — read from Slack's JSON reply, never inferred
+# from a missing header (a captive portal or proxy answers 200 with no header, and is transient).
+_TOKEN_DEAD = {"invalid_auth", "token_revoked", "token_expired", "account_inactive", "not_authed"}
 _RETRY_S = {"whoami": lambda: _ID_RETRY_S, "scopes": lambda: _PROBE_RETRY_S}
 
 
@@ -359,11 +392,20 @@ def granted_scopes(identity=USER, refresh=False):
     returns them on the `x-oauth-scopes` response header of any call, so one `auth.test` answers
     it. Cached per identity — the token can't change without a restart."""
     if refresh:
-        _GRANTED.pop(identity, None)
-    if identity in _GRANTED:
+        # Bypass the cache and the backoff, but DROP nothing yet: a refresh that fails keeps the
+        # last good answer instead of turning a known grant into "unknown".
+        _FAILED.pop(("scopes", identity), None)
+    elif identity in _GRANTED:
         return _GRANTED[identity]
     if _backing_off("scopes", identity):
         return set()                          # a recent probe failed; do not re-block the caller
+    _probe_scopes(identity)
+    return _GRANTED.get(identity, set())   # the last good answer, if any
+
+
+def _probe_scopes(identity):
+    """One auth.test: updates the grant / rejection caches and the failure stamp, and RETURNS
+    whether Slack answered — the caller's own outcome, never a global another probe can race."""
     token = _token(identity)
     out = set()
     if token:
@@ -375,6 +417,13 @@ def granted_scopes(identity=USER, refresh=False):
             with urllib.request.urlopen(req, timeout=15) as r:
                 out = {s.strip() for s in (r.headers.get("x-oauth-scopes") or "").split(",")
                        if s.strip()}
+                body = json.loads(r.read() or b"{}")
+            if not body.get("ok") and body.get("error") in _TOKEN_DEAD:
+                _REJECTED[identity] = body["error"]       # Slack said so; cached like a grant
+            elif not body.get("ok"):
+                raise RuntimeError(body.get("error") or "auth.test not ok")   # transient: retry
+            else:
+                _REJECTED.pop(identity, None)             # a token that works again
         except Exception as e:  # noqa: BLE001 - transient; an unknown grant reports as unknown
             # Remember the FAILURE too, briefly. Without this every `/api/slack-config` re-paid a
             # 15s urlopen per identity, so an offline box spun the Events tab for ~30s on every
@@ -382,27 +431,54 @@ def granted_scopes(identity=USER, refresh=False):
             # list` in `loadAdmin`). Short, because the fix for a real outage is a retry soon.
             trace("SLACK", f"scope check failed ({str(e)[:80]})")
             _FAILED[("scopes", identity)] = time.time()
-            return set()
+            return False
     _GRANTED[identity] = out
+    return True
+
+
+def refresh_scopes(identity):
+    """Re-probe this identity's grant now; True when Slack answered (granting or refusing)."""
+    _FAILED.pop(("scopes", identity), None)
+    return _probe_scopes(identity)
+
+
+def _scope_needed(gate, cfg):
+    """A scope is needed unless the feature it serves is switched off. ONE rule for both what
+    scope_gaps reports and what the setup guide asks for, so the two can't disagree."""
+    return gate is True or bool(cfg.get(gate, True))   # truthiness, as the poller tests it
+
+
+def scope_catalog(identity=USER, cfg=None):
+    """[(scope, why, optional)] this identity needs for what it is configured to watch, plus the
+    optional ones scope_gaps notes — what the Events setup guide tells the operator to add."""
+    cfg = cfg if cfg is not None else load()
+    table, opt = _SCOPES.get(identity, {}), _OPTIONAL_SCOPES.get(identity, set())
+    out = [(s, why, s in opt) for s, (why, gate) in sorted(table.items()) if _scope_needed(gate, cfg)]
+    out += [(s, "private channels / group DMs", True) for s in sorted(opt - set(table))]
     return out
 
 
-def scope_gaps(identity=USER, cfg=None):
+def scope_gaps(identity=USER, cfg=None, cached_only=False):
     """What this identity cannot do with the scopes it has, given what it's configured to watch.
 
     Returns {"missing": [(scope, why), …], "optional": [(scope, why), …], "known": bool}.
     `known` is False when the grant could not be read at all (no token, or Slack unreachable) —
     reporting "nothing missing" in that case would be the same silent lie this exists to end.
-    PURE apart from the cached `granted_scopes`."""
+    PURE apart from the cached `granted_scopes`; `cached_only` never probes Slack, reporting
+    `known: False` for a grant nobody has read yet."""
     cfg = cfg if cfg is not None else load()
-    granted = granted_scopes(identity)
+    granted = _GRANTED.get(identity, set()) if cached_only else granted_scopes(identity)
+    if identity in _REJECTED:
+        # Slack REFUSED the token (its own error code). `known` stays False — readers treat
+        # known-with-nothing-missing as all clear — and `rejected` names the real problem.
+        return {"missing": [], "optional": [], "known": False, "rejected": _REJECTED[identity]}
     if not granted:
         return {"missing": [], "optional": [], "known": False}
     missing, optional = [], []
     for scope, (why, gate) in sorted(_SCOPES.get(identity, {}).items()):
         if scope in granted:
             continue
-        if gate is not True and cfg.get(gate) is False:
+        if not _scope_needed(gate, cfg):
             continue                      # that feature is off, so the scope isn't needed
         (optional if scope in _OPTIONAL_SCOPES.get(identity, set()) else missing).append(
             (scope, why))
@@ -411,7 +487,7 @@ def scope_gaps(identity=USER, cfg=None):
         # A scope whose feature is switched off is not worth a note either — the same reason the
         # required loop skips it. Reported anyway, it is a line about a feature the operator has
         # already decided against, sitting next to the ones that matter.
-        if spec and spec[1] is not True and cfg.get(spec[1]) is False:
+        if spec and not _scope_needed(spec[1], cfg):
             continue
         why = (spec or ("private channels / group DMs",))[0]
         if (scope, why) not in optional and scope not in dict(missing):

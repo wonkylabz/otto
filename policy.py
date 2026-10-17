@@ -19,6 +19,7 @@ _CUSTOM = os.path.join(config.DATA_DIR, "capabilities.json")   # Otto-added capa
 _MCPDEF = os.path.join(config.DATA_DIR, "mcp-servers.json")    # Otto-added MCP servers
 _CONN_CACHE = os.path.join(config.DATA_DIR, "mcp-connectors-cache.json")  # claude.ai connectors
 _CONN_TTL = 3600   # connectors change rarely; the Admin view also force-refreshes on demand
+_CONN_FAIL_TTL = 300   # a FAILED listing is retried much sooner — it is usually transient
 
 
 def _read(path, default):
@@ -486,7 +487,15 @@ def _run_mcp_list():
     import claude_cli           # noqa: PLC0415 — see above
     res = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=60,
                          env=claude_cli.child_env())
-    return res.stdout or ""
+    # The exit code decides: 0 is authoritative even when it lists nothing (no servers and no
+    # connectors is a real state, and must be able to replace a stale listing). Non-zero with
+    # nothing parseable is a failed CLI, returned as None so the caller keeps the last good
+    # cache; non-zero that still lists servers is kept — one may have failed its health check.
+    # (_parse_health covers every connector line too, so one parse decides.)
+    out = res.stdout or ""
+    if res.returncode == 0 or _parse_health(out):
+        return out
+    return None
 
 
 # Health categories parsed from `claude mcp list`. Each server line ends in one of these
@@ -552,6 +561,18 @@ def _parse_health(text):
     return out
 
 
+def _stamp_failed():
+    """Record a failed listing by its OWN stamp, merged into whatever the store holds NOW — a
+    listing can run 60s, and writing back the copy read before it would clobber a refresh that
+    succeeded meanwhile. Data and `at` untouched: the connector guard reads them."""
+    now = time.time()
+
+    def _mut(d):
+        d = d if isinstance(d, dict) else {}
+        return {**d, "failed_at": now}
+    return storage.mutate_json(_CONN_CACHE, _mut, default={})
+
+
 def _mcp_status(allow_refresh=False, force=False):
     """Cached parse of `claude mcp list`: {'connectors': [...], 'health': {name: cat}}. The
     slow health-checking `claude mcp list` runs only when the Admin view asks (allow_refresh),
@@ -559,17 +580,74 @@ def _mcp_status(allow_refresh=False, force=False):
     and never blocks. On a transient failure we keep the stale cache rather than dropping it."""
     cached = _read(_CONN_CACHE, {})
     cached = cached if isinstance(cached, dict) else {}
-    fresh = (time.time() - cached.get("at", 0)) < _CONN_TTL
+    # A failed listing is negatively cached by its OWN stamp: retried only after the TTL, while
+    # the data and its `at` stay exactly as the last good listing left them.
+    now = time.time()
+    fresh = (now - cached.get("at", 0)) < _CONN_TTL or (now - cached.get("failed_at", 0)) < _CONN_FAIL_TTL
     if allow_refresh and (force or not fresh):
-        try:
-            text = _run_mcp_list()
-            cached = {"at": time.time(),
-                      "connectors": _parse_connectors(text),
-                      "health": _parse_health(text)}
-            _write(_CONN_CACHE, cached)
-        except Exception:
-            pass
+        cached, _ok = _refresh_listing(cached, force=force)
     return cached
+
+
+def _refresh_listing(cached, force=True):
+    """Run `claude mcp list` once: (the cache as it now stands, whether THIS listing succeeded).
+    EVERY caller, in EVERY process — Admin's Recheck, the TTL refresh, onboarding, the worker —
+    comes through here under one FILE lock, so two listings never start every stdio server at
+    the same time. Once it holds the lock, a TTL refresh (`force=False`) re-reads the cache and
+    skips its own listing when the one it waited behind just refreshed it; an explicit Recheck
+    (`force`) still runs its own, because the one it waited on began before its click."""
+    import fcntl
+    os.makedirs(os.path.dirname(_CONN_CACHE) or ".", exist_ok=True)
+    with open(_CONN_CACHE + ".listing.lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)          # released when the file closes
+        if not force:
+            now = _read(_CONN_CACHE, {})
+            now = now if isinstance(now, dict) else {}
+            if now.get("at", 0) > cached.get("at", 0) and time.time() - now["at"] < _CONN_TTL:
+                return now, True
+        return _refresh_listing_locked(cached)
+
+
+def _refresh_listing_locked(cached):
+    try:
+        text = _run_mcp_list()
+        # Parsed INSIDE the guard: output the parser can't read is a failed listing too, never
+        # an error escaping into Admin's /api/policy instead of the last good listing.
+        parsed = None if text is None else {"connectors": _parse_connectors(text),
+                                            "health": _parse_health(text)}
+    except Exception:  # noqa: BLE001 — a hang (TimeoutExpired) or a missing CLI is a failure too
+        parsed = None
+    if parsed is not None:
+        cached = {"at": time.time(), **parsed}
+        try:
+            _write(_CONN_CACHE, cached)
+        except Exception:  # noqa: BLE001 — a read-only data dir must not break the read
+            pass
+        return cached, True
+    # Stamped, so the 60s spawn is not re-paid by every caller until the failure TTL.
+    try:
+        cached = _stamp_failed()
+    except Exception:  # noqa: BLE001
+        pass
+    return cached, False
+
+
+def refresh_mcp_status():
+    """Run `claude mcp list` now (it starts every stdio server) and say whether THIS listing
+    succeeded — serialized with every other listing by `_refresh_listing`."""
+    _cached, ok = _refresh_listing(_mcp_status())
+    return ok
+
+
+def mcp_status_cached():
+    """The cached `claude mcp list` parse, never refreshed — for callers a spinner waits on."""
+    return _mcp_status()
+
+
+def connectors_polled(status):
+    """Whether `claude mcp list` has EVER filled the connector cache. Never refreshes it: an
+    unfilled cache means "not known yet", not "no connectors"."""
+    return bool(status.get("at"))      # ONE read, the caller's — never a second cache read
 
 
 def discover_connectors(allow_refresh=False, force=False, status=None):
@@ -587,7 +665,7 @@ def mcp_health(allow_refresh=False, force=False, status=None):
     return status.get("health", {})
 
 
-def all_mcps(pol, allow_refresh=False, force=False):
+def all_mcps(pol, allow_refresh=False, force=False, status=None):
     """Discovered local stdio servers (from ~/.claude.json, read-only) + Otto-added servers
     + connected claude.ai connectors, each with its enabled state, source, and last-known
     `health` (None until polled). `allow_refresh` lets the Admin view re-poll `claude mcp
@@ -597,7 +675,8 @@ def all_mcps(pol, allow_refresh=False, force=False):
     # was free on the cached path (the first call rewrites the cache, so the second sees it fresh)
     # but ran the ~8s `claude mcp list` TWICE under `force` — the Recheck button paid it twice for
     # identical data.
-    status = _mcp_status(allow_refresh=allow_refresh, force=force)
+    if status is None:
+        status = _mcp_status(allow_refresh=allow_refresh, force=force)
     health = mcp_health(status=status)
 
     def note(n):

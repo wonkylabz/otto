@@ -15,6 +15,17 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
+- **Onboarding and a guided tour** (header → Setup). On first load Otto asks what you'll use it
+  for, how to trade cost against quality, and what it should reach (Slack, email, calendar,
+  GitHub…). It shows the exact runtime-settings changes before applying them, lists which
+  integrations are connected and where to connect the rest, then tours the UI. Skippable, and
+  safe to re-run: applying the same answers twice changes nothing. Existing installs see it once
+  on their next page load — Skip dismisses it.
+- **Slack and GitHub setup guides** (Events → *setup guide* on each section). Step-by-step:
+  creating the Slack app and its scopes, adding the token, choosing who Otto answers; signing in
+  `gh`, connecting a project board, PR reviews and repos. Each step shows whether it's already
+  done on this install and opens the existing configure form; the guide resumes at the first
+  step still to do.
 - **Factory mode** (Admin → Mode → Start factory). Point it at an empty registered repo with a
   seed idea — or at one with code, saying what to finish or add — and a budget, and a PM plans tickets on your GitHub board, the worker builds
   them one at a time, and a PR that passes review **and** QA merges itself. It writes a

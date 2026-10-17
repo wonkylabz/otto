@@ -38,6 +38,7 @@ import estop  # noqa: F401
 import events  # noqa: F401
 import local_runtime  # noqa: F401
 import mcp_client  # noqa: F401
+import onboarding  # noqa: F401
 import policy  # noqa: F401
 import pr_review  # noqa: F401
 import repos  # noqa: F401
@@ -75,6 +76,7 @@ _DATA_STORES = (
     ("gateway", "_STATS_PATH", "gateway-stats.json"),
     ("local_runtime", "SESSIONS", "local-sessions"),
     ("mcp_client", "_CATALOGUE", "mcp-tools.json"),
+    ("onboarding", "_STATE", "onboarding.json"),
     ("policy", "_PATH", "policy.json"),
     ("policy", "_CUSTOM", "capabilities.json"),
     ("policy", "_MCPDEF", "mcp-servers.json"),
