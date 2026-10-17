@@ -275,8 +275,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
         const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        // gate() already counted a clicked approval in the ledger; counting here doubled it.
-        if(ok!==null) await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
+        // gate() SENT the decision itself (and counted it), so nothing is signalled here.
         setNode("GATE","done", ok===null?"no longer waiting":(ok?"approved":"denied")); gateDone=true;
         // Decided elsewhere could be a decline — say nothing about running until the run does.
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
@@ -1416,7 +1415,7 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       const act=modal.querySelector(".actions"); if(act) act.remove();
       const rb=modal.querySelector(".revisebox"); if(rb) rb.remove();
       const r=document.createElement("div"); r.className="resolution "+(ok===null?"":ok?"ok":"no");
-      r.textContent= ok===null ? "no longer waiting here — decided in Slack or on the board, expired, or stopped"
+      r.textContent= ok===null ? "no longer waiting here — decided elsewhere, re-planned, expired or stopped; reload to see it"
                    : ok ? "✓ approved" : "✕ declined — nothing ran";
       modal.querySelector(".modalBody").appendChild(r);
       gateStatusEl.textContent = r.textContent;
@@ -1425,26 +1424,14 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       closeGateModal();
       document.removeEventListener("keydown", escHandler);
       if(ok){ led.appr++; render(); } resolve(ok); };
-    // A click re-reads the gate first: decided in Slack or on the board since the last watch
-    // tick, a late Decline would paint "nothing ran" over a write already executing.
-    // Unreadable (an error, a timeout, `unreachable`) never discards the click: it stands, and
-    // the workflow keeps the FIRST decision, so a stale one changes nothing.
+    // The decision is SENT here, before anything is painted, carrying the plan round on screen:
+    // the server refuses it (409) when the gate has moved — decided in Slack or on the board,
+    // re-planned from another tab, expired. One check, server-side, instead of a client re-read
+    // racing the other doors. Never throws out: a refused or failed send is "no longer waiting".
     const decide=async ok=>{
-      if(wid){
-        for(const b of actionBtns()) b.disabled=true;
-        try {
-          const st=await Promise.race([getJSON("/api/wf?id="+encodeURIComponent(wid)), sleep(4000)]);
-          if(st && st.state && st.state!=="awaiting_approval" && st.state!=="unreachable") return finish(null);
-          // Mid re-plan (another tab asked for changes): the plan on screen is not the one that
-          // would run, so this click approves nothing.
-          if(st && st.replanning){
-            for(const b of actionBtns()) b.disabled=false;
-            const n=modal.querySelector(".revisenote");
-            n.hidden=false; n.textContent="The plan is being revised — wait for the new one.";
-            return;
-          }
-        } catch(e){ /* the click stands */ }
-      }
+      for(const b of actionBtns()) b.disabled=true;
+      try { await api("/api/wf/signal",{id:wid, signal:"approve", value:ok, revision:revisions||0}); }
+      catch(e){ return finish(null); }
       finish(ok);
     };
     modal.querySelector(".approve").addEventListener("click",()=>decide(true));
@@ -1533,8 +1520,8 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
         for(let tries=0; tries<400; tries++){        // ~10min ceiling, matching the preview's own budget
           await sleep(1500);
           let st;
-          try { st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json(); }
-          catch(e){ continue; }
+          try { st=await getJSON("/api/wf?id="+encodeURIComponent(wid)); }
+          catch(e){ continue; }         // an HTTP error is not "moved on" either
           if(st.state==="unreachable") continue;   // an unread status is not "moved on"
           if(st.state!=="awaiting_approval"){
             stopReplan();

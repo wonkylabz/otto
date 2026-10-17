@@ -3325,7 +3325,9 @@ class DelegatedGateChatTests(unittest.TestCase):
 
     def test_a_finished_delegate_is_never_read_on_a_poll(self):
         # The lookup rides every chat poll (450ms): a finished child's history must not be.
-        st = self._state({"slack-b-C1-1-1": {"children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]}},
+        # The child's status WOULD read as gated: only the RUNNING check keeps it off the parent.
+        st = self._state({"slack-b-C1-1-1": {"children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]},
+                          "slack-b-C1-1-1-d1": {"awaiting_approval": True, "plan": "x"}},
                          finished=("slack-b-C1-1-1-d1",))
         self.assertEqual(st["state"], "running")
         self.assertEqual(self.results, [])
@@ -3370,15 +3372,45 @@ class DelegatedGateChatTests(unittest.TestCase):
 
     def test_a_settled_delegate_is_never_looked_up(self):
         st = self._state({"slack-b-C1-1-1": {"children": [
-            {"id": "slack-b-C1-1-1-d1", "delegated": True, "done": True}]}})
+            {"id": "slack-b-C1-1-1-d1", "delegated": True, "done": True}]},
+            "slack-b-C1-1-1-d1": {"awaiting_approval": True, "plan": "x"}})
         self.assertEqual(st["state"], "running")
 
-    def test_an_unreadable_click_check_never_discards_the_click(self):
-        html = ui_src()
-        d = html[html.index("const decide=async ok=>{"):]
-        d = d[:d.index("};")]
-        self.assertIn('st.state!=="unreachable"', d)
-        self.assertIn("st.replanning", d, "a click mid re-plan approves a plan nobody read")
+    def _signal(self, status, revision=None):
+        import asyncio
+        import server
+        import temporal_client as tc
+        sent = []
+
+        class FakeHandle:
+            async def query(self, _q):
+                return status
+
+            async def signal(self, _s, value):
+                sent.append(value)
+
+        class FakeClient:
+            def get_workflow_handle(self, wid):
+                return FakeHandle()
+
+        orig = tc.client
+        async def fake_client():
+            return FakeClient()
+        tc.client = fake_client
+        try:
+            asyncio.run(server._wf_signal("w-d1", "approve", True, revision=revision))
+        finally:
+            tc.client = orig
+        return sent
+
+    def test_a_decision_lands_only_on_the_gate_the_sender_saw(self):
+        import server
+        self.assertEqual(self._signal({"awaiting_approval": True, "plan_revisions": 1}, 1), [True])
+        for st, rev in (({}, None),                                            # decided/expired
+                        ({"awaiting_approval": True, "replanning": True}, 0),  # mid re-plan
+                        ({"awaiting_approval": True, "plan_revisions": 1}, 0)):  # stale round
+            with self.assertRaises(server.GateMoved):
+                self._signal(st, rev)
 
     def test_a_fast_lane_channel_must_be_one_the_bot_reads(self):
         self.assertIn("the bot never reads a channel outside that list", ui_src())
@@ -3398,7 +3430,8 @@ class DelegatedGateChatTests(unittest.TestCase):
         self.assertIn("finish(null)", g)
         self.assertIn('getJSON("/api/wf?id="', g, "an HTTP error must not read as decided")
         self.assertIn("card.isConnected", g, "a switched-away card must stop its watch")
-        self.assertIn("if(ok!==null) await api(\"/api/wf/signal\",{id:gateWid", html)
+        self.assertIn('signal:"approve", value:ok, revision:revisions||0', g,
+                      "the decision is sent from the card, with the plan round it showed")
 
     def test_the_chat_signals_the_run_holding_the_gate(self):
         html = ui_src()
