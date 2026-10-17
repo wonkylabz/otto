@@ -1462,9 +1462,13 @@ class Handler(BaseHTTPRequestHandler):
                                         "router_model": config.ROUTER_MODEL,
                                         "health": health,
                                         "tasks": gateway.TASKS}))
-        elif self.path == "/api/onboarding":
-            _warm_onboarding_caches()           # by the time the Review step asks, they're filled
-            self._send(200, json.dumps(onboarding.state()))
+        elif self.path == "/api/onboarding" or self.path.startswith("/api/onboarding?"):
+            st = onboarding.state()
+            # Only when a wizard is about to show: it opens by itself, or Setup asked (?warm=1).
+            # Every page load GETs this, and a finished install must not probe Slack/gh each time.
+            if st["auto_open"] or "warm=1" in self.path:
+                _warm_onboarding_caches()       # by the time the Review step asks, they're filled
+            self._send(200, json.dumps(st))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
             # env var + env_pinned so Admin can render an env-pinned knob as locked instead of
@@ -2890,7 +2894,7 @@ def _warm_onboarding_caches():
     own first GET — a browser is open, so the network is up (a boot-time lookup can fail before it
     is, and that failure would stick), and nothing runs on a restart nobody looks at. Never
     `claude mcp list`: it starts every stdio server, and stays the Admin view's to run.
-    On EVERY wizard open, Setup re-runs included, throttled: both lookups cache a success and
+    On every wizard open (auto, or Setup's ?warm=1), throttled: both lookups cache a success and
     back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
     import threading
     if time.time() - _WARMED["at"] < _WARM_EVERY_S:

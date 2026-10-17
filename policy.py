@@ -486,7 +486,9 @@ def _run_mcp_list():
     import claude_cli           # noqa: PLC0415 — see above
     res = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=60,
                          env=claude_cli.child_env())
-    return res.stdout or ""
+    # A non-zero exit is a failed listing even when it printed something (a header, an error
+    # line): returned as "", so the caller keeps the last good cache instead of parsing it.
+    return (res.stdout or "") if res.returncode == 0 else ""
 
 
 # Health categories parsed from `claude mcp list`. Each server line ends in one of these
@@ -572,7 +574,9 @@ def _mcp_status(allow_refresh=False, force=False):
                 # An empty listing is a CLI that failed (not ready, logged out), never "no
                 # servers": keep the last good data — the run path's connector guard reads it —
                 # but stamp `at`, so the slow retry still waits out the TTL.
-                cached = {**cached, "at": now, "ok": False}
+                # `good_at` carried over: a cache from before it existed was good at its `at`.
+                cached = {**cached, "at": now, "ok": False,
+                          "good_at": cached.get("good_at") or (cached.get("at") if "ok" not in cached else None)}
             _write(_CONN_CACHE, cached)
         except Exception:
             pass

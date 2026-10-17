@@ -2597,10 +2597,11 @@ class OnboardingTests(unittest.TestCase):
 
     def test_a_probed_empty_grant_is_a_broken_token_not_an_unread_one(self):
         import slack
-        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True):
+        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-t"):
             g = slack.scope_gaps(slack.USER, {}, cached_only=True)
         self.assertTrue(g["known"])
-        self.assertTrue(g["missing"])
+        self.assertTrue(g.get("rejected"))
 
     def test_a_failed_mcp_list_keeps_data_but_negatively_caches(self):
         import policy
@@ -2613,6 +2614,76 @@ class OnboardingTests(unittest.TestCase):
         self.assertGreater(wrote.call_args[0][1]["at"], 1.0, "stamped, so the retry waits the TTL")
         self.assertTrue(policy.connectors_polled(got))
         self.assertFalse(policy.connectors_polled({"at": 2.0, "ok": False}), "never good is not polled")
+
+    def test_a_url_only_repo_counts_as_registered(self):
+        import pr_review
+        with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
+                mock.patch.object(pr_review, "viewer_cached", return_value="octo"), \
+                mock.patch.object(registry, "projects", return_value=["/nowhere/repos/x"]), \
+                mock.patch.object(registry, "project_meta", return_value={"url": "https://github.com/o/x"}):
+            got = self.ob.preview({"integrations": ["github"]})["integrations"][0]
+        self.assertTrue(got["ready"])
+        self.assertIn("known_repos", ui_src()[ui_src().index("github:{title:"):][:900])
+
+    def test_a_nonzero_mcp_list_exit_is_a_failed_listing(self):
+        import policy
+        res = mock.Mock(returncode=1, stdout="Checking MCP server health...\n")
+        with mock.patch.object(policy.subprocess, "run", return_value=res):
+            self.assertEqual(policy._run_mcp_list(), "")
+
+    def test_a_pre_good_at_cache_stays_polled_through_a_failure(self):
+        import policy
+        legacy = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {}}
+        with mock.patch.object(policy, "_read", return_value=dict(legacy)), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=""), \
+                mock.patch.object(policy, "_write"):
+            got = policy._mcp_status(allow_refresh=True, force=True)
+        self.assertTrue(policy.connectors_polled(got))
+
+    def test_a_rejected_token_reads_the_same_on_both_paths(self):
+        import slack
+        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-t"):
+            a = slack.scope_gaps(slack.USER, {}, cached_only=True)
+            b = slack.scope_gaps(slack.USER, {})
+        self.assertEqual(a, b)
+        self.assertTrue(a.get("rejected"))
+        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True), \
+                mock.patch.object(slack, "_token", return_value=None):
+            self.assertFalse(slack.scope_gaps(slack.USER, {}).get("rejected"), "no token is not rejected")
+
+    def test_a_falsy_stored_watch_switch_is_off(self):
+        import slack
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"):
+            self.assertEqual(slack.answering_state(slack.USER, {
+                "enabled": True, "allow_users": ["U1"], "watch_dms": 0, "watch_mentions": ""}), "nobody")
+
+    def test_a_stale_draft_expires(self):
+        self.ob.save_draft({"usage": "work", "profile": "economic"})
+        self.assertIsNotNone(self.ob.state()["draft"])
+        with mock.patch.object(self.ob.time, "time", return_value=self.ob.time.time() + self.ob.DRAFT_TTL_S + 1):
+            self.assertIsNone(self.ob.state()["draft"])
+
+    def test_applied_reports_only_what_the_store_holds(self):
+        orig = config.save_settings
+        with mock.patch.object(config, "save_settings",
+                               side_effect=lambda ch: orig({k: v for k, v in ch.items() if k != "effort"})):
+            out = self._apply({"profile": "economic"})
+        self.assertNotIn("effort", out["applied"])
+        self.assertIn("max_attempts", out["applied"])
+
+    def test_a_finished_install_is_not_probed_on_every_page_load(self):
+        import server
+        src = inspect.getsource(server)
+        block = src[src.index('self.path.startswith("/api/onboarding?")'):][:600]
+        self.assertIn('st["auto_open"] or "warm=1"', block)
+        self.assertIn("/api/onboarding?warm=1", ui_src())
+
+    def test_scrolling_the_tour_never_rebuilds_its_buttons(self):
+        src = ui_src()
+        place = src[src.index("function tourPlace"):]
+        place = place[:place.index("\n}")]
+        self.assertNotIn("innerHTML", place)
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack

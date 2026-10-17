@@ -232,7 +232,9 @@ def answering_state(identity, cfg=None):
     users_key, channels_key = allow_keys(identity)
     dms, mentions = (("bot_watch_dms", "bot_watch_mentions") if identity == BOT
                      else ("watch_dms", "watch_mentions"))
-    dm_on, mention_on = cfg.get(dms) is not False, cfg.get(mentions) is not False
+    # The poller's own test (truthiness, defaults filled by load()), so a stored 0 or "" reads
+    # as off here exactly as it does there.
+    dm_on, mention_on = bool(cfg.get(dms, True)), bool(cfg.get(mentions, True))
     if identity == USER:
         # Mirrors the poller: a DM is matched on its AUTHOR (an IM id is never a listed channel),
         # a mention on its author OR its channel. So a listed channel needs the mention door.
@@ -440,10 +442,11 @@ def scope_gaps(identity=USER, cfg=None, cached_only=False):
     `known: False` for a grant nobody has read yet."""
     cfg = cfg if cfg is not None else load()
     granted = _GRANTED.get(identity, set()) if cached_only else granted_scopes(identity)
-    if not granted and cached_only and identity in _GRANTED:
-        # PROBED and came back empty: a rejected or revoked token, not an unread one.
-        return {"missing": [(s, why) for s, why, opt in scope_catalog(identity, cfg) if not opt],
-                "optional": [], "known": True}
+    if not granted and identity in _GRANTED and _token(identity):
+        # PROBED with a token and came back empty — on BOTH paths, so the wizard and the Events
+        # card agree: a rejected or revoked token, not an unread one. (No token caches empty
+        # too, which is "nothing to check", never "rejected".)
+        return {"missing": [], "optional": [], "known": True, "rejected": True}
     if not granted:
         return {"missing": [], "optional": [], "known": False}
     missing, optional = [], []

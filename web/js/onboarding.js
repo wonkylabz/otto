@@ -26,7 +26,7 @@ async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   // Parked by an integration's Open: resume exactly where it was, choices intact.
   if(!meta && OB && OB.parked){ OB.parked=false; obRender(); return; }
-  if(!meta){ try { meta=await getJSON("/api/onboarding"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
+  if(!meta){ try { meta=await getJSON("/api/onboarding?warm=1"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
   // A detour that outlived the page (the hints say "restart Otto") resumes from its saved draft.
   if(meta.draft){
     const d=meta.draft;
@@ -237,19 +237,16 @@ function tourStep(dir){
   while(i>=0 && i<TOUR.length && !tourVisible(TOUR[i])) i+=dir;
   if(i<0) return;
   if(i>=TOUR.length){ endTour(); return; }
-  TOUR_I=i; tourPlace();
+  TOUR_I=i; tourRender(); tourPlace();
   // Focus on a STEP change only: tourPlace also runs on every scroll, and must not steal focus.
   const nx=document.querySelector('.obtip [data-t="next"]')||document.querySelector('.obtip [data-t="end"]'); if(nx) nx.focus();
 }
-function tourPlace(){
-  if(TOUR_I<0) return;
-  const s=TOUR[TOUR_I], el=tourVisible(s);
-  if(!el){ tourStep(1); return; }
-  let spot=document.querySelector(".obspot"), tip=document.querySelector(".obtip");
-  if(!spot){ spot=document.createElement("div"); spot.className="obspot"; document.body.appendChild(spot); }
+/* The tip's CONTENT, once per step — scroll and resize only move it (tourPlace), so the focused
+   button survives them. */
+function tourRender(){
+  const s=TOUR[TOUR_I];
+  let tip=document.querySelector(".obtip");
   if(!tip){ tip=document.createElement("div"); tip.className="obtip"; tip.setAttribute("role","dialog"); document.body.appendChild(tip); }
-  const r=el.getBoundingClientRect(), pad=6;
-  Object.assign(spot.style,{left:(r.left-pad)+"px", top:(r.top-pad)+"px", width:(r.width+2*pad)+"px", height:(r.height+2*pad)+"px"});
   const last=!TOUR.slice(TOUR_I+1).some(tourVisible);
   // Count only the steps this screen can show, so the tour ends on "N / N".
   const shown=TOUR.filter(tourVisible), pos=shown.indexOf(s)+1;
@@ -259,6 +256,17 @@ function tourPlace(){
   tip.querySelectorAll("[data-t]").forEach(b=>b.addEventListener("click",()=>{
     const t=b.dataset.t; if(t==="end") endTour(); else tourStep(t==="next"?1:-1);
   }));
+}
+function tourPlace(){
+  if(TOUR_I<0) return;
+  const s=TOUR[TOUR_I], el=tourVisible(s);
+  if(!el){ tourStep(1); return; }
+  let spot=document.querySelector(".obspot");
+  const tip=document.querySelector(".obtip");
+  if(!spot){ spot=document.createElement("div"); spot.className="obspot"; document.body.appendChild(spot); }
+  if(!tip) return;
+  const r=el.getBoundingClientRect(), pad=6;
+  Object.assign(spot.style,{left:(r.left-pad)+"px", top:(r.top-pad)+"px", width:(r.width+2*pad)+"px", height:(r.height+2*pad)+"px"});
   // Below the target when it sits in the top half, above it otherwise; clamped to the viewport.
   const tw=tip.offsetWidth, th=tip.offsetHeight, vw=window.innerWidth, vh=window.innerHeight;
   const top = r.bottom+pad+12+th < vh ? r.bottom+pad+12 : Math.max(12, r.top-pad-12-th);

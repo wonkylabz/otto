@@ -82,7 +82,7 @@ function githubSteps(ctx, feats){
     act:{label:"Open PR review settings", run:()=>{ PRREV_CFG=pc; PRREV_CAPS=pr.caps||[]; PRREV_REPOS=pr.known_repos||[]; showPrReviewForm(); }}});
   if(feats.includes("repos")) out.push({t:"Register the repos Otto may change", done:(repos||[]).length>0,
     b:`Board tickets and chat requests that edit code run in an isolated clone of a <b>registered</b> repo and come back as a draft PR. Register each repo in <b>Admin → Project repos</b>.`+
-      ((repos||[]).length?`<p class="obsub">Registered: ${repos.map(r=>gCode(r.name)).join(", ")}.</p>`:""),
+      ((repos||[]).length?`<p class="obsub">Registered: ${repos.map(r=>gCode(r.name||r.slug)).join(", ")}.</p>`:""),
     act:{label:"Open Project repos", run:()=>obGoto("admin","projects"), leaves:true}});
   const polls=[feats.includes("board")&&bc.enabled&&board.poll, feats.includes("pr")&&pc.enabled&&pr.poll].filter(Boolean);
   // Board and PR polls report existence and pause only — neither tracks failures the way Slack's
@@ -108,8 +108,10 @@ const GUIDES={
       ["board","Work from a project board","Cards moved to Ready run unattended; results come back as comments."],
       ["pr","Review PRs that ask for you","Read-only reviews, posted when you say so."],
       ["repos","Open PRs in my repos","Code changes run in an isolated clone and return as draft PRs."]]},
-    load:async()=>{ const [pr,board,repos]=await Promise.all([getJSON("/api/pr-review-config"),getJSON("/api/board-config"),getJSON("/api/repos")]);
-                    return {pr,board,repos:repos.repos||[]}; },
+    // Repos from the PR config's known_repos — URL-first, so a repo registered by URL whose
+    // clone hasn't landed still counts (workspace.git_repos would miss it, and spawns git).
+    load:async()=>{ const [pr,board]=await Promise.all([getJSON("/api/pr-review-config"),getJSON("/api/board-config")]);
+                    return {pr,board,repos:pr.known_repos||[]}; },
     steps:(ctx,choice)=>gGated(githubSteps(ctx,choice))},
 };
 

@@ -31,6 +31,7 @@ _STATE = os.path.join(config.DATA_DIR, "onboarding.json")
 VERSION = 1
 
 USAGES = ("personal", "work", "both")
+DRAFT_TTL_S = 24 * 3600
 
 # Every profile but "keep" assigns the SAME keys, so switching profile never strands a value the
 # previous one set. "balanced" is the code defaults — `save_settings` then removes those keys.
@@ -119,8 +120,11 @@ def state():
     when the operator has neither finished nor skipped the current VERSION."""
     d = _load()
     done = d.get("version") == VERSION and (d.get("completed_at") or d.get("skipped_at"))
+    # A detour's draft is for resuming THAT detour; a stale one would reopen Setup on an old
+    # profile one click from re-applying over what was tuned since.
+    draft = d.get("draft") if time.time() - (d.get("draft_at") or 0) < DRAFT_TTL_S else None
     return {"version": VERSION, "auto_open": not done, "answers": d.get("answers") or {},
-            "draft": d.get("draft") or None,
+            "draft": draft or None,
             "completed_at": d.get("completed_at"), "skipped_at": d.get("skipped_at"),
             "usages": list(USAGES),
             "profiles": [{"key": k, "label": p["label"], "blurb": p["blurb"]}
@@ -176,6 +180,12 @@ def _usable_mcps(mcps):
             and m.get("health") not in policy.UNHEALTHY]
 
 
+def _row(ready, detail, hint=None):
+    """One integration's verdict. `hint=None` = the integration's generic setup hint; a detector
+    that knows the exact fix passes it (or "" when the detail already says it)."""
+    return {"ready": ready, "detail": detail, "hint": hint}
+
+
 def _detect(key, mcps, connectors_checked=True):
     """(ready, detail) for one integration; ready is None when it cannot be told yet. Never runs
     `claude mcp list` — the preview sits behind a spinner — so a connector cache that has never
@@ -193,72 +203,78 @@ def _detect(key, mcps, connectors_checked=True):
         states = {i: slack.answering_state(i, cfg) for i in (slack.USER, slack.BOT)}
         live = [i for i, st in states.items() if st == "on"]
         if not live and "test" in states.values():
-            return False, "test mode only — it answers just your own self-DM; add an allowlist", ""
+            return _row(False, "test mode only — it answers just your own self-DM; add an allowlist", "")
         # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here;
         # a grant nobody has read yet is unknown, like the gh login and the connector cache.
         # Judged PER identity: one working identity is a working Slack, whatever the other's state.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
+        dead = [i for i in live if gaps[i].get("rejected")]
         good = [i for i in live if gaps[i]["known"] and not gaps[i]["missing"]]
         short = [i for i in live if gaps[i]["missing"]]
         fix = ("add the missing scopes, reinstall the Slack app and update the token")
         if good:
             # Config, not liveness: whether the poll is running is the Events card's to say.
             extra = f"; {names[short[0]]}, the token is missing scopes — {fix}" if short else ""
-            return True, "set up " + " and ".join(names[i] for i in good) + extra
+            return _row(True, "set up " + " and ".join(names[i] for i in good) + extra)
+        if dead:
+            return _row(False, f"set up {names[dead[0]]}, but Slack rejected the token — replace it "
+                        "with a fresh one from the app's OAuth page and restart Otto", "")
         if short:
-            return False, f"set up {names[short[0]]}, but the token is missing scopes — {fix}", ""
+            return _row(False, f"set up {names[short[0]]}, but the token is missing scopes — {fix}", "")
         if live:
-            return None, "token scopes not checked yet — the Events tab's Slack card checks them", ""
+            return _row(None, "token scopes not checked yet — the Events tab's Slack card checks them", "")
         if "nobody" in states.values():
-            return (False, "switched on, but nobody is both allowlisted and watched — it answers "
+            return _row(False, "switched on, but nobody is both allowlisted and watched — it answers "
                     "nobody; add people or channels in Events → Slack", "")
         toks = [n for n, i in (("user", slack.USER), ("bot", slack.BOT)) if slack.token_set(i)]
         if toks:
-            return False, f"{' and '.join(toks)} token set, listener off — switch it on in Events → Slack", ""
-        return False, "no Slack token"
+            return _row(False, f"{' and '.join(toks)} token set, listener off — switch it on in Events → Slack", "")
+        return _row(False, "no Slack token")
     if key == "github":
         import pr_review        # noqa: PLC0415
         import registry         # noqa: PLC0415
         if not shutil.which("gh"):
-            return False, "`gh` not on PATH"
+            return _row(False, "`gh` not on PATH")
         # The CACHED login only: resolving it is a `gh api` call of up to 30s. Repos are counted
         # from the filesystem, no `git` spawned, by the same `.git` test workspace.git_repos uses.
         who = pr_review.viewer_cached()
-        repos = sum(1 for p in registry.projects() if os.path.isdir(os.path.join(p, ".git")))
+        # Registered = a stored URL or a checkout: a URL-only repo whose managed clone hasn't
+        # landed is still registered (registry.project_path), as pr_review.known_repos counts it.
+        repos = sum(1 for p in registry.projects()
+                    if registry.project_meta(p).get("url") or os.path.isdir(os.path.join(p, ".git")))
         if who is None:
-            return None, "sign-in not checked yet — the Events tab's GitHub card checks it"
+            return _row(None, "sign-in not checked yet — the Events tab's GitHub card checks it")
         if not who:
             # "" is a FAILED lookup: signed out, or GitHub unreachable — `gh api` can't tell them.
-            return False, "couldn't confirm the `gh` sign-in — run `gh auth status`"
+            return _row(False, "couldn't confirm the `gh` sign-in — run `gh auth status`")
         if not repos:
-            return False, f"signed in as {who}, no project repo registered"
-        return True, f"signed in as {who}, {repos} repo(s) registered"
+            return _row(False, f"signed in as {who}, no project repo registered")
+        return _row(True, f"signed in as {who}, {repos} repo(s) registered")
     if key == "push":
         ok = bool(config.secret("OTTO_NTFY_TOPIC"))
-        return ok, ("OTTO_NTFY_TOPIC set" if ok else "OTTO_NTFY_TOPIC not set")
+        return _row(ok, ("OTTO_NTFY_TOPIC set" if ok else "OTTO_NTFY_TOPIC not set"))
     if key == "local":
         import gateway          # noqa: PLC0415
         # CLASS, not transport: a hosted model on an OpenAI-compatible URL is not "your hardware".
         local = [m["name"] for m in gateway.load().get("pool", []) if gateway.model_kind(m) == "local"]
-        return bool(local), (", ".join(local) if local else "no local model configured")
+        return _row(bool(local), (", ".join(local) if local else "no local model configured"))
     hits = [label for hay, label in _usable_mcps(mcps) if re.search(spec["match"], hay)]
     if hits:
-        return True, ", ".join(hits)
+        return _row(True, ", ".join(hits))
     if not connectors_checked:
-        return None, "not checked yet — Admin → MCP servers lists your claude.ai connectors"
-    return False, "nothing connected"
+        return _row(None, "not checked yet — Admin → MCP servers lists your claude.ai connectors")
+    return _row(False, "nothing connected")
 
 
 def _integrations_plan(wants, mcps, connectors_checked=True):
     out = []
     for key in wants:
-        # A detector may name its own fix (a third element), overriding the generic hint. An
-        # UNKNOWN row gets none: its detail says how to find out, and the generic "how to set
-        # this up" would contradict a setup that may be complete.
-        ready, detail, *own = _detect(key, mcps, connectors_checked)
+        # An UNKNOWN row gets no hint: its detail says how to find out, and the generic "how to
+        # set this up" would contradict a setup that may be complete.
+        r = _detect(key, mcps, connectors_checked)
         spec = INTEGRATIONS[key]
-        hint = "" if ready or ready is None else (own[0] if own else spec["hint"])
-        out.append({"key": key, "label": spec["label"], "ready": ready, "detail": detail,
+        hint = "" if r["ready"] or r["ready"] is None else (spec["hint"] if r["hint"] is None else r["hint"])
+        out.append({"key": key, "label": spec["label"], "ready": r["ready"], "detail": r["detail"],
                     "hint": hint, "where": spec["where"]})
     return out
 
@@ -304,6 +320,8 @@ def apply(answers, expect):
         changes = {s["name"]: s["after"] for s in settings if s["action"] == "set"}
         if changes:
             config.save_settings(changes)
+        # Report what the store now HOLDS: save_settings silently drops a value its spec refuses.
+        changes = {k: v for k, v in changes.items() if config.setting(k) == v}
     now = time.time()
     def _mut(d):
         d = d if isinstance(d, dict) else {}
@@ -328,7 +346,7 @@ def save_draft(answers):
 
     def _mut(d):
         d = d if isinstance(d, dict) else {}
-        return {**d, "draft": draft}
+        return {**d, "draft": draft, "draft_at": time.time()}
     storage.mutate_json(_STATE, _mut, default={})
     return state()
 
@@ -342,6 +360,7 @@ def skip(answers=None):
         d = d if isinstance(d, dict) else {}
         out = {**d, "version": VERSION, "skipped_at": now}
         out.pop("draft", None)
+        out.pop("draft_at", None)
         # Keep only what was actually answered: a draft closed on the welcome step must not
         # store "personal" as a choice, nor [] as a deliberate "no integrations".
         # The profile is never drafted: the stored one is what was last APPLIED, and the next
