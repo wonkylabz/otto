@@ -44,15 +44,17 @@ upgrading a running install, in their vocabulary, not Otto's internals. Then:
 python3 release.py patch          # or minor | major | 1.2.0
 ```
 
-It refuses a dirty tree, a branch other than `main`, an existing tag and an empty Unreleased
-section; then runs the suite, bumps `pyproject.toml`, dates the changelog section, fixes the
-compare links, commits and tags. `--dry-run` prints the version it would cut.
+It refuses a dirty tree, a branch other than `main`, a `main` that isn't exactly
+`origin/main`, an existing tag, an empty Unreleased section, and a released section that no
+longer matches what its own tag shipped (a later merge can file `[Unreleased]` entries under
+the last release). Then it runs the suite, bumps `pyproject.toml`, dates the changelog section,
+fixes the compare links, commits on `release/vX.Y.Z`, pushes it and opens the PR. `--dry-run`
+prints the version it would cut.
 
-Publishing is deliberately separate — a pushed tag is the irreversible half:
-
-```bash
-git push && git push origin vX.Y.Z
-```
+**Merging the PR is publishing.** `.github/workflows/release-tag.yml` tags the commit that
+lands on `main` — `main` squash-merges, so a tag cut locally would point at a commit `main`
+never gets. Nothing is tagged by hand; after the merge, `git pull` and the in-app updater
+sees the new version.
 
 ## Upgrading an install
 
