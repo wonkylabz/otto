@@ -11,8 +11,6 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-10-17
-
 ### Added
 
 - **Onboarding and a guided tour** (header → Setup). On first load Otto asks what you'll use it
@@ -26,6 +24,11 @@ changelog that restates it is a second copy of `git log`.
   `gh`, connecting a project board, PR reviews and repos. Each step shows whether it's already
   done on this install and opens the existing configure form; the guide resumes at the first
   step still to do.
+
+## [0.3.0] - 2026-10-17
+
+### Added
+
 - **Factory mode** (Admin → Mode → Start factory). Point it at an empty registered repo with a
   seed idea — or at one with code, saying what to finish or add — and a budget, and a PM plans tickets on your GitHub board, the worker builds
   them one at a time, and a PR that passes review **and** QA merges itself. It writes a
