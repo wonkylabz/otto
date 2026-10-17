@@ -169,6 +169,8 @@ async function watchLoop(wid, chatId, content, sess, flags){
   const myWatch = ++liveWatch;
   flags = flags || {};
   let pickShown=!!flags.pickShown, clarDone=!!flags.clarDone, gateDone=!!flags.gateDone, runActive=false;
+  // A frontman reaches RUN (so gateDone) BEFORE its delegate gates: that gate is a second one.
+  let delegateGateShown=false;
   // `decomposeDone` tracks the early fan-out CHECK (plan_swarm — is this really several
   // independent tasks?); `previewDone` tracks the separate, later PLAN node — the read-only dry
   // run that shows the human the actual operations at the approval gate. Two different passes
@@ -245,7 +247,8 @@ async function watchLoop(wid, chatId, content, sess, flags){
     else if(st.state==="awaiting_approval"){
       if(!clarDone){ setNode("CLARIFY","done","no questions",{durMs:times.CLARIFY&&times.CLARIFY.dur}); clarDone=true; }
       if(!previewDone){ setNode("PLAN","done","previewed",{durMs:times.PLAN&&times.PLAN.dur}); previewDone=true; }
-      if(!gateDone){
+      if(!gateDone || (st.gate_wid && !delegateGateShown)){
+        if(st.gate_wid) delegateGateShown=true;
         const cap=capOf(st);
         // A delegated run's gate lives on its child (`gate_wid`, server._wf_state): plan, revise
         // and decision all go there, while this loop keeps watching the parent it belongs to.
@@ -274,7 +277,9 @@ async function watchLoop(wid, chatId, content, sess, flags){
         // gate() already counted a clicked approval in the ledger; counting here doubled it.
         if(ok!==null) await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
         setNode("GATE","done", ok===null?"decided elsewhere":(ok?"approved":"denied")); gateDone=true;
-        if(ok!==false) showThinking(content,"Running "+(cap?cap.name:"")+"…");
+        // Decided elsewhere could be a decline — say nothing about running until the run does.
+        if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
+        else if(ok===null) showThinking(content,"Working…");
       }
     }
     else if(st.state==="done"){
@@ -1415,13 +1420,25 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       closeGateModal();
       document.removeEventListener("keydown", escHandler);
       if(ok){ led.appr++; render(); } resolve(ok); };
-    modal.querySelector(".approve").addEventListener("click",()=>finish(true));
-    modal.querySelector(".decline").addEventListener("click",()=>finish(false));
+    // A click re-reads the gate first: decided in Slack or on the board since the last watch
+    // tick, a late Decline would paint "nothing ran" over a write already executing.
+    const decide=async ok=>{
+      if(wid){
+        try { if((await getJSON("/api/wf?id="+encodeURIComponent(wid))).state!=="awaiting_approval") return finish(null); }
+        catch(e){ /* unreadable: the click stands, and the workflow ignores a stale signal */ }
+      }
+      finish(ok);
+    };
+    modal.querySelector(".approve").addEventListener("click",()=>decide(true));
+    modal.querySelector(".decline").addEventListener("click",()=>decide(false));
     // The same gate can be cleared from Slack or the board — a delegated one mostly is. Without
     // this the card waited on a click forever, and a late Decline painted "nothing ran" over a
     // write already executing. `null` = decided elsewhere: the caller signals nothing.
+    // getJSON THROWS on an HTTP error, so only a state the server actually read moves the card;
+    // a card no longer on screen (chat switched) stops its own watch.
     if(wid) stopWatch=poll(async()=>{
-      const st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json();
+      if(!card.isConnected){ stopWatch(); return POLL_SKIP; }
+      const st=await getJSON("/api/wf?id="+encodeURIComponent(wid));
       if(st.state!=="awaiting_approval" && st.state!=="unreachable") finish(null);
     }, 3000);
 
@@ -1498,6 +1515,7 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
           let st;
           try { st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json(); }
           catch(e){ continue; }
+          if(st.state==="unreachable") continue;   // an unread status is not "moved on"
           if(st.state!=="awaiting_approval"){
             stopReplan();
             note.hidden=false;

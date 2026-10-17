@@ -14,6 +14,7 @@ workflow — the browser only watches state and sends signals. Temporal is requi
 
     ./run.sh               # temporal + worker + this server; open http://localhost:8765
 """
+import asyncio
 import datetime
 import json
 import os
@@ -154,8 +155,10 @@ async def _wf_state(wid):
         return {"state": "failed", "result": f"workflow {name.lower()}", "terminal_status": name}
     try:
         st = await h.query(OttoWorkflow.status)
-    except Exception:  # noqa: BLE001
-        st = {}
+    except Exception as e:  # noqa: BLE001
+        # Not "running": a client watching for a transition (the gate card's watch, a revision
+        # poll) read an unread status as "the gate cleared" and let go of a parked run.
+        return {"state": "unreachable", "result": str(e)[:200] or "status query failed"}
     if st.get("awaiting_clarification"):
         return {"state": "awaiting_clarification", "question": st.get("question"), "cap": st.get("cap"),
                 "times": st.get("times") or {}}
@@ -205,10 +208,11 @@ async def _delegate_gate(c, cid):
     child we cannot read leaves the parent's own state standing."""
     try:
         h = c.get_workflow_handle(cid)
-        desc = await h.describe()
+        # Bounded: a stuck child must not stall the parent's own poll behind it.
+        desc = await asyncio.wait_for(h.describe(), 5)
         if desc.status and desc.status.name != "RUNNING":
             return None
-        st = await h.query(OttoWorkflow.status)
+        st = await asyncio.wait_for(h.query(OttoWorkflow.status), 5)
     except Exception:  # noqa: BLE001
         return None
     return {**_gate_state(st), "gate_wid": cid} if st.get("awaiting_approval") else None

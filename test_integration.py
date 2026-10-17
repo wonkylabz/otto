@@ -3336,6 +3336,38 @@ class DelegatedGateChatTests(unittest.TestCase):
             "slack-b-C1-1-1-s1": {"awaiting_approval": True, "plan": "x"}})
         self.assertEqual(st["state"], "running")
 
+    def test_an_unread_status_is_unreachable_not_running(self):
+        # A failed status query read as "running" told the gate watch the gate had cleared.
+        import asyncio
+        import server
+        import temporal_client as tc
+
+        class FakeHandle:
+            async def describe(self):
+                return types.SimpleNamespace(status=types.SimpleNamespace(name="RUNNING"))
+
+            async def query(self, _q):
+                raise RuntimeError("worker restarting")
+
+        class FakeClient:
+            def get_workflow_handle(self, wid):
+                return FakeHandle()
+
+        orig = tc.client
+        async def fake_client():
+            return FakeClient()
+        tc.client = fake_client
+        try:
+            st = asyncio.run(server._wf_state("web-deadbeef"))
+        finally:
+            tc.client = orig
+        self.assertEqual(st["state"], "unreachable")
+
+    def test_a_delegate_gating_after_run_started_still_shows(self):
+        # The frontman enters RUN before delegating, so gateDone is already true by then.
+        html = ui_src()
+        self.assertIn("if(!gateDone || (st.gate_wid && !delegateGateShown)){", html)
+
     def test_the_frontman_marks_its_delegate(self):
         import wf_frontman
         self.assertIn('"delegated": True', inspect.getsource(wf_frontman.FrontmanMixin._frontman_turn))
@@ -3347,6 +3379,8 @@ class DelegatedGateChatTests(unittest.TestCase):
         g = html[html.index("function gate(content"):html.index("function finishTurn()")]
         self.assertIn('st.state!=="awaiting_approval"', g)
         self.assertIn("finish(null)", g)
+        self.assertIn('getJSON("/api/wf?id="', g, "an HTTP error must not read as decided")
+        self.assertIn("card.isConnected", g, "a switched-away card must stop its watch")
         self.assertIn("if(ok!==null) await api(\"/api/wf/signal\",{id:gateWid", html)
 
     def test_the_chat_signals_the_run_holding_the_gate(self):
