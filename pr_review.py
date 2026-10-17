@@ -192,9 +192,14 @@ def viewer(retry=False):
     if not retry and time.time() - _viewer_failed < _VIEWER_RETRY_S:
         return None
     rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
-    viewer._cache = out.strip() if rc == 0 else ""
-    if not viewer._cache:
+    prev = getattr(viewer, "_cache", None)
+    if rc == 0 and out.strip():
+        viewer._cache = out.strip()
+    else:
         _viewer_failed = time.time()
+        # A failed RE-ask keeps the login it already had (as granted_scopes keeps its grant):
+        # one blip must not turn a known sign-in into "couldn't confirm" for the retry window.
+        viewer._cache = prev if (retry and prev) else ""
     return viewer._cache or None
 
 

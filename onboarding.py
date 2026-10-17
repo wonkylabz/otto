@@ -155,7 +155,10 @@ def profile_settings(profile, cur=None):
     if profile == "keep":
         return {}
     cur = cur or config.settings_all()
-    base = {k: cur[k]["default"] for k in _PROFILE_KEYS}
+    # A code "default" is the config constant, which read env at import: an UNUSABLE env value
+    # (OTTO_EFFORT=bogus) leaks in as the default. Never target it — leave that key alone.
+    base = {k: cur[k]["default"] for k in _PROFILE_KEYS
+            if config._coerce(cur[k]["kind"], cur[k]["default"]) is not None}
     return {**base, **(PROFILES[profile]["settings"] or {})}
 
 

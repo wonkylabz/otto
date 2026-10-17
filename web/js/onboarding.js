@@ -27,8 +27,11 @@ async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   // Parked by an integration's Open: resume exactly where it was, choices intact.
   if(!meta && OB && OB.parked){
-    // Resume on Review and RE-CHECK there: the detour may have fixed exactly what it shows.
-    OB.parked=false; OB.step=OB_STEPS.indexOf("review"); OB.recheckOnShow=true; obRender();
+    // Resume on Review. The plain warm (Slack scopes, gh login) runs on this GET; the full
+    // Re-check — `claude mcp list` starts every stdio server — stays the operator's click.
+    OB.parked=false; OB.step=OB_STEPS.indexOf("review");
+    try { await getJSON("/api/onboarding?warm=1"); } catch(e){}
+    obRender();
     return;
   }
   if(!meta){ try { meta=await getJSON("/api/onboarding?warm=1"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
@@ -101,10 +104,7 @@ function obRender(){
     obRender(); refocusOption(inp);
   }));
   body.querySelectorAll("[data-ob]").forEach(b=>b.addEventListener("click",()=>obAction(b.dataset.ob)));
-  if(step==="review"){
-    if(OB.recheckOnShow){ OB.recheckOnShow=false; obAction("recheck"); }
-    else obReview();
-  }
+  if(step==="review") obReview();
 }
 
 async function obAction(act){
@@ -128,7 +128,7 @@ async function obAction(act){
     const note=failed ? "Re-check: "+failed+" — showing the last known state for those." : "";
     document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
     await obReview();
-    const err=document.getElementById("ob-err"); if(note && err && err.isConnected && !err.textContent) err.textContent=note;
+    const err=document.getElementById("ob-err"); if(note && err && err.isConnected) err.textContent=note;
     return;
   }
   if(act==="tour"){ closeFormModal(); startTour(); return; }
@@ -171,6 +171,7 @@ async function obReview(){
   // Superseded (Back → changed an answer → Next) or closed while in flight: a detached node is
   // still truthy, so test the sequence and isConnected, never the reference.
   if(seq!==OB.seq || !box || !box.isConnected) return;
+  if(err && err.isConnected) err.textContent="";     // a fresh plan supersedes the last error
   OB.fingerprint=p.fingerprint;
   document.getElementById("ob-loading").textContent="Nothing is written until you apply. Applying the same answers again changes nothing.";
   const label={set:'<span class="obset">will change</span>',keep:'<span class="obkeep">already set</span>',

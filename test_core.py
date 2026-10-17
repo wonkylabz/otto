@@ -2548,18 +2548,6 @@ class OnboardingTests(unittest.TestCase):
         self.ob.skip({"usage": "personal", "integrations": None})
         self.assertNotIn("integrations", self.ob.state()["answers"])
 
-    def test_the_server_warms_what_onboarding_only_reads(self):
-        import server
-        src = inspect.getsource(server._warm_onboarding_caches)
-        for need in ("granted_scopes", "pr_review.viewer", "daemon=True"):
-            self.assertIn(need, src)
-        body = src[src.index('"""', src.index('"""') + 3):]          # past the docstring
-        self.assertLess(body.index("if mcp:"), body.index("allow_refresh=True"),
-                        "`claude mcp list` starts every server: only behind an explicit Re-check")
-        self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main),
-                         "warmed lazily on the wizard's GET, never at boot")
-        self.assertNotIn('"done"', src, "a once-per-process flag never retries a failed warm")
-
     def test_a_deep_link_defers_the_wizard_once_not_forever(self):
         init = ui_src()
         init = init[init.index("async function initOnboarding"):]
@@ -2600,12 +2588,14 @@ class OnboardingTests(unittest.TestCase):
     def test_a_failed_mcp_list_keeps_data_but_negatively_caches(self):
         import policy
         good = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {"gmail": "connected"}}
+        stamp = lambda path, fn, default: fn(dict(good))    # noqa: E731 — the store holds `good`
         with mock.patch.object(policy, "_read", return_value=dict(good)), \
                 mock.patch.object(policy, "_run_mcp_list", return_value=None), \
-                mock.patch.object(policy, "_write") as wrote:
+                mock.patch.object(policy.storage, "mutate_json", side_effect=stamp) as wrote:
             got = policy._mcp_status(allow_refresh=True, force=True)
         self.assertEqual({k: got[k] for k in good}, good, "data AND its `at` untouched")
-        self.assertGreater(wrote.call_args[0][1]["failed_at"], 1.0, "its own stamp holds the retry")
+        self.assertGreater(got["failed_at"], 1.0, "its own stamp holds the retry")
+        wrote.assert_called_once()
         self.assertTrue(policy.connectors_polled(got))
         self.assertFalse(policy.connectors_polled({"failed_at": 2.0}), "never good is not polled")
         with mock.patch.object(policy, "_read", return_value={**good, "at": 0.0, "failed_at": policy.time.time()}), \
@@ -2700,17 +2690,6 @@ class OnboardingTests(unittest.TestCase):
             got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
         self.assertIsNone(got["ready"])
 
-    def test_recheck_waits_for_a_refresh_that_includes_connectors(self):
-        import server
-        src = inspect.getsource(server._warm_onboarding_caches)
-        self.assertIn("allow_refresh=True, force=True", src)
-        self.assertIn("t.join(", src)
-        self.assertIn('await postJSON("/api/onboarding/recheck"', ui_src(),
-                      "it spawns MCP servers: a POST behind the origin check, never a GET")
-        self.assertIn("/api/onboarding/recheck", server._POST_ROUTES)
-        get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
-        self.assertNotIn("mcp=", get)
-
     def test_a_token_slack_refuses_is_named_not_left_unknown(self):
         import slack
         ok = mock.MagicMock()
@@ -2741,23 +2720,18 @@ class OnboardingTests(unittest.TestCase):
 
     def test_a_hung_mcp_list_is_negatively_cached(self):
         import policy
-        with mock.patch.object(policy, "_read", return_value={"at": 1.0, "connectors": [], "health": {}}), \
+        held = {"at": 1.0, "connectors": [], "health": {}}
+        with mock.patch.object(policy, "_read", return_value=dict(held)), \
                 mock.patch.object(policy, "_run_mcp_list", side_effect=TimeoutError("hung")), \
-                mock.patch.object(policy, "_write") as wrote:
-            policy._mcp_status(allow_refresh=True, force=True)
-        self.assertIn("failed_at", wrote.call_args[0][1])
+                mock.patch.object(policy.storage, "mutate_json",
+                                  side_effect=lambda path, fn, default: fn(dict(held))):
+            got = policy._mcp_status(allow_refresh=True, force=True)
+        self.assertIn("failed_at", got)
 
     def test_any_forge_and_url_only_repos_count(self):
         with mock.patch.object(registry, "_project_entries", return_value=[
                 {"url": "https://gitlab.com/o/x", "path": ""}, {"url": "", "path": "/legacy"}]):
             self.assertEqual(registry.registered_count(), 2)
-
-    def test_a_recheck_never_settles_for_a_plain_warm_in_flight(self):
-        import server
-        src = inspect.getsource(server._warm_onboarding_caches)
-        self.assertIn('_WARMED["threads"], _WARMED["kind"] = mine', src[:src.index("break\n")],
-                      "threads are stored before the lock is released")
-        self.assertIn("if not (mcp or retry):", src)
 
     def test_a_failed_refresh_keeps_the_last_good_grant(self):
         import slack
@@ -2822,16 +2796,79 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(pr_review.viewer(), "old")
             self.assertEqual(pr_review.viewer(retry=True), "new")
 
-    def test_recheck_reports_what_it_could_not_refresh(self):
+    def _warm(self, probes):
         import server
-        src = inspect.getsource(server._warm_onboarding_caches)
-        self.assertIn('"incomplete"', src)
-        self.assertIn('"failed": sorted(failed)', src)
-        self.assertIn("deadline = time.time() + wait          # its OWN probes", src)
-        self.assertIn("if covers:", src)
-        ui = ui_src()
-        rc = ui[ui.index('if(act==="recheck")'):][:1600]
-        self.assertIn("++OB.seq", rc, "an in-flight first preview must not overwrite the recheck")
+        server._WARM.update(job=None, at=0.0)
+        return server, mock.patch.object(server, "_warm_probes", side_effect=lambda m, r, since: probes(m))
+
+    def test_a_coalesced_recheck_reads_the_shared_result(self):
+        import threading as th
+        gate = th.Event()
+        def boom():
+            gate.wait(2)
+            raise RuntimeError("mcp list failed")
+        server, patch = self._warm(lambda m: [("mcp-list", boom)] if m else [])
+        with patch:
+            out = []
+            t = th.Thread(target=lambda: out.append(server._warm_onboarding_caches(force=True, mcp=True, wait=5, retry=True)))
+            t.start()
+            time_ = __import__("time"); time_.sleep(0.1)
+            t2 = th.Thread(target=lambda: out.append(server._warm_onboarding_caches(force=True, mcp=True, wait=5, retry=True)))
+            t2.start(); time_.sleep(0.1); gate.set(); t.join(); t2.join()
+        self.assertEqual([o["failed"] for o in out], [["mcp-list"], ["mcp-list"]],
+                         "the joiner reports the real outcome, not a clean refresh")
+
+    def test_a_plain_warm_never_lists_mcp_and_a_recheck_is_not_covered_by_it(self):
+        import threading as th
+        calls, gate = [], th.Event()
+        def probes(m):
+            calls.append(m)
+            return [("slack-scopes", lambda: gate.wait(2))]
+        server, patch = self._warm(probes)
+        with patch:
+            server._warm_onboarding_caches(force=True)                       # plain, in flight
+            server._warm_onboarding_caches(force=True, mcp=True, retry=True)  # NOT covered by it
+            gate.set()
+        self.assertEqual(calls, [False, True])
+
+    def test_a_recheck_that_runs_out_of_time_says_so(self):
+        import threading as th
+        gate = th.Event()
+        server, patch = self._warm(lambda m: [("gh-viewer", lambda: gate.wait(3))])
+        with patch:
+            out = server._warm_onboarding_caches(force=True, mcp=False, wait=0.2, retry=True)
+            gate.set()
+        self.assertIn("gh-viewer", out["incomplete"])
+
+    def test_the_mcp_list_runs_only_behind_an_explicit_recheck(self):
+        import server
+        names = [n for n, _ in server._warm_probes(False, False, 0)]
+        self.assertNotIn("mcp-list", names)
+        self.assertIn("mcp-list", [n for n, _ in server._warm_probes(True, True, 0)])
+        self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main), "never at boot")
+        get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
+        self.assertNotIn("mcp=True", get, "a GET must never spawn MCP servers")
+
+    def test_a_failed_reask_keeps_the_resolved_login(self):
+        import pr_review
+        with mock.patch.object(pr_review.viewer, "_cache", "alice", create=True), \
+                mock.patch.object(pr_review, "_run", return_value=(1, "", "offline")):
+            self.assertEqual(pr_review.viewer(retry=True), "alice")
+
+    def test_a_failure_stamp_never_clobbers_a_newer_listing(self):
+        import policy
+        fresh = {"at": 99.0, "connectors": [{"name": "new"}], "health": {}}
+        with mock.patch.object(policy.storage, "read_json", return_value=dict(fresh)), \
+                mock.patch.object(policy.storage, "mutate_json",
+                                  side_effect=lambda path, fn, default: fn(dict(fresh))):
+            got = policy._stamp_failed()
+        self.assertEqual(got["connectors"], fresh["connectors"])
+        self.assertIn("failed_at", got)
+
+    def test_an_unusable_env_default_is_never_a_profile_target(self):
+        os.environ["OTTO_EFFORT"] = "bogus"
+        with mock.patch.object(config, "EFFORT", "bogus"):
+            self.assertNotIn("effort", self.ob.profile_settings("balanced"))
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack

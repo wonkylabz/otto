@@ -561,6 +561,18 @@ def _parse_health(text):
     return out
 
 
+def _stamp_failed():
+    """Record a failed listing by its OWN stamp, merged into whatever the store holds NOW — a
+    listing can run 60s, and writing back the copy read before it would clobber a refresh that
+    succeeded meanwhile. Data and `at` untouched: the connector guard reads them."""
+    now = time.time()
+
+    def _mut(d):
+        d = d if isinstance(d, dict) else {}
+        return {**d, "failed_at": now}
+    return storage.mutate_json(_CONN_CACHE, _mut, default={})
+
+
 def _mcp_status(allow_refresh=False, force=False):
     """Cached parse of `claude mcp list`: {'connectors': [...], 'health': {name: cat}}. The
     slow health-checking `claude mcp list` runs only when the Admin view asks (allow_refresh),
@@ -579,17 +591,14 @@ def _mcp_status(allow_refresh=False, force=False):
                 cached = {"at": time.time(),
                           "connectors": _parse_connectors(text),
                           "health": _parse_health(text)}
+                _write(_CONN_CACHE, cached)
             else:
-                # Never "no servers": keep the last good data — the run path's connector guard
-                # reads it — and its `at`, so nothing reads it as freshly checked.
-                cached = {**cached, "failed_at": time.time()}
-            _write(_CONN_CACHE, cached)
+                cached = _stamp_failed()
         except Exception:
             # A hang (TimeoutExpired) or a missing CLI is a failed listing too — stamped, so the
-            # 60s spawn is not re-paid by every caller until the TTL.
-            cached = {**cached, "failed_at": time.time()}
+            # 60s spawn is not re-paid by every caller until the failure TTL.
             try:
-                _write(_CONN_CACHE, cached)
+                cached = _stamp_failed()
             except Exception:  # noqa: BLE001 — a read-only data dir must not break the read
                 pass
     return cached
