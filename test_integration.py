@@ -3308,7 +3308,7 @@ class DelegatedGateChatTests(unittest.TestCase):
     def test_a_gated_delegate_surfaces_its_plan_on_the_parent(self):
         st = self._state({
             "slack-b-C1-1-1": {"cap": {"name": "assistant"}, "swarm": False,
-                               "children": [{"id": "slack-b-C1-1-1-d1", "cap": "(routed)"}]},
+                               "children": [{"id": "slack-b-C1-1-1-d1", "cap": "(routed)", "delegated": True}]},
             "slack-b-C1-1-1-d1": {"awaiting_approval": True, "cap": {"name": "doer"},
                                   "plan": "play the Aspen playlist", "max_plan_revisions": 3}})
         self.assertEqual(st["state"], "awaiting_approval")
@@ -3318,14 +3318,14 @@ class DelegatedGateChatTests(unittest.TestCase):
     def test_a_running_delegate_leaves_the_parent_running(self):
         st = self._state({
             "slack-b-C1-1-1": {"cap": {"name": "assistant"},
-                               "children": [{"id": "slack-b-C1-1-1-d1"}]},
+                               "children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]},
             "slack-b-C1-1-1-d1": {"cap": {"name": "doer"}}})
         self.assertEqual(st["state"], "running")
         self.assertNotIn("gate_wid", st)
 
     def test_a_finished_delegate_is_never_read_on_a_poll(self):
         # The lookup rides every chat poll (450ms): a finished child's history must not be.
-        st = self._state({"slack-b-C1-1-1": {"children": [{"id": "slack-b-C1-1-1-d1"}]}},
+        st = self._state({"slack-b-C1-1-1": {"children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]}},
                          finished=("slack-b-C1-1-1-d1",))
         self.assertEqual(st["state"], "running")
         self.assertEqual(self.results, [])
@@ -3336,10 +3336,22 @@ class DelegatedGateChatTests(unittest.TestCase):
             "slack-b-C1-1-1-s1": {"awaiting_approval": True, "plan": "x"}})
         self.assertEqual(st["state"], "running")
 
+    def test_the_frontman_marks_its_delegate(self):
+        import wf_frontman
+        self.assertIn('"delegated": True', inspect.getsource(wf_frontman.FrontmanMixin._frontman_turn))
+
+    def test_a_gate_decided_elsewhere_releases_the_chat_card(self):
+        # Slack or the board can clear the same gate; a card waiting on a click forever painted
+        # "declined — nothing ran" over a write already executing when clicked late.
+        html = ui_src()
+        g = html[html.index("function gate(content"):html.index("function finishTurn()")]
+        self.assertIn('st.state!=="awaiting_approval"', g)
+        self.assertIn("finish(null)", g)
+        self.assertIn("if(ok!==null) await api(\"/api/wf/signal\",{id:gateWid", html)
+
     def test_the_chat_signals_the_run_holding_the_gate(self):
         html = ui_src()
         self.assertIn("const gateWid=st.gate_wid||wid;", html)
-        self.assertIn('{id:gateWid,signal:"approve"', html)
 
 
 class WfTerminateAuditTests(unittest.TestCase):

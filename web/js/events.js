@@ -321,7 +321,7 @@ function showSlackBotForm(){
 
     <div class="sk-sec">
       <div class="sk-sectitle">Skip approval in these channels <span class="sk-opt">&mdash; optional</span></div>
-      <p class="sk-help">A request from you or an approver that needs only tools you ticked <b>safe</b> runs without a gate in a DM. List a channel here to allow the same there. <b>Only list channels nobody else posts in</b> &mdash; Otto reads the channel's recent messages, so anyone posting there can steer a run nobody approves.</p>
+      <p class="sk-help">A request from you or an approver that needs only tools you ticked <b>safe</b> runs without a gate in a DM. List a channel here to allow the same there. <b>Only list channels nobody else posts in</b> &mdash; no colleagues, guests, bots or integrations &mdash; Otto reads the channel's recent messages, so anyone posting there can steer a run nobody approves.</p>
       <textarea id="sb-fastlane" class="sk-mono" placeholder="C01ABCDEF #sandbox"></textarea>
     </div>
 

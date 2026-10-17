@@ -271,10 +271,10 @@ async function watchLoop(wid, chatId, content, sess, flags){
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
         const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
-        setNode("GATE","done", ok?"approved":"denied"); gateDone=true;
-        if(ok){ led.appr++; render(); }
-        if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
+        // gate() already counted a clicked approval in the ledger; counting here doubled it.
+        if(ok!==null) await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
+        setNode("GATE","done", ok===null?"decided elsewhere":(ok?"approved":"denied")); gateDone=true;
+        if(ok!==false) showThinking(content,"Running "+(cap?cap.name:"")+"…");
       }
     }
     else if(st.state==="done"){
@@ -1398,21 +1398,32 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
     paint(plan, concerns);
     content.appendChild(card); scroll();
     const actionBtns=()=>modal.querySelectorAll(".approve, .decline, .revise");
+    let stopWatch=null;
     const finish=(ok)=>{
+      if(card.classList.contains("resolved")) return;
+      if(stopWatch) stopWatch();
       card.classList.add("resolved");
       const act=modal.querySelector(".actions"); if(act) act.remove();
       const rb=modal.querySelector(".revisebox"); if(rb) rb.remove();
-      const r=document.createElement("div"); r.className="resolution "+(ok?"ok":"no");
-      r.textContent= ok ? "✓ approved" : "✕ declined — nothing ran";
+      const r=document.createElement("div"); r.className="resolution "+(ok===null?"":ok?"ok":"no");
+      r.textContent= ok===null ? "decided elsewhere (Slack or the board)"
+                   : ok ? "✓ approved" : "✕ declined — nothing ran";
       modal.querySelector(".modalBody").appendChild(r);
       gateStatusEl.textContent = r.textContent;
-      gateStatusEl.className = "gatestatus resolution "+(ok?"ok":"no");
+      gateStatusEl.className = "gatestatus resolution "+(ok===null?"":ok?"ok":"no");
       seeplanBtn.textContent = "View plan";
       closeGateModal();
       document.removeEventListener("keydown", escHandler);
       if(ok){ led.appr++; render(); } resolve(ok); };
     modal.querySelector(".approve").addEventListener("click",()=>finish(true));
     modal.querySelector(".decline").addEventListener("click",()=>finish(false));
+    // The same gate can be cleared from Slack or the board — a delegated one mostly is. Without
+    // this the card waited on a click forever, and a late Decline painted "nothing ran" over a
+    // write already executing. `null` = decided elsewhere: the caller signals nothing.
+    if(wid) stopWatch=poll(async()=>{
+      const st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json();
+      if(st.state!=="awaiting_approval" && st.state!=="unreachable") finish(null);
+    }, 3000);
 
     // Request changes: free-text feedback instead of a decision. The workflow folds it into
     // the request and re-runs the plan preview + critic; THIS modal stays open and repaints
