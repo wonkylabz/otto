@@ -211,10 +211,15 @@ def _detect(key, mcps, connectors_checked=True):
         good = [i for i in live if gaps[i]["known"] and not gaps[i]["missing"]]
         short = [i for i in live if gaps[i]["missing"]]
         fix = ("add the missing scopes, reinstall the Slack app and update the token")
+        unknown = [i for i in live if not gaps[i]["known"]]
         if good:
             # Config, not liveness: whether the poll is running is the Events card's to say.
             extra = f"; {names[short[0]]}, the token is missing scopes — {fix}" if short else ""
+            extra += f"; {names[unknown[0]]}, scopes not checked yet" if unknown else ""
             return _row(True, "set up " + " and ".join(names[i] for i in good) + extra)
+        if unknown:
+            # The unread identity may be the working one: unknown, not a verdict from the other.
+            return _row(None, "token scopes not checked yet — the Events tab's Slack card checks them", "")
         if short:
             return _row(False, f"set up {names[short[0]]}, but the token is missing scopes — {fix}", "")
         if live:

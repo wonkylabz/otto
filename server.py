@@ -1470,7 +1470,9 @@ class Handler(BaseHTTPRequestHandler):
             if st["auto_open"] or "warm=1" in self.path:
                 # An explicit ask (Setup, Re-check) skips the throttle; each lookup still backs
                 # off its own failures, so this cannot hammer Slack or GitHub.
-                _warm_onboarding_caches(force="warm=1" in self.path)
+                recheck = "recheck=1" in self.path
+                _warm_onboarding_caches(force="warm=1" in self.path, mcp=recheck,
+                                        wait=20 if recheck else 0)
             self._send(200, json.dumps(st))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
@@ -2892,12 +2894,13 @@ _WARM_EVERY_S = 60
 _WARM_LOCK = threading.Lock()
 
 
-def _warm_onboarding_caches(force=False):
+def _warm_onboarding_caches(force=False, mcp=False, wait=0):
     """Fill, in the background, the two caches the onboarding review reads but may never fill
     itself behind its spinner: Slack's granted scopes and the `gh` login. Lazily, on the wizard's
     own first GET — a browser is open, so the network is up (a boot-time lookup can fail before it
-    is, and that failure would stick), and nothing runs on a restart nobody looks at. Never
-    `claude mcp list`: it starts every stdio server, and stays the Admin view's to run.
+    is, and that failure would stick), and nothing runs on a restart nobody looks at.
+    `claude mcp list` starts every stdio server, so it runs ONLY on the operator's explicit
+    Re-check (`mcp=True`) — the same click Admin's Recheck is — never on an open.
     On every wizard open (auto, or Setup's ?warm=1), throttled: both lookups cache a success and
     back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
     with _WARM_LOCK:                  # threaded server: two GETs must not both pass the throttle
@@ -2910,10 +2913,21 @@ def _warm_onboarding_caches(force=False):
             fn()
         except Exception:  # noqa: BLE001 — a cache left cold reads as "not checked yet"
             pass
-    for name, fn in (("slack-scopes", lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT)
-                                              if slack.token_set(i)]),
-                     ("gh-viewer", pr_review.viewer)):
-        threading.Thread(target=run, args=(fn,), name=f"onboarding-warm-{name}", daemon=True).start()
+    probes = [("slack-scopes", lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT)
+                                        if slack.token_set(i)]),
+              ("gh-viewer", pr_review.viewer)]
+    if mcp:
+        # Only on the operator's explicit Re-check — the same click-to-refresh Admin's Recheck is.
+        probes.append(("mcp-list", lambda: policy.all_mcps(policy.load(), allow_refresh=True, force=True)))
+    threads = [threading.Thread(target=run, args=(fn,), name=f"onboarding-warm-{n}", daemon=True)
+               for n, fn in probes]
+    for t in threads:
+        t.start()
+    if wait:
+        # Re-check WAITS (bounded), so what it reads back is the refreshed answer, not a race.
+        deadline = time.time() + wait
+        for t in threads:
+            t.join(max(0.0, deadline - time.time()))
 
 
 def _mcps_and_polled():

@@ -108,9 +108,13 @@ async function obAction(act){
   if(act==="recheck"){
     // Warm first: the checks a detour may have fixed (gh login, Slack scopes) refill in the
     // background, so give them a moment before reading them back.
-    getJSON("/api/onboarding?warm=1").catch(()=>{});
-    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again…</p>';
-    setTimeout(obReview, 2500); return;
+    // Awaited: the server re-runs the lookups (connectors included) and answers when they are
+    // done or after 20s, so the preview reads the refreshed state instead of racing it.
+    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take a few seconds…</p>';
+    document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
+    try { await getJSON("/api/onboarding?warm=1&recheck=1"); } catch(e){}
+    document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
+    obReview(); return;
   }
   if(act==="tour"){ closeFormModal(); startTour(); return; }
   if(act==="skip"){ closeFormModal(); return; }   // the close hook records the skip

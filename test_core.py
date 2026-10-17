@@ -2553,7 +2553,9 @@ class OnboardingTests(unittest.TestCase):
         src = inspect.getsource(server._warm_onboarding_caches)
         for need in ("granted_scopes", "pr_review.viewer", "daemon=True"):
             self.assertIn(need, src)
-        self.assertNotIn("allow_refresh", src, "`claude mcp list` starts every server; Admin's to run")
+        body = src[src.index('"""', src.index('"""') + 3):]          # past the docstring
+        self.assertLess(body.index("if mcp:"), body.index("allow_refresh=True"),
+                        "`claude mcp list` starts every server: only behind an explicit Re-check")
         self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main),
                          "warmed lazily on the wizard's GET, never at boot")
         self.assertNotIn('"done"', src, "a once-per-process flag never retries a failed warm")
@@ -2599,7 +2601,7 @@ class OnboardingTests(unittest.TestCase):
         import policy
         good = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {"gmail": "connected"}}
         with mock.patch.object(policy, "_read", return_value=dict(good)), \
-                mock.patch.object(policy, "_run_mcp_list", return_value=""), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=None), \
                 mock.patch.object(policy, "_write") as wrote:
             got = policy._mcp_status(allow_refresh=True, force=True)
         self.assertEqual({k: got[k] for k in good}, good, "data AND its `at` untouched")
@@ -2621,10 +2623,13 @@ class OnboardingTests(unittest.TestCase):
 
     def test_a_nonzero_mcp_list_exit_is_a_failed_listing(self):
         import policy
-        for rc in (0, 1):                  # header-only is a failure whatever the exit code
-            res = mock.Mock(returncode=rc, stdout="Checking MCP server health...\n")
-            with mock.patch.object(policy.subprocess, "run", return_value=res):
-                self.assertEqual(policy._run_mcp_list(), "", rc)
+        res = mock.Mock(returncode=1, stdout="Checking MCP server health...\n")
+        with mock.patch.object(policy.subprocess, "run", return_value=res):
+            self.assertIsNone(policy._run_mcp_list(), "non-zero and nothing listed: failed")
+        res = mock.Mock(returncode=0, stdout="Checking MCP server health...\n")
+        with mock.patch.object(policy.subprocess, "run", return_value=res):
+            self.assertEqual(policy._run_mcp_list(), res.stdout,
+                             "exit 0 listing nothing is a real empty setup, never a failure")
         listed = "Checking MCP server health...\n\ngmail: npx gmail - ✓ Connected\n"
         with mock.patch.object(policy.subprocess, "run", return_value=mock.Mock(returncode=1, stdout=listed)), \
                 mock.patch.object(policy, "_parse_health", return_value={"gmail": "connected"}):
@@ -2676,6 +2681,33 @@ class OnboardingTests(unittest.TestCase):
                 mock.patch.object(registry, "project_meta", return_value={}), \
                 mock.patch.object(workspace, "_git_origin", side_effect=AssertionError("spawned git")):
             self.assertEqual(pr_review.known_repos(offline=True), [])
+
+    def test_an_empty_listing_replaces_a_stale_one(self):
+        import policy
+        stale = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {"g": "connected"}}
+        with mock.patch.object(policy, "_read", return_value=dict(stale)), \
+                mock.patch.object(policy, "_run_mcp_list", return_value="Checking MCP server health...\n"), \
+                mock.patch.object(policy, "_write"):
+            got = policy._mcp_status(allow_refresh=True, force=True)
+        self.assertEqual(got["connectors"], [], "removed connectors must stop reading as present")
+
+    def test_an_unread_identity_is_unknown_not_judged_by_the_other(self):
+        import slack
+        cfg = {"enabled": True, "allow_users": ["U1"], "bot_enabled": True, "bot_allow_users": ["U2"]}
+        gaps = {slack.USER: {"missing": [("search:read", "x")], "known": True},
+                slack.BOT: {"missing": [], "known": False}}
+        with mock.patch.object(slack, "load", return_value=cfg), \
+                mock.patch.object(slack, "identity_enabled", return_value=True), \
+                mock.patch.object(slack, "scope_gaps", side_effect=lambda i, c=None, cached_only=False: gaps[i]):
+            got = self.ob.preview({"integrations": ["slack"]})["integrations"][0]
+        self.assertIsNone(got["ready"])
+
+    def test_recheck_waits_for_a_refresh_that_includes_connectors(self):
+        import server
+        src = inspect.getsource(server._warm_onboarding_caches)
+        self.assertIn("allow_refresh=True, force=True", src)
+        self.assertIn("t.join(", src)
+        self.assertIn('await getJSON("/api/onboarding?warm=1&recheck=1")', ui_src())
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack

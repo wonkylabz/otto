@@ -486,11 +486,15 @@ def _run_mcp_list():
     import claude_cli           # noqa: PLC0415 — see above
     res = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=60,
                          env=claude_cli.child_env())
-    # Output that lists NOTHING parseable — whatever the exit code — is a failed CLI (a header,
-    # an error line), returned as "" so the caller keeps the last good cache. A non-zero exit
-    # that still lists servers is kept: one of them may simply have failed its health check.
+    # The exit code decides: 0 is authoritative even when it lists nothing (no servers and no
+    # connectors is a real state, and must be able to replace a stale listing). Non-zero with
+    # nothing parseable is a failed CLI, returned as None so the caller keeps the last good
+    # cache; non-zero that still lists servers is kept — one may have failed its health check.
+    # (_parse_health covers every connector line too, so one parse decides.)
     out = res.stdout or ""
-    return out if (_parse_health(out) or _parse_connectors(out)) else ""
+    if res.returncode == 0 or _parse_health(out):
+        return out
+    return None
 
 
 # Health categories parsed from `claude mcp list`. Each server line ends in one of these
@@ -569,7 +573,7 @@ def _mcp_status(allow_refresh=False, force=False):
     if allow_refresh and (force or not fresh):
         try:
             text = _run_mcp_list()
-            if text.strip():
+            if text is not None:
                 cached = {"at": time.time(),
                           "connectors": _parse_connectors(text),
                           "health": _parse_health(text)}
