@@ -209,7 +209,7 @@ def _detect(key, mcps, connectors_checked=True):
         # Judged PER identity: one working identity is a working Slack, whatever the other's state.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
         dead = [i for i in live if gaps[i].get("rejected")]
-        good = [i for i in live if gaps[i]["known"] and not gaps[i]["missing"]]
+        good = [i for i in live if gaps[i]["known"] and not gaps[i]["missing"] and i not in dead]
         short = [i for i in live if gaps[i]["missing"]]
         fix = ("add the missing scopes, reinstall the Slack app and update the token")
         if good:
@@ -232,16 +232,14 @@ def _detect(key, mcps, connectors_checked=True):
         return _row(False, "no Slack token")
     if key == "github":
         import pr_review        # noqa: PLC0415
-        import registry         # noqa: PLC0415
         if not shutil.which("gh"):
             return _row(False, "`gh` not on PATH")
         # The CACHED login only: resolving it is a `gh api` call of up to 30s. Repos are counted
         # from the filesystem, no `git` spawned, by the same `.git` test workspace.git_repos uses.
         who = pr_review.viewer_cached()
-        # Registered = a stored URL or a checkout: a URL-only repo whose managed clone hasn't
-        # landed is still registered (registry.project_path), as pr_review.known_repos counts it.
-        repos = sum(1 for p in registry.projects()
-                    if registry.project_meta(p).get("url") or os.path.isdir(os.path.join(p, ".git")))
+        # The SAME list the GitHub guide and the PR-review form use: github.com repos, deduped,
+        # URL-first (a URL-only repo whose clone hasn't landed still counts).
+        repos = len(pr_review.known_repos())
         if who is None:
             return _row(None, "sign-in not checked yet — the Events tab's GitHub card checks it")
         if not who:

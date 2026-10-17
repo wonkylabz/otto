@@ -419,7 +419,7 @@ def granted_scopes(identity=USER, refresh=False):
 def _scope_needed(gate, cfg):
     """A scope is needed unless the feature it serves is switched off. ONE rule for both what
     scope_gaps reports and what the setup guide asks for, so the two can't disagree."""
-    return gate is True or cfg.get(gate) is not False
+    return gate is True or bool(cfg.get(gate, True))   # truthiness, as the poller tests it
 
 
 def scope_catalog(identity=USER, cfg=None):
@@ -444,9 +444,10 @@ def scope_gaps(identity=USER, cfg=None, cached_only=False):
     granted = _GRANTED.get(identity, set()) if cached_only else granted_scopes(identity)
     if not granted and identity in _GRANTED and _token(identity):
         # PROBED with a token and came back empty — on BOTH paths, so the wizard and the Events
-        # card agree: a rejected or revoked token, not an unread one. (No token caches empty
-        # too, which is "nothing to check", never "rejected".)
-        return {"missing": [], "optional": [], "known": True, "rejected": True}
+        # card agree: a rejected or revoked token. `known` stays False: every reader treats
+        # known-with-nothing-missing as all clear, and a dead token is the opposite. (No token
+        # caches empty too, which is "nothing to check", never "rejected".)
+        return {"missing": [], "optional": [], "known": False, "rejected": True}
     if not granted:
         return {"missing": [], "optional": [], "known": False}
     missing, optional = [], []

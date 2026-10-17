@@ -25,7 +25,11 @@ async function initOnboarding(){
 async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   // Parked by an integration's Open: resume exactly where it was, choices intact.
-  if(!meta && OB && OB.parked){ OB.parked=false; obRender(); return; }
+  if(!meta && OB && OB.parked){
+    OB.parked=false; obRender();
+    getJSON("/api/onboarding?warm=1").catch(()=>{});   // re-check what the detour may have fixed
+    return;
+  }
   if(!meta){ try { meta=await getJSON("/api/onboarding?warm=1"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
   // A detour that outlived the page (the hints say "restart Otto") resumes from its saved draft.
   if(meta.draft){

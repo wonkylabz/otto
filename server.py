@@ -19,6 +19,7 @@ import json
 import os
 import re
 import socketserver
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
@@ -2886,6 +2887,7 @@ class Handler(BaseHTTPRequestHandler):
 
 _WARMED = {"at": 0.0}
 _WARM_EVERY_S = 60
+_WARM_LOCK = threading.Lock()
 
 
 def _warm_onboarding_caches():
@@ -2896,10 +2898,10 @@ def _warm_onboarding_caches():
     `claude mcp list`: it starts every stdio server, and stays the Admin view's to run.
     On every wizard open (auto, or Setup's ?warm=1), throttled: both lookups cache a success and
     back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
-    import threading
-    if time.time() - _WARMED["at"] < _WARM_EVERY_S:
-        return
-    _WARMED["at"] = time.time()
+    with _WARM_LOCK:                  # threaded server: two GETs must not both pass the throttle
+        if time.time() - _WARMED["at"] < _WARM_EVERY_S:
+            return
+        _WARMED["at"] = time.time()
 
     def run(fn):
         try:

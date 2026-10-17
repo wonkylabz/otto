@@ -2600,7 +2600,7 @@ class OnboardingTests(unittest.TestCase):
         with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True), \
                 mock.patch.object(slack, "_token", return_value="xoxp-t"):
             g = slack.scope_gaps(slack.USER, {}, cached_only=True)
-        self.assertTrue(g["known"])
+        self.assertFalse(g["known"], "known+nothing-missing reads as all clear to every reader")
         self.assertTrue(g.get("rejected"))
 
     def test_a_failed_mcp_list_keeps_data_but_negatively_caches(self):
@@ -2619,8 +2619,7 @@ class OnboardingTests(unittest.TestCase):
         import pr_review
         with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
                 mock.patch.object(pr_review, "viewer_cached", return_value="octo"), \
-                mock.patch.object(registry, "projects", return_value=["/nowhere/repos/x"]), \
-                mock.patch.object(registry, "project_meta", return_value={"url": "https://github.com/o/x"}):
+                mock.patch.object(pr_review, "known_repos", return_value=[{"slug": "o/x", "name": "x"}]):
             got = self.ob.preview({"integrations": ["github"]})["integrations"][0]
         self.assertTrue(got["ready"])
         self.assertIn("known_repos", ui_src()[ui_src().index("github:{title:"):][:900])
@@ -2630,6 +2629,26 @@ class OnboardingTests(unittest.TestCase):
         res = mock.Mock(returncode=1, stdout="Checking MCP server health...\n")
         with mock.patch.object(policy.subprocess, "run", return_value=res):
             self.assertEqual(policy._run_mcp_list(), "")
+        listed = "Checking MCP server health...\n\ngmail: npx gmail - ✓ Connected\n"
+        with mock.patch.object(policy.subprocess, "run", return_value=mock.Mock(returncode=1, stdout=listed)), \
+                mock.patch.object(policy, "_parse_health", return_value={"gmail": "connected"}):
+            self.assertEqual(policy._run_mcp_list(), listed, "a listing that parses is kept")
+
+    def test_a_failed_listing_drops_health_it_can_no_longer_vouch_for(self):
+        import policy
+        good = {"at": 1.0, "good_at": 1.0, "connectors": [], "health": {"gmail": "connected"}}
+        with mock.patch.object(policy, "_read", return_value=dict(good)), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=""), \
+                mock.patch.object(policy, "_write"):
+            self.assertEqual(policy._mcp_status(allow_refresh=True, force=True)["health"], {})
+
+    def test_a_rejected_token_is_not_a_working_identity(self):
+        import slack
+        got = self._slack({"enabled": True, "allow_users": ["U1"]}, [slack.USER],
+                          {"missing": [], "optional": [], "known": False, "rejected": True})
+        self.assertFalse(got["ready"])
+        self.assertIn("rejected", got["detail"])
+        self.assertIn("g.rejected", ui_src(), "the Events card must say so too")
 
     def test_a_pre_good_at_cache_stays_polled_through_a_failure(self):
         import policy
@@ -2865,13 +2884,11 @@ class OnboardingTests(unittest.TestCase):
     def _github(self, who):
         import pr_review
         import workspace
-        repo = os.path.join(self._dir, "repo")
-        os.makedirs(os.path.join(repo, ".git"), exist_ok=True)
         with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
                 mock.patch.object(pr_review, "viewer_cached", return_value=who), \
                 mock.patch.object(pr_review, "viewer", side_effect=AssertionError("shells out")), \
                 mock.patch.object(workspace, "git_repos", side_effect=AssertionError("spawns git")), \
-                mock.patch.object(registry, "projects", return_value=[repo]):
+                mock.patch.object(pr_review, "known_repos", return_value=[{"slug": "o/r", "name": "r"}]):
             return self.ob.preview({"integrations": ["github"]})["integrations"][0]
 
     def test_github_needs_a_signed_in_gh_and_never_waits_on_one(self):
