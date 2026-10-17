@@ -2616,10 +2616,10 @@ class OnboardingTests(unittest.TestCase):
         import pr_review
         with mock.patch.object(self.ob.shutil, "which", return_value="/usr/bin/gh"), \
                 mock.patch.object(pr_review, "viewer_cached", return_value="octo"), \
-                mock.patch.object(pr_review, "known_repos", return_value=[{"slug": "o/x", "name": "x"}]):
+                mock.patch.object(registry, "registered_count", return_value=1):
             got = self.ob.preview({"integrations": ["github"]})["integrations"][0]
         self.assertTrue(got["ready"])
-        self.assertIn("known_repos", ui_src()[ui_src().index("github:{title:"):][:900])
+        self.assertIn("registered_repos", ui_src()[ui_src().index("github:{title:"):][:900])
 
     def test_a_nonzero_mcp_list_exit_is_a_failed_listing(self):
         import policy
@@ -2748,6 +2748,37 @@ class OnboardingTests(unittest.TestCase):
                 mock.patch.object(policy, "_write") as wrote:
             policy._mcp_status(allow_refresh=True, force=True)
         self.assertIn("failed_at", wrote.call_args[0][1])
+
+    def test_any_forge_and_url_only_repos_count(self):
+        with mock.patch.object(registry, "_project_entries", return_value=[
+                {"url": "https://gitlab.com/o/x", "path": ""}, {"url": "", "path": "/legacy"}]):
+            self.assertEqual(registry.registered_count(), 2)
+
+    def test_a_recheck_never_settles_for_a_plain_warm_in_flight(self):
+        import server
+        src = inspect.getsource(server._warm_onboarding_caches)
+        self.assertIn('_WARMED["threads"] = mine', src[:src.index("break")],
+                      "threads are stored before the lock is released")
+        self.assertIn("if not (mcp or retry):", src)
+
+    def test_a_failed_refresh_keeps_the_last_good_grant(self):
+        import slack
+        with mock.patch.dict(slack._GRANTED, {slack.USER: {"chat:write"}}, clear=True), \
+                mock.patch.dict(slack._FAILED, {}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-t"), \
+                mock.patch.object(slack.urllib.request, "urlopen", side_effect=OSError("blip")):
+            self.assertEqual(slack.granted_scopes(slack.USER, refresh=True), {"chat:write"})
+            self.assertEqual(slack._GRANTED[slack.USER], {"chat:write"})
+
+    def test_a_failed_listing_is_retried_sooner_than_a_good_one(self):
+        import policy
+        self.assertLess(policy._CONN_FAIL_TTL, policy._CONN_TTL)
+        old = policy.time.time() - policy._CONN_FAIL_TTL - 1
+        with mock.patch.object(policy, "_read", return_value={"at": 1.0, "failed_at": old}), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=None) as ran, \
+                mock.patch.object(policy, "_write"):
+            policy._mcp_status(allow_refresh=True)
+        ran.assert_called_once()
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack
@@ -2933,7 +2964,7 @@ class OnboardingTests(unittest.TestCase):
                 mock.patch.object(pr_review, "viewer_cached", return_value=who), \
                 mock.patch.object(pr_review, "viewer", side_effect=AssertionError("shells out")), \
                 mock.patch.object(workspace, "git_repos", side_effect=AssertionError("spawns git")), \
-                mock.patch.object(pr_review, "known_repos", return_value=[{"slug": "o/r", "name": "r"}]):
+                mock.patch.object(registry, "registered_count", return_value=1):
             return self.ob.preview({"integrations": ["github"]})["integrations"][0]
 
     def test_github_needs_a_signed_in_gh_and_never_waits_on_one(self):

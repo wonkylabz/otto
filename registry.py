@@ -378,6 +378,12 @@ def project_path(entry):
     return managed or path
 
 
+def registered_count():
+    """How many project repos are registered — a stored URL or a local checkout, any forge.
+    Offline: reads the store, never spawns `git`. What onboarding and the GitHub guide count."""
+    return sum(1 for e in _project_entries() if e.get("url") or e.get("path"))
+
+
 def projects():
     """External repo roots whose project-scoped `.claude/` skills+agents are imported. Returns
     the EFFECTIVE paths (back-compat for the allowlist / discovery callers, which have always

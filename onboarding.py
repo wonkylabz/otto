@@ -245,14 +245,15 @@ def _detect(key, mcps, connectors_checked=True):
         if not who:
             # "" is a FAILED lookup: signed out, or GitHub unreachable — `gh api` can't tell them.
             return _row(False, "couldn't confirm the `gh` sign-in — run `gh auth status`")
-        # The SAME list the GitHub guide and the PR-review form use (github.com, deduped,
-        # URL-first), read offline: no `git` spawn behind the spinner.
-        repos = len(pr_review.known_repos(offline=True))
+        # Any registered repo — GitHub, GHE or another forge, URL-only or a checkout — read
+        # offline (no `git` spawn behind the spinner); the guide reads the same count.
+        import registry         # noqa: PLC0415
+        repos = registry.registered_count()
         if not repos:
             return _row(False, f"signed in as {who}, no project repo registered")
         return _row(True, f"signed in as {who}, {repos} repo(s) registered")
     if key == "push":
-        ok = bool(config.secret("OTTO_NTFY_TOPIC"))
+        ok = bool(config.NTFY_TOPIC)        # what delivery.notify will actually use
         return _row(ok, ("OTTO_NTFY_TOPIC set" if ok else "OTTO_NTFY_TOPIC not set"))
     if key == "local":
         import gateway          # noqa: PLC0415

@@ -81,7 +81,7 @@ function githubSteps(ctx, feats){
   if(feats.includes("pr")) out.push({t:"Review the PRs that ask for you", done:!!pc.enabled,
     b:`When a pull request requests <b>your</b> review, Otto reviews it read-only and parks the review in a chat thread for you to read. Nothing reaches GitHub until you press post${pc.auto_post?" — <b>auto-post is ON</b>, so reviews currently publish without a click":""}. Pick which repos it watches, tick <b>Enabled</b> and save.`,
     act:{label:"Open PR review settings", run:()=>{ PRREV_CFG=pc; PRREV_CAPS=pr.caps||[]; PRREV_REPOS=pr.known_repos||[]; showPrReviewForm(); }}});
-  if(feats.includes("repos")) out.push({t:"Register the repos Otto may change", done:(repos||[]).length>0,
+  if(feats.includes("repos")) out.push({t:"Register the repos Otto may change", done:(ctx.nrepos||0)>0,
     b:`Board tickets and chat requests that edit code run in an isolated clone of a <b>registered</b> repo and come back as a draft PR. Register each repo in <b>Admin → Project repos</b>.`+
       ((repos||[]).length?`<p class="obsub">Registered: ${repos.map(r=>gCode(r.name||r.slug)).join(", ")}.</p>`:""),
     act:{label:"Open Project repos", run:()=>obGoto("admin","projects"), leaves:true}});
@@ -112,7 +112,7 @@ const GUIDES={
     // Repos from the PR config's known_repos — URL-first, so a repo registered by URL whose
     // clone hasn't landed still counts (workspace.git_repos would miss it, and spawns git).
     load:async()=>{ const [pr,board]=await Promise.all([getJSON("/api/pr-review-config"),getJSON("/api/board-config")]);
-                    return {pr,board,repos:pr.known_repos||[]}; },
+                    return {pr,board,repos:pr.known_repos||[],nrepos:pr.registered_repos||0}; },
     steps:(ctx,choice)=>gGated(githubSteps(ctx,choice))},
 };
 

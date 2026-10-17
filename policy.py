@@ -19,6 +19,7 @@ _CUSTOM = os.path.join(config.DATA_DIR, "capabilities.json")   # Otto-added capa
 _MCPDEF = os.path.join(config.DATA_DIR, "mcp-servers.json")    # Otto-added MCP servers
 _CONN_CACHE = os.path.join(config.DATA_DIR, "mcp-connectors-cache.json")  # claude.ai connectors
 _CONN_TTL = 3600   # connectors change rarely; the Admin view also force-refreshes on demand
+_CONN_FAIL_TTL = 300   # a FAILED listing is retried much sooner — it is usually transient
 
 
 def _read(path, default):
@@ -569,7 +570,8 @@ def _mcp_status(allow_refresh=False, force=False):
     cached = cached if isinstance(cached, dict) else {}
     # A failed listing is negatively cached by its OWN stamp: retried only after the TTL, while
     # the data and its `at` stay exactly as the last good listing left them.
-    fresh = (time.time() - max(cached.get("at", 0), cached.get("failed_at", 0))) < _CONN_TTL
+    now = time.time()
+    fresh = (now - cached.get("at", 0)) < _CONN_TTL or (now - cached.get("failed_at", 0)) < _CONN_FAIL_TTL
     if allow_refresh and (force or not fresh):
         try:
             text = _run_mcp_list()

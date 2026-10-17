@@ -1607,6 +1607,7 @@ class Handler(BaseHTTPRequestHandler):
                 # The registered project repos, so the config form ticks boxes instead of
                 # asking the operator to retype slugs Otto already holds.
                 "known_repos": pr_review.known_repos(),
+                "registered_repos": registry.registered_count(),   # any forge — the guide's count
                 "caps": [c.name for c in CAPS if c.enabled],
             }))
         elif self.path.startswith("/api/pr-review/chat"):
@@ -2910,19 +2911,6 @@ def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False):
     Re-check (`mcp=True`) — the same click Admin's Recheck is — never on an open.
     On every wizard open (auto, or Setup's ?warm=1), throttled: both lookups cache a success and
     back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
-    with _WARM_LOCK:                  # threaded server: two GETs must not both pass the throttle
-        live = [t for t in _WARMED["threads"] if t.is_alive()]
-        if not live and (force or time.time() - _WARMED["at"] >= _WARM_EVERY_S):
-            _WARMED["at"] = time.time()
-            live = None               # this call starts the refresh, below
-    if live is not None:
-        # One refresh in flight at a time: a second Re-check JOINS it (outside the lock, so other
-        # requests are never held) rather than spawning a second `claude mcp list` racing the first.
-        deadline = time.time() + wait
-        for t in live:
-            t.join(max(0.0, deadline - time.time()))
-        return
-
     def run(fn):
         try:
             fn()
@@ -2934,16 +2922,34 @@ def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False):
     if mcp:
         # Only on the operator's explicit Re-check — the same click-to-refresh Admin's Recheck is.
         probes.append(("mcp-list", lambda: policy.all_mcps(policy.load(), allow_refresh=True, force=True)))
-    threads = [threading.Thread(target=run, args=(fn,), name=f"onboarding-warm-{n}", daemon=True)
-               for n, fn in probes]
-    for t in threads:
-        t.start()
-    _WARMED["threads"] = threads
-    if wait:
-        # Re-check WAITS (bounded), so what it reads back is the refreshed answer, not a race.
-        deadline = time.time() + wait
-        for t in threads:
+    deadline = time.time() + wait
+    while True:
+        with _WARM_LOCK:
+            # Decide AND start under the lock, storing the threads before releasing it: two
+            # callers can never both see "nothing in flight" and spawn two `claude mcp list`s.
+            live = [t for t in _WARMED["threads"] if t.is_alive()]
+            if not live:
+                if not force and time.time() - _WARMED["at"] < _WARM_EVERY_S:
+                    return
+                _WARMED["at"] = time.time()
+                mine = [threading.Thread(target=run, args=(fn,), name=f"onboarding-warm-{n}",
+                                         daemon=True) for n, fn in probes]
+                for t in mine:
+                    t.start()
+                _WARMED["threads"] = mine
+                break
+        # Something is already in flight, outside the lock so no request is held. A plain warm
+        # is satisfied by it. A Re-check is NOT — that refresh may lack the connector list and the
+        # failure-window skip — so it waits for it to finish and then starts its own.
+        if not (mcp or retry):
+            return
+        for t in live:
             t.join(max(0.0, deadline - time.time()))
+        if any(t.is_alive() for t in live):
+            return                    # out of time; the caller reads what there is
+    for t in mine:
+        # Re-check WAITS (bounded), so what it reads back is the refreshed answer, not a race.
+        t.join(max(0.0, deadline - time.time()))
 
 
 def _mcps_and_polled():

@@ -111,7 +111,7 @@ async function obAction(act){
     // Warm first: the checks a detour may have fixed (gh login, Slack scopes) refill in the
     // background, so give them a moment before reading them back.
     // Awaited: the server re-runs the lookups (connectors included) and answers when they are
-    // done or after 20s, so the preview reads the refreshed state instead of racing it.
+    // done or after _RECHECK_WAIT_S (65s), so the preview reads the refreshed state, not a race.
     const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take up to a minute…</p>';
     document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
     try { await postJSON("/api/onboarding/recheck",{}); } catch(e){}

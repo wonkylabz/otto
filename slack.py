@@ -391,10 +391,10 @@ def granted_scopes(identity=USER, refresh=False):
     returns them on the `x-oauth-scopes` response header of any call, so one `auth.test` answers
     it. Cached per identity — the token can't change without a restart."""
     if refresh:
-        _GRANTED.pop(identity, None)
-        _REJECTED.pop(identity, None)
+        # Bypass the cache and the backoff, but DROP nothing yet: a refresh that fails keeps the
+        # last good answer instead of turning a known grant into "unknown".
         _FAILED.pop(("scopes", identity), None)
-    if identity in _GRANTED:
+    elif identity in _GRANTED:
         return _GRANTED[identity]
     if _backing_off("scopes", identity):
         return set()                          # a recent probe failed; do not re-block the caller
@@ -414,6 +414,8 @@ def granted_scopes(identity=USER, refresh=False):
                 _REJECTED[identity] = body["error"]       # Slack said so; cached like a grant
             elif not body.get("ok"):
                 raise RuntimeError(body.get("error") or "auth.test not ok")   # transient: retry
+            else:
+                _REJECTED.pop(identity, None)             # a token that works again
         except Exception as e:  # noqa: BLE001 - transient; an unknown grant reports as unknown
             # Remember the FAILURE too, briefly. Without this every `/api/slack-config` re-paid a
             # 15s urlopen per identity, so an offline box spun the Events tab for ~30s on every
@@ -421,7 +423,7 @@ def granted_scopes(identity=USER, refresh=False):
             # list` in `loadAdmin`). Short, because the fix for a real outage is a retry soon.
             trace("SLACK", f"scope check failed ({str(e)[:80]})")
             _FAILED[("scopes", identity)] = time.time()
-            return set()
+            return _GRANTED.get(identity, set())   # the last good answer, if any
     _GRANTED[identity] = out
     return out
 
