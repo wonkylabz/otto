@@ -219,14 +219,22 @@ def any_enabled(cfg=None):
     return enabled(cfg) or bot_enabled(cfg)
 
 
-def answers_anyone(identity, cfg=None):
-    """Whether `identity` is switched on AND would answer someone: both allowlists empty means
-    nobody (allow_self counts for the owner's own identity). The ONE readiness rule — onboarding
-    and the Events setup guide both read it, rather than each keeping a copy."""
+def answering_state(identity, cfg=None):
+    """`off` | `nobody` | `test` | `on` — whether `identity` is switched on (switch AND token, like
+    the poller) and who it would answer: both allowlists empty is nobody; the owner's test mode
+    alone is `test` (their own self-DM only). The ONE readiness rule: onboarding and the Events
+    setup guide both read it, and both count only `on` as set up."""
     cfg = cfg if cfg is not None else load()
-    on = identity_enabled(identity, cfg)          # the switch AND the token, like the poller
-    listed = any(allow_ids(cfg, k) for k in allow_keys(identity))
-    return bool(on and (listed or (identity == USER and cfg.get("allow_self"))))
+    if not identity_enabled(identity, cfg):
+        return "off"
+    if any(allow_ids(cfg, k) for k in allow_keys(identity)):
+        return "on"
+    return "test" if identity == USER and cfg.get("allow_self") else "nobody"
+
+
+def answers_anyone(identity, cfg=None):
+    """Switched on and answering someone, test mode included — what may start a poll."""
+    return answering_state(identity, cfg) in ("on", "test")
 
 
 def enabled_identities(cfg=None):

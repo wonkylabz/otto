@@ -184,12 +184,10 @@ def _detect(key, mcps, connectors_checked=True):
         import slack            # noqa: PLC0415 — slack pulls in Temporal-free but heavy imports
         cfg = slack.load()
         names = {slack.USER: "as you", slack.BOT: "as a bot"}
-        live = [i for i in slack.enabled_identities(cfg) if slack.answers_anyone(i, cfg)]
-        # Test mode alone answers only the owner's own self-DM — fine for trying it, not "set up".
-        listed = [i for i in live if any(slack.allow_ids(cfg, k) for k in slack.allow_keys(i))]
-        if live and not listed:
+        state = {i: slack.answering_state(i, cfg) for i in (slack.USER, slack.BOT)}
+        live = [i for i, st in state.items() if st == "on"]
+        if not live and "test" in state.values():
             return False, "test mode only — it answers just your own self-DM; add an allowlist"
-        live = listed
         # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here;
         # a grant nobody has read yet is unknown, like the gh login and the connector cache.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
@@ -201,7 +199,7 @@ def _detect(key, mcps, connectors_checked=True):
         if live:
             # Config, not liveness: whether the poll is running is the Events card's to say.
             return True, "set up " + " and ".join(names[i] for i in live)
-        if slack.enabled_identities(cfg):
+        if "nobody" in state.values():
             return False, "switched on, but its allowlist is empty — it answers nobody"
         toks = [n for n, i in (("user", slack.USER), ("bot", slack.BOT)) if slack.token_set(i)]
         return False, (f"{' and '.join(toks)} token set, listener off" if toks
@@ -250,7 +248,9 @@ def _integrations_plan(wants, mcps, connectors_checked=True):
 
 
 def _fingerprint(a, settings):
-    changes = [{"name": s["name"], "after": s["after"]} for s in settings if s["action"] == "set"]
+    # `before` too: an Admin edit between preview and apply must refuse, not be overwritten unseen.
+    changes = [{"name": s["name"], "before": s["before"], "after": s["after"]}
+               for s in settings if s["action"] == "set"]
     return hashlib.sha256(json.dumps({"answers": a, "changes": changes}, sort_keys=True,
                                      default=str).encode()).hexdigest()[:16]
 
@@ -321,7 +321,11 @@ def skip(answers=None):
             draft.pop("profile")
             if not isinstance(answers.get("integrations"), list):
                 draft.pop("integrations")
-            prev = d.get("answers") if isinstance(d.get("answers"), dict) else {}
+            prev = dict(d.get("answers")) if isinstance(d.get("answers"), dict) else {}
+            # Picks made for another usage are not this one's: drop them, so the next run offers
+            # the new usage's defaults instead of preselecting the old ones.
+            if "integrations" not in draft and prev.get("usage") != draft["usage"]:
+                prev.pop("integrations", None)
             out["answers"] = {**prev, **draft}      # unreached fields keep their stored value
         return out
     storage.mutate_json(_STATE, _mut, default={})

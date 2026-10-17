@@ -2530,10 +2530,35 @@ class OnboardingTests(unittest.TestCase):
 
     def test_a_draft_keeps_the_stored_fields_it_never_reached(self):
         self._apply({"usage": "work", "profile": "economic", "integrations": ["slack", "github"]})
-        self.ob.skip({"usage": "personal", "integrations": None})
+        self.ob.skip({"usage": "work", "integrations": None})
         st = self.ob.state()["answers"]
-        self.assertEqual(st["usage"], "personal")
+        self.assertEqual(st["profile"], "economic")
         self.assertEqual(st["integrations"], ["slack", "github"])
+
+    def test_an_admin_edit_between_preview_and_apply_refuses(self):
+        config.save_settings({"max_attempts": 5})
+        fp = self.ob.preview({"profile": "balanced"})["fingerprint"]
+        config.save_settings({"max_attempts": 7})          # target is still 3: same "after"
+        with self.assertRaises(self.ob.StalePreview):
+            self.ob.apply({"profile": "balanced"}, fp)
+        self.assertEqual(config.setting("max_attempts"), 7)
+
+    def test_a_usage_change_drops_the_old_usages_picks(self):
+        self._apply({"usage": "work", "profile": "keep", "integrations": ["slack", "github"]})
+        self.ob.skip({"usage": "personal", "integrations": None})
+        self.assertNotIn("integrations", self.ob.state()["answers"])
+
+    def test_the_server_warms_what_onboarding_only_reads(self):
+        import server
+        src = inspect.getsource(server._warm_onboarding_caches)
+        for need in ("granted_scopes", "pr_review.viewer", "allow_refresh=True", "daemon=True"):
+            self.assertIn(need, src)
+        self.assertIn("_warm_onboarding_caches()", inspect.getsource(server.main))
+
+    def test_a_deep_link_defers_the_wizard_once_not_forever(self):
+        init = ui_src()
+        init = init[init.index("async function initOnboarding"):]
+        self.assertIn("ottoObDeferred", init[:init.index("\n}")])
 
     def test_keep_on_a_first_run_records_no_profile(self):
         self._apply({"usage": "work", "profile": "keep"})
@@ -2609,6 +2634,8 @@ class OnboardingTests(unittest.TestCase):
             self.assertTrue(slack.answers_anyone(slack.USER, {"enabled": True, "allow_self": True}))
             self.assertFalse(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "allow_self": True}))
             self.assertTrue(slack.answers_anyone(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}))
+            self.assertEqual(slack.answering_state(slack.USER, {"enabled": True, "allow_self": True}), "test")
+            self.assertEqual(slack.answering_state(slack.USER, {"enabled": True}), "nobody")
         with mock.patch.object(slack, "USER_TOKEN", ""):
             self.assertFalse(slack.answers_anyone(slack.USER, {"enabled": True, "allow_users": ["U1"]}),
                              "switched on without a token answers nobody")
@@ -2807,7 +2834,8 @@ class EventsSetupGuideTests(unittest.TestCase):
     def test_a_paused_poll_is_not_running(self):
         g = self.src[self.src.index("function slackSteps"):self.src.index("const GUIDES=")]
         self.assertIn("!poll.paused", g)
-        self.assertIn("!p.failing && !p.paused", g)
+        self.assertIn("p.exists && !p.paused", g)
+        self.assertNotIn("p.failing", g, "board/PR polls have no failing key — a dead check reads as done")
 
     def test_a_guide_never_writes_config_itself(self):
         g = self.src[self.src.index("let GUIDE=null"):]

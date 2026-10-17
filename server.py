@@ -1632,8 +1632,8 @@ class Handler(BaseHTTPRequestHandler):
                 # scope_gaps checks against, so the guide can't drift from what is enforced.
                 "scope_catalog": {k: slack.scope_catalog(i, scfg) for k, i in
                                   (("user", slack.USER), ("bot", slack.BOT))},
-                # Switched on with someone to answer — the setup guide's "done", by slack's rule.
-                "answering": {k: slack.answers_anyone(i, scfg) for k, i in
+                # off|nobody|test|on per identity — the setup guide's "done", by slack's rule.
+                "answering": {k: slack.answering_state(i, scfg) for k, i in
                               (("user", slack.USER), ("bot", slack.BOT))},
                 "socket": slack_socket.status(),   # instant delivery for the bot, if configured
                 "poll": slack.poll_status() if TEMPORAL_OK else {"exists": False},
@@ -2875,6 +2875,23 @@ class Handler(BaseHTTPRequestHandler):
         pass  # engine.trace() already prints a readable trace
 
 
+def _warm_onboarding_caches():
+    """Fill, in the background, the caches onboarding reads but never fills itself (it may not
+    shell out behind its spinner): Slack's granted scopes, the `gh` login and the connector list.
+    Without this the wizard opens at boot before any of them exist and every row reads "?"."""
+    import threading
+
+    def warm():
+        for fn in (lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT) if slack.token_set(i)],
+                   pr_review.viewer,
+                   lambda: policy.all_mcps(policy.load(), allow_refresh=True)):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 — a cache left cold reads as "not checked yet"
+                pass
+    threading.Thread(target=warm, name="onboarding-warm", daemon=True).start()
+
+
 def _mcps_and_polled():
     """The MCP listing and whether its connector half was ever polled, from ONE cache read — two
     reads could straddle an Admin recheck and describe different listings."""
@@ -3022,6 +3039,7 @@ def main():
     print(f"Slack socket: {slack_socket.reconcile()}", flush=True)
     # PR-review poll schedule — same out-of-"otto-*"-namespace reasoning.
     print(f"PR reviews: {pr_review.reconcile_schedule()}", flush=True)
+    _warm_onboarding_caches()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -40,11 +40,12 @@ function slackSteps(d, ident){
       gList(toks.map(([env,shape,,set])=>`${gCode(env+"="+shape)} ${set?'<span class="gdok">set</span>':'<span class="gdno">not set</span>'}`))+
       `<p class="obsub">${gCode("./.venv/bin/python setup_wizard.py")} can write the user token for you without echoing it. Tokens are read at startup, so <b>restart Otto</b> afterwards, then press Re-check.</p>`+
       (user?gMissing(d.scopes):"")+(bot?gMissing(d.bot_scopes):"")});
-  if(user) out.push({t:"Choose who Otto answers as you", done:!!(d.answering||{}).user,
-    b:`Otto only answers people and channels on the allowlist — <b>both empty means nobody</b>. Add Slack member IDs (profile → ⋮ → <i>Copy member ID</i>) and/or channel IDs (the ${gCode("C…")} part of a channel link), tick <b>Enabled</b> and save. Writes still wait for your approval on the Board unless you change that.`+
+  if(user) out.push({t:"Choose who Otto answers as you", done:(d.answering||{}).user==="on",
+    b:((d.answering||{}).user==="test"?`<div class="obnote">Test mode is on with no allowlist: Otto answers only your own self-DM. Fine for trying it — add people or channels when you're ready.</div>`:"")+
+      `Otto only answers people and channels on the allowlist — <b>both empty means nobody</b>. Add Slack member IDs (profile → ⋮ → <i>Copy member ID</i>) and/or channel IDs (the ${gCode("C…")} part of a channel link), tick <b>Enabled</b> and save. Writes still wait for your approval on the Board unless you change that.`+
       `<p class="obsub">Trying it alone? <b>Test mode</b> lets your own self-DM trigger a run — turn it off on a real workspace.</p>`,
     act:{label:"Open Auto-answer settings", run:()=>{ gSlackSync(d); showSlackForm(); }}});
-  if(bot) out.push({t:"Choose where the bot answers", done:!!(d.answering||{}).bot,
+  if(bot) out.push({t:"Choose where the bot answers", done:(d.answering||{}).bot==="on",
     b:`List the channels the bot may answer in and the people who may DM it, tick <b>Enabled</b> and save. A listed channel still needs the bot <b>invited</b> to it: type ${gCode("/invite @Otto")} there.`+
       `<p class="obsub"><b>Approvers</b> are a separate list on purpose — who may ask is not who may approve a write.</p>`,
     act:{label:"Open Bot user settings", run:()=>{ gSlackSync(d); showSlackBotForm(); }}});
@@ -84,7 +85,9 @@ function githubSteps(ctx, feats){
       ((repos||[]).length?`<p class="obsub">Registered: ${repos.map(r=>gCode(r.name)).join(", ")}.</p>`:""),
     act:{label:"Open Project repos", run:()=>obGoto("admin","projects"), leaves:true}});
   const polls=[feats.includes("board")&&bc.enabled&&board.poll, feats.includes("pr")&&pc.enabled&&pr.poll].filter(Boolean);
-  out.push({t:"Check it's running", done:!!pr.temporal && polls.every(p=>p.exists && !p.failing && !p.paused),
+  // Board and PR polls report existence and pause only — neither tracks failures the way Slack's
+  // does, so a fire that errors is something this step cannot see.
+  out.push({t:"Check it's running", done:!!pr.temporal && polls.every(p=>p.exists && !p.paused),
     b:(!pr.temporal?`<div class="obnote">Temporal isn't running — start Otto with ${gCode("./run.sh")}.</div>`:"")+
       (polls.some(p=>!p.exists)?`<div class="obnote">A poll schedule hasn't been created yet — restart Otto.</div>`:"")+
       (polls.some(p=>p.paused)?`<div class="obnote">A poll schedule is paused — nothing runs until it resumes.</div>`:"")+

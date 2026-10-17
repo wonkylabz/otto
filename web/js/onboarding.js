@@ -15,7 +15,11 @@ async function initOnboarding(){
   let meta; try { meta=await getJSON("/api/onboarding"); } catch(e){ return; }
   if(!document.getElementById("formModal").hidden) return;   // the user already opened something
   // A push's deep link (#run=<wid>) lands on the run it is about; the wizard must not cover it.
-  if(meta.auto_open && !/^#run=/.test(location.hash)) openOnboarding(meta);
+  // Deferred ONCE per tab: openDeepLink leaves the hash, so a reload would defer it forever.
+  if(!meta.auto_open) return;
+  let deferred=false; try { deferred=sessionStorage.getItem("ottoObDeferred")==="1"; } catch(e){}
+  if(/^#run=/.test(location.hash) && !deferred){ try { sessionStorage.setItem("ottoObDeferred","1"); } catch(e){} return; }
+  openOnboarding(meta);
 }
 
 async function openOnboarding(meta){
@@ -128,7 +132,7 @@ async function obReview(){
   }
   // Superseded (Back → changed an answer → Next) or closed while in flight: a detached node is
   // still truthy, so test the sequence and isConnected, never the reference.
-  if(seq!==OB.seq || !box.isConnected) return;
+  if(seq!==OB.seq || !box || !box.isConnected) return;
   OB.fingerprint=p.fingerprint;
   document.getElementById("ob-loading").textContent="Nothing is written until you apply. Applying the same answers again changes nothing.";
   const label={set:'<span class="obset">will change</span>',keep:'<span class="obkeep">already set</span>',
