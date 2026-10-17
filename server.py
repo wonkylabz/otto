@@ -2746,7 +2746,7 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/onboarding/preview — the settings diff + integration checklist for `answers`.
         MCPs are the CACHED listing: the wizard waits on this, so it must never shell out."""
         self._send(200, json.dumps({"ok": True, **onboarding.preview(
-            body.get("answers"), *_mcps_and_polled())}))
+            body.get("answers"), **_mcp_view())}))
 
     def _post_onboarding_apply(self, body):
         """POST /api/onboarding/apply — applies only the plan its `expect` fingerprint names."""
@@ -2902,7 +2902,7 @@ class Handler(BaseHTTPRequestHandler):
 
 _RECHECK_WAIT_S = 65          # above `claude mcp list`'s own 60s timeout
 _WARM_EVERY_S = 60
-_WARM = {"at": 0.0, "thread": None}
+_WARM = {"at": 0.0, "threads": []}
 _WARM_LOCK = threading.Lock()
 
 
@@ -2941,8 +2941,9 @@ def _recheck(mcp, only=None, wait=_RECHECK_WAIT_S):
     deadline = time.time() + wait
     for t in threads:
         t.join(max(0.0, deadline - time.time()))
-    return {"failed": sorted(n for n, ok in results.items() if not ok),
-            "incomplete": sorted(n for n, _ in probes if n not in results)}
+    done = dict(results)       # ONE snapshot: a late probe may still be writing
+    return {"failed": sorted(n for n, ok in done.items() if not ok),
+            "incomplete": sorted(n for n, _ in probes if n not in done)}
 
 
 def _warm_onboarding_caches(force=False):
@@ -2951,29 +2952,34 @@ def _warm_onboarding_caches(force=False):
     network is up). Fills only what is missing: each lookup's own cache and backoff decide. One
     at a time, throttled unless `force`. Never `claude mcp list` (that is Re-check's)."""
     with _WARM_LOCK:
-        t = _WARM["thread"]
-        if (t and t.is_alive()) or (not force and time.time() - _WARM["at"] < _WARM_EVERY_S):
+        if any(t.is_alive() for t in _WARM["threads"]) or \
+                (not force and time.time() - _WARM["at"] < _WARM_EVERY_S):
             return
 
-        def fill():
-            for fn in (lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT)
-                                if slack.token_set(i)],
-                       lambda: shutil.which("gh") and pr_review.viewer()):
-                try:
-                    fn()
-                except Exception:  # noqa: BLE001 — a cold cache reads as "not checked yet"
-                    pass
-        _WARM["at"] = time.time()
-        _WARM["thread"] = threading.Thread(target=fill, name="onboarding-warm", daemon=True)
-        _WARM["thread"].start()
+        def one(fn):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 — a cold cache reads as "not checked yet"
+                pass
+        # One thread PER lookup: a slow Slack must not hold up the gh login, nor one identity
+        # the other.
+        fills = [lambda i=i: slack.granted_scopes(i) for i in (slack.USER, slack.BOT) if slack.token_set(i)]
+        if shutil.which("gh"):
+            fills.append(pr_review.viewer)
+        threads = [threading.Thread(target=one, args=(fn,), name="onboarding-warm", daemon=True)
+                   for fn in fills]
+        for t in threads:
+            t.start()
+        _WARM["at"], _WARM["threads"] = time.time(), threads
 
 
-def _mcps_and_polled():
-    """The MCP listing and whether its connector half was ever polled, from ONE cache read — two
-    reads could straddle an Admin recheck and describe different listings."""
+def _mcp_view():
+    """{mcps, connectors_checked, health} from ONE cache read — two reads could straddle an
+    Admin recheck and describe different listings. Named, for onboarding.preview's kwargs."""
     status = policy.mcp_status_cached()
-    return (policy.all_mcps(POLICY, status=status), policy.connectors_polled(status),
-            status.get("health") or {})
+    return {"mcps": policy.all_mcps(POLICY, status=status),
+            "connectors_checked": policy.connectors_polled(status),
+            "health": policy.mcp_health(status=status)}
 
 
 # POST dispatch. Built from Handler's methods rather than a 52-branch `elif` chain:

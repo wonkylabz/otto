@@ -2803,8 +2803,16 @@ class OnboardingTests(unittest.TestCase):
         names = [n for n, _ in server._recheck_probes(False)]
         self.assertNotIn("mcp-list", names)
         self.assertIn("mcp-list", [n for n, _ in server._recheck_probes(True)])
-        self.assertNotIn("mcp", inspect.getsource(server._warm_onboarding_caches).split('"""')[2],
-                         "the page-open warm never lists MCP servers")
+        # Behaviourally: a page-open warm, run to completion, never starts a listing.
+        import policy
+        with mock.patch.object(policy, "_refresh_listing", side_effect=AssertionError("listed")), \
+                mock.patch.object(policy, "refresh_mcp_status", side_effect=AssertionError("listed")), \
+                mock.patch.object(server.slack, "token_set", return_value=False), \
+                mock.patch.object(server.shutil, "which", return_value=None):
+            server._WARM.update(at=0.0, threads=[])
+            server._warm_onboarding_caches(force=True)
+            for t in server._WARM["threads"]:
+                t.join(2)
         self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main), "never at boot")
         get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
         self.assertNotIn("mcp=True", get, "a GET must never spawn MCP servers")
@@ -2928,28 +2936,6 @@ class OnboardingTests(unittest.TestCase):
             gate.set()
         self.assertEqual(out, {"failed": ["gh-viewer"], "incomplete": ["mcp-list"]})
 
-    def test_two_listings_never_run_at_once(self):
-        import policy
-        import threading as th
-        started, gate = [], th.Event()
-
-        def listing(cached):
-            started.append(1)
-            gate.wait(2)
-            return cached, True
-        with mock.patch.object(policy, "_refresh_listing", side_effect=listing), \
-                mock.patch.object(policy, "_mcp_status", return_value={}):
-            out = []
-            ts = [th.Thread(target=lambda: out.append(policy.refresh_mcp_status())) for _ in range(2)]
-            for t in ts:
-                t.start()
-            __import__("time").sleep(0.2)
-            gate.set()
-            for t in ts:
-                t.join()
-        self.assertEqual(len(started), 1, "the second caller reads the first's outcome")
-        self.assertEqual(out, [True, True])
-
     def test_a_disabled_server_says_switch_it_on(self):
         got = self.ob.preview({"integrations": ["email"]},
                               [{"name": "claude_ai_Gmail", "display": "claude.ai Gmail", "enabled": False}])
@@ -2969,6 +2955,64 @@ class OnboardingTests(unittest.TestCase):
         import snapshot
         self.assertIn("snapshot.fingerprint(", inspect.getsource(self.ob._fingerprint))
         self.assertEqual(len(snapshot.fingerprint({"a": 1})), 16)
+
+    def test_listings_never_overlap_and_a_waiter_runs_its_own(self):
+        import policy
+        import threading as th
+        live, peak, runs, lock = [0], [0], [0], th.Lock()
+
+        def listing(cached):
+            with lock:
+                live[0] += 1
+                runs[0] += 1
+                peak[0] = max(peak[0], live[0])
+            __import__("time").sleep(0.05)
+            with lock:
+                live[0] -= 1
+            return cached, True
+        with mock.patch.object(policy, "_refresh_listing_locked", side_effect=listing), \
+                mock.patch.object(policy, "_mcp_status", return_value={}):
+            ts = [th.Thread(target=policy.refresh_mcp_status) for _ in range(3)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        self.assertEqual(peak[0], 1, "never two `claude mcp list`s at once")
+        self.assertEqual(runs[0], 3, "a waiter's listing began after its own click, not before")
+
+    def test_a_health_only_entry_is_named_by_its_real_state(self):
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"claude_ai_Gmail": "failed"})["integrations"][0]
+        self.assertIn("claude.ai Gmail failed to connect", got["detail"])
+        got = self.ob.preview({"integrations": ["email"]}, [], True,
+                              {"plugin:mail:inbox": "pending"})["integrations"][0]
+        self.assertNotIn("claude.ai", got["detail"], "a plugin/stdio key never gets connector advice")
+
+    def test_an_older_gh_lookup_never_overwrites_a_newer_answer(self):
+        import pr_review
+        import threading as th
+        gate, started = th.Event(), th.Event()
+
+        def run(argv, timeout=30):
+            if th.current_thread().name == "slow-warm":
+                started.set()
+                gate.wait(2)
+                return 1, "", "network down"
+            return 0, "alice\n", ""
+        with mock.patch.object(pr_review, "_run", side_effect=run), \
+                mock.patch.object(pr_review.viewer, "_cache", None, create=True), \
+                mock.patch.object(pr_review.viewer, "_at", 0.0, create=True):
+            slow = th.Thread(target=lambda: pr_review._lookup_login(keep_known=False), name="slow-warm")
+            slow.start()
+            started.wait(2)              # the slow lookup has STARTED before the Re-check
+            self.assertTrue(pr_review.refresh_viewer())
+            gate.set()
+            slow.join()
+            self.assertEqual(pr_review.viewer_cached(), "alice")
+
+    def test_recheck_reads_its_results_once(self):
+        import server
+        self.assertIn("done = dict(results)", inspect.getsource(server._recheck))
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack

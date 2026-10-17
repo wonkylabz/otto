@@ -20,7 +20,8 @@ _CUSTOM = os.path.join(config.DATA_DIR, "capabilities.json")   # Otto-added capa
 _MCPDEF = os.path.join(config.DATA_DIR, "mcp-servers.json")    # Otto-added MCP servers
 _CONN_CACHE = os.path.join(config.DATA_DIR, "mcp-connectors-cache.json")  # claude.ai connectors
 _CONN_TTL = 3600   # connectors change rarely; the Admin view also force-refreshes on demand
-_CONN_FAIL_TTL = 300   # a FAILED listing is retried much sooner — it is usually transient
+_CONN_FAIL_TTL = 300
+_LISTING_LOCK = threading.Lock()   # one `claude mcp list` at a time, for every caller   # a FAILED listing is retried much sooner — it is usually transient
 
 
 def _read(path, default):
@@ -591,7 +592,15 @@ def _mcp_status(allow_refresh=False, force=False):
 
 
 def _refresh_listing(cached):
-    """Run `claude mcp list` once: (the cache as it now stands, whether THIS listing succeeded)."""
+    """Run `claude mcp list` once: (the cache as it now stands, whether THIS listing succeeded).
+    EVERY caller — Admin's Recheck, the TTL refresh, onboarding — comes through here under one
+    lock, so two listings never start every stdio server at the same time. A caller that waited
+    still runs its OWN listing: the one it waited on began before its click."""
+    with _LISTING_LOCK:
+        return _refresh_listing_locked(cached)
+
+
+def _refresh_listing_locked(cached):
     try:
         text = _run_mcp_list()
         # Parsed INSIDE the guard: output the parser can't read is a failed listing too, never
@@ -615,23 +624,11 @@ def _refresh_listing(cached):
     return cached, False
 
 
-_LISTING_LOCK = threading.Lock()
-_LISTING = {"ok": None}
-
-
 def refresh_mcp_status():
-    """Run `claude mcp list` now (it starts every stdio server) and say whether it succeeded.
-    One listing at a time: a caller arriving while one runs WAITS for it and reads its outcome
-    rather than spawning every server a second time for identical data."""
-    if not _LISTING_LOCK.acquire(blocking=False):
-        with _LISTING_LOCK:             # the one in flight finishes; its answer is ours
-            return bool(_LISTING["ok"])
-    try:
-        _cached, ok = _refresh_listing(_mcp_status())
-        _LISTING["ok"] = ok
-        return ok
-    finally:
-        _LISTING_LOCK.release()
+    """Run `claude mcp list` now (it starts every stdio server) and say whether THIS listing
+    succeeded — serialized with every other listing by `_refresh_listing`."""
+    _cached, ok = _refresh_listing(_mcp_status())
+    return ok
 
 
 def mcp_status_cached():

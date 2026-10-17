@@ -31,6 +31,7 @@ Config `data/pr-review.json`, state `data/pr-review-state.json` (both hot-editab
 import json
 import os
 import re
+import threading
 import time
 
 import config
@@ -175,6 +176,7 @@ def known_repos(cfg=None):
 # per window rather than one per Events-panel load.
 _VIEWER_RETRY_S = int(os.environ.get("OTTO_PR_VIEWER_RETRY_S") or 120)
 _viewer_failed = 0.0
+_VIEWER_LOCK = threading.Lock()
 
 
 def viewer():
@@ -202,14 +204,22 @@ def _lookup_login(keep_known):
     the failure stamp, returns whether it succeeded. On failure a known login is kept only when
     `keep_known` AND the failure was not gh saying nobody is signed in (`gh auth logout`)."""
     global _viewer_failed
+    started = time.monotonic()
     rc, out, err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
-    if rc == 0 and out.strip():
-        viewer._cache = out.strip()
-        return True
-    _viewer_failed = time.time()
-    logged_out = any(w in (err or "").lower() for w in _LOGGED_OUT)
-    if logged_out or not (keep_known and getattr(viewer, "_cache", None)):
-        viewer._cache = ""
+    ok = rc == 0 and bool(out.strip())
+    with _VIEWER_LOCK:
+        # A lookup that STARTED before the last write lost the race: a slow page-open warm must
+        # not overwrite the login a Re-check started later just resolved (nor its failure).
+        if started < getattr(viewer, "_at", 0.0):
+            return ok
+        viewer._at = started
+        if ok:
+            viewer._cache = out.strip()
+            return True
+        _viewer_failed = time.time()
+        logged_out = any(w in (err or "").lower() for w in _LOGGED_OUT)
+        if logged_out or not (keep_known and getattr(viewer, "_cache", None)):
+            viewer._cache = ""
     return False
 
 

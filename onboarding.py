@@ -204,10 +204,16 @@ def _partition_mcps(mcps, health=None):
             unusable.append((hay, label, "can't be used right now — reconnect or re-authenticate it"))
         else:
             usable.append((hay, label))
+    why = {"needs_auth": "needs re-authentication — reconnect it in claude.ai → Settings → Connectors",
+           "failed": "failed to connect — check it in claude.ai → Settings → Connectors",
+           "pending": "is waiting for approval in claude.ai → Settings → Connectors"}
     for name, cat in (health or {}).items():
-        if name not in seen and cat in policy.UNHEALTHY:
-            unusable.append((name.lower(), name.replace("_", " "),
-                             "needs re-authentication — reconnect it in claude.ai → Settings → Connectors"))
+        # Only claude.ai CONNECTORS lack a row (stdio and plugin servers always have one, under
+        # their own keys); the rest of the health map is not this loop's to judge.
+        if name in seen or not name.startswith("claude_ai_") or cat not in why:
+            continue
+        label = "claude.ai " + name[len("claude_ai_"):].replace("_", " ")
+        unusable.append((name.lower(), label, why[cat]))
     return usable, unusable
 
 
