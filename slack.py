@@ -1173,7 +1173,7 @@ def fast_lane_channel(cfg, channel, identity):
     no human reviews on the trusted asker's credit, so the default stays DMs only. The list is
     the BOT's, like every per-channel grant on its form: it never widens the user token's."""
     channel = str(channel or "")
-    return channel.startswith("D") or (identity == BOT and bool(channel)
+    return channel.startswith("D") or (identity == BOT
                                        and channel in allow_ids(cfg, "fast_lane_channels"))
 
 

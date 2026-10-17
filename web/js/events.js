@@ -351,6 +351,11 @@ function showSlackBotForm(){
   document.getElementById("sb-save").onclick=async()=>{
     const lines=id=>document.getElementById(id).value.split("\n").map(s=>s.trim()).filter(Boolean);
     const bot_allow_users=lines("sb-users"), bot_allow_channels=lines("sb-channels");
+    // The bot never reads a channel it isn't allowed in, so a fast-lane entry outside that list
+    // would be a setting that silently does nothing.
+    const unread=slackIds(lines("sb-fastlane")).filter(id=>!slackIds(bot_allow_channels).includes(id));
+    if(unread.length){
+      document.getElementById("sb-err").textContent="add "+unread.join(", ")+" to Allowed channels too — the bot never reads a channel outside that list"; return; }
     if(document.getElementById("sb-enabled").checked && !slackIds(bot_allow_users).length
        && !slackIds(bot_allow_channels).length){
       document.getElementById("sb-err").textContent="add at least one allowed channel or DM user ID (a #comment alone isn't one) before enabling"; return; }

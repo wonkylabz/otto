@@ -311,7 +311,11 @@ async function watchLoop(wid, chatId, content, sess, flags){
       // restart mid-poll). Treat it as weather, not a verdict: leave every node exactly as it is,
       // say so on screen, and keep polling — a transient blip used to arrive as state "failed"
       // and paint a dead pipeline over a run that then executed happily for another 15 minutes.
-      showThinking(content, "\u26a0 lost contact with Temporal \u2014 the run is still going, retrying\u2026");
+      // `unread`: Temporal answered but the run's status query did not (worker down, a failing
+      // workflow task) — a different fault, so a different sentence.
+      showThinking(content, st.unread
+        ? "\u26a0 can't read this run's status right now (is the worker up?) \u2014 retrying\u2026"
+        : "\u26a0 lost contact with Temporal \u2014 the run is still going, retrying\u2026");
       await sleep(2000);
       continue;
     }
@@ -1422,10 +1426,15 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       if(ok){ led.appr++; render(); } resolve(ok); };
     // A click re-reads the gate first: decided in Slack or on the board since the last watch
     // tick, a late Decline would paint "nothing ran" over a write already executing.
+    // Unreadable (an error, a timeout, `unreachable`) never discards the click: it stands, and
+    // the workflow keeps the FIRST decision, so a stale one changes nothing.
     const decide=async ok=>{
       if(wid){
-        try { if((await getJSON("/api/wf?id="+encodeURIComponent(wid))).state!=="awaiting_approval") return finish(null); }
-        catch(e){ /* unreadable: the click stands, and the workflow ignores a stale signal */ }
+        for(const b of actionBtns()) b.disabled=true;
+        try {
+          const st=await Promise.race([getJSON("/api/wf?id="+encodeURIComponent(wid)), sleep(4000)]);
+          if(st && st.state && st.state!=="awaiting_approval" && st.state!=="unreachable") return finish(null);
+        } catch(e){ /* the click stands */ }
       }
       finish(ok);
     };
@@ -1438,6 +1447,8 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
     // a card no longer on screen (chat switched) stops its own watch.
     if(wid) stopWatch=poll(async()=>{
       if(!card.isConnected){ stopWatch(); return POLL_SKIP; }
+      // A revision round runs its own (faster) poll; the gate is still standing meanwhile.
+      if(!modal.querySelector(".replanbar").hidden) return POLL_SKIP;
       const st=await getJSON("/api/wf?id="+encodeURIComponent(wid));
       if(st.state!=="awaiting_approval" && st.state!=="unreachable") finish(null);
     }, 3000);

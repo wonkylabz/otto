@@ -1774,7 +1774,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
 
     @workflow.signal
     async def approve(self, decision: bool):
-        self._decision = decision
+        # FIRST decision wins: one gate has three doors (chat, board, Slack), and a late click
+        # landing after another door's approval must not overturn what is already running.
+        if self._decision is None:
+            self._decision = decision
 
     @workflow.signal
     async def revise_plan(self, feedback: str):

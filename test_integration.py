@@ -3368,9 +3368,31 @@ class DelegatedGateChatTests(unittest.TestCase):
         html = ui_src()
         self.assertIn("if(!gateDone || (st.gate_wid && !delegateGateShown)){", html)
 
+    def test_a_settled_delegate_is_never_looked_up(self):
+        st = self._state({"slack-b-C1-1-1": {"children": [
+            {"id": "slack-b-C1-1-1-d1", "delegated": True, "done": True}]}})
+        self.assertEqual(st["state"], "running")
+
+    def test_the_first_decision_wins(self):
+        # Three doors decide one gate; a late click must not overturn a decision already acted on.
+        import workflows
+        src = inspect.getsource(workflows.OttoWorkflow.approve)
+        self.assertIn("if self._decision is None:", src)
+
+    def test_an_unreadable_click_check_never_discards_the_click(self):
+        html = ui_src()
+        d = html[html.index("const decide=async ok=>{"):]
+        d = d[:d.index("};")]
+        self.assertIn('st.state!=="unreachable"', d)
+
+    def test_a_fast_lane_channel_must_be_one_the_bot_reads(self):
+        self.assertIn("the bot never reads a channel outside that list", ui_src())
+
     def test_the_frontman_marks_its_delegate(self):
         import wf_frontman
-        self.assertIn('"delegated": True', inspect.getsource(wf_frontman.FrontmanMixin._frontman_turn))
+        src = inspect.getsource(wf_frontman.FrontmanMixin._frontman_turn)
+        self.assertIn('"delegated": True', src)
+        self.assertIn('self._children[0]["done"] = True', src)
 
     def test_a_gate_decided_elsewhere_releases_the_chat_card(self):
         # Slack or the board can clear the same gate; a card waiting on a click forever painted

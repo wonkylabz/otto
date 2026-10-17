@@ -73,6 +73,8 @@ class FrontmanMixin:
                 id=child_id)
         except Exception as e:  # noqa: BLE001 - a dead child is an outcome to relay, not a crash
             res = e
+        # Settled: the chat stops looking this child up on every poll (server._wf_state).
+        self._children[0]["done"] = True
         outcome = _outcome(res)
         report = (res.get("result") if isinstance(res, dict)
                   else f"(failed: {_failure_detail(res)})")

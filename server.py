@@ -158,7 +158,8 @@ async def _wf_state(wid):
     except Exception as e:  # noqa: BLE001
         # Not "running": a client watching for a transition (the gate card's watch, a revision
         # poll) read an unread status as "the gate cleared" and let go of a parked run.
-        return {"state": "unreachable", "result": str(e)[:200] or "status query failed"}
+        return {"state": "unreachable", "unread": True,
+                "result": str(e)[:200] or "status query failed"}
     if st.get("awaiting_clarification"):
         return {"state": "awaiting_clarification", "question": st.get("question"), "cap": st.get("cap"),
                 "times": st.get("times") or {}}
@@ -169,7 +170,7 @@ async def _wf_state(wid):
     # with no plan to read, approve or revise. Surface the child's gate as this run's, naming
     # `gate_wid` so every decision is signalled to the run that holds it.
     for ch in st.get("children") or []:
-        if isinstance(ch, dict) and ch.get("delegated") and ch.get("id"):
+        if isinstance(ch, dict) and ch.get("delegated") and not ch.get("done") and ch.get("id"):
             cst = await _delegate_gate(c, ch["id"])
             if cst:
                 return cst
