@@ -208,17 +208,13 @@ def _detect(key, mcps, connectors_checked=True):
         # a grant nobody has read yet is unknown, like the gh login and the connector cache.
         # Judged PER identity: one working identity is a working Slack, whatever the other's state.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
-        dead = [i for i in live if gaps[i].get("rejected")]
-        good = [i for i in live if gaps[i]["known"] and not gaps[i]["missing"] and i not in dead]
+        good = [i for i in live if gaps[i]["known"] and not gaps[i]["missing"]]
         short = [i for i in live if gaps[i]["missing"]]
         fix = ("add the missing scopes, reinstall the Slack app and update the token")
         if good:
             # Config, not liveness: whether the poll is running is the Events card's to say.
             extra = f"; {names[short[0]]}, the token is missing scopes — {fix}" if short else ""
             return _row(True, "set up " + " and ".join(names[i] for i in good) + extra)
-        if dead:
-            return _row(False, f"set up {names[dead[0]]}, but Slack rejected the token — replace it "
-                        "with a fresh one from the app's OAuth page and restart Otto", "")
         if short:
             return _row(False, f"set up {names[short[0]]}, but the token is missing scopes — {fix}", "")
         if live:
@@ -234,17 +230,16 @@ def _detect(key, mcps, connectors_checked=True):
         import pr_review        # noqa: PLC0415
         if not shutil.which("gh"):
             return _row(False, "`gh` not on PATH")
-        # The CACHED login only: resolving it is a `gh api` call of up to 30s. Repos are counted
-        # from the filesystem, no `git` spawned, by the same `.git` test workspace.git_repos uses.
+        # The CACHED login only: resolving it is a `gh api` call of up to 30s.
         who = pr_review.viewer_cached()
-        # The SAME list the GitHub guide and the PR-review form use: github.com repos, deduped,
-        # URL-first (a URL-only repo whose clone hasn't landed still counts).
-        repos = len(pr_review.known_repos())
         if who is None:
             return _row(None, "sign-in not checked yet — the Events tab's GitHub card checks it")
         if not who:
             # "" is a FAILED lookup: signed out, or GitHub unreachable — `gh api` can't tell them.
             return _row(False, "couldn't confirm the `gh` sign-in — run `gh auth status`")
+        # The SAME list the GitHub guide and the PR-review form use (github.com, deduped,
+        # URL-first), read offline: no `git` spawn behind the spinner.
+        repos = len(pr_review.known_repos(offline=True))
         if not repos:
             return _row(False, f"signed in as {who}, no project repo registered")
         return _row(True, f"signed in as {who}, {repos} repo(s) registered")

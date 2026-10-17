@@ -486,13 +486,11 @@ def _run_mcp_list():
     import claude_cli           # noqa: PLC0415 — see above
     res = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=60,
                          env=claude_cli.child_env())
-    # A non-zero exit that lists NOTHING parseable is a failed CLI (a header, an error line):
-    # returned as "", so the caller keeps the last good cache. One that still lists servers is
-    # kept — the CLI may exit non-zero because one of them failed its health check.
+    # Output that lists NOTHING parseable — whatever the exit code — is a failed CLI (a header,
+    # an error line), returned as "" so the caller keeps the last good cache. A non-zero exit
+    # that still lists servers is kept: one of them may simply have failed its health check.
     out = res.stdout or ""
-    if res.returncode != 0 and not (_parse_health(out) or _parse_connectors(out)):
-        return ""
-    return out
+    return out if (_parse_health(out) or _parse_connectors(out)) else ""
 
 
 # Health categories parsed from `claude mcp list`. Each server line ends in one of these
@@ -565,24 +563,20 @@ def _mcp_status(allow_refresh=False, force=False):
     and never blocks. On a transient failure we keep the stale cache rather than dropping it."""
     cached = _read(_CONN_CACHE, {})
     cached = cached if isinstance(cached, dict) else {}
-    if cached.get("at") and "ok" not in cached and "good_at" not in cached:
-        cached["good_at"] = cached["at"]      # a cache from before failures were marked was good
-    fresh = (time.time() - cached.get("at", 0)) < _CONN_TTL
+    # A failed listing is negatively cached by its OWN stamp: retried only after the TTL, while
+    # the data and its `at` stay exactly as the last good listing left them.
+    fresh = (time.time() - max(cached.get("at", 0), cached.get("failed_at", 0))) < _CONN_TTL
     if allow_refresh and (force or not fresh):
         try:
             text = _run_mcp_list()
-            now = time.time()
             if text.strip():
-                cached = {"at": now, "good_at": now,
+                cached = {"at": time.time(),
                           "connectors": _parse_connectors(text),
                           "health": _parse_health(text)}
             else:
-                # An empty listing is a CLI that failed (not ready, logged out), never "no
-                # servers": keep the last good data — the run path's connector guard reads it —
-                # but stamp `at`, so the slow retry still waits out the TTL.
-                # Health is DROPPED: it would otherwise read as just checked. Connectors are kept
-                # — the run path's guard needs them, and they don't go stale in an hour.
-                cached = {**cached, "at": now, "ok": False, "health": {}}
+                # Never "no servers": keep the last good data — the run path's connector guard
+                # reads it — and its `at`, so nothing reads it as freshly checked.
+                cached = {**cached, "failed_at": time.time()}
             _write(_CONN_CACHE, cached)
         except Exception:
             pass
@@ -597,7 +591,7 @@ def mcp_status_cached():
 def connectors_polled(status=None):
     """Whether `claude mcp list` has EVER filled the connector cache. Never refreshes it: an
     unfilled cache means "not known yet", not "no connectors"."""
-    return bool((mcp_status_cached() if status is None else status).get("good_at"))
+    return bool((mcp_status_cached() if status is None else status).get("at"))
 
 
 def discover_connectors(allow_refresh=False, force=False, status=None):

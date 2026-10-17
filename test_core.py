@@ -2595,25 +2595,20 @@ class OnboardingTests(unittest.TestCase):
         self.assertIsNone(got["ready"])
         self.assertEqual(got["hint"], "")
 
-    def test_a_probed_empty_grant_is_a_broken_token_not_an_unread_one(self):
-        import slack
-        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True), \
-                mock.patch.object(slack, "_token", return_value="xoxp-t"):
-            g = slack.scope_gaps(slack.USER, {}, cached_only=True)
-        self.assertFalse(g["known"], "known+nothing-missing reads as all clear to every reader")
-        self.assertTrue(g.get("rejected"))
-
     def test_a_failed_mcp_list_keeps_data_but_negatively_caches(self):
         import policy
-        good = {"at": 1.0, "good_at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {}}
+        good = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {"gmail": "connected"}}
         with mock.patch.object(policy, "_read", return_value=dict(good)), \
                 mock.patch.object(policy, "_run_mcp_list", return_value=""), \
                 mock.patch.object(policy, "_write") as wrote:
             got = policy._mcp_status(allow_refresh=True, force=True)
-        self.assertEqual(got["connectors"], good["connectors"])
-        self.assertGreater(wrote.call_args[0][1]["at"], 1.0, "stamped, so the retry waits the TTL")
+        self.assertEqual({k: got[k] for k in good}, good, "data AND its `at` untouched")
+        self.assertGreater(wrote.call_args[0][1]["failed_at"], 1.0, "its own stamp holds the retry")
         self.assertTrue(policy.connectors_polled(got))
-        self.assertFalse(policy.connectors_polled({"at": 2.0, "ok": False}), "never good is not polled")
+        self.assertFalse(policy.connectors_polled({"failed_at": 2.0}), "never good is not polled")
+        with mock.patch.object(policy, "_read", return_value={**good, "at": 0.0, "failed_at": policy.time.time()}), \
+                mock.patch.object(policy, "_run_mcp_list", side_effect=AssertionError("retried")):
+            policy._mcp_status(allow_refresh=True)          # a fresh failure waits out the TTL
 
     def test_a_url_only_repo_counts_as_registered(self):
         import pr_review
@@ -2626,50 +2621,14 @@ class OnboardingTests(unittest.TestCase):
 
     def test_a_nonzero_mcp_list_exit_is_a_failed_listing(self):
         import policy
-        res = mock.Mock(returncode=1, stdout="Checking MCP server health...\n")
-        with mock.patch.object(policy.subprocess, "run", return_value=res):
-            self.assertEqual(policy._run_mcp_list(), "")
+        for rc in (0, 1):                  # header-only is a failure whatever the exit code
+            res = mock.Mock(returncode=rc, stdout="Checking MCP server health...\n")
+            with mock.patch.object(policy.subprocess, "run", return_value=res):
+                self.assertEqual(policy._run_mcp_list(), "", rc)
         listed = "Checking MCP server health...\n\ngmail: npx gmail - ✓ Connected\n"
         with mock.patch.object(policy.subprocess, "run", return_value=mock.Mock(returncode=1, stdout=listed)), \
                 mock.patch.object(policy, "_parse_health", return_value={"gmail": "connected"}):
             self.assertEqual(policy._run_mcp_list(), listed, "a listing that parses is kept")
-
-    def test_a_failed_listing_drops_health_it_can_no_longer_vouch_for(self):
-        import policy
-        good = {"at": 1.0, "good_at": 1.0, "connectors": [], "health": {"gmail": "connected"}}
-        with mock.patch.object(policy, "_read", return_value=dict(good)), \
-                mock.patch.object(policy, "_run_mcp_list", return_value=""), \
-                mock.patch.object(policy, "_write"):
-            self.assertEqual(policy._mcp_status(allow_refresh=True, force=True)["health"], {})
-
-    def test_a_rejected_token_is_not_a_working_identity(self):
-        import slack
-        got = self._slack({"enabled": True, "allow_users": ["U1"]}, [slack.USER],
-                          {"missing": [], "optional": [], "known": False, "rejected": True})
-        self.assertFalse(got["ready"])
-        self.assertIn("rejected", got["detail"])
-        self.assertIn("g.rejected", ui_src(), "the Events card must say so too")
-
-    def test_a_pre_good_at_cache_stays_polled_through_a_failure(self):
-        import policy
-        legacy = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {}}
-        with mock.patch.object(policy, "_read", return_value=dict(legacy)), \
-                mock.patch.object(policy, "_run_mcp_list", return_value=""), \
-                mock.patch.object(policy, "_write"):
-            got = policy._mcp_status(allow_refresh=True, force=True)
-        self.assertTrue(policy.connectors_polled(got))
-
-    def test_a_rejected_token_reads_the_same_on_both_paths(self):
-        import slack
-        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True), \
-                mock.patch.object(slack, "_token", return_value="xoxp-t"):
-            a = slack.scope_gaps(slack.USER, {}, cached_only=True)
-            b = slack.scope_gaps(slack.USER, {})
-        self.assertEqual(a, b)
-        self.assertTrue(a.get("rejected"))
-        with mock.patch.dict(slack._GRANTED, {slack.USER: set()}, clear=True), \
-                mock.patch.object(slack, "_token", return_value=None):
-            self.assertFalse(slack.scope_gaps(slack.USER, {}).get("rejected"), "no token is not rejected")
 
     def test_a_falsy_stored_watch_switch_is_off(self):
         import slack
@@ -2703,6 +2662,20 @@ class OnboardingTests(unittest.TestCase):
         place = src[src.index("function tourPlace"):]
         place = place[:place.index("\n}")]
         self.assertNotIn("innerHTML", place)
+
+    def test_a_listed_dm_channel_reaches_through_the_dm_door(self):
+        import slack
+        with mock.patch.object(slack, "USER_TOKEN", "xoxp-t"):
+            self.assertEqual(slack.answering_state(slack.USER, {
+                "enabled": True, "allow_channels": ["D0123"], "watch_mentions": False}), "on")
+
+    def test_the_repo_count_never_spawns_git(self):
+        import pr_review
+        import workspace
+        with mock.patch.object(registry, "projects", return_value=["/legacy"]), \
+                mock.patch.object(registry, "project_meta", return_value={}), \
+                mock.patch.object(workspace, "_git_origin", side_effect=AssertionError("spawned git")):
+            self.assertEqual(pr_review.known_repos(offline=True), [])
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack

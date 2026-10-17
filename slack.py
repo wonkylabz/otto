@@ -239,10 +239,13 @@ def answering_state(identity, cfg=None):
         # Mirrors the poller: a DM is matched on its AUTHOR (an IM id is never a listed channel),
         # a mention on its author OR its channel. So a listed channel needs the mention door.
         users, chans = allow_ids(cfg, users_key), allow_ids(cfg, channels_key)
-        if (dm_on and users) or (mention_on and (users or chans)):
+        dm_ids = {c for c in chans if c.startswith("D")}     # a listed DM channel, which _allowed matches
+        if (dm_on and (users or dm_ids)) or (mention_on and (users or chans)):
             return "on"
         return "test" if dm_on and cfg.get("allow_self") else "nobody"
-    if (allow_ids(cfg, users_key) and dm_on) or (allow_ids(cfg, channels_key) and mention_on):
+    chans = allow_ids(cfg, channels_key)
+    if ((allow_ids(cfg, users_key) or {c for c in chans if c.startswith("D")}) and dm_on) \
+            or (chans and mention_on):
         return "on"
     return "nobody"
 
@@ -442,12 +445,6 @@ def scope_gaps(identity=USER, cfg=None, cached_only=False):
     `known: False` for a grant nobody has read yet."""
     cfg = cfg if cfg is not None else load()
     granted = _GRANTED.get(identity, set()) if cached_only else granted_scopes(identity)
-    if not granted and identity in _GRANTED and _token(identity):
-        # PROBED with a token and came back empty — on BOTH paths, so the wizard and the Events
-        # card agree: a rejected or revoked token. `known` stays False: every reader treats
-        # known-with-nothing-missing as all clear, and a dead token is the opposite. (No token
-        # caches empty too, which is "nothing to check", never "rejected".)
-        return {"missing": [], "optional": [], "known": False, "rejected": True}
     if not granted:
         return {"missing": [], "optional": [], "known": False}
     missing, optional = [], []

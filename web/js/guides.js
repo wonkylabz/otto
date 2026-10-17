@@ -35,12 +35,11 @@ function slackSteps(d, ident){
       `<p class="obsub">Then <b>Install to Workspace</b>.</p>`});
   const toks=[user&&["OTTO_SLACK_USER_TOKEN","xoxp-…","User OAuth Token",d.token_set,d.scopes],
               bot&&["OTTO_SLACK_BOT_TOKEN","xoxb-…","Bot User OAuth Token",d.bot_token_set,d.bot_scopes]].filter(Boolean);
-  out.push({t:"Give Otto the token", done:toks.every(([,,,set,sc])=>set && !(sc&&sc.rejected) && !(sc&&sc.known&&(sc.missing||[]).length)),
+  out.push({t:"Give Otto the token", done:toks.every(([,,,set,sc])=>set && !(sc&&sc.known&&(sc.missing||[]).length)),
     b:`Copy the ${toks.map(([,,label])=>`<b>${label}</b>`).join(" and the ")} from <b>OAuth &amp; Permissions</b> into Otto's ${gCode(".env")}, never into anything under ${gCode("data/")}:`+
       gList(toks.map(([env,shape,,set])=>`${gCode(env+"="+shape)} ${set?'<span class="gdok">set</span>':'<span class="gdno">not set</span>'}`))+
       `<p class="obsub">${gCode("./.venv/bin/python setup_wizard.py")} can write the user token for you without echoing it. Tokens are read at startup, so <b>restart Otto</b> afterwards, then press Re-check.</p>`+
-      (user?gMissing(d.scopes):"")+(bot?gMissing(d.bot_scopes):"")+
-      toks.filter(([,,,,sc])=>sc&&sc.rejected).map(([env])=>`<div class="obnote">Slack rejected ${gCode(env)} — it may be revoked or mistyped. Copy a fresh token from the app's <b>OAuth &amp; Permissions</b> page and restart Otto.</div>`).join("")});
+      (user?gMissing(d.scopes):"")+(bot?gMissing(d.bot_scopes):"")});
   if(user) out.push({t:"Choose who Otto answers as you", done:(d.answering||{}).user==="on",
     b:((d.answering||{}).user==="test"?`<div class="obnote">Test mode is on with no allowlist: Otto answers only your own self-DM. Fine for trying it — add people or channels when you're ready.</div>`:"")+
       `Otto only answers people and channels on the allowlist — <b>both empty means nobody</b>. Add Slack member IDs (profile → ⋮ → <i>Copy member ID</i>) and/or channel IDs (the ${gCode("C…")} part of a channel link), tick <b>Enabled</b> and save. Writes still wait for your approval on the Board unless you change that.`+
@@ -55,7 +54,7 @@ function slackSteps(d, ident){
       (d.temporal && !poll.exists?`<div class="obnote">No poll schedule yet — restart Otto to create it.</div>`:"")+
       (poll.failing?`<div class="obnote">Every poll is failing — check the worker log for the traceback.</div>`:"")+
       (poll.paused?`<div class="obnote">The poll schedule is paused — nothing is being read until it resumes.</div>`:"")+
-      `<p class="obsub">Send a message from an allowlisted account${bot?" (or @-mention the bot in a listed channel)":""}. Otto reacts with 👀, then replies in the thread within one poll (${esc(""+(c.poll_seconds||60))}s).</p>`+
+      `<p class="obsub">Send a message from an allowlisted account${bot?" (or @-mention the bot in a listed channel)":""}. Otto reacts with 👀, then replies in the thread within one poll (${esc(""+Math.max(20,+c.poll_seconds||60))}s — the schedule never polls faster than 20s).</p>`+
       (bot?`<p class="obsub">Optional: an app-level token in ${gCode("OTTO_SLACK_APP_TOKEN")} turns on Socket Mode, so the bot answers instantly instead of on the poll.</p>`:"")});
   return out;
 }

@@ -1468,7 +1468,9 @@ class Handler(BaseHTTPRequestHandler):
             # Only when a wizard is about to show: it opens by itself, or Setup asked (?warm=1).
             # Every page load GETs this, and a finished install must not probe Slack/gh each time.
             if st["auto_open"] or "warm=1" in self.path:
-                _warm_onboarding_caches()       # by the time the Review step asks, they're filled
+                # An explicit ask (Setup, Re-check) skips the throttle; each lookup still backs
+                # off its own failures, so this cannot hammer Slack or GitHub.
+                _warm_onboarding_caches(force="warm=1" in self.path)
             self._send(200, json.dumps(st))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
@@ -2890,7 +2892,7 @@ _WARM_EVERY_S = 60
 _WARM_LOCK = threading.Lock()
 
 
-def _warm_onboarding_caches():
+def _warm_onboarding_caches(force=False):
     """Fill, in the background, the two caches the onboarding review reads but may never fill
     itself behind its spinner: Slack's granted scopes and the `gh` login. Lazily, on the wizard's
     own first GET — a browser is open, so the network is up (a boot-time lookup can fail before it
@@ -2899,7 +2901,7 @@ def _warm_onboarding_caches():
     On every wizard open (auto, or Setup's ?warm=1), throttled: both lookups cache a success and
     back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
     with _WARM_LOCK:                  # threaded server: two GETs must not both pass the throttle
-        if time.time() - _WARMED["at"] < _WARM_EVERY_S:
+        if not force and time.time() - _WARMED["at"] < _WARM_EVERY_S:
             return
         _WARMED["at"] = time.time()
 

@@ -26,8 +26,9 @@ async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   // Parked by an integration's Open: resume exactly where it was, choices intact.
   if(!meta && OB && OB.parked){
-    OB.parked=false; obRender();
+    OB.parked=false;
     getJSON("/api/onboarding?warm=1").catch(()=>{});   // re-check what the detour may have fixed
+    obRender();
     return;
   }
   if(!meta){ try { meta=await getJSON("/api/onboarding?warm=1"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
@@ -87,7 +88,7 @@ function obRender(){
   if(step!=="welcome"){
     const canNext=step==="usage"?!!a.usage:true;
     html+=`<div class="oberr" id="ob-err"></div><div class="obnav"><button class="btn decline obleft" data-ob="back">Back</button>`+
-      (step==="review" ? `<button class="btn revise" data-ob="apply" disabled>Apply</button><button class="btn approve" data-ob="apply-tour" disabled>Apply &amp; take the tour</button>`
+      (step==="review" ? `<button class="btn revise" data-ob="recheck" title="Look at this install again — after connecting something">Re-check</button><button class="btn revise" data-ob="apply" disabled>Apply</button><button class="btn approve" data-ob="apply-tour" disabled>Apply &amp; take the tour</button>`
                        : `<button class="btn approve" data-ob="next"${canNext?'':' disabled'}>Next</button>`)+`</div>`;
   }
   body.innerHTML=bar+html;
@@ -104,6 +105,13 @@ function obRender(){
 async function obAction(act){
   if(act==="next"){ OB.step++; obRender(); return; }
   if(act==="back"){ OB.step--; obRender(); return; }
+  if(act==="recheck"){
+    // Warm first: the checks a detour may have fixed (gh login, Slack scopes) refill in the
+    // background, so give them a moment before reading them back.
+    getJSON("/api/onboarding?warm=1").catch(()=>{});
+    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again…</p>';
+    setTimeout(obReview, 2500); return;
+  }
   if(act==="tour"){ closeFormModal(); startTour(); return; }
   if(act==="skip"){ closeFormModal(); return; }   // the close hook records the skip
   if(act==="apply"||act==="apply-tour"){
