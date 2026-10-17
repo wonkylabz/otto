@@ -11,7 +11,7 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-10-17
+## [0.4.0] - 2026-10-18
 
 ### Added
 
@@ -26,6 +26,11 @@ changelog that restates it is a second copy of `git log`.
   `gh`, connecting a project board, PR reviews and repos. Each step shows whether it's already
   done on this install and opens the existing configure form; the guide resumes at the first
   step still to do.
+
+## [0.3.0] - 2026-10-17
+
+### Added
+
 - **Factory mode** (Admin → Mode → Start factory). Point it at an empty registered repo with a
   seed idea — or at one with code, saying what to finish or add — and a budget, and a PM plans tickets on your GitHub board, the worker builds
   them one at a time, and a PR that passes review **and** QA merges itself. It writes a
@@ -210,7 +215,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/wonkylabz/otto/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/wonkylabz/otto/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/wonkylabz/otto/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/wonkylabz/otto/releases/tag/v0.1.0
