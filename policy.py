@@ -583,7 +583,13 @@ def _mcp_status(allow_refresh=False, force=False):
                 cached = {**cached, "failed_at": time.time()}
             _write(_CONN_CACHE, cached)
         except Exception:
-            pass
+            # A hang (TimeoutExpired) or a missing CLI is a failed listing too — stamped, so the
+            # 60s spawn is not re-paid by every caller until the TTL.
+            cached = {**cached, "failed_at": time.time()}
+            try:
+                _write(_CONN_CACHE, cached)
+            except Exception:  # noqa: BLE001 — a read-only data dir must not break the read
+                pass
     return cached
 
 

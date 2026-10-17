@@ -26,9 +26,8 @@ async function openOnboarding(meta){
   endTour();   // Setup is the tour's last stop; the tour layer sits above the modal
   // Parked by an integration's Open: resume exactly where it was, choices intact.
   if(!meta && OB && OB.parked){
-    OB.parked=false;
-    getJSON("/api/onboarding?warm=1").catch(()=>{});   // re-check what the detour may have fixed
-    obRender();
+    // Resume on Review and RE-CHECK there: the detour may have fixed exactly what it shows.
+    OB.parked=false; OB.step=OB_STEPS.indexOf("review"); OB.recheckOnShow=true; obRender();
     return;
   }
   if(!meta){ try { meta=await getJSON("/api/onboarding?warm=1"); } catch(e){ toast("onboarding failed to load: "+e.message); return; } }
@@ -36,7 +35,7 @@ async function openOnboarding(meta){
   if(meta.draft){
     const d=meta.draft;
     OB={meta, step:OB_STEPS.indexOf("review"), seq:0, done:false, parked:false, lastProfile:(meta.answers||{}).profile||"",
-        answers:{usage:d.usage, profile:d.profile, integrations:d.integrations}};
+        answers:{usage:d.usage, profile:d.profile, integrations:d.integrations}, recheckOnShow:true};
     obRender(); return;
   }
   const prev=meta.answers||{};
@@ -99,7 +98,10 @@ function obRender(){
     obRender(); refocusOption(inp);
   }));
   body.querySelectorAll("[data-ob]").forEach(b=>b.addEventListener("click",()=>obAction(b.dataset.ob)));
-  if(step==="review") obReview();
+  if(step==="review"){
+    if(OB.recheckOnShow){ OB.recheckOnShow=false; obAction("recheck"); }
+    else obReview();
+  }
 }
 
 async function obAction(act){
@@ -110,9 +112,11 @@ async function obAction(act){
     // background, so give them a moment before reading them back.
     // Awaited: the server re-runs the lookups (connectors included) and answers when they are
     // done or after 20s, so the preview reads the refreshed state instead of racing it.
-    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take a few seconds…</p>';
+    const box=document.getElementById("ob-review"); if(box) box.innerHTML='<p class="obsub">Checking again — this can take up to a minute…</p>';
     document.querySelectorAll('[data-ob^="apply"],[data-ob="recheck"]').forEach(b=>b.disabled=true);
-    try { await getJSON("/api/onboarding?warm=1&recheck=1"); } catch(e){}
+    try { await postJSON("/api/onboarding/recheck",{}); } catch(e){}
+    // Still on Review, in the same wizard? Otherwise the user moved on while it ran.
+    if(!box || !box.isConnected || OB_STEPS[OB.step]!=="review") return;
     document.querySelectorAll('[data-ob="recheck"]').forEach(b=>b.disabled=false);
     obReview(); return;
   }

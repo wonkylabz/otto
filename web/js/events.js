@@ -182,6 +182,7 @@ async function loadSlackConfig(){
    inbound paths are dead. Found on the first real install. Rendered ABOVE the status line, because
    it is the reason the status line is lying. */
 function scopeWarning(g){
+  if(g && g.rejected) return `<div class="jstatus"><span class="warn">Slack refused this token (${esc(String(g.rejected))})</span> &mdash; it is revoked, expired or mistyped. Copy a fresh one from the app's <b>OAuth &amp; Permissions</b> page and restart Otto.</div>`;
   if(!g || !g.known || !g.missing || !g.missing.length) return "";
   const rows=g.missing.map(([s,why])=>`<code>${esc(s)}</code> &mdash; ${esc(why)}`).join("<br>");
   return `<div class="jstatus"><span class="warn">missing Slack scope(s)</span> &mdash; it polls but

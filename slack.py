@@ -235,19 +235,15 @@ def answering_state(identity, cfg=None):
     # The poller's own test (truthiness, defaults filled by load()), so a stored 0 or "" reads
     # as off here exactly as it does there.
     dm_on, mention_on = bool(cfg.get(dms, True)), bool(cfg.get(mentions, True))
-    if identity == USER:
-        # Mirrors the poller: a DM is matched on its AUTHOR (an IM id is never a listed channel),
-        # a mention on its author OR its channel. So a listed channel needs the mention door.
-        users, chans = allow_ids(cfg, users_key), allow_ids(cfg, channels_key)
-        dm_ids = {c for c in chans if c.startswith("D")}     # a listed DM channel, which _allowed matches
-        if (dm_on and (users or dm_ids)) or (mention_on and (users or chans)):
-            return "on"
-        return "test" if dm_on and cfg.get("allow_self") else "nobody"
-    chans = allow_ids(cfg, channels_key)
-    if ((allow_ids(cfg, users_key) or {c for c in chans if c.startswith("D")}) and dm_on) \
-            or (chans and mention_on):
+    # Mirrors the poller: a DM is matched on its author or its (D…) channel id; a mention on its
+    # channel — and, for the USER token, which finds mentions by search anywhere, its author too.
+    # The bot reads only listed channels, so a listed user alone never reaches it by mention.
+    users, chans = allow_ids(cfg, users_key), allow_ids(cfg, channels_key)
+    dm_ids = {c for c in chans if c.startswith("D")}
+    by_mention = chans or (users if identity == USER else set())
+    if (dm_on and (users or dm_ids)) or (mention_on and by_mention):
         return "on"
-    return "nobody"
+    return "test" if identity == USER and dm_on and cfg.get("allow_self") else "nobody"
 
 
 
@@ -300,6 +296,10 @@ _PROBE_RETRY_S = int(os.environ.get("OTTO_SLACK_SCOPE_RETRY_S") or 120)
 # re-probes and only a BURST inside one page load is collapsed (`SlackReviewFixTests`).
 _ID_RETRY_S = int(os.environ.get("OTTO_SLACK_ID_RETRY_S") or 15)
 _FAILED = {}          # (probe, identity) -> when it last failed
+_REJECTED = {}        # identity -> Slack's own error for a token it refused (invalid_auth, …)
+# Slack's auth errors that mean THIS TOKEN is dead — read from Slack's JSON reply, never inferred
+# from a missing header (a captive portal or proxy answers 200 with no header, and is transient).
+_TOKEN_DEAD = {"invalid_auth", "token_revoked", "token_expired", "account_inactive", "not_authed"}
 _RETRY_S = {"whoami": lambda: _ID_RETRY_S, "scopes": lambda: _PROBE_RETRY_S}
 
 
@@ -392,6 +392,8 @@ def granted_scopes(identity=USER, refresh=False):
     it. Cached per identity — the token can't change without a restart."""
     if refresh:
         _GRANTED.pop(identity, None)
+        _REJECTED.pop(identity, None)
+        _FAILED.pop(("scopes", identity), None)
     if identity in _GRANTED:
         return _GRANTED[identity]
     if _backing_off("scopes", identity):
@@ -407,6 +409,11 @@ def granted_scopes(identity=USER, refresh=False):
             with urllib.request.urlopen(req, timeout=15) as r:
                 out = {s.strip() for s in (r.headers.get("x-oauth-scopes") or "").split(",")
                        if s.strip()}
+                body = json.loads(r.read() or b"{}")
+            if not body.get("ok") and body.get("error") in _TOKEN_DEAD:
+                _REJECTED[identity] = body["error"]       # Slack said so; cached like a grant
+            elif not body.get("ok"):
+                raise RuntimeError(body.get("error") or "auth.test not ok")   # transient: retry
         except Exception as e:  # noqa: BLE001 - transient; an unknown grant reports as unknown
             # Remember the FAILURE too, briefly. Without this every `/api/slack-config` re-paid a
             # 15s urlopen per identity, so an offline box spun the Events tab for ~30s on every
@@ -445,6 +452,10 @@ def scope_gaps(identity=USER, cfg=None, cached_only=False):
     `known: False` for a grant nobody has read yet."""
     cfg = cfg if cfg is not None else load()
     granted = _GRANTED.get(identity, set()) if cached_only else granted_scopes(identity)
+    if identity in _REJECTED:
+        # Slack REFUSED the token (its own error code). `known` stays False — readers treat
+        # known-with-nothing-missing as all clear — and `rejected` names the real problem.
+        return {"missing": [], "optional": [], "known": False, "rejected": _REJECTED[identity]}
     if not granted:
         return {"missing": [], "optional": [], "known": False}
     missing, optional = [], []

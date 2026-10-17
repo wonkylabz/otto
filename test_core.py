@@ -2707,7 +2707,47 @@ class OnboardingTests(unittest.TestCase):
         src = inspect.getsource(server._warm_onboarding_caches)
         self.assertIn("allow_refresh=True, force=True", src)
         self.assertIn("t.join(", src)
-        self.assertIn('await getJSON("/api/onboarding?warm=1&recheck=1")', ui_src())
+        self.assertIn('await postJSON("/api/onboarding/recheck"', ui_src(),
+                      "it spawns MCP servers: a POST behind the origin check, never a GET")
+        self.assertIn("/api/onboarding/recheck", server._POST_ROUTES)
+        get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
+        self.assertNotIn("mcp=", get)
+
+    def test_a_token_slack_refuses_is_named_not_left_unknown(self):
+        import slack
+        ok = mock.MagicMock()
+        ok.__enter__.return_value.headers = {}
+        ok.__enter__.return_value.read.return_value = b'{"ok": false, "error": "invalid_auth"}'
+        with mock.patch.dict(slack._GRANTED, {}, clear=True), mock.patch.dict(slack._REJECTED, {}, clear=True), \
+                mock.patch.dict(slack._FAILED, {}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-dead"), \
+                mock.patch.object(slack.urllib.request, "urlopen", return_value=ok):
+            g = slack.scope_gaps(slack.USER, {})
+            self.assertEqual(g["rejected"], "invalid_auth")
+            self.assertFalse(g["known"])
+            self.assertEqual(slack.scope_gaps(slack.USER, {}, cached_only=True), g, "both paths agree")
+        self.assertIn("g.rejected", ui_src(), "the Events card says so")
+
+    def test_a_captive_portal_is_transient_not_a_rejection(self):
+        import slack
+        page = mock.MagicMock()
+        page.__enter__.return_value.headers = {}
+        page.__enter__.return_value.read.return_value = b"<html>log in to the wifi</html>"
+        with mock.patch.dict(slack._GRANTED, {}, clear=True), mock.patch.dict(slack._REJECTED, {}, clear=True), \
+                mock.patch.dict(slack._FAILED, {}, clear=True), \
+                mock.patch.object(slack, "_token", return_value="xoxp-fine"), \
+                mock.patch.object(slack.urllib.request, "urlopen", return_value=page):
+            g = slack.scope_gaps(slack.USER, {})
+            self.assertNotIn("rejected", g)
+            self.assertNotIn(slack.USER, slack._GRANTED, "never cached: retried after the backoff")
+
+    def test_a_hung_mcp_list_is_negatively_cached(self):
+        import policy
+        with mock.patch.object(policy, "_read", return_value={"at": 1.0, "connectors": [], "health": {}}), \
+                mock.patch.object(policy, "_run_mcp_list", side_effect=TimeoutError("hung")), \
+                mock.patch.object(policy, "_write") as wrote:
+            policy._mcp_status(allow_refresh=True, force=True)
+        self.assertIn("failed_at", wrote.call_args[0][1])
 
     def test_a_slack_row_past_the_token_names_its_own_fix(self):
         import slack

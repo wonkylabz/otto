@@ -35,11 +35,12 @@ function slackSteps(d, ident){
       `<p class="obsub">Then <b>Install to Workspace</b>.</p>`});
   const toks=[user&&["OTTO_SLACK_USER_TOKEN","xoxp-…","User OAuth Token",d.token_set,d.scopes],
               bot&&["OTTO_SLACK_BOT_TOKEN","xoxb-…","Bot User OAuth Token",d.bot_token_set,d.bot_scopes]].filter(Boolean);
-  out.push({t:"Give Otto the token", done:toks.every(([,,,set,sc])=>set && !(sc&&sc.known&&(sc.missing||[]).length)),
+  out.push({t:"Give Otto the token", done:toks.every(([,,,set,sc])=>set && !(sc&&sc.rejected) && !(sc&&sc.known&&(sc.missing||[]).length)),
     b:`Copy the ${toks.map(([,,label])=>`<b>${label}</b>`).join(" and the ")} from <b>OAuth &amp; Permissions</b> into Otto's ${gCode(".env")}, never into anything under ${gCode("data/")}:`+
       gList(toks.map(([env,shape,,set])=>`${gCode(env+"="+shape)} ${set?'<span class="gdok">set</span>':'<span class="gdno">not set</span>'}`))+
       `<p class="obsub">${gCode("./.venv/bin/python setup_wizard.py")} can write the user token for you without echoing it. Tokens are read at startup, so <b>restart Otto</b> afterwards, then press Re-check.</p>`+
-      (user?gMissing(d.scopes):"")+(bot?gMissing(d.bot_scopes):"")});
+      (user?gMissing(d.scopes):"")+(bot?gMissing(d.bot_scopes):"")+
+      toks.filter(([,,,,sc])=>sc&&sc.rejected).map(([env,,,,sc])=>`<div class="obnote">Slack refused ${gCode(env)} (${esc(String(sc.rejected))}) — copy a fresh token from <b>OAuth &amp; Permissions</b> and restart Otto.</div>`).join("")});
   if(user) out.push({t:"Choose who Otto answers as you", done:(d.answering||{}).user==="on",
     b:((d.answering||{}).user==="test"?`<div class="obnote">Test mode is on with no allowlist: Otto answers only your own self-DM. Fine for trying it — add people or channels when you're ready.</div>`:"")+
       `Otto only answers people and channels on the allowlist — <b>both empty means nobody</b>. Add Slack member IDs (profile → ⋮ → <i>Copy member ID</i>) and/or channel IDs (the ${gCode("C…")} part of a channel link), tick <b>Enabled</b> and save. Writes still wait for your approval on the Board unless you change that.`+

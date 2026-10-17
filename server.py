@@ -1468,11 +1468,10 @@ class Handler(BaseHTTPRequestHandler):
             # Only when a wizard is about to show: it opens by itself, or Setup asked (?warm=1).
             # Every page load GETs this, and a finished install must not probe Slack/gh each time.
             if st["auto_open"] or "warm=1" in self.path:
-                # An explicit ask (Setup, Re-check) skips the throttle; each lookup still backs
-                # off its own failures, so this cannot hammer Slack or GitHub.
-                recheck = "recheck=1" in self.path
-                _warm_onboarding_caches(force="warm=1" in self.path, mcp=recheck,
-                                        wait=20 if recheck else 0)
+                # An explicit ask (Setup) skips the throttle; each lookup still backs off its own
+                # failures, so this cannot hammer Slack or GitHub. Nothing here spawns MCP
+                # servers — that is the POST /api/onboarding/recheck, behind the origin check.
+                _warm_onboarding_caches(force="warm=1" in self.path)
             self._send(200, json.dumps(st))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
@@ -2759,6 +2758,13 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/onboarding/draft — park the wizard's answers (an integration detour)."""
         self._send(200, json.dumps({"ok": True, **onboarding.save_draft(body.get("answers"))}))
 
+    def _post_onboarding_recheck(self, body):
+        """POST /api/onboarding/recheck — re-run every lookup the review reads (Slack scopes,
+        the gh login, the connector list) and answer when they are done. A POST: it spawns every
+        stdio MCP server, so it sits behind _csrf_ok like any other side effect."""
+        _warm_onboarding_caches(force=True, mcp=True, wait=_RECHECK_WAIT_S, retry=True)
+        self._send(200, json.dumps({"ok": True}))
+
     def _post_onboarding_skip(self, body):
         """POST /api/onboarding/skip"""
         self._send(200, json.dumps({"ok": True, **onboarding.skip(body.get("answers"))}))
@@ -2889,12 +2895,13 @@ class Handler(BaseHTTPRequestHandler):
         pass  # engine.trace() already prints a readable trace
 
 
-_WARMED = {"at": 0.0}
+_WARMED = {"at": 0.0, "threads": []}
+_RECHECK_WAIT_S = 65          # above `claude mcp list`'s own 60s timeout
 _WARM_EVERY_S = 60
 _WARM_LOCK = threading.Lock()
 
 
-def _warm_onboarding_caches(force=False, mcp=False, wait=0):
+def _warm_onboarding_caches(force=False, mcp=False, wait=0, retry=False):
     """Fill, in the background, the two caches the onboarding review reads but may never fill
     itself behind its spinner: Slack's granted scopes and the `gh` login. Lazily, on the wizard's
     own first GET — a browser is open, so the network is up (a boot-time lookup can fail before it
@@ -2904,18 +2911,26 @@ def _warm_onboarding_caches(force=False, mcp=False, wait=0):
     On every wizard open (auto, or Setup's ?warm=1), throttled: both lookups cache a success and
     back off a failure themselves, so a repeat costs nothing and a failed warm is retried."""
     with _WARM_LOCK:                  # threaded server: two GETs must not both pass the throttle
-        if not force and time.time() - _WARMED["at"] < _WARM_EVERY_S:
-            return
-        _WARMED["at"] = time.time()
+        live = [t for t in _WARMED["threads"] if t.is_alive()]
+        if not live and (force or time.time() - _WARMED["at"] >= _WARM_EVERY_S):
+            _WARMED["at"] = time.time()
+            live = None               # this call starts the refresh, below
+    if live is not None:
+        # One refresh in flight at a time: a second Re-check JOINS it (outside the lock, so other
+        # requests are never held) rather than spawning a second `claude mcp list` racing the first.
+        deadline = time.time() + wait
+        for t in live:
+            t.join(max(0.0, deadline - time.time()))
+        return
 
     def run(fn):
         try:
             fn()
         except Exception:  # noqa: BLE001 — a cache left cold reads as "not checked yet"
             pass
-    probes = [("slack-scopes", lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT)
-                                        if slack.token_set(i)]),
-              ("gh-viewer", pr_review.viewer)]
+    probes = [("slack-scopes", lambda: [slack.granted_scopes(i, refresh=retry)
+                                        for i in (slack.USER, slack.BOT) if slack.token_set(i)]),
+              ("gh-viewer", lambda: pr_review.viewer(retry=retry))]
     if mcp:
         # Only on the operator's explicit Re-check — the same click-to-refresh Admin's Recheck is.
         probes.append(("mcp-list", lambda: policy.all_mcps(policy.load(), allow_refresh=True, force=True)))
@@ -2923,6 +2938,7 @@ def _warm_onboarding_caches(force=False, mcp=False, wait=0):
                for n, fn in probes]
     for t in threads:
         t.start()
+    _WARMED["threads"] = threads
     if wait:
         # Re-check WAITS (bounded), so what it reads back is the refreshed answer, not a race.
         deadline = time.time() + wait
@@ -3006,6 +3022,7 @@ _POST_ROUTES = {
     "/api/onboarding/apply": Handler._post_onboarding_apply,
     "/api/onboarding/draft": Handler._post_onboarding_draft,
     "/api/onboarding/preview": Handler._post_onboarding_preview,
+    "/api/onboarding/recheck": Handler._post_onboarding_recheck,
     "/api/onboarding/skip": Handler._post_onboarding_skip,
     "/api/settings": Handler._post_settings,
     "/api/pr-review-config": Handler._post_pr_review_config,

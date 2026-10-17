@@ -179,7 +179,7 @@ _VIEWER_RETRY_S = int(os.environ.get("OTTO_PR_VIEWER_RETRY_S") or 120)
 _viewer_failed = 0.0
 
 
-def viewer():
+def viewer(retry=False):
     """The `gh` login this Otto acts as, or None. Cached per process — it cannot change
     without a re-auth, and it is read on every poll."""
     # Only a RESOLVED login is cached. `_cache = ""` on failure read as "cached" to the old
@@ -189,7 +189,8 @@ def viewer():
     global _viewer_failed
     if getattr(viewer, "_cache", None):
         return viewer._cache
-    if time.time() - _viewer_failed < _VIEWER_RETRY_S:
+    # `retry`: the operator just asked (Re-check after `gh auth login`) — skip the failure window.
+    if not retry and time.time() - _viewer_failed < _VIEWER_RETRY_S:
         return None
     rc, out, _err = _run(["gh", "api", "user", "--jq", ".login"], timeout=30)
     viewer._cache = out.strip() if rc == 0 else ""
