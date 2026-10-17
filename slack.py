@@ -227,9 +227,21 @@ def answering_state(identity, cfg=None):
     cfg = cfg if cfg is not None else load()
     if not identity_enabled(identity, cfg):
         return "off"
-    if any(allow_ids(cfg, k) for k in allow_keys(identity)):
+    # A listed audience only counts through a door that is being WATCHED: listed users reach
+    # Otto by DM, listed channels by @-mention, and a door switched off reads nothing.
+    users_key, channels_key = allow_keys(identity)
+    dms, mentions = (("bot_watch_dms", "bot_watch_mentions") if identity == BOT
+                     else ("watch_dms", "watch_mentions"))
+    dm_on, mention_on = cfg.get(dms) is not False, cfg.get(mentions) is not False
+    if identity == USER:
+        # The user token reads the owner's own DMs AND searches mentions, so a listed user or
+        # channel is reached through either door that is open.
+        if (dm_on or mention_on) and (allow_ids(cfg, users_key) or allow_ids(cfg, channels_key)):
+            return "on"
+        return "test" if dm_on and cfg.get("allow_self") else "nobody"
+    if (allow_ids(cfg, users_key) and dm_on) or (allow_ids(cfg, channels_key) and mention_on):
         return "on"
-    return "test" if identity == USER and cfg.get("allow_self") else "nobody"
+    return "nobody"
 
 
 

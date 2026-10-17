@@ -1463,7 +1463,10 @@ class Handler(BaseHTTPRequestHandler):
                                         "health": health,
                                         "tasks": gateway.TASKS}))
         elif self.path == "/api/onboarding":
-            self._send(200, json.dumps(onboarding.state()))
+            st = onboarding.state()
+            if st["auto_open"]:
+                _warm_onboarding_caches()       # by the time the Review step asks, they're filled
+            self._send(200, json.dumps(st))
         elif self.path == "/api/settings":
             # UI-editable runtime knobs (config._SETTING_SPECS). Each entry carries value + kind +
             # env var + env_pinned so Admin can render an env-pinned knob as locked instead of
@@ -2879,15 +2882,19 @@ class Handler(BaseHTTPRequestHandler):
         pass  # engine.trace() already prints a readable trace
 
 
+_WARMED = {"done": False}
+
+
 def _warm_onboarding_caches():
-    """Fill, in the background, the caches onboarding reads but never fills itself (it may not
-    shell out behind its spinner): Slack's granted scopes, the `gh` login and the connector list.
-    Without this the wizard opens at boot before any of them exist and every row reads "?".
-    Only while the wizard would open by itself, and each probe on its own thread: they are slow
-    (an auth.test, `gh api`, `claude mcp list`) and none should wait behind another."""
+    """Fill, in the background, the two caches the onboarding review reads but may never fill
+    itself behind its spinner: Slack's granted scopes and the `gh` login. Lazily, on the wizard's
+    own first GET — a browser is open, so the network is up (a boot-time lookup can fail before it
+    is, and that failure would stick), and nothing runs on a restart nobody looks at. Never
+    `claude mcp list`: it starts every stdio server, and stays the Admin view's to run."""
     import threading
-    if not onboarding.state()["auto_open"]:
+    if _WARMED["done"]:
         return
+    _WARMED["done"] = True
 
     def run(fn):
         try:
@@ -2896,8 +2903,7 @@ def _warm_onboarding_caches():
             pass
     for name, fn in (("slack-scopes", lambda: [slack.granted_scopes(i) for i in (slack.USER, slack.BOT)
                                               if slack.token_set(i)]),
-                     ("gh-viewer", pr_review.viewer),
-                     ("mcp-list", lambda: policy.all_mcps(policy.load(), allow_refresh=True))):
+                     ("gh-viewer", pr_review.viewer)):
         threading.Thread(target=run, args=(fn,), name=f"onboarding-warm-{name}", daemon=True).start()
 
 
@@ -3049,7 +3055,6 @@ def main():
     print(f"Slack socket: {slack_socket.reconcile()}", flush=True)
     # PR-review poll schedule — same out-of-"otto-*"-namespace reasoning.
     print(f"PR reviews: {pr_review.reconcile_schedule()}", flush=True)
-    _warm_onboarding_caches()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

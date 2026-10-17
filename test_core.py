@@ -2551,10 +2551,11 @@ class OnboardingTests(unittest.TestCase):
     def test_the_server_warms_what_onboarding_only_reads(self):
         import server
         src = inspect.getsource(server._warm_onboarding_caches)
-        for need in ("granted_scopes", "pr_review.viewer", "allow_refresh=True", "daemon=True",
-                     'onboarding.state()["auto_open"]'):
+        for need in ("granted_scopes", "pr_review.viewer", "daemon=True"):
             self.assertIn(need, src)
-        self.assertIn("_warm_onboarding_caches()", inspect.getsource(server.main))
+        self.assertNotIn("allow_refresh", src, "`claude mcp list` starts every server; Admin's to run")
+        self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main),
+                         "warmed lazily on the wizard's GET, never at boot")
 
     def test_a_deep_link_defers_the_wizard_once_not_forever(self):
         init = ui_src()
@@ -2562,15 +2563,28 @@ class OnboardingTests(unittest.TestCase):
         self.assertIn("ottoObDeferred", init[:init.index("\n}")])
 
     def test_underscored_server_names_still_match(self):
-        for name, key in (("email_mcp", "email"), ("gdrive_sync", "docs")):
+        for name, key in (("email_mcp", "email"), ("gdrive_sync", "docs"), ("fastmail", "email"),
+                          ("protonmail-mcp", "email"), ("apple-mail", "email")):
             got = self.ob.preview({"integrations": [key]}, [{"name": name}])["integrations"][0]
             self.assertTrue(got["ready"], name)
+        got = self.ob.preview({"integrations": ["docs"]}, [{"name": "overdrive"}])["integrations"][0]
+        self.assertFalse(got["ready"], "no left boundary matched 'overdrive'")
+
+    def test_a_slack_row_past_the_token_names_its_own_fix(self):
+        import slack
+        got = self._slack({"enabled": True}, [slack.USER])
+        self.assertNotIn("Add a Slack user or bot token", got["hint"])
 
     def test_a_failed_mcp_list_is_not_a_completed_poll(self):
         import policy
-        self.assertFalse(policy.connectors_polled({"at": 1.0, "ok": False, "connectors": []}))
-        self.assertTrue(policy.connectors_polled({"at": 1.0, "ok": True}))
-        self.assertTrue(policy.connectors_polled({"at": 1.0}), "a pre-`ok` cache keeps meaning polled")
+        good = {"at": 1.0, "connectors": [{"name": "claude_ai_Gmail"}], "health": {}}
+        with mock.patch.object(policy, "_read", return_value=dict(good)), \
+                mock.patch.object(policy, "_run_mcp_list", return_value=""), \
+                mock.patch.object(policy, "_write") as wrote:
+            got = policy._mcp_status(allow_refresh=True, force=True)
+        wrote.assert_not_called()
+        self.assertEqual(got["connectors"], good["connectors"],
+                         "an empty listing must never wipe the connector guard's cache")
 
     def test_a_detour_draft_survives_a_restart_and_apply_clears_it(self):
         self.ob.save_draft({"usage": "work", "profile": "economic", "integrations": ["slack"]})
@@ -2660,6 +2674,11 @@ class OnboardingTests(unittest.TestCase):
             self.assertEqual(st(slack.USER, {"enabled": True, "allow_self": True}), "test")
             self.assertEqual(st(slack.BOT, {"bot_enabled": True, "allow_self": True}), "nobody")
             self.assertEqual(st(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1 #x"]}), "on")
+            self.assertEqual(st(slack.BOT, {"bot_enabled": True, "bot_allow_users": ["U1"],
+                                            "bot_watch_dms": False}), "nobody",
+                             "listed users reach the bot only by DM")
+            self.assertEqual(st(slack.USER, {"enabled": True, "allow_users": ["U1"],
+                                             "watch_dms": False, "watch_mentions": False}), "nobody")
         with mock.patch.object(slack, "USER_TOKEN", ""):
             self.assertEqual(st(slack.USER, {"enabled": True, "allow_users": ["U1"]}), "off",
                              "switched on without a token answers nobody")
@@ -3887,6 +3906,8 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 8055 -> 8034: the ladder rule got SHORTER because the thing it describes did. The loop's
     # decisions moved into `ladder.py`, so the rule no longer has to explain a three-copy mirror
     # and instruct a reader to keep it in step by hand — the ceiling ratchets DOWN by what left.
+    # 8034 -> 8047: `onboarding.py` joins the UI row of the layer table, so a session editing it
+    # is routed to ui.md, which carries its apply rule.
     MAX_BYTES = 8047          # resident tier — the per-session tax
     # 78897 -> 77758 (#56): `gateway-backends.md` had reached 18 KB, digested into every
     # convention judge. Split into gateway/backends/walls and `tools-mcp.md`, and the prose
@@ -3977,6 +3998,7 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 93323 -> 93619: factory mode. Four rules, one per way an edit makes an unattended,
     # 92807 -> 93096: a re-readied board card runs again as the next run generation.
     # 94372 -> 94612: a factory repo with code is assessed, never scaffolded over.
+    # 94612 -> 94885: onboarding applies a profile as a full assignment, only as previewed.
     MAX_RULES_BYTES = 94885   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of

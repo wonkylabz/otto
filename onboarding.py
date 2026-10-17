@@ -74,7 +74,9 @@ INTEGRATIONS = {
                  "hint": "Add a Slack user or bot token (setup_wizard.py or .env), then switch the "
                          "listener on in Events → Slack."},
     "email":    {"label": "Email", "default_for": ("personal", "work", "both"),
-                 "match": r"gmail|outlook|(?<![a-z0-9])e-?mail(?![a-z0-9])",
+                 # Any "<x>mail" provider (fastmail, protonmail, apple-mail) or a standalone
+                 # e-mail word; not "mailgun"/"mailchimp", which send mail rather than read it.
+                 "match": r"gmail|outlook|fastmail|protonmail|(?<![a-z0-9])(apple-?)?e?-?mail(?![a-z0-9])",
                  "where": {"tab": "admin", "sect": "mcp"},
                  "hint": "Connect Gmail (or another mail connector) in claude.ai → Settings → "
                          "Connectors; Otto inherits it. Runs on a local model can't use it."},
@@ -84,7 +86,7 @@ INTEGRATIONS = {
     "docs":     {"label": "Docs & notes", "default_for": (),
                  # Not bare "docs": that is every documentation-LOOKUP server (aws-docs, …).
                  # Boundaries are alnum-only, not \b: "_" is a separator in server names.
-                 "match": r"notion|google.?(drive|docs)|g?drive(?![a-z0-9])|confluence|obsidian",
+                 "match": r"notion|google.?(drive|docs)|(?<![a-z0-9])g?drive(?![a-z0-9])|confluence|obsidian",
                  "where": {"tab": "admin", "sect": "mcp"},
                  "hint": "Connect Notion/Drive in claude.ai, or add a stdio server in Admin → "
                          "MCP servers."},
@@ -187,26 +189,30 @@ def _detect(key, mcps, connectors_checked=True):
         import slack            # noqa: PLC0415 — slack pulls in Temporal-free but heavy imports
         cfg = slack.load()
         names = {slack.USER: "as you", slack.BOT: "as a bot"}
-        state = {i: slack.answering_state(i, cfg) for i in (slack.USER, slack.BOT)}
-        live = [i for i, st in state.items() if st == "on"]
-        if not live and "test" in state.values():
-            return False, "test mode only — it answers just your own self-DM; add an allowlist"
+        # The detail names the fix for every state past "no token", so the token hint is dropped.
+        states = {i: slack.answering_state(i, cfg) for i in (slack.USER, slack.BOT)}
+        live = [i for i, st in states.items() if st == "on"]
+        if not live and "test" in states.values():
+            return False, "test mode only — it answers just your own self-DM; add an allowlist", ""
         # A token missing a scope polls and answers nobody. Cached grant only — no auth.test here;
         # a grant nobody has read yet is unknown, like the gh login and the connector cache.
         gaps = {i: slack.scope_gaps(i, cfg, cached_only=True) for i in live}
         short = [i for i in live if gaps[i]["missing"]]
         if short:
-            return False, f"set up {names[short[0]]}, but the token is missing scopes — see Events → Slack"
+            return (False, f"set up {names[short[0]]}, but the token is missing scopes — add them, "
+                    "reinstall the Slack app and update the token", "")
         if any(not g["known"] for g in gaps.values()):
             return None, "token scopes not checked yet — the Events tab's Slack card checks them"
         if live:
             # Config, not liveness: whether the poll is running is the Events card's to say.
             return True, "set up " + " and ".join(names[i] for i in live)
-        if "nobody" in state.values():
-            return False, "switched on, but its allowlist is empty — it answers nobody"
+        if "nobody" in states.values():
+            return (False, "switched on, but nobody is both allowlisted and watched — it answers "
+                    "nobody; add people or channels in Events → Slack", "")
         toks = [n for n, i in (("user", slack.USER), ("bot", slack.BOT)) if slack.token_set(i)]
-        return False, (f"{' and '.join(toks)} token set, listener off" if toks
-                       else "no Slack token")
+        if toks:
+            return False, f"{' and '.join(toks)} token set, listener off — switch it on in Events → Slack", ""
+        return False, "no Slack token"
     if key == "github":
         import pr_review        # noqa: PLC0415
         import registry         # noqa: PLC0415
@@ -243,10 +249,12 @@ def _detect(key, mcps, connectors_checked=True):
 def _integrations_plan(wants, mcps, connectors_checked=True):
     out = []
     for key in wants:
-        ready, detail = _detect(key, mcps, connectors_checked)
+        # A detector may name its own fix (a third element), overriding the generic hint.
+        ready, detail, *own = _detect(key, mcps, connectors_checked)
         spec = INTEGRATIONS[key]
+        hint = "" if ready else (own[0] if own else spec["hint"])
         out.append({"key": key, "label": spec["label"], "ready": ready, "detail": detail,
-                    "hint": "" if ready else spec["hint"], "where": spec["where"]})
+                    "hint": hint, "where": spec["where"]})
     return out
 
 
@@ -258,8 +266,10 @@ def _fingerprint(a, settings):
                                      default=str).encode()).hexdigest()[:16]
 
 
-def _plan(answers, mcps, connectors_checked=True):
+def preview(answers, mcps=(), connectors_checked=True):
+    """Every change `apply` would make, plus the fingerprint it must be given back."""
     a = normalize(answers)
+    mcps = list(mcps)
     settings = _settings_plan(a["profile"])
     fp = _fingerprint(a, settings)
     notes = []
@@ -274,10 +284,6 @@ def _plan(answers, mcps, connectors_checked=True):
             "integrations": _integrations_plan(a["integrations"], mcps, connectors_checked),
             "notes": notes}
 
-
-def preview(answers, mcps=(), connectors_checked=True):
-    """Every change `apply` would make, plus the fingerprint it must be given back."""
-    return _plan(answers, list(mcps), connectors_checked)
 
 
 def apply(answers, expect):

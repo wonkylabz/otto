@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -675,8 +676,10 @@ def settings_all():
 
 
 # Held by save_settings, and by a caller that must CHECK the store and write it as one step
-# (onboarding.apply) — re-entrant so that caller can call save_settings inside it.
-SETTINGS_LOCK = __import__("threading").RLock()
+# (onboarding.apply) — re-entrant so that caller can call save_settings inside it. In-PROCESS
+# only: it holds because every settings writer runs in server.py. A writer in another process
+# would need the check inside storage.mutate_json's file lock instead.
+SETTINGS_LOCK = threading.RLock()
 
 
 def save_settings(updates):
