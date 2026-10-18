@@ -13,9 +13,11 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
-- **Slack fast lane in chosen channels** (Events → Slack bot → *Fast-lane channels*). Safe
-  read-only requests skip approval in DMs and, now, in any channel you list there that the bot
-  reads. Empty by default, so existing installs still fast-lane DMs only.
+- **Skip approval in chosen Slack channels** (Events → Slack bot → *Skip approval in these
+  channels*). A request from you or an approver that needs only tools you ticked *safe* already
+  ran without a gate in a DM; listing a channel the bot reads allows the same there. Only list
+  channels nobody else posts in — anyone posting there can steer a run nobody approves. Empty by
+  default, so existing installs are unchanged.
 
 ### Fixed
 
