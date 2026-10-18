@@ -261,7 +261,7 @@ function slackBotCard(d,c,poll){
         <span class="jcron">Slack bot</span></div>
         <div class="jstatus">${st}</div>
         ${scopeWarning(d.bot_scopes)}${scopeNote(d.bot_scopes)}${socketNote(d.socket)}${pollFailureNote(poll)}
-        <div class="jstatus">allowlist: <b>${nU}</b> user(s) for DMs, <b>${nC}</b> channel(s)${nA?` · <b>${nA}</b> approver(s)`:``}${nF?` · <b>${nF}</b> channel(s) skip approval`:``}
+        <div class="jstatus">allowlist: <b>${nU}</b> user(s) for DMs, <b>${nC}</b> channel(s)${nA?` · <b>${nA}</b> approver(s)`:``}${nF?` · fast lane in <b>${nF}</b> channel(s)`:``}
           · watch: ${c.bot_watch_dms!==false?'DMs to the bot':''}${(c.bot_watch_dms!==false&&c.bot_watch_mentions!==false)?' + ':''}${c.bot_watch_mentions!==false?'@-mentions':''}${(c.bot_watch_dms===false&&c.bot_watch_mentions===false)?'nothing':''}</div>
       </div>
     </div>
