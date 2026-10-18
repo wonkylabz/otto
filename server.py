@@ -2907,15 +2907,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, json.dumps({"error": "expired or already used"})); return
         approve = bool(body.get("approve"))
         try:
-            # Keyed on the token (hashed — the token is a live credential until spent), so a
-            # re-tap after a 503 gets the first tap's real outcome, not "already decided".
-            tc.run(_wf_decide(wid, approve, revision, update_id="gate-" + hashlib.sha256(
-                token.encode()).hexdigest()[:24]))
+            # Keyed on the token (hashed — the token is a live credential until spent) AND the
+            # choice: both buttons share one token, and Temporal dedupes by id alone, so a Deny
+            # after a timed-out Approve would otherwise be handed the Approve's outcome.
+            got = tc.run(_wf_decide(wid, approve, revision, update_id="gate-" + hashlib.sha256(
+                token.encode()).hexdigest()[:24] + ("-a" if approve else "-d")))
         except TimeoutError:
             self._send(503, json.dumps({"error": "no worker answered — try again shortly"})); return
         except Exception as e:  # noqa: BLE001 - refused (GateMoved) or the run is gone: final
             delivery.redeem_action_token(token)
             self._send(409, json.dumps({"error": str(e)[:200]})); return
+        applied = (got or {}).get("decision")
+        if applied and applied != ("approved" if approve else "denied"):
+            # Report what the WORKFLOW decided, never what was tapped.
+            delivery.redeem_action_token(token)
+            self._send(409, json.dumps({"error": f"the gate was already {applied}"})); return
         if not delivery.redeem_action_token(token):
             # A second tap raced this one; the workflow already admitted exactly one of them.
             engine.trace("GATE", f"action token for {wid} was spent concurrently")

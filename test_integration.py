@@ -318,7 +318,7 @@ class ApiTokenAuthTests(unittest.TestCase):
             ids.append(update_id)
             if outcome.get("raise"):
                 raise outcome["raise"]
-            return {"decision": "approved"}
+            return outcome.get("result") or {"decision": "approved" if approve else "denied"}
 
         saved = srv._wf_decide, srv.tc.run
         self.addCleanup(lambda: (setattr(srv, "_wf_decide", saved[0]),
@@ -339,8 +339,14 @@ class ApiTokenAuthTests(unittest.TestCase):
         self.assertEqual(delivery.peek_action_token(tok), (None, None))
         self.assertEqual(seen[-1], ("web-g1", False, 0))
         self.assertEqual(seen[0][2], 2, "the minted round must ride into decide")
-        # A re-tap after a 503 reuses the first tap's id, so it gets the first tap's outcome.
+        # A re-tap after a 503 reuses the first tap's id, so it gets the first tap's outcome...
         self.assertEqual(ids[0], ids[1])
+        # ...but only for the SAME choice: both buttons share one token.
+        self.assertNotEqual(ids[1], ids[2])
+        # And the reply is the workflow's decision, never the tap's.
+        tok = delivery.mint_action_token("web-g1", revision=0)
+        outcome["result"] = {"decision": "approved"}
+        self.assertEqual(self._req(f"/api/gate/{tok}", "POST", {"approve": False})[0], 409)
         self.assertNotIn(tok, "".join(ids), "the token is a live credential — never in history")
 
     def test_the_page_and_its_assets_load_logged_out(self):
