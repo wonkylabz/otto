@@ -275,11 +275,10 @@ async function watchLoop(wid, chatId, content, sess, flags){
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
         const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        // gate() SENT the decision itself (and counted it), so nothing is signalled here.
-        setNode("GATE","done", ok===null?"no longer waiting":(ok?"approved":"denied")); gateDone=true;
-        // Decided elsewhere could be a decline — say nothing about running until the run does.
+        await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
+        setNode("GATE","done", ok?"approved":"denied"); gateDone=true;
+        if(ok){ led.appr++; render(); }
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
-        else if(ok===null) showThinking(content,"Working…");
       }
     }
     else if(st.state==="done"){
@@ -311,11 +310,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
       // restart mid-poll). Treat it as weather, not a verdict: leave every node exactly as it is,
       // say so on screen, and keep polling — a transient blip used to arrive as state "failed"
       // and paint a dead pipeline over a run that then executed happily for another 15 minutes.
-      // `unread`: Temporal answered but the run's status query did not (worker down, a failing
-      // workflow task) — a different fault, so a different sentence.
-      showThinking(content, st.unread
-        ? "\u26a0 can't read this run's status right now (is the worker up?) \u2014 retrying\u2026"
-        : "\u26a0 lost contact with Temporal \u2014 the run is still going, retrying\u2026");
+      showThinking(content, "\u26a0 lost contact with Temporal \u2014 the run is still going, retrying\u2026");
       await sleep(2000);
       continue;
     }
@@ -1407,47 +1402,21 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
     paint(plan, concerns);
     content.appendChild(card); scroll();
     const actionBtns=()=>modal.querySelectorAll(".approve, .decline, .revise");
-    let stopWatch=null;
     const finish=(ok)=>{
-      if(card.classList.contains("resolved")) return;
-      if(stopWatch) stopWatch();
       card.classList.add("resolved");
       const act=modal.querySelector(".actions"); if(act) act.remove();
       const rb=modal.querySelector(".revisebox"); if(rb) rb.remove();
-      const r=document.createElement("div"); r.className="resolution "+(ok===null?"":ok?"ok":"no");
-      r.textContent= ok===null ? "no longer waiting here — decided elsewhere, re-planned, expired or stopped; reload to see it"
-                   : ok ? "✓ approved" : "✕ declined — nothing ran";
+      const r=document.createElement("div"); r.className="resolution "+(ok?"ok":"no");
+      r.textContent= ok ? "✓ approved" : "✕ declined — nothing ran";
       modal.querySelector(".modalBody").appendChild(r);
       gateStatusEl.textContent = r.textContent;
-      gateStatusEl.className = "gatestatus resolution "+(ok===null?"":ok?"ok":"no");
+      gateStatusEl.className = "gatestatus resolution "+(ok?"ok":"no");
       seeplanBtn.textContent = "View plan";
       closeGateModal();
       document.removeEventListener("keydown", escHandler);
       if(ok){ led.appr++; render(); } resolve(ok); };
-    // The decision is SENT here, before anything is painted, carrying the plan round on screen:
-    // the server refuses it (409) when the gate has moved — decided in Slack or on the board,
-    // re-planned from another tab, expired. One check, server-side, instead of a client re-read
-    // racing the other doors. Never throws out: a refused or failed send is "no longer waiting".
-    const decide=async ok=>{
-      for(const b of actionBtns()) b.disabled=true;
-      try { await api("/api/wf/signal",{id:wid, signal:"approve", value:ok, revision:revisions||0}); }
-      catch(e){ return finish(null); }
-      finish(ok);
-    };
-    modal.querySelector(".approve").addEventListener("click",()=>decide(true));
-    modal.querySelector(".decline").addEventListener("click",()=>decide(false));
-    // The same gate can be cleared from Slack or the board — a delegated one mostly is. Without
-    // this the card waited on a click forever, and a late Decline painted "nothing ran" over a
-    // write already executing. `null` = decided elsewhere: the caller signals nothing.
-    // getJSON THROWS on an HTTP error, so only a state the server actually read moves the card;
-    // a card no longer on screen (chat switched) stops its own watch.
-    if(wid) stopWatch=poll(async()=>{
-      if(!card.isConnected){ stopWatch(); return POLL_SKIP; }
-      // A revision round runs its own (faster) poll; the gate is still standing meanwhile.
-      if(!modal.querySelector(".replanbar").hidden) return POLL_SKIP;
-      const st=await getJSON("/api/wf?id="+encodeURIComponent(wid));
-      if(st.state!=="awaiting_approval" && st.state!=="unreachable") finish(null);
-    }, 3000);
+    modal.querySelector(".approve").addEventListener("click",()=>finish(true));
+    modal.querySelector(".decline").addEventListener("click",()=>finish(false));
 
     // Request changes: free-text feedback instead of a decision. The workflow folds it into
     // the request and re-runs the plan preview + critic; THIS modal stays open and repaints
@@ -1520,9 +1489,8 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
         for(let tries=0; tries<400; tries++){        // ~10min ceiling, matching the preview's own budget
           await sleep(1500);
           let st;
-          try { st=await getJSON("/api/wf?id="+encodeURIComponent(wid)); }
-          catch(e){ continue; }         // an HTTP error is not "moved on" either
-          if(st.state==="unreachable") continue;   // an unread status is not "moved on"
+          try { st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json(); }
+          catch(e){ continue; }
           if(st.state!=="awaiting_approval"){
             stopReplan();
             note.hidden=false;

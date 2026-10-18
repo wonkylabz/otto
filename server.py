@@ -155,11 +155,8 @@ async def _wf_state(wid):
         return {"state": "failed", "result": f"workflow {name.lower()}", "terminal_status": name}
     try:
         st = await h.query(OttoWorkflow.status)
-    except Exception as e:  # noqa: BLE001
-        # Not "running": a client watching for a transition (the gate card's watch, a revision
-        # poll) read an unread status as "the gate cleared" and let go of a parked run.
-        return {"state": "unreachable", "unread": True,
-                "result": str(e)[:200] or "status query failed"}
+    except Exception:  # noqa: BLE001
+        st = {}
     if st.get("awaiting_clarification"):
         return {"state": "awaiting_clarification", "question": st.get("question"), "cap": st.get("cap"),
                 "times": st.get("times") or {}}
@@ -591,22 +588,10 @@ def _run_model(wid):
 _SIGNALS = frozenset({"approve", "revise_plan", "clarify"})
 
 
-class GateMoved(Exception):
-    """An approve signal for a gate that is no longer the one the sender saw."""
-
-
-async def _wf_signal(wid, sig, value, revision=None):
+async def _wf_signal(wid, sig, value):
     c = await tc.client()
     h = c.get_workflow_handle(wid)
     if sig == "approve":
-        # One gate, three doors (chat, board, Slack): a decision is only taken for the gate the
-        # sender SAW — still parked, not mid re-plan, and (when it says) the same plan round.
-        # Otherwise a late click overturns a decision already acted on, or approves a revised
-        # plan nobody read. `approve` itself stays last-write-wins: changing it is replay-unsafe.
-        st = await h.query(OttoWorkflow.status)
-        if (not st.get("awaiting_approval") or st.get("replanning")
-                or (revision is not None and revision != (st.get("plan_revisions") or 0))):
-            raise GateMoved("this gate has moved on — decided, re-planned or expired")
         await h.signal(OttoWorkflow.approve, bool(value))
     elif sig == "revise_plan":
         await h.signal(OttoWorkflow.revise_plan, str(value))
@@ -2067,12 +2052,7 @@ class Handler(BaseHTTPRequestHandler):
         if not wid or sig not in _SIGNALS:
             self._send(400, json.dumps({"error": f"need 'id' and a 'signal' in {sorted(_SIGNALS)}"}))
             return
-        rev = body.get("revision")
-        try:
-            tc.run(_wf_signal(wid, sig, body.get("value"),
-                              revision=rev if isinstance(rev, int) else None))
-        except GateMoved as e:
-            self._send(409, json.dumps({"error": str(e)})); return
+        tc.run(_wf_signal(wid, sig, body.get("value")))
         self._send(200, json.dumps({"ok": True}))
 
     def _post_wf_terminate(self, body):
