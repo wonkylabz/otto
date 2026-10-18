@@ -48,7 +48,10 @@ class FrontmanMixin:
             return out
         wid = workflow.info().workflow_id
         child_id = f"{wid}-d1"
-        self._children = [{"id": child_id, "cap": "(routed)", "request": task, "risk": None}]
+        # `delegated` is what the chat reads to surface this child's gate on the parent
+        # (server._delegate_gate) — the id shape is this module's business, not the server's.
+        self._children = [{"id": child_id, "cap": "(routed)", "request": task, "risk": None,
+                           "delegated": True}]
         try:
             res = await workflow.execute_child_workflow(
                 type(self).run,
@@ -70,6 +73,8 @@ class FrontmanMixin:
                 id=child_id)
         except Exception as e:  # noqa: BLE001 - a dead child is an outcome to relay, not a crash
             res = e
+        # Settled: the chat stops looking this child up on every poll (server._wf_state).
+        self._children[0]["done"] = True
         outcome = _outcome(res)
         report = (res.get("result") if isinstance(res, dict)
                   else f"(failed: {_failure_detail(res)})")

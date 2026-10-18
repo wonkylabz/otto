@@ -169,6 +169,8 @@ async function watchLoop(wid, chatId, content, sess, flags){
   const myWatch = ++liveWatch;
   flags = flags || {};
   let pickShown=!!flags.pickShown, clarDone=!!flags.clarDone, gateDone=!!flags.gateDone, runActive=false;
+  // A frontman reaches RUN (so gateDone) BEFORE its delegate gates: that gate is a second one.
+  let delegateGateShown=false;
   // `decomposeDone` tracks the early fan-out CHECK (plan_swarm — is this really several
   // independent tasks?); `previewDone` tracks the separate, later PLAN node — the read-only dry
   // run that shows the human the actual operations at the approval gate. Two different passes
@@ -213,10 +215,12 @@ async function watchLoop(wid, chatId, content, sess, flags){
       if(!decomposeDone && times.DECOMPOSE && times.DECOMPOSE.dur!=null){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE.dur}); decomposeDone=true; }
       if(times.ROUTER && times.ROUTER.start && times.ROUTER.dur==null) setNode("ROUTER","active","picking a capability…",{startMs:times.ROUTER.start});
     }
-    if(st.cap && !pickShown && !isSwarm){
+    // A delegated gate carries the CHILD's cap: the route this chat shows is the parent's.
+    if(st.cap && !pickShown && !isSwarm && !st.gate_wid){
       if(!decomposeDone){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE&&times.DECOMPOSE.dur}); decomposeDone=true; }
       pickShown=true; setNode("ROUTER","done","picked:",{durMs:times.ROUTER&&times.ROUTER.dur}); addPick(st.cap);
-      if(!flags.quietPick){ content.innerHTML=`<p>I'll use <code>${esc(st.cap.name)}</code> <span class="badge ${st.cap.risk}">${st.cap.risk}</span></p>`; stampMsg(content); }
+      // Once a delegated gate's card is up, `innerHTML` would erase it and its decision.
+      if(!flags.quietPick && !delegateGateShown){ content.innerHTML=`<p>I'll use <code>${esc(st.cap.name)}</code> <span class="badge ${st.cap.risk}">${st.cap.risk}</span></p>`; stampMsg(content); }
       showThinking(content,"Working…");
     }
     // Between CLARIFY and the approval gate the backend runs the real PLAN preview — a full
@@ -245,8 +249,12 @@ async function watchLoop(wid, chatId, content, sess, flags){
     else if(st.state==="awaiting_approval"){
       if(!clarDone){ setNode("CLARIFY","done","no questions",{durMs:times.CLARIFY&&times.CLARIFY.dur}); clarDone=true; }
       if(!previewDone){ setNode("PLAN","done","previewed",{durMs:times.PLAN&&times.PLAN.dur}); previewDone=true; }
-      if(!gateDone){
+      if(!gateDone || (st.gate_wid && !delegateGateShown)){
+        if(st.gate_wid) delegateGateShown=true;
         const cap=capOf(st);
+        // A delegated run's gate lives on its child (`gate_wid`, server._wf_state): plan, revise
+        // and decision all go there, while this loop keeps watching the parent it belongs to.
+        const gateWid=st.gate_wid||wid;
         setNode("GATE","gatehold","waiting for your approval",{startMs:times.GATE&&times.GATE.start}); clearThinking(content);
         // A "request changes" round re-runs PLAN and re-enters GATE, but the loop is parked inside
         // gate() for the whole round, so the diagram would sit on "waiting for your approval" —
@@ -266,11 +274,10 @@ async function watchLoop(wid, chatId, content, sess, flags){
           }
         };
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
-        const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, wid, onReplan, st.plan_model);
+        const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        await api("/api/wf/signal",{id:wid,signal:"approve",value:ok});
-        setNode("GATE","done", ok?"approved":"denied"); gateDone=true;
-        if(ok){ led.appr++; render(); }
+        await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
+        setNode("GATE","done", ok?"approved":"denied"); gateDone=true;   // gate() counted it
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
       }
     }

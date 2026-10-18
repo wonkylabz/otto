@@ -2185,10 +2185,10 @@ class GateStateForwardingTests(unittest.TestCase):
         call = re.search(r"await gate\(content, cap, (st\..*?)\);", html)
         self.assertIsNotNone(call, "the chat's gate() call moved — re-point this test")
         fields = [f.strip().removeprefix("st.") for f in call.group(1).split(",")]
-        # `wid` (the workflow id the client already has, used to signal revise_plan) and `onReplan`
+        # `gateWid` (the run holding the gate, used to signal revise_plan) and `onReplan`
         # (the callback gate() repaints the pipeline through) are not OttoWorkflow.status fields, so
         # they have nothing to be forwarded FROM.
-        fields = [f for f in fields if f not in ("wid", "onReplan")]
+        fields = [f for f in fields if f not in ("gateWid", "onReplan")]
         branch = self._gate_branch()
         for f in fields:
             self.assertIn(f'"{f}"', branch,

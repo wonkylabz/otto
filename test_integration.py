@@ -1122,6 +1122,13 @@ class HttpApiTests(unittest.TestCase):
             st, body = _get(self.base, "/api/progress?id=web-abc")
             self.assertEqual(body["part"], "review round 4")    # rounds are 0-indexed on disk
             self.assertLess(body["idle_s"], 60)                 # measured on the round, not the attempt
+            # A frontman's delegate does the conversation's work: the parent's chat tails it.
+            d1 = os.path.join(tmp, "web-abc-d1-a1.jsonl")
+            with open(d1, "w") as f:
+                f.write(json.dumps(events[1]) + "\n")
+            os.utime(d1, (time.time() + 10, time.time() + 10))
+            st, body = _get(self.base, "/api/progress?id=web-abc")
+            self.assertEqual((body["attempt"], body["events"]), (1, 1))
         finally:
             claude_cli.TRANSCRIPTS = orig
             shutil.rmtree(tmp, ignore_errors=True)
@@ -3263,6 +3270,111 @@ class WfStateTransientFailureTests(unittest.TestCase):
         self.assertIn("continue;", branch, "an unreachable poll must keep the watch loop alive")
         self.assertNotIn("failCurrent", branch)
         self.assertNotIn("clearRun", branch)
+
+
+class DelegatedGateChatTests(unittest.TestCase):
+    """A Slack frontman parks on its `-d1` child, and the child holds the gate — but the chat
+    thread is bound to the PARENT, so reopening it showed "running" with no plan to read, approve
+    or revise (slack-b-C0BAQSJHFSP-1792275792-937829). `_wf_state` surfaces the child's gate as the
+    parent's, naming `gate_wid`, and the chat signals that id."""
+
+    def _state(self, statuses, wid="slack-b-C1-1-1", finished=()):
+        import asyncio
+        import server
+        import temporal_client as tc
+        class FakeHandle:
+            def __init__(self, wid):
+                self.wid = wid
+
+            async def describe(self):
+                name = "COMPLETED" if self.wid in finished else "RUNNING"
+                return types.SimpleNamespace(status=types.SimpleNamespace(name=name))
+
+            async def query(self, _q):
+                return statuses[self.wid]
+
+        class FakeClient:
+            def get_workflow_handle(self, wid):
+                return FakeHandle(wid)
+
+        orig = tc.client
+        async def fake_client():
+            return FakeClient()
+        tc.client = fake_client
+        try:
+            return asyncio.run(server._wf_state(wid))
+        finally:
+            tc.client = orig
+
+    def test_a_gated_delegate_surfaces_its_plan_on_the_parent(self):
+        st = self._state({
+            "slack-b-C1-1-1": {"cap": {"name": "assistant"}, "swarm": False,
+                               "children": [{"id": "slack-b-C1-1-1-d1", "cap": "(routed)", "delegated": True}]},
+            "slack-b-C1-1-1-d1": {"awaiting_approval": True, "cap": {"name": "doer"},
+                                  "plan": "play the Aspen playlist", "max_plan_revisions": 3}})
+        self.assertEqual(st["state"], "awaiting_approval")
+        self.assertEqual(st["plan"], "play the Aspen playlist")
+        self.assertEqual(st["gate_wid"], "slack-b-C1-1-1-d1")
+
+    def test_a_running_delegate_leaves_the_parent_running(self):
+        st = self._state({
+            "slack-b-C1-1-1": {"cap": {"name": "assistant"},
+                               "children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]},
+            "slack-b-C1-1-1-d1": {"cap": {"name": "doer"}}})
+        self.assertEqual(st["state"], "running")
+        self.assertNotIn("gate_wid", st)
+
+    def test_a_finished_delegate_is_not_surfaced(self):
+        # The lookup rides every chat poll (450ms): a finished child's history must not be.
+        # The child's status WOULD read as gated: only the RUNNING check keeps it off the parent.
+        st = self._state({"slack-b-C1-1-1": {"children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]},
+                          "slack-b-C1-1-1-d1": {"awaiting_approval": True, "plan": "x"}},
+                         finished=("slack-b-C1-1-1-d1",))
+        self.assertEqual(st["state"], "running")
+
+    def test_a_swarm_child_gate_is_not_lifted_onto_the_parent(self):
+        st = self._state({
+            "slack-b-C1-1-1": {"swarm": True, "children": [{"id": "slack-b-C1-1-1-s1"}]},
+            "slack-b-C1-1-1-s1": {"awaiting_approval": True, "plan": "x"}})
+        self.assertEqual(st["state"], "running")
+
+    def test_a_delegate_gating_after_run_started_still_shows(self):
+        # The frontman enters RUN before delegating, so gateDone is already true by then.
+        html = ui_src()
+        self.assertIn("if(!gateDone || (st.gate_wid && !delegateGateShown)){", html)
+
+    def test_a_settled_delegate_is_never_looked_up(self):
+        st = self._state({"slack-b-C1-1-1": {"children": [
+            {"id": "slack-b-C1-1-1-d1", "delegated": True, "done": True}]},
+            "slack-b-C1-1-1-d1": {"awaiting_approval": True, "plan": "x"}})
+        self.assertEqual(st["state"], "running")
+
+    def test_a_fast_lane_channel_must_be_one_the_bot_reads(self):
+        self.assertIn("the bot never reads a channel outside that list", ui_src())
+
+    def test_the_frontman_marks_its_delegate(self):
+        import wf_frontman
+        src = inspect.getsource(wf_frontman.FrontmanMixin._frontman_turn)
+        self.assertIn('"delegated": True', src)
+        self.assertIn('self._children[0]["done"] = True', src)
+
+    def test_the_chat_signals_the_run_holding_the_gate(self):
+        html = ui_src()
+        self.assertIn("const gateWid=st.gate_wid||wid;", html)
+        self.assertIn('api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok})', html)
+
+    def test_a_delegated_gate_shows_the_parents_timings(self):
+        st = self._state({
+            "slack-b-C1-1-1": {"times": {"RUN": {"start": 1}},
+                               "children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]},
+            "slack-b-C1-1-1-d1": {"awaiting_approval": True, "plan": "x", "times": {"PLAN": {"start": 2}}}})
+        self.assertEqual(st["times"], {"RUN": {"start": 1}, "PLAN": {"start": 2}})
+
+    def test_an_approval_is_counted_once_and_a_late_pick_spares_the_card(self):
+        html = ui_src()
+        w = html[html.index("async function watchLoop("):html.index("function gate(content")]
+        self.assertNotIn("led.appr++", w, "gate()'s finish() already counts it")
+        self.assertIn("!flags.quietPick && !delegateGateShown", w)
 
 
 class WfTerminateAuditTests(unittest.TestCase):
