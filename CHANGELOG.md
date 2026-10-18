@@ -11,6 +11,26 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Slack fast lane in chosen channels** (Events → Slack bot → *Fast-lane channels*). Safe
+  read-only requests skip approval in DMs and, now, in any channel you list there that the bot
+  reads. Empty by default, so existing installs still fast-lane DMs only.
+
+### Fixed
+
+- **A Slack request Otto hands off to a write task shows its approval in the chat.** Reopening
+  that conversation used to show "running" with no plan to read, approve or revise.
+- **An approval only counts for the plan you saw.** The chat, board, Slack and ntfy buttons now
+  refuse a decision if the gate was already decided elsewhere, a revised plan is being written,
+  or a newer plan replaced the one you were shown. Before, approving during a "Request changes"
+  round ran the revised plan unread, and a late Decline could overturn an approval. A refused
+  decision says so instead of reporting it as applied. An ntfy button tapped while the worker is
+  restarting stays usable.
+
+**Upgrading:** restart the worker (`./run.sh`) along with the server. Until it restarts, every
+approval is refused.
+
 ## [0.4.0] - 2026-10-18
 
 ### Added
