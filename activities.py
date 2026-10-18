@@ -1395,7 +1395,9 @@ def poll_slack(payload: dict) -> dict:
             # decision in a DM gate notice's thread confirms in that thread (ack_ts) but clears the
             # DM's own record.
             gate_ts = rec.get("thread_ts") if rec else ack_ts
-            ok = slack.signal_decision(gate_wid, decision)
+            ok = slack.signal_decision(
+                gate_wid, decision,
+                update_id=f"slack-{identity}-{msg['channel']}-{msg['ts']}")
             if ok is slack.MOVED:
                 # Refused: a re-plan is running, so this verdict was about a plan that is being
                 # replaced. NOT retried — retrying it would approve the new plan unread — and the

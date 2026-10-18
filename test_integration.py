@@ -310,11 +310,12 @@ class ApiTokenAuthTests(unittest.TestCase):
         import asyncio
         import delivery
         srv = self.server
-        seen = []
+        seen, ids = [], []
         outcome = {}
 
-        async def fake_decide(wid, approve, revision=None):
+        async def fake_decide(wid, approve, revision=None, update_id=None):
             seen.append((wid, approve, revision))
+            ids.append(update_id)
             if outcome.get("raise"):
                 raise outcome["raise"]
             return {"decision": "approved"}
@@ -338,6 +339,9 @@ class ApiTokenAuthTests(unittest.TestCase):
         self.assertEqual(delivery.peek_action_token(tok), (None, None))
         self.assertEqual(seen[-1], ("web-g1", False, 0))
         self.assertEqual(seen[0][2], 2, "the minted round must ride into decide")
+        # A re-tap after a 503 reuses the first tap's id, so it gets the first tap's outcome.
+        self.assertEqual(ids[0], ids[1])
+        self.assertNotIn(tok, "".join(ids), "the token is a live credential — never in history")
 
     def test_the_page_and_its_assets_load_logged_out(self):
         # Nothing secret is in them, and the page is what tells you to log in.
@@ -2288,7 +2292,7 @@ class SlackListenerActivityTests(unittest.TestCase):
         """One message arriving in a conversation parked at a gate."""
         self.signalled = []
         self.disarmed = []
-        self.slack.signal_decision = lambda wid, ok: (
+        self.slack.signal_decision = lambda wid, ok, **k: (
             self.signalled.append((wid, ok)) or outcome)
         self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
             self.disarmed.append((ch, root, wid, expect)))
@@ -2349,7 +2353,7 @@ class SlackListenerActivityTests(unittest.TestCase):
         conversation must stop treating replies as verdicts rather than swallowing them forever."""
         self.signalled = []
         self.disarmed = []
-        self.slack.signal_decision = lambda wid, ok: False        # the workflow is gone
+        self.slack.signal_decision = lambda wid, ok, **k: False        # the workflow is gone
         self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
             self.disarmed.append((ch, root, wid, expect)))
         self.slack.load = lambda: {**self.slack._DEFAULTS, "bot_enabled": True,
@@ -2369,7 +2373,7 @@ class SlackListenerActivityTests(unittest.TestCase):
         parked, and the approver's "yes" was held as an ordinary message until the 24h deadline
         declined the run. The gate stays and the decision is retried next poll."""
         self.disarmed = []
-        self.slack.signal_decision = lambda wid, ok: None        # Temporal could not say
+        self.slack.signal_decision = lambda wid, ok, **k: None        # Temporal could not say
         self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
             self.disarmed.append((ch, root, wid, expect)))
         self.slack.load = lambda: {**self.slack._DEFAULTS, "bot_enabled": True,
@@ -4942,8 +4946,14 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
                 st = await h.query(OttoWorkflow.status)
                 self.assertTrue(st["awaiting_approval"], "a refused decision must not move the gate")
 
-                got = await h.execute_update(OttoWorkflow.decide, {"approve": True, "revision": 1})
+                got = await h.execute_update(OttoWorkflow.decide, {"approve": True, "revision": 1},
+                                             id="door-msg-1")
                 self.assertEqual(got["decision"], "approved")
+                # The same decision retried under its id (an unknown outcome, re-sent) returns
+                # the first outcome rather than "already decided".
+                again = await h.execute_update(OttoWorkflow.decide,
+                                               {"approve": True, "revision": 1}, id="door-msg-1")
+                self.assertEqual(again["decision"], "approved")
                 # The late Decline from another door: refused, the approval stands.
                 with self.assertRaises(WorkflowUpdateFailedError):
                     await h.execute_update(OttoWorkflow.decide, {"approve": False, "revision": 1})

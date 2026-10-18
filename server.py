@@ -16,6 +16,7 @@ workflow — the browser only watches state and sends signals. Temporal is requi
 """
 import asyncio
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -605,10 +606,14 @@ class GateMoved(Exception):
 _DECIDE_TIMEOUT_S = 15
 
 
-async def _wf_decide(wid, approve, revision=None):
+async def _wf_decide(wid, approve, revision=None, update_id=None):
     """Approve/decline `wid`'s gate through `OttoWorkflow.decide` (#261) — the one call every
     door uses, so a decision is conditional on the gate the sender saw. Raises `GateMoved` when
-    the workflow refuses it, `TimeoutError` when no worker answered in time."""
+    the workflow refuses it, `TimeoutError` when no worker answered in time.
+
+    `update_id` makes a RETRY of the same decision idempotent: an unanswered call may still have
+    been admitted and applied, and a fresh id would then be refused as "already decided" — a
+    decision that landed reported as one that did not. Temporal returns the first outcome."""
     from temporalio.client import WorkflowUpdateFailedError
     c = await tc.client()
     h = c.get_workflow_handle(wid)
@@ -616,7 +621,8 @@ async def _wf_decide(wid, approve, revision=None):
         return await asyncio.wait_for(
             h.execute_update(OttoWorkflow.decide,
                              {"approve": bool(approve),
-                              "revision": revision if isinstance(revision, int) else None}),
+                              "revision": revision if isinstance(revision, int) else None},
+                             **({"id": update_id} if update_id else {})),
             _DECIDE_TIMEOUT_S)
     except WorkflowUpdateFailedError as e:
         raise GateMoved(str(getattr(e.cause, "message", None) or e.cause or e)) from e
@@ -2901,7 +2907,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, json.dumps({"error": "expired or already used"})); return
         approve = bool(body.get("approve"))
         try:
-            tc.run(_wf_decide(wid, approve, revision))
+            # Keyed on the token (hashed — the token is a live credential until spent), so a
+            # re-tap after a 503 gets the first tap's real outcome, not "already decided".
+            tc.run(_wf_decide(wid, approve, revision, update_id="gate-" + hashlib.sha256(
+                token.encode()).hexdigest()[:24]))
         except TimeoutError:
             self._send(503, json.dumps({"error": "no worker answered — try again shortly"})); return
         except Exception as e:  # noqa: BLE001 - refused (GateMoved) or the run is gone: final

@@ -3336,7 +3336,7 @@ class SlackGateApprovalTests(unittest.TestCase):
                 slack.post = lambda ch, text, thread_ts=None, **k: (
                     posted.append((ch, text, thread_ts)) or "9.0")
                 slack.react = lambda *a, **k: True
-                slack.signal_decision = lambda wid, d: signalled.append((wid, d)) or decision_ok
+                slack.signal_decision = lambda wid, d, **k: signalled.append((wid, d)) or decision_ok
                 slack.start_run = lambda *a, **k: started.append(a) or "started"
                 with contextlib.redirect_stdout(io.StringIO()):
                     activities.poll_slack({})

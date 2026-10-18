@@ -1955,7 +1955,7 @@ def start_run(wid, params):
 MOVED = "moved"
 
 
-def signal_decision(wid, approved):
+def signal_decision(wid, approved, update_id=None):
     """Send an approve/deny decision to a parked workflow. True on success, False when the run has
     definitely left its gate (or is gone), None when Temporal cannot say, `MOVED` when the gate
     stands on a newer plan (a re-plan) — refused, but the conversation stays armed.
@@ -1983,7 +1983,11 @@ def signal_decision(wid, approved):
             # on a live worker — a restart would otherwise stall every Slack channel.
             await asyncio.wait_for(
                 c.get_workflow_handle(wid).execute_update(
-                    OttoWorkflow.decide, {"approve": bool(approved), "revision": None}),
+                    OttoWorkflow.decide, {"approve": bool(approved), "revision": None},
+                    # One id per decision MESSAGE: an unknown outcome (None) is retried next
+                    # poll, and if the first call landed late a fresh id would read "already
+                    # decided" and disarm a gate this very message approved.
+                    **({"id": update_id} if update_id else {})),
                 _TEMPORAL_TIMEOUT_S)
         except WorkflowUpdateFailedError as e:
             if getattr(e.cause, "type", None) == "gate_moved":
