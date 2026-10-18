@@ -170,8 +170,10 @@ async def _wf_state(wid):
         if isinstance(ch, dict) and ch.get("delegated") and not ch.get("done") and ch.get("id"):
             cst = await _delegate_gate(c, ch["id"])
             if cst:
-                # The diagram is the PARENT's: the child's stage timings would latch as its own.
-                return {**cst, "times": st.get("times") or {}}
+                # The diagram is the PARENT's, but the gate stages it never enters are the child's.
+                times = {**(st.get("times") or {}),
+                         **{k: v for k, v in cst["times"].items() if k in ("PLAN", "GATE")}}
+                return {**cst, "times": times}
     return {"state": "running", "cap": st.get("cap"),
             "swarm": st.get("swarm", False), "children": st.get("children") or [],
             # A follow-up this run re-read as a QUESTION: no gate, no plan preview, read tools
@@ -273,11 +275,12 @@ def _run_progress(wid):
     # their fix runs, "<wid>-rev2-a1"). Those rounds are where a repo-mode run spends its last
     # 20 minutes — reading only "<wid>-aN" there tails a file nothing has written since RUN ended
     # and reports a working run as stuck. A swarm child ("<wid>-sN-aM") stays excluded: it is its
-    # own run with its own card.
+    # own run with its own card. A frontman's delegate ("<wid>-d1-aN") is not: it does the
+    # conversation's work, and the chat watching the parent would otherwise call it stuck.
     best, best_attempt, best_part, best_key = None, 0, None, ()
     plan_name = os.path.basename(claude_cli.plan_transcript_path(wid))
     for name in names:
-        m = re.fullmatch(re.escape(wid) + r"(?:-(revfix|rev|qafix|qa|fix)(\d+))?-a(\d+)\.jsonl", name)
+        m = re.fullmatch(re.escape(wid) + r"(?:-d\d+)?(?:-(revfix|rev|qafix|qa|fix)(\d+))?-a(\d+)\.jsonl", name)
         is_plan = not m and name == plan_name
         if not m and not is_plan:
             continue

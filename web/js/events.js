@@ -228,7 +228,7 @@ function socketNote(sk){
    ambiguous which account a reply would come from. */
 function slackBotCard(d,c,poll){
   const nU=slackIds(c.bot_allow_users).length, nC=slackIds(c.bot_allow_channels).length;
-  const nA=slackIds(c.bot_approvers).length;
+  const nA=slackIds(c.bot_approvers).length, nF=slackIds(c.bot_fast_lane_channels).length;
   let st,bc,bl;
   if(!d.bot_token_set){ st=`<span class="warn">no token</span> &mdash; set <code>OTTO_SLACK_BOT_TOKEN</code> (a Slack <b>bot</b> token, <code>xoxb-&hellip;</code>) and restart`; bc='off'; bl='no token'; }
   else if(!d.temporal){ st=`<span class="warn">needs Temporal (run via ./run.sh)</span>`; bc='warn'; bl='no Temporal'; }
@@ -261,7 +261,7 @@ function slackBotCard(d,c,poll){
         <span class="jcron">Slack bot</span></div>
         <div class="jstatus">${st}</div>
         ${scopeWarning(d.bot_scopes)}${scopeNote(d.bot_scopes)}${socketNote(d.socket)}${pollFailureNote(poll)}
-        <div class="jstatus">allowlist: <b>${nU}</b> user(s) for DMs, <b>${nC}</b> channel(s)${nA?` · <b>${nA}</b> approver(s)`:``}
+        <div class="jstatus">allowlist: <b>${nU}</b> user(s) for DMs, <b>${nC}</b> channel(s)${nA?` · <b>${nA}</b> approver(s)`:``}${nF?` · <b>${nF}</b> channel(s) skip approval`:``}
           · watch: ${c.bot_watch_dms!==false?'DMs to the bot':''}${(c.bot_watch_dms!==false&&c.bot_watch_mentions!==false)?' + ':''}${c.bot_watch_mentions!==false?'@-mentions':''}${(c.bot_watch_dms===false&&c.bot_watch_mentions===false)?'nothing':''}</div>
       </div>
     </div>

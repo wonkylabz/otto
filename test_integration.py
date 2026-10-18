@@ -1122,6 +1122,13 @@ class HttpApiTests(unittest.TestCase):
             st, body = _get(self.base, "/api/progress?id=web-abc")
             self.assertEqual(body["part"], "review round 4")    # rounds are 0-indexed on disk
             self.assertLess(body["idle_s"], 60)                 # measured on the round, not the attempt
+            # A frontman's delegate does the conversation's work: the parent's chat tails it.
+            d1 = os.path.join(tmp, "web-abc-d1-a1.jsonl")
+            with open(d1, "w") as f:
+                f.write(json.dumps(events[1]) + "\n")
+            os.utime(d1, (time.time() + 10, time.time() + 10))
+            st, body = _get(self.base, "/api/progress?id=web-abc")
+            self.assertEqual((body["attempt"], body["events"]), (1, 1))
         finally:
             claude_cli.TRANSCRIPTS = orig
             shutil.rmtree(tmp, ignore_errors=True)
@@ -3361,13 +3368,13 @@ class DelegatedGateChatTests(unittest.TestCase):
             "slack-b-C1-1-1": {"times": {"RUN": {"start": 1}},
                                "children": [{"id": "slack-b-C1-1-1-d1", "delegated": True}]},
             "slack-b-C1-1-1-d1": {"awaiting_approval": True, "plan": "x", "times": {"PLAN": {"start": 2}}}})
-        self.assertEqual(st["times"], {"RUN": {"start": 1}})
+        self.assertEqual(st["times"], {"RUN": {"start": 1}, "PLAN": {"start": 2}})
 
     def test_an_approval_is_counted_once_and_a_late_pick_spares_the_card(self):
         html = ui_src()
         w = html[html.index("async function watchLoop("):html.index("function gate(content")]
         self.assertNotIn("led.appr++", w, "gate()'s finish() already counts it")
-        self.assertIn("!st.gate_wid && !delegateGateShown", w)
+        self.assertIn("!flags.quietPick && !delegateGateShown", w)
 
 
 class WfTerminateAuditTests(unittest.TestCase):
