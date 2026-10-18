@@ -137,7 +137,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._cap = None
         self._question = None
         self._clarification = None     # set by provide_clarification() signal
-        self._decision = None          # set by approve() signal
+        self._decision = None          # set by decide() (or the legacy approve() signal)
         self._plan_feedback = None     # set by revise_plan() signal — free-text change request
         self._plan_revisions = 0       # revision rounds spent so far at the current gate
         self._replanning = False       # True only while a revision round's re-preview is in flight
@@ -557,7 +557,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                                        detail=request,
                                        tags=["warning"],
                                        priority="max", kind="approval",   # a run is parked
-                                       wid=workflow.info().workflow_id)
+                                       wid=workflow.info().workflow_id,
+                                       # The push's buttons decide THIS round's plan, never a
+                                       # later one (`decide`'s validator reads it back).
+                                       revision=self._plan_revisions)
                     # The ntfy push above goes to the OWNER. Nobody has told the person who
                     # ASKED — and from their side the conversation simply stopped: an ack, then
                     # silence, for as long as the gate stands (measured: 67 minutes on a Slack DM
@@ -1691,7 +1694,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         return out, verdict, attempt, wid
 
     async def _notify(self, title, *, cap=None, repo=None, reply_to=None, unattended=False,
-                      note=None, detail=None, tags=None, kind=None, priority="high", wid=None):
+                      note=None, detail=None, tags=None, kind=None, priority="high", wid=None,
+                      revision=None):
         """Best-effort owner push (issue #92) on a human-blocking transition. Swallows every
         failure — including notify_human not being registered on an older worker — because a
         notification must never fail or stall the run it announces. `kind="complete"` pushes
@@ -1715,7 +1719,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             await workflow.execute_activity(
                 notify_human, {"title": title, "cap": cap, "repo": repo, "reply_to": reply_to,
                                "unattended": unattended, "note": note, "detail": detail,
-                               "tags": tags, "kind": kind, "priority": priority, "wid": wid},
+                               "tags": tags, "kind": kind, "priority": priority, "wid": wid,
+                               "revision": revision},
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=RetryPolicy(maximum_attempts=3 if blocking else 1))
         except Exception:  # noqa: BLE001 - strictly best-effort
@@ -1774,7 +1779,46 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
 
     @workflow.signal
     async def approve(self, decision: bool):
+        # Kept ONLY for runs already in flight (a signal in their history must still have a
+        # handler on replay). Nothing sends it any more: every door calls `decide` (#261).
         self._decision = decision
+
+    @workflow.update
+    async def decide(self, d: dict) -> dict:
+        """Approve or decline the gate THE SENDER SAW, in one step (#261). `d` is
+        `{"approve": bool, "revision": int|None}` — `revision` is the `plan_revisions` the
+        sender's plan was shown at; None means "whatever is on screen now" (a door that never
+        showed a plan round, e.g. a Slack reply). The validator below is what makes it
+        conditional; this handler only records what it already admitted."""
+        self._decision = bool(d.get("approve"))
+        return {"decision": "approved" if self._decision else "denied",
+                "revision": self._plan_revisions}
+
+    @decide.validator
+    def _validate_decide(self, d: dict) -> None:
+        """Reject a decision about a gate that is not the one standing. The `approve` signal was
+        last-write-wins: a late chat Decline overturned a Slack approval, and an approve sent
+        mid re-plan sat in `_decision` until the revised plan landed, which then cleared the
+        gate on a plan nobody had read. A rejection writes no history and reaches the sender
+        as an error, so a door can say "the gate moved" instead of reporting a decision that
+        never applied. Read-only, as a validator must be.
+
+        Two refusal TYPES, because a door must act differently on them: `gate_closed` (decided,
+        or not parked — nothing left to decide) vs `gate_moved` (the gate still stands, on a plan
+        the sender has not seen — a Slack conversation must stay armed for the new one)."""
+        def refuse(kind, msg):
+            raise exceptions.ApplicationError(msg, type=kind, non_retryable=True)
+        if not isinstance(d, dict) or not isinstance(d.get("approve"), bool):
+            refuse("gate_closed", "decide needs {'approve': bool}")
+        if self._decision is not None:
+            refuse("gate_closed", "this gate has already been decided")
+        if not self._awaiting_approval:
+            refuse("gate_closed", "this run is not waiting at its approval gate")
+        if self._replanning or self._plan_feedback is not None:
+            refuse("gate_moved", "the plan is being revised — decide on the new plan once it is up")
+        rev = d.get("revision")
+        if rev is not None and rev != self._plan_revisions:
+            refuse("gate_moved", "the plan changed since it was shown — review the new plan")
 
     @workflow.signal
     async def revise_plan(self, feedback: str):

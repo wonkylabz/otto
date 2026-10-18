@@ -16,6 +16,7 @@ workflow — the browser only watches state and sends signals. Temporal is requi
 """
 import asyncio
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -592,11 +593,46 @@ def _run_model(wid):
 _SIGNALS = frozenset({"approve", "revise_plan", "clarify"})
 
 
-async def _wf_signal(wid, sig, value):
+class GateMoved(Exception):
+    """The workflow REFUSED a decision: its gate is no longer the one the sender saw (decided
+    elsewhere, re-planning, a newer plan round, or not parked at all). Final — retrying the same
+    decision gets the same answer."""
+
+
+# How long a decision may wait on the worker. An Update needs a live worker to run its
+# validator, so during a restart it would otherwise hang the request; past this the outcome is
+# UNKNOWN, never "moved" (the workflow may still apply it once a worker picks it up — and its
+# validator re-checks the gate then, so a late landing is still a decision about the same gate).
+_DECIDE_TIMEOUT_S = 15
+
+
+async def _wf_decide(wid, approve, revision=None, update_id=None):
+    """Approve/decline `wid`'s gate through `OttoWorkflow.decide` (#261) — the one call every
+    door uses, so a decision is conditional on the gate the sender saw. Raises `GateMoved` when
+    the workflow refuses it, `TimeoutError` when no worker answered in time.
+
+    `update_id` makes a RETRY of the same decision idempotent: an unanswered call may still have
+    been admitted and applied, and a fresh id would then be refused as "already decided" — a
+    decision that landed reported as one that did not. Temporal returns the first outcome."""
+    from temporalio.client import WorkflowUpdateFailedError
+    c = await tc.client()
+    h = c.get_workflow_handle(wid)
+    try:
+        return await asyncio.wait_for(
+            h.execute_update(OttoWorkflow.decide,
+                             {"approve": bool(approve),
+                              "revision": revision if isinstance(revision, int) else None},
+                             **({"id": update_id} if update_id else {})),
+            _DECIDE_TIMEOUT_S)
+    except WorkflowUpdateFailedError as e:
+        raise GateMoved(str(getattr(e.cause, "message", None) or e.cause or e)) from e
+
+
+async def _wf_signal(wid, sig, value, revision=None):
     c = await tc.client()
     h = c.get_workflow_handle(wid)
     if sig == "approve":
-        await h.signal(OttoWorkflow.approve, bool(value))
+        await _wf_decide(wid, value, revision)
     elif sig == "revise_plan":
         await h.signal(OttoWorkflow.revise_plan, str(value))
     else:
@@ -774,6 +810,11 @@ async def _board(limit=40):
                     e["plan"] = q.get("plan")
                     e["plan_concerns"] = q.get("plan_concerns") or []
                     e["plan_model"] = q.get("plan_model")
+                    # The round this card's plan belongs to: its buttons decide THAT plan (#261).
+                    # Mid re-plan the counter is already one ahead of the plan on the card, and a
+                    # click right after the new plan lands would match the round it never showed.
+                    rev = q.get("plan_revisions") or 0
+                    e["plan_revisions"] = rev - 1 if q.get("replanning") and rev else rev
                 elif q.get("attempt"):
                     e["phase"] = f"running · try {q['attempt']}"
                 else:
@@ -2056,7 +2097,13 @@ class Handler(BaseHTTPRequestHandler):
         if not wid or sig not in _SIGNALS:
             self._send(400, json.dumps({"error": f"need 'id' and a 'signal' in {sorted(_SIGNALS)}"}))
             return
-        tc.run(_wf_signal(wid, sig, body.get("value")))
+        try:
+            tc.run(_wf_signal(wid, sig, body.get("value"), body.get("revision")))
+        except GateMoved as e:
+            self._send(409, json.dumps({"error": str(e)[:200], "gate_moved": True})); return
+        except TimeoutError:
+            self._send(503, json.dumps({"error": "no worker answered — the decision may still "
+                                                 "land; check the run before retrying"})); return
         self._send(200, json.dumps({"ok": True}))
 
     def _post_wf_terminate(self, body):
@@ -2853,14 +2900,31 @@ class Handler(BaseHTTPRequestHandler):
         and the run id is never in the URL, so a leaked topic cannot be replayed against any other
         run or any other endpoint. Unknown/expired/spent token: 403 and nothing happens."""
         token = self.path.rsplit("/", 1)[-1]
-        wid = delivery.redeem_action_token(token)
+        # Peeked, then spent only on a FINAL outcome: a tap during a worker restart times out,
+        # and burning the token there left the phone with no button for a gate still standing.
+        wid, revision = delivery.peek_action_token(token)
         if not wid:
             self._send(403, json.dumps({"error": "expired or already used"})); return
         approve = bool(body.get("approve"))
         try:
-            tc.run(_wf_signal(wid, "approve", approve))
-        except Exception as e:  # noqa: BLE001 - the run may have moved on (gate expired, denied)
+            # Keyed on the token (hashed — the token is a live credential until spent) AND the
+            # choice: both buttons share one token, and Temporal dedupes by id alone, so a Deny
+            # after a timed-out Approve would otherwise be handed the Approve's outcome.
+            got = tc.run(_wf_decide(wid, approve, revision, update_id="gate-" + hashlib.sha256(
+                token.encode()).hexdigest()[:24] + ("-a" if approve else "-d")))
+        except TimeoutError:
+            self._send(503, json.dumps({"error": "no worker answered — try again shortly"})); return
+        except Exception as e:  # noqa: BLE001 - refused (GateMoved) or the run is gone: final
+            delivery.redeem_action_token(token)
             self._send(409, json.dumps({"error": str(e)[:200]})); return
+        applied = (got or {}).get("decision")
+        if applied and applied != ("approved" if approve else "denied"):
+            # Report what the WORKFLOW decided, never what was tapped.
+            delivery.redeem_action_token(token)
+            self._send(409, json.dumps({"error": f"the gate was already {applied}"})); return
+        if not delivery.redeem_action_token(token):
+            # A second tap raced this one; the workflow already admitted exactly one of them.
+            engine.trace("GATE", f"action token for {wid} was spent concurrently")
         self._send(200, json.dumps({"ok": True, "id": wid,
                                     "decision": "approved" if approve else "denied"}))
 

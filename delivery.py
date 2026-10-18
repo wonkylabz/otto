@@ -130,20 +130,24 @@ def health():
     return last if isinstance(last, dict) else {}
 
 
-def mint_action_token(wid, ttl_s=None):
+def mint_action_token(wid, ttl_s=None, revision=None):
     """Mint a single-use grant to approve/deny `wid` from a notification action button.
 
     The token travels to a third-party broker, so it is scoped as tightly as a grant can be: ONE
     run, single-use, and expiring with the gate. A leaked topic therefore exposes at most the
     approve/deny of the runs currently parked at a gate — not the unauthenticated API behind it,
-    which is what a bare `?id=<wid>` link would have handed over."""
+    which is what a bare `?id=<wid>` link would have handed over.
+
+    `revision` is the plan round the push announced: the button decides THAT plan, so a tap
+    after a "request changes" round is refused by the workflow instead of approving a plan the
+    phone never showed (`OttoWorkflow.decide`)."""
     now = time.time()
     token = secrets.token_urlsafe(24)
     exp = now + (ttl_s if ttl_s is not None else max(60, config.NTFY_ACTION_TTL_S))
 
     def fn(state):
         _prune(state, now)
-        state["tokens"][token] = {"wid": wid, "exp": exp}
+        state["tokens"][token] = {"wid": wid, "exp": exp, "revision": revision}
         return state
 
     try:
@@ -151,6 +155,22 @@ def mint_action_token(wid, ttl_s=None):
     except Exception:  # noqa: BLE001 - no token is a missing button, not a failed run
         return None
     return token
+
+
+def peek_action_token(token):
+    """`(wid, revision)` a live token grants, WITHOUT spending it — or `(None, None)`. The token
+    is spent only once the decision has landed or been refused (`redeem_action_token`): a tap
+    while the worker restarts must not burn the only button the phone has."""
+    if not token:
+        return None, None
+    try:
+        state = storage.read_json(_STATE, {}) or {}
+    except Exception:  # noqa: BLE001
+        return None, None
+    entry = (state.get("tokens") or {}).get(token)
+    if not isinstance(entry, dict) or entry.get("exp", 0) <= time.time():
+        return None, None
+    return entry.get("wid"), entry.get("revision")
 
 
 def redeem_action_token(token):

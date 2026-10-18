@@ -3092,11 +3092,23 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertIn("mark_awaiting_gate", src)
         self.assertIn("wid=None", src)
 
-    def test_the_slack_decision_uses_the_same_signal_as_the_web_gate(self):
+    def test_a_board_card_mid_re_plan_carries_the_round_it_shows(self):
+        """#262 review: `plan_revisions` bumps before the re-preview lands, so a card painted mid
+        re-plan shows round N under N+1 — a click just after the new plan lands would approve a
+        plan the board never showed. The card carries the round of the plan ON it."""
+        src = inspect.getsource(server._board)
+        self.assertIn('rev - 1 if q.get("replanning") and rev else rev', src)
+
+    def test_the_slack_decision_uses_the_same_update_as_the_web_gate(self):
         """A Slack approval is not a second kind of approval — it is the same one arriving by a
-        different door. Two signals would be two definitions of "approved"."""
-        self.assertIn("OttoWorkflow.approve", inspect.getsource(slack.signal_decision))
-        self.assertIn("OttoWorkflow.approve", inspect.getsource(server._wf_signal))
+        different door. Two calls would be two definitions of "approved", and only `decide` is
+        conditional on the gate the sender saw (#261)."""
+        self.assertIn("OttoWorkflow.decide", inspect.getsource(slack.signal_decision))
+        self.assertIn("OttoWorkflow.decide", inspect.getsource(server._wf_decide))
+        self.assertIn("_wf_decide(", inspect.getsource(server._wf_signal))
+        for fn in (slack.signal_decision, server._wf_signal, server._wf_decide):
+            self.assertNotIn("OttoWorkflow.approve", inspect.getsource(fn),
+                             "the legacy signal is last-write-wins — no door may send it")
 
 
     # --- a decision sent as a reply in the gate notice's THREAD (#194) -----------------------
@@ -3324,7 +3336,7 @@ class SlackGateApprovalTests(unittest.TestCase):
                 slack.post = lambda ch, text, thread_ts=None, **k: (
                     posted.append((ch, text, thread_ts)) or "9.0")
                 slack.react = lambda *a, **k: True
-                slack.signal_decision = lambda wid, d: signalled.append((wid, d)) or decision_ok
+                slack.signal_decision = lambda wid, d, **k: signalled.append((wid, d)) or decision_ok
                 slack.start_run = lambda *a, **k: started.append(a) or "started"
                 with contextlib.redirect_stdout(io.StringIO()):
                     activities.poll_slack({})
@@ -3417,33 +3429,47 @@ class SlackReviewFixTests(unittest.TestCase):
 
     def test_a_decision_is_refused_once_the_run_has_left_its_gate(self):
         """The armed marker is cleared on DELIVERY, so between an owner approving on the board and
-        the run finishing it still stands. `approve(False)` on a workflow past its gate only sets
-        a field nothing re-reads — the signal SUCCEEDS — so the poller told the thread "OK, I
-        won't do it. Nothing was run." while the approved write ran and delivered into it."""
-        seen = []
-        orig_open, orig_alive, orig_tc = slack.gate_open, slack.run_alive, None
+        the run finishing it still stands. A refusal from `decide`'s validator is FINAL (False:
+        the caller disarms); a timeout or RPC error is unknown (None) unless Temporal confirms
+        the run is gone — or the approver's "yes" becomes an ordinary message on a live gate."""
+        import asyncio
+        from temporalio.client import WorkflowUpdateFailedError
         import temporal_client as tc
-        orig_tc = tc.OK, tc.run
+        outcome = {}
+
+        class _H:
+            async def execute_update(self, *a, **k):
+                if outcome["raise"] is not None:
+                    raise outcome["raise"]
+                return {"decision": "approved"}
+
+        class _C:
+            def get_workflow_handle(self, wid):
+                return _H()
+
+        async def _client():
+            return _C()
+
+        orig = tc.OK, tc.run, tc.client, slack.run_alive
         try:
-            tc.OK = True
-            tc.run = lambda coro: coro.close() or seen.append("signalled") or True
-            slack.gate_open = lambda wid: False            # already past the gate
+            tc.OK, tc.client = True, _client
+            tc.run = lambda coro: asyncio.new_event_loop().run_until_complete(coro)
+            outcome["raise"] = WorkflowUpdateFailedError(RuntimeError("already decided"))
             self.assertIs(slack.signal_decision("w1", False), False)
-            self.assertEqual(seen, [], "no signal may be sent to a run that has moved on")
-            slack.gate_open = lambda wid: None             # unreadable, and the run is gone
-            slack.run_alive = lambda wid: False
+            from temporalio.exceptions import ApplicationError
+            outcome["raise"] = WorkflowUpdateFailedError(
+                ApplicationError("re-planning", type="gate_moved"))
+            self.assertIs(slack.signal_decision("w1", True), slack.MOVED,
+                          "a gate standing on a newer plan is not a gone one")
+            outcome["raise"] = RuntimeError("deadline exceeded")
+            slack.run_alive = lambda wid: False             # and the run is gone
             self.assertIs(slack.signal_decision("w1", True), False)
-            # Unreadable and Temporal can't say either: NOT False, or the caller disarms a gate
-            # whose run is still parked and the approver's "yes" becomes an ordinary message.
-            slack.run_alive = lambda wid: None
+            slack.run_alive = lambda wid: None              # Temporal can't say either
             self.assertIsNone(slack.signal_decision("w1", True))
-            self.assertEqual(seen, [])
-            slack.gate_open = lambda wid: True             # genuinely parked
+            outcome["raise"] = None                         # genuinely parked
             self.assertTrue(slack.signal_decision("w1", True))
-            self.assertEqual(seen, ["signalled"])
         finally:
-            slack.gate_open, slack.run_alive = orig_open, orig_alive
-            tc.OK, tc.run = orig_tc
+            tc.OK, tc.run, tc.client, slack.run_alive = orig
 
     def test_a_conversation_is_armed_only_when_the_notice_actually_posted(self):
         """Arming a thread that was never told anything leaves a later unrelated "ok" or "no" to
@@ -3593,20 +3619,20 @@ class SlackReviewFixTests(unittest.TestCase):
              threading.Thread) = orig
 
     def test_every_temporal_lookup_from_the_poll_is_bounded(self):
-        """`run_alive` and `gate_open` both run inside the poll activity, which serves EVERY Slack
+        """`run_alive` and `signal_decision` both run inside the poll activity, which serves EVERY Slack
         channel — an unbounded call there turns a hung Temporal frontend into a total ingress
         stall instead of a fast failure. Bounding one and not the other is exactly what shipped,
         so this asserts the property rather than one call site, and a third lookup added later
         has to opt in too."""
-        for fn in (slack.run_alive, slack.gate_open):
+        for fn in (slack.run_alive, slack.signal_decision):
             src = inspect.getsource(fn)
             self.assertIn("asyncio.wait_for", src, f"{fn.__name__} must bound its Temporal call")
             self.assertIn("_TEMPORAL_TIMEOUT_S", src,
                           f"{fn.__name__} must use the shared ceiling, not a literal")
         # Both map a raise to the safe answer: unknown, which the callers treat as "still busy"
-        # and "gate closed" respectively.
+        # and "gate still armed" respectively.
         self.assertIn("return None", inspect.getsource(slack.run_alive))
-        self.assertIn("return None", inspect.getsource(slack.gate_open))
+        self.assertIn("return None", inspect.getsource(slack.signal_decision))
         self.assertGreater(slack._TEMPORAL_TIMEOUT_S, 0)
 
     def test_the_gate_bypass_does_not_widen_concurrency_inside_a_DM(self):

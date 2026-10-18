@@ -274,9 +274,19 @@ async function watchLoop(wid, chatId, content, sess, flags){
           }
         };
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
-        const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
+        const {ok, revision}=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
+        try { await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok,revision}); }
+        catch(e){
+          // Refused (409: decided elsewhere, re-planning, a newer plan) or unanswered (503). The
+          // card already reads as decided, so say it did NOT land, and keep watching: the next
+          // poll shows whatever the gate really is now.
+          if(!alive()) return;
+          setNode("GATE","failed", e.status===409 ? "not applied — the gate moved" : "not sent — try again");
+          toast(e.message||"the decision did not land");
+          if(st.gate_wid) delegateGateShown=false;
+          await sleep(1500); continue;
+        }
         setNode("GATE","done", ok?"approved":"denied"); gateDone=true;   // gate() counted it
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
       }
@@ -1414,7 +1424,9 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       seeplanBtn.textContent = "View plan";
       closeGateModal();
       document.removeEventListener("keydown", escHandler);
-      if(ok){ led.appr++; render(); } resolve(ok); };
+      // The round this card SHOWS rides with the decision, so the workflow refuses it if the
+      // plan has moved on since (OttoWorkflow.decide).
+      if(ok){ led.appr++; render(); } resolve({ok, revision: revisions||0}); };
     modal.querySelector(".approve").addEventListener("click",()=>finish(true));
     modal.querySelector(".decline").addEventListener("click",()=>finish(false));
 
