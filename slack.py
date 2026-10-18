@@ -1951,9 +1951,14 @@ def start_run(wid, params):
     return ingress.start_run(wid, full, estop_key="slack", trace_tag="SLACK")
 
 
+# `signal_decision`'s fourth answer: the gate still stands, but on a plan the approver never saw.
+MOVED = "moved"
+
+
 def signal_decision(wid, approved):
     """Send an approve/deny decision to a parked workflow. True on success, False when the run has
-    definitely left its gate (or is gone), None when Temporal cannot say.
+    definitely left its gate (or is gone), None when Temporal cannot say, `MOVED` when the gate
+    stands on a newer plan (a re-plan) — refused, but the conversation stays armed.
 
     None is not False: the caller disarms the conversation on False, so a Temporal blip mapped to
     False dropped a live gate and the approver's "yes" became an ordinary message. Unknown keeps
@@ -1981,12 +1986,18 @@ def signal_decision(wid, approved):
                     OttoWorkflow.decide, {"approve": bool(approved), "revision": None}),
                 _TEMPORAL_TIMEOUT_S)
         except WorkflowUpdateFailedError as e:
+            if getattr(e.cause, "type", None) == "gate_moved":
+                # Still parked, on a plan this approver has not seen (a re-plan is running).
+                # Neither applied nor gone: the caller keeps the conversation armed.
+                trace("SLACK", f"refusing a decision for {wid} — {str(e.cause)[:120]}")
+                return MOVED
             trace("SLACK", f"ignoring a decision for {wid} — {str(e.cause or e)[:120]}")
             return False
         return True
 
     try:
-        return bool(tc.run(_go()))
+        got = tc.run(_go())
+        return got if got is MOVED else bool(got)
     except Exception as e:  # noqa: BLE001 - timeout or RPC: gone only if Temporal says so
         if run_alive(wid) is False:
             trace("SLACK", f"ignoring a decision for {wid} — the run is gone")

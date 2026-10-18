@@ -1396,6 +1396,15 @@ def poll_slack(payload: dict) -> dict:
             # DM's own record.
             gate_ts = rec.get("thread_ts") if rec else ack_ts
             ok = slack.signal_decision(gate_wid, decision)
+            if ok is slack.MOVED:
+                # Refused: a re-plan is running, so this verdict was about a plan that is being
+                # replaced. NOT retried — retrying it would approve the new plan unread — and the
+                # gate stays armed, since nothing re-arms it once the revised plan is up.
+                _seen()
+                slack.post(msg["channel"],
+                           "The plan is being revised, so I didn't act on that — reply again "
+                           "once the new plan is up.", thread_ts=ack_ts, identity=identity)
+                continue
             if ok is None:
                 # Temporal could not say. Keep the gate and leave the cursor: the decision is
                 # retried next poll, and `live_gate` releases the gate if the run turns out gone.

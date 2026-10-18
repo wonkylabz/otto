@@ -2284,12 +2284,12 @@ class SlackListenerActivityTests(unittest.TestCase):
                 self.assertEqual(len(self.started), 1, "the message must still start a run")
                 self.assertEqual(out["resumed"], [], "nothing to resume without a bound cap")
 
-    def _armed(self, text, user="U1", approvers=("U1",)):
+    def _armed(self, text, user="U1", approvers=("U1",), outcome=True):
         """One message arriving in a conversation parked at a gate."""
         self.signalled = []
         self.disarmed = []
         self.slack.signal_decision = lambda wid, ok: (
-            self.signalled.append((wid, ok)) or True)
+            self.signalled.append((wid, ok)) or outcome)
         self.slack.mark_awaiting_gate = lambda ch, root=None, wid=None, identity="user", expect=None: (
             self.disarmed.append((ch, root, wid, expect)))
         self.slack.load = lambda: {**self.slack._DEFAULTS, "enabled": True, "bot_enabled": True,
@@ -2332,6 +2332,17 @@ class SlackListenerActivityTests(unittest.TestCase):
         self.assertEqual(self.started, [])
         self.assertEqual(out["decided"], [])
         self.assertEqual(self.seen, [])
+
+    def test_a_decision_during_a_re_plan_keeps_the_gate_armed(self):
+        """#262 review: refused because a re-plan is running is NOT "the run is gone". Disarming
+        there left the revised plan undecidable from Slack (nothing re-arms the gate), and
+        retrying it would approve a plan the approver never saw — so: consumed, told, armed."""
+        out = self._armed("approve", outcome=self.slack.MOVED)
+        self.assertEqual(out["decided"], [])
+        self.assertEqual(self.disarmed, [], "the gate still stands — keep the conversation armed")
+        # Consumed (the thread cursor advances), never retried: a retry would approve the new plan.
+        self.assertEqual([w[3] for w in self.watched], ["20.0"])
+        self.assertIn("being revised", self.posts[-1][1])
 
     def test_a_decision_for_a_run_that_is_already_gone_disarms_instead_of_hanging(self):
         """A gate can be cleared from the board, expire, or the run can be terminated. The

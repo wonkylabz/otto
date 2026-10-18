@@ -1801,18 +1801,24 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         mid re-plan sat in `_decision` until the revised plan landed, which then cleared the
         gate on a plan nobody had read. A rejection writes no history and reaches the sender
         as an error, so a door can say "the gate moved" instead of reporting a decision that
-        never applied. Read-only, as a validator must be."""
+        never applied. Read-only, as a validator must be.
+
+        Two refusal TYPES, because a door must act differently on them: `gate_closed` (decided,
+        or not parked — nothing left to decide) vs `gate_moved` (the gate still stands, on a plan
+        the sender has not seen — a Slack conversation must stay armed for the new one)."""
+        def refuse(kind, msg):
+            raise exceptions.ApplicationError(msg, type=kind, non_retryable=True)
         if not isinstance(d, dict) or not isinstance(d.get("approve"), bool):
-            raise ValueError("decide needs {'approve': bool}")
+            refuse("gate_closed", "decide needs {'approve': bool}")
         if self._decision is not None:
-            raise ValueError("this gate has already been decided")
+            refuse("gate_closed", "this gate has already been decided")
         if not self._awaiting_approval:
-            raise ValueError("this run is not waiting at its approval gate")
+            refuse("gate_closed", "this run is not waiting at its approval gate")
         if self._replanning or self._plan_feedback is not None:
-            raise ValueError("the plan is being revised — decide on the new plan once it is up")
+            refuse("gate_moved", "the plan is being revised — decide on the new plan once it is up")
         rev = d.get("revision")
         if rev is not None and rev != self._plan_revisions:
-            raise ValueError("the plan changed since it was shown — review the new plan")
+            refuse("gate_moved", "the plan changed since it was shown — review the new plan")
 
     @workflow.signal
     async def revise_plan(self, feedback: str):

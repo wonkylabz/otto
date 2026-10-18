@@ -805,7 +805,10 @@ async def _board(limit=40):
                     e["plan_concerns"] = q.get("plan_concerns") or []
                     e["plan_model"] = q.get("plan_model")
                     # The round this card's plan belongs to: its buttons decide THAT plan (#261).
-                    e["plan_revisions"] = q.get("plan_revisions") or 0
+                    # Mid re-plan the counter is already one ahead of the plan on the card, and a
+                    # click right after the new plan lands would match the round it never showed.
+                    rev = q.get("plan_revisions") or 0
+                    e["plan_revisions"] = rev - 1 if q.get("replanning") and rev else rev
                 elif q.get("attempt"):
                     e["phase"] = f"running · try {q['attempt']}"
                 else:

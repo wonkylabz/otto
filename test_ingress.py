@@ -3092,6 +3092,13 @@ class SlackGateApprovalTests(unittest.TestCase):
         self.assertIn("mark_awaiting_gate", src)
         self.assertIn("wid=None", src)
 
+    def test_a_board_card_mid_re_plan_carries_the_round_it_shows(self):
+        """#262 review: `plan_revisions` bumps before the re-preview lands, so a card painted mid
+        re-plan shows round N under N+1 — a click just after the new plan lands would approve a
+        plan the board never showed. The card carries the round of the plan ON it."""
+        src = inspect.getsource(server._board)
+        self.assertIn('rev - 1 if q.get("replanning") and rev else rev', src)
+
     def test_the_slack_decision_uses_the_same_update_as_the_web_gate(self):
         """A Slack approval is not a second kind of approval — it is the same one arriving by a
         different door. Two calls would be two definitions of "approved", and only `decide` is
@@ -3449,6 +3456,11 @@ class SlackReviewFixTests(unittest.TestCase):
             tc.run = lambda coro: asyncio.new_event_loop().run_until_complete(coro)
             outcome["raise"] = WorkflowUpdateFailedError(RuntimeError("already decided"))
             self.assertIs(slack.signal_decision("w1", False), False)
+            from temporalio.exceptions import ApplicationError
+            outcome["raise"] = WorkflowUpdateFailedError(
+                ApplicationError("re-planning", type="gate_moved"))
+            self.assertIs(slack.signal_decision("w1", True), slack.MOVED,
+                          "a gate standing on a newer plan is not a gone one")
             outcome["raise"] = RuntimeError("deadline exceeded")
             slack.run_alive = lambda wid: False             # and the run is gone
             self.assertIs(slack.signal_decision("w1", True), False)
