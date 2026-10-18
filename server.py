@@ -278,10 +278,11 @@ def _run_progress(wid):
     # own run with its own card. A frontman's delegate ("<wid>-d1-aN") is not: it does the
     # conversation's work, and the chat watching the parent would otherwise call it stuck.
     best, best_attempt, best_part, best_key = None, 0, None, ()
-    plan_name = os.path.basename(claude_cli.plan_transcript_path(wid))
+    plan_names = {os.path.basename(claude_cli.plan_transcript_path(wid)),
+                  os.path.basename(claude_cli.plan_transcript_path(f"{wid}-d1"))}
     for name in names:
         m = re.fullmatch(re.escape(wid) + r"(?:-d\d+)?(?:-(revfix|rev|qafix|qa|fix)(\d+))?-a(\d+)\.jsonl", name)
-        is_plan = not m and name == plan_name
+        is_plan = not m and name in plan_names
         if not m and not is_plan:
             continue
         kind, rnd, attempt = (m.group(1), m.group(2), int(m.group(3))) if m else (None, None, 0)

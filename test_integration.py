@@ -1129,6 +1129,13 @@ class HttpApiTests(unittest.TestCase):
             os.utime(d1, (time.time() + 10, time.time() + 10))
             st, body = _get(self.base, "/api/progress?id=web-abc")
             self.assertEqual((body["attempt"], body["events"]), (1, 1))
+            # ...and its plan preview, the longest stretch before it gates.
+            for n in os.listdir(tmp):
+                os.remove(os.path.join(tmp, n))
+            with open(os.path.join(tmp, "web-abc-d1-plan.jsonl"), "w") as f:
+                f.write(json.dumps(events[1]) + "\n")
+            st, body = _get(self.base, "/api/progress?id=web-abc")
+            self.assertTrue(body["found"])
         finally:
             claude_cli.TRANSCRIPTS = orig
             shutil.rmtree(tmp, ignore_errors=True)

@@ -228,7 +228,7 @@ function socketNote(sk){
    ambiguous which account a reply would come from. */
 function slackBotCard(d,c,poll){
   const nU=slackIds(c.bot_allow_users).length, nC=slackIds(c.bot_allow_channels).length;
-  const nA=slackIds(c.bot_approvers).length, nF=slackIds(c.bot_fast_lane_channels).length;
+  const nA=slackIds(c.bot_approvers).length, nF=slackIds(c.bot_fast_lane_channels).filter(id=>slackIds(c.bot_allow_channels).includes(id)).length;
   let st,bc,bl;
   if(!d.bot_token_set){ st=`<span class="warn">no token</span> &mdash; set <code>OTTO_SLACK_BOT_TOKEN</code> (a Slack <b>bot</b> token, <code>xoxb-&hellip;</code>) and restart`; bc='off'; bl='no token'; }
   else if(!d.temporal){ st=`<span class="warn">needs Temporal (run via ./run.sh)</span>`; bc='warn'; bl='no Temporal'; }
