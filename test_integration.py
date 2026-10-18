@@ -303,6 +303,42 @@ class ApiTokenAuthTests(unittest.TestCase):
         self.assertEqual(self._req("/api/gate/not-a-token", "POST", {"approve": True})[0], 403)
         self.assertNotEqual(self._req("/api/events/itest", "POST", {})[0], 401)
 
+    def test_a_gate_token_is_spent_only_on_a_final_outcome(self):
+        """#261: a tap while the worker restarts used to burn the phone's only button. Unanswered
+        (503) keeps the token; refused (409) or applied (200) spends it; the round it was minted
+        for rides into `decide`, so a button never decides a later plan."""
+        import asyncio
+        import delivery
+        srv = self.server
+        seen = []
+        outcome = {}
+
+        async def fake_decide(wid, approve, revision=None):
+            seen.append((wid, approve, revision))
+            if outcome.get("raise"):
+                raise outcome["raise"]
+            return {"decision": "approved"}
+
+        saved = srv._wf_decide, srv.tc.run
+        self.addCleanup(lambda: (setattr(srv, "_wf_decide", saved[0]),
+                                 setattr(srv.tc, "run", saved[1])))
+        srv._wf_decide, srv.tc.run = fake_decide, (lambda coro: asyncio.run(coro))
+
+        tok = delivery.mint_action_token("web-g1", revision=2)
+        outcome["raise"] = TimeoutError()
+        self.assertEqual(self._req(f"/api/gate/{tok}", "POST", {"approve": True})[0], 503)
+        self.assertEqual(delivery.peek_action_token(tok), ("web-g1", 2), "unanswered keeps it")
+        outcome["raise"] = srv.GateMoved("the plan changed")
+        self.assertEqual(self._req(f"/api/gate/{tok}", "POST", {"approve": True})[0], 409)
+        self.assertEqual(delivery.peek_action_token(tok), (None, None), "refused spends it")
+
+        tok = delivery.mint_action_token("web-g1", revision=0)
+        outcome["raise"] = None
+        self.assertEqual(self._req(f"/api/gate/{tok}", "POST", {"approve": False})[0], 200)
+        self.assertEqual(delivery.peek_action_token(tok), (None, None))
+        self.assertEqual(seen[-1], ("web-g1", False, 0))
+        self.assertEqual(seen[0][2], 2, "the minted round must ride into decide")
+
     def test_the_page_and_its_assets_load_logged_out(self):
         # Nothing secret is in them, and the page is what tells you to log in.
         self.assertEqual(self._req("/")[0], 200)
@@ -3361,7 +3397,7 @@ class DelegatedGateChatTests(unittest.TestCase):
     def test_the_chat_signals_the_run_holding_the_gate(self):
         html = ui_src()
         self.assertIn("const gateWid=st.gate_wid||wid;", html)
-        self.assertIn('api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok})', html)
+        self.assertIn('api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok,revision})', html)
 
     def test_a_delegated_gate_shows_the_parents_timings(self):
         st = self._state({
@@ -4855,6 +4891,54 @@ class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
                 await h.signal(OttoWorkflow.approve, True)
                 out = await h.result()
                 self.assertEqual(out["result"], "done")
+
+    async def test_decide_is_refused_unless_it_is_about_the_gate_standing(self):
+        """#261: `approve` was last-write-wins. An approve sent mid re-plan sat in `_decision`
+        until the revised plan landed and then cleared the gate on a plan nobody had read; a late
+        Decline overturned an approval already given. `decide` checks the gate the sender saw
+        and applies the decision in the same step — a refusal reaches the sender, not the run."""
+        import threading
+        from temporalio.client import WorkflowUpdateFailedError
+        from workflows import OttoWorkflow
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocking_preview(request, c, cwd=None, resume_session=None, wid=None, **kw):
+            self.preview_requests.append(request)
+            n = len(self.preview_requests)
+            if n > 1:
+                release.wait(20)
+            return {"plan": f"1. plan version {n}", "cost": 0, "tokens": None}
+
+        engine.plan_preview = blocking_preview
+        async with await _time_skipping_env() as env:
+            async for h in self._start(env, "prq5"):
+                await self._await_status(
+                    h, lambda st: st["awaiting_approval"], "never reached awaiting_approval")
+                await h.signal(OttoWorkflow.revise_plan, "only touch dev, not prod")
+                await self._await_status(h, lambda st: st["replanning"], "never re-planned")
+
+                # Mid re-plan: the revised plan is not up yet, so nobody can have read it.
+                with self.assertRaises(WorkflowUpdateFailedError):
+                    await h.execute_update(OttoWorkflow.decide, {"approve": True, "revision": None})
+
+                release.set()
+                await self._await_status(
+                    h, lambda st: st["plan"] == "1. plan version 2", "revision never landed")
+                # A card still showing round 0's plan decides round 0's plan, not this one.
+                with self.assertRaises(WorkflowUpdateFailedError):
+                    await h.execute_update(OttoWorkflow.decide, {"approve": True, "revision": 0})
+                st = await h.query(OttoWorkflow.status)
+                self.assertTrue(st["awaiting_approval"], "a refused decision must not move the gate")
+
+                got = await h.execute_update(OttoWorkflow.decide, {"approve": True, "revision": 1})
+                self.assertEqual(got["decision"], "approved")
+                # The late Decline from another door: refused, the approval stands.
+                with self.assertRaises(WorkflowUpdateFailedError):
+                    await h.execute_update(OttoWorkflow.decide, {"approve": False, "revision": 1})
+                out = await h.result()
+                self.assertEqual(out["result"], "done")
+                self.assertEqual(len(self.run_requests), 1)
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")

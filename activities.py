@@ -982,7 +982,7 @@ def notify_human(payload: dict) -> dict:
     # it can never be minted in replay-safe workflow code. Off unless OTTO_NTFY_ACTIONS is on.
     actions = None
     if payload.get("kind") == "approval" and config.NTFY_ACTIONS and payload.get("wid"):
-        token = delivery.mint_action_token(payload["wid"])
+        token = delivery.mint_action_token(payload["wid"], revision=payload.get("revision"))
         if token:
             actions = delivery.gate_actions(token)
     sent = delivery.notify(payload.get("title", ""), lines=lines,

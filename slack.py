@@ -1951,39 +1951,6 @@ def start_run(wid, params):
     return ingress.start_run(wid, full, estop_key="slack", trace_tag="SLACK")
 
 
-def gate_open(wid):
-    """Is this run STILL waiting at its approval gate? True / False / None when unknown.
-
-    A decision arriving after the gate closed is worse than a late no-op. The armed marker is
-    cleared on delivery, so between an owner approving on the web board and the run finishing
-    (minutes) it still stands — and `approve(False)` on a workflow that has already passed the
-    gate merely sets a field nothing re-reads. The signal SUCCEEDS, so the poller happily told the
-    thread "OK, I won't do it. Nothing was run." while the approved write ran and delivered into
-    that same thread. None on any doubt, and the caller treats None as closed: refusing a genuine
-    decision costs one board click, acting on a stale one lies to the asker."""
-    import temporal_client as tc
-    if not (tc.OK and wid):
-        return None
-
-    async def _go():
-        import asyncio
-        from workflows import OttoWorkflow
-        c = await tc.client()
-        # BOUNDED for the same reason `run_alive` is: this runs inside the poll activity, so a
-        # hung Temporal frontend would stall every Slack channel rather than failing fast. A
-        # timeout raises, and the handler below maps that to None — treated as "closed", which is
-        # the safe direction for a decision.
-        st = await asyncio.wait_for(
-            c.get_workflow_handle(wid).query(OttoWorkflow.status), timeout=_TEMPORAL_TIMEOUT_S)
-        return bool((st or {}).get("awaiting_approval"))
-
-    try:
-        return tc.run(_go())
-    except Exception as e:  # noqa: BLE001 - finished, terminated, or unreachable: unknown
-        trace("SLACK", f"gate state for {wid} unreadable ({str(e)[:100]})")
-        return None
-
-
 def signal_decision(wid, approved):
     """Send an approve/deny decision to a parked workflow. True on success, False when the run has
     definitely left its gate (or is gone), None when Temporal cannot say.
@@ -1992,34 +1959,39 @@ def signal_decision(wid, approved):
     False dropped a live gate and the approver's "yes" became an ordinary message. Unknown keeps
     the gate — `live_gate` releases it once Temporal CONFIRMS the run is gone.
 
-    The same signal the web gate's Approve/Deny buttons send (`server._wf_signal`) — a Slack
+    The same Update the web gate's Approve/Deny buttons send (`server._wf_decide`) — a Slack
     decision is not a second kind of approval, it is the same one arriving by a different door,
-    so it must land on the same signal or the two can diverge in what "approved" means."""
+    so it must land on the same call or the two can diverge in what "approved" means. The
+    workflow's validator is the gate check (#261): it refuses a decided, re-planning or unparked
+    gate in the same step that applies the decision, which a status pre-check could not."""
     import temporal_client as tc
     if not (tc.OK and wid):
         return False
 
-    # The gate must still be OPEN. Checked here rather than at the call site so no future caller
-    # can signal a run that has moved on.
-    state = gate_open(wid)
-    if state is not True:
-        # A closed run's query raises too, so an unreadable gate is "gone" only if the run is.
-        if state is None and run_alive(wid) is not False:
-            trace("SLACK", f"holding a decision for {wid} — its gate state is unreadable")
-            return None
-        trace("SLACK", f"ignoring a decision for {wid} — it is no longer at its gate")
-        return False
-
     async def _go():
+        import asyncio
+        from temporalio.client import WorkflowUpdateFailedError
         from workflows import OttoWorkflow
         c = await tc.client()
-        await c.get_workflow_handle(wid).signal(OttoWorkflow.approve, bool(approved))
+        try:
+            # BOUNDED like `run_alive`: this runs inside the poll activity, and an Update waits
+            # on a live worker — a restart would otherwise stall every Slack channel.
+            await asyncio.wait_for(
+                c.get_workflow_handle(wid).execute_update(
+                    OttoWorkflow.decide, {"approve": bool(approved), "revision": None}),
+                _TEMPORAL_TIMEOUT_S)
+        except WorkflowUpdateFailedError as e:
+            trace("SLACK", f"ignoring a decision for {wid} — {str(e.cause or e)[:120]}")
+            return False
         return True
 
     try:
         return bool(tc.run(_go()))
-    except Exception as e:  # noqa: BLE001 - the gate was open a moment ago: unknown, not gone
-        trace("SLACK", f"gate signal to {wid} failed: {str(e)[:120]}")
+    except Exception as e:  # noqa: BLE001 - timeout or RPC: gone only if Temporal says so
+        if run_alive(wid) is False:
+            trace("SLACK", f"ignoring a decision for {wid} — the run is gone")
+            return False
+        trace("SLACK", f"holding a decision for {wid} — the gate did not answer ({str(e)[:120]})")
         return None
 
 

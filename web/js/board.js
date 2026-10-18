@@ -231,8 +231,8 @@ async function loadBoard(silent){
     </div>`;
   loadBoardHealth();
   el.querySelectorAll("[data-plan]").forEach(x=>x.addEventListener("click",e=>{ e.preventDefault(); openPlanModal(byId[x.dataset.plan]); }));
-  el.querySelectorAll("[data-approve]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.approve,true)));
-  el.querySelectorAll("[data-deny]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.deny,false)));
+  el.querySelectorAll("[data-approve]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.approve,true,b.dataset.rev)));
+  el.querySelectorAll("[data-deny]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.deny,false,b.dataset.rev)));
   el.querySelectorAll("[data-clarify]").forEach(b=>b.addEventListener("click",()=>boardClarify(b.dataset.clarify,b)));
   el.querySelectorAll("[data-clarinput]").forEach(i=>i.addEventListener("keydown",e=>{
     if(e.key==="Enter"){ e.preventDefault(); const b=byData(el,"data-clarify",i.dataset.clarinput); if(b) boardClarify(i.dataset.clarinput,b); }
@@ -310,8 +310,9 @@ function gateBlock(it){
   // A plan that is only questions has nothing concrete to approve; the chat gate disables
   // Approve for exactly this case, and a board that still offered it would be the softer door.
   const dis=(questions.length&&!rest)?` disabled title="This plan only asks a question — it proposes no operations. Answer it in the run's chat, or deny."`:'';
-  return h+`<div class="bapprove"><button class="btn approve sm" data-approve="${esc(it.id)}"${dis}>Approve</button>`
-          +`<button class="btn decline sm" data-deny="${esc(it.id)}">Deny</button></div>`;
+  const rev=it.plan_revisions==null?'':` data-rev="${esc(String(it.plan_revisions))}"`;
+  return h+`<div class="bapprove"><button class="btn approve sm" data-approve="${esc(it.id)}"${rev}${dis}>Approve</button>`
+          +`<button class="btn decline sm" data-deny="${esc(it.id)}"${rev}>Deny</button></div>`;
 }
 /* The whole plan, rendered straight from the card's own data. openCardModal can't serve this:
    it fetches /api/board/full, which refuses a RUNNING run — and a gate card is always RUNNING. */
@@ -327,10 +328,13 @@ function openPlanModal(it){
   body.innerHTML=con+`<div class="result">${renderMD(it.plan||"(no plan preview was produced — approving runs it blind)")}</div>`;
   modal.hidden=false;
 }
-async function boardSignal(id, ok){
+async function boardSignal(id, ok, rev){
   // A swallowed failure here is the worst of the set: the run stays parked at its gate while
   // the repaint tells you it was released, and the next thing anyone sees is a run that "hung".
-  await postOr("/api/wf/signal",{id,signal:"approve",value:ok},
+  // `rev` is the plan round this card painted — the workflow refuses the decision (409) if the
+  // plan moved on since (OttoWorkflow.decide).
+  const revision=(rev===undefined||rev==="") ? null : Number(rev);
+  await postOr("/api/wf/signal",{id,signal:"approve",value:ok,revision},
                ok?"approving this run":"declining this run");
   loadBoard(true);
 }
