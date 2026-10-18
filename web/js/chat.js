@@ -215,8 +215,9 @@ async function watchLoop(wid, chatId, content, sess, flags){
       if(!decomposeDone && times.DECOMPOSE && times.DECOMPOSE.dur!=null){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE.dur}); decomposeDone=true; }
       if(times.ROUTER && times.ROUTER.start && times.ROUTER.dur==null) setNode("ROUTER","active","picking a capability…",{startMs:times.ROUTER.start});
     }
-    // A delegated gate carries the CHILD's cap: the route this chat shows is the parent's.
-    if(st.cap && !pickShown && !isSwarm && !st.gate_wid){
+    // A delegated gate carries the CHILD's cap: the route this chat shows is the parent's. Once
+    // that gate's card is up, a late pick would overwrite it (`content.innerHTML`), so none follows.
+    if(st.cap && !pickShown && !isSwarm && !st.gate_wid && !delegateGateShown){
       if(!decomposeDone){ setNode("DECOMPOSE","done","single task",{durMs:times.DECOMPOSE&&times.DECOMPOSE.dur}); decomposeDone=true; }
       pickShown=true; setNode("ROUTER","done","picked:",{durMs:times.ROUTER&&times.ROUTER.dur}); addPick(st.cap);
       if(!flags.quietPick){ content.innerHTML=`<p>I'll use <code>${esc(st.cap.name)}</code> <span class="badge ${st.cap.risk}">${st.cap.risk}</span></p>`; stampMsg(content); }
@@ -275,9 +276,11 @@ async function watchLoop(wid, chatId, content, sess, flags){
         if(st.replanning) onReplan("replanning", times);   // reload landed mid-round
         const ok=await gate(content, cap, st.plan, st.repo, st.risk_reason, st.plan_concerns, st.plan_revisions, st.max_plan_revisions, st.replanning, gateWid, onReplan, st.plan_model);
         if(!alive()) return;
-        await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok});
-        setNode("GATE","done", ok?"approved":"denied"); gateDone=true;
-        if(ok){ led.appr++; render(); }
+        // A delegate's gate can be decided in Slack first, and a signal to a child that has
+        // finished fails: say so and keep watching the parent rather than die here.
+        try { await api("/api/wf/signal",{id:gateWid,signal:"approve",value:ok}); }
+        catch(e){ setNode("GATE","done","decided elsewhere"); gateDone=true; showThinking(content,"Working…"); continue; }
+        setNode("GATE","done", ok?"approved":"denied"); gateDone=true;   // gate() counted it
         if(ok) showThinking(content,"Running "+(cap?cap.name:"")+"…");
       }
     }

@@ -170,7 +170,8 @@ async def _wf_state(wid):
         if isinstance(ch, dict) and ch.get("delegated") and not ch.get("done") and ch.get("id"):
             cst = await _delegate_gate(c, ch["id"])
             if cst:
-                return cst
+                # The diagram is the PARENT's: the child's stage timings would latch as its own.
+                return {**cst, "times": st.get("times") or {}}
     return {"state": "running", "cap": st.get("cap"),
             "swarm": st.get("swarm", False), "children": st.get("children") or [],
             # A follow-up this run re-read as a QUESTION: no gate, no plan preview, read tools
