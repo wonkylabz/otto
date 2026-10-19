@@ -14,7 +14,7 @@ function obModelRows(mp){
   return mp.models.map(m=>{
     const unset=!m.max_turns;
     return `<div class="obint"><span class="obmark ${unset?'no':'ok'}">${unset?"!":"&#10003;"}</span>
-      <div class="obtext"><b>${esc(m.name)}</b> (${esc(m.kind)}${m.executes?", runs execution":""}) — ${unset?`no turn limit set, so it gets the default <b>${mp.default_turns}</b>. A capable model needs more or it is cut off mid-task ("hit the ${mp.default_turns}-turn budget"). Set <b>Max turns</b> on its row (100–200 for a strong model).`:`<b>${m.max_turns}</b> turns.`}</div>
+      <div class="obtext"><b>${esc(m.name)}</b> (${esc(m.kind)}${m.executes?", runs execution":""}) — ${unset?`no turn limit set, so it gets the default <b>${mp.default_turns}</b>. A capable model needs more or it is cut off mid-task ("hit the ${mp.default_turns}-turn budget"). Set <b>Max turns</b> on its row (100–200 for a strong model).`:`<b>${esc(m.max_turns)}</b> turns.`}</div>
       ${unset?`<button class="btn sm revise" data-goto="admin" data-sect="models">Open</button>`:""}</div>`;
   }).join("");
 }
@@ -122,6 +122,7 @@ function obRender(){
     obRender(); refocusOption(inp);
   }));
   body.querySelectorAll("[data-ob]").forEach(b=>b.addEventListener("click",()=>obAction(b.dataset.ob)));
+  if(step==="models") body.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>obGoto(b.dataset.goto,b.dataset.sect)));
   if(step==="review") obReview();
 }
 
@@ -205,7 +206,7 @@ async function obReview(why){
   box.innerHTML=(rows?`<table class="obtable"><tr><th>Setting</th><th>Now</th><th>${esc(p.answers.profile)}</th><th></th></tr>${rows}</table>`
                      :`<p class="obsub">Your runtime settings stay exactly as they are.</p>`)+
     (ints?`<p class="obq">Integrations</p>${ints}`:`<p class="obsub">No integrations picked — Otto still works from chat with its built-in capabilities.</p>`)+
-    `<p class="obq">Models</p>${obModelRows(p.models)}`+
+    (p.models.models.length?`<p class="obq">Models</p>${obModelRows(p.models)}`:"")+
     p.notes.map(n=>`<div class="obnote">${esc(n)}</div>`).join("");
   box.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>obGoto(b.dataset.goto,b.dataset.sect)));
   document.querySelectorAll('[data-ob^="apply"]').forEach(b=>b.disabled=false);

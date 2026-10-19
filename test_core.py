@@ -2500,6 +2500,13 @@ class OnboardingTests(unittest.TestCase):
         import gateway
         self.assertEqual(set(self.ob.PHASES), set(gateway.TASKS))
 
+    def test_models_step_wires_its_open_button(self):
+        # The step's Open buttons are rendered by obModelRows but bound only where the step's
+        # own render binds them; obReview's binding never sees this step.
+        src = ui_src()
+        self.assertIn('"models","integrations"', src.replace(" ", ""))
+        self.assertIn('if(step==="models") body.querySelectorAll("[data-goto]")', src)
+
     def test_models_plan_flags_a_local_model_with_no_turn_budget(self):
         import gateway
         cfg = {"pool": [{"name": "c", "provider": "claude", "model": "claude-sonnet-5"},
