@@ -7655,6 +7655,15 @@ class UiAssetLayoutTests(unittest.TestCase):
         self.assertNotIn("function ", doc, "logic came back inline")
         self.assertNotRegex(doc, r"<script>\s*\n", "an inline script block came back")
 
+    def test_a_silent_board_repaint_waits_out_a_held_press(self):
+        """A rebuild between mousedown and mouseup drops the click, so Terminate/Retry needed
+        several tries while runs were live. The skip is time-bounded so a lost pointerup
+        cannot freeze the board."""
+        src = ui_src()
+        self.assertIn('addEventListener("pointerdown"', src)
+        self.assertIn("if(silent && _boardPress && Date.now()-_boardPress<5000) return;", src)
+        self.assertLess(src.index("if(silent && _boardPress"), src.index("_boardSig=sig;"))
+
     def test_css_escape_never_appears_inside_a_quoted_attribute_selector(self):
         """`CSS.escape()` is for IDENTIFIERS. Inside `[data-x="${CSS.escape(v)}"]` it injects
         backslashes the literal attribute value does not have, so the match silently returns

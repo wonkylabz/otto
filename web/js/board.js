@@ -97,6 +97,10 @@ const _boardSignature=d=>JSON.stringify({t:d.temporal,ui:d.ui,items:(d.items||[]
   it.id,it.run_id,it.status,it.phase,it.stage,it.verified,it.needs_human,it.pr,it.outcome,it.model,
   it.fallback_from,it.fallback_reason,it.retried_to,it.question,it.risk,it.risk_reason,it.cap,
   it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.kind,it.archived])});
+let _boardPress=0;   // ms timestamp of a press held on the board; 0 = none
+document.addEventListener("pointerdown",e=>{ _boardPress=e.target.closest("#boardview")?Date.now():0; },true);
+document.addEventListener("pointerup",()=>{ _boardPress=0; },true);
+document.addEventListener("pointercancel",()=>{ _boardPress=0; },true);
 async function loadBoard(silent){
   const el=document.getElementById("boardview");
   if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
@@ -112,6 +116,7 @@ async function loadBoard(silent){
   }
   const sig=_boardSignature(data);
   if(silent && sig===_boardSig){ loadBoardHealth(); return; }  // nothing changed — no DOM churn
+  if(silent && _boardPress && Date.now()-_boardPress<5000) return;   // a rebuild between mousedown and mouseup drops the click; sig stays stale so the next poll repaints
   _boardSig=sig;
   const needsYou=it=>{
     if(it.needs_human) return NEEDS_LABEL[it.needs_human]||"needs review";
