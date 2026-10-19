@@ -7,6 +7,18 @@
    Nothing here runs at load except wiring its own button; boot.js calls initOnboarding(). */
 let OB=null;   // {meta, answers, step}
 
+/* The turn-budget warning, shared by the models step and the review: a non-Claude model with no
+   `max_turns` runs on the global default, so a capable one is cut off mid-task. Open → Admin → Models. */
+function obModelRows(mp){
+  if(!mp.models.length) return `<p class="obsub">No local or hosted models in the pool — every phase runs on Claude, which has no turn cap. Add one in Admin → Models.</p>`;
+  return mp.models.map(m=>{
+    const unset=!m.max_turns;
+    return `<div class="obint"><span class="obmark ${unset?'no':'ok'}">${unset?"!":"&#10003;"}</span>
+      <div class="obtext"><b>${esc(m.name)}</b> (${esc(m.kind)}${m.executes?", runs execution":""}) — ${unset?`no turn limit set, so it gets the default <b>${mp.default_turns}</b>. A capable model needs more or it is cut off mid-task ("hit the ${mp.default_turns}-turn budget"). Set <b>Max turns</b> on its row (100–200 for a strong model).`:`<b>${esc(m.max_turns)}</b> turns.`}</div>
+      ${unset?`<button class="btn sm revise" data-goto="admin" data-sect="models">Open</button>`:""}</div>`;
+  }).join("");
+}
+
 /* Wired at load (its own button, its own file): live from first paint, and independent of
    whatever boot.js does before it gets to initOnboarding. */
 (()=>{ const b=document.getElementById("ob-start"); if(b) b.addEventListener("click",()=>openOnboarding()); })();
@@ -54,7 +66,7 @@ async function openOnboarding(meta){
   obRender();
 }
 
-const OB_STEPS=["welcome","usage","profile","integrations","review"];
+const OB_STEPS=["welcome","usage","profile","models","integrations","review"];
 
 function obBody(){
   const body=openFormModal("<b>Set up Otto</b>");
@@ -74,7 +86,7 @@ function obRender(){
   let html="";
   if(step==="welcome"){
     html=`<p class="obq">Welcome to Otto</p>
-      <p class="obsub">Three quick questions tune Otto to how you'll use it: who it works for, how much each run may cost, and what it should be able to reach. You'll see every change before it's made, and you can run this again any time from the <b>Setup</b> button.</p>
+      <p class="obsub">Four quick steps tune Otto to how you'll use it: who it works for, how much each run may cost, which model runs each phase, and what it should be able to reach. You'll see every change before it's made, and you can run this again any time from the <b>Setup</b> button.</p>
       <div class="obnav"><button class="btn decline obleft" data-ob="skip" title="Don't open this by itself again — the Setup button still runs it">Skip for now</button>
       <button class="btn revise" data-ob="tour">Just the tour</button><button class="btn approve" data-ob="next">Start</button></div>`;
   } else if(step==="usage"){
@@ -85,6 +97,10 @@ function obRender(){
     const last=m.profiles.find(p=>p.key===OB.lastProfile);
     html=`<p class="obq">How should Otto trade cost against quality?</p><p class="obsub">Each profile sets the retry, review and effort knobs in Admin → Runtime settings. You can fine-tune them there later.${last?` Last applied: <b>${esc(last.label)}</b>.`:""}</p>
       <div class="obopts">${m.profiles.map(p=>opt("radio","ob-profile",p.key,p.label,p.blurb,a.profile===p.key)).join("")}</div>`;
+  } else if(step==="models"){
+    html=`<p class="obq">Which model runs each phase?</p><p class="obsub">A run isn't one model call. Admin → Models assigns a model to each phase below; cheap phases can use a small or local model, but the plan preview, the judge and execution deserve a strong one.</p>
+      <table class="obtable"><tr><th>Phase</th><th>What it does</th></tr>${m.phases.map(p=>`<tr><td><code>${esc(p.key)}</code></td><td>${esc(p.blurb)}</td></tr>`).join("")}</table>
+      <p class="obq">Your local &amp; hosted models</p>${obModelRows(m.models)}`;
   } else if(step==="integrations"){
     if(!a.integrations) a.integrations=m.integrations.filter(i=>i.default_for.includes(a.usage)).map(i=>i.key);
     html=`<p class="obq">What should Otto be able to reach?</p><p class="obsub">Next you'll see which of these are already connected and where to connect the rest.</p>
@@ -106,6 +122,7 @@ function obRender(){
     obRender(); refocusOption(inp);
   }));
   body.querySelectorAll("[data-ob]").forEach(b=>b.addEventListener("click",()=>obAction(b.dataset.ob)));
+  if(step==="models") body.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>obGoto(b.dataset.goto,b.dataset.sect)));
   if(step==="review") obReview();
 }
 
@@ -189,6 +206,7 @@ async function obReview(why){
   box.innerHTML=(rows?`<table class="obtable"><tr><th>Setting</th><th>Now</th><th>${esc(p.answers.profile)}</th><th></th></tr>${rows}</table>`
                      :`<p class="obsub">Your runtime settings stay exactly as they are.</p>`)+
     (ints?`<p class="obq">Integrations</p>${ints}`:`<p class="obsub">No integrations picked — Otto still works from chat with its built-in capabilities.</p>`)+
+    (p.models.models.length?`<p class="obq">Models</p>${obModelRows(p.models)}`:"")+
     p.notes.map(n=>`<div class="obnote">${esc(n)}</div>`).join("");
   box.querySelectorAll("[data-goto]").forEach(b=>b.addEventListener("click",()=>obGoto(b.dataset.goto,b.dataset.sect)));
   document.querySelectorAll('[data-ob^="apply"]').forEach(b=>b.disabled=false);

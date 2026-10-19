@@ -66,6 +66,39 @@ PROFILES = {
     },
 }
 
+# What each phase of a run does, for the wizard's model step. Keyed 1:1 to `gateway.TASKS`
+# (`OnboardingTests`), so a new tier cannot ship unexplained.
+PHASES = {
+    "routing": "Picks which capability handles your request. Cheap and frequent — a small model is fine.",
+    "plan": "Splits a big request into steps (swarm / plan-then-execute).",
+    "preview": "Writes the plan you approve before any write. It runs once, with no retry above it — don't pick a weak model.",
+    "clarify": "Decides whether to ask you a question first. Cheap.",
+    "memory": "Extracts durable facts after a run. Cheap.",
+    "verify": "The judge: passes or fails each attempt. A weak judge passes bad work or fails good work.",
+    "supervise": "Watches a run mid-flight and can steer or kill it.",
+    "memory_gc": "The on-demand memory cleaner — the one pass that deletes memory.",
+    "execution": "Does the actual work, with tools. This is the phase where a model's turn budget matters.",
+}
+
+
+def models_plan():
+    """The non-Claude models in the pool, each with its turn budget. PURE read: no secret leaves
+    (name/model/kind/turns only). `max_turns` unset means the global default — the silent
+    misconfiguration this exists to surface: a capable model gets the same ceiling as a 4B one."""
+    import gateway          # noqa: PLC0415
+    cfg = gateway.load()
+    execs = {cfg.get("assign", {}).get("execution")}
+    out = []
+    for m in cfg.get("pool", []):
+        if gateway.backend_of(m) != "local":
+            continue                    # Claude has no Otto-side cap; Codex ignores max_turns
+        out.append({"name": m.get("name", ""), "model": m.get("model", ""),
+                    "kind": gateway.model_kind(m), "max_turns": m.get("max_turns"),
+                    "effective": m.get("max_turns") or config.LOCAL_RUNTIME_MAX_TURNS,
+                    "executes": m.get("name") in execs})
+    return {"default_turns": config.LOCAL_RUNTIME_MAX_TURNS, "models": out}
+
+
 # What each use needs connected. `match` is tested against every MCP server/connector name Otto
 # can see; `where` is the screen that sets it ({tab, sect} → the UI's data-sect).
 INTEGRATIONS = {
@@ -129,6 +162,8 @@ def state():
             "draft": draft or None,
             "completed_at": d.get("completed_at"), "skipped_at": d.get("skipped_at"),
             "usages": list(USAGES),
+            "phases": [{"key": k, "blurb": b} for k, b in PHASES.items()],
+            "models": models_plan(),
             "profiles": [{"key": k, "label": p["label"], "blurb": p["blurb"]}
                          for k, p in PROFILES.items()],
             "integrations": [{"key": k, "label": i["label"], "default_for": list(i["default_for"])}
@@ -355,7 +390,7 @@ def preview(answers, mcps=(), connectors_checked=True, health=None):
                      "Setup again.")
     return {"answers": a, "fingerprint": fp, "settings": settings,
             "integrations": _integrations_plan(a["integrations"], mcps, connectors_checked, health),
-            "notes": notes}
+            "models": models_plan(), "notes": notes}
 
 
 

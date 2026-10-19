@@ -2496,6 +2496,34 @@ class OnboardingTests(unittest.TestCase):
     def _apply(self, answers):
         return self.ob.apply(answers, self.ob.preview(answers)["fingerprint"])
 
+    def test_every_gateway_phase_is_explained_in_the_wizard(self):
+        import gateway
+        self.assertEqual(set(self.ob.PHASES), set(gateway.TASKS))
+
+    def test_models_step_wires_its_open_button(self):
+        # The step's Open buttons are rendered by obModelRows but bound only where the step's
+        # own render binds them; obReview's binding never sees this step.
+        src = ui_src()
+        self.assertIn('"models","integrations"', src.replace(" ", ""))
+        self.assertIn('if(step==="models") body.querySelectorAll("[data-goto]")', src)
+
+    def test_models_plan_flags_a_local_model_with_no_turn_budget(self):
+        import gateway
+        cfg = {"pool": [{"name": "c", "provider": "claude", "model": "claude-sonnet-5"},
+                        {"name": "q", "provider": "openai", "model": "qwen", "kind": "local"},
+                        {"name": "d", "provider": "openai", "model": "ds", "kind": "hosted", "max_turns": 150},
+                        {"name": "x", "provider": "codex", "model": "gpt"}],
+               "assign": {"execution": "q"}}
+        with mock.patch.object(gateway, "load", return_value=cfg):
+            mp = self.ob.models_plan()
+        by = {m["name"]: m for m in mp["models"]}
+        self.assertEqual(set(by), {"q", "d"})          # Claude and Codex have no Otto-side cap
+        self.assertIsNone(by["q"]["max_turns"])
+        self.assertEqual(by["q"]["effective"], mp["default_turns"])
+        self.assertTrue(by["q"]["executes"])
+        self.assertEqual(by["d"]["effective"], 150)
+        self.assertNotIn("api_key_env", by["q"])
+
     def test_every_profile_assigns_the_same_real_settings(self):
         # A profile that set a key another left alone would strand it on switch: economic's
         # max_attempts=2 would survive picking balanced.
