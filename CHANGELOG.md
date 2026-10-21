@@ -11,6 +11,33 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Chat replies stream as they are written.** The answer appears in the chat while the model
+  is still generating it, instead of only once the whole run finishes (Claude and local models;
+  not Codex). Memory learning now happens after the reply, and several pre-run checks run side
+  by side, so a turn starts and ends sooner. **Restart the worker after upgrading.**
+- **Slack triggers take an *ignore* pattern** (Events → Triggers). A post it matches never
+  starts a run, whatever *match* says — e.g. `(?i)\bis closed\b` stops an alert's closing post
+  from opening a full investigation.
+- **A Models step in the setup wizard** explains what each phase does, which deserve a strong
+  model, and flags local/hosted models with no turn limit (they get the default of 60).
+- **Local models can use an agent's skills.** An agent's `skills:` are listed to the run and a
+  `Skill` tool loads them, instead of the model rebuilding each one from scratch in the shell.
+
+### Changed
+
+- **A local run near its turn or time budget is told to wrap up and report** (at 75%,
+  `OTTO_LOCAL_WRAP_UP_AT`), and its last turn has no tools — so it returns what it found rather
+  than a bare "hit the turn budget" error.
+- **In Brainstorm, a follow-up stays in the brainstorm.** Asking it to "go do it" no longer
+  hands off to a write task; start a new run for that.
+
+### Fixed
+
+- **Board buttons (Terminate, Retry, Approve, Dismiss) work on the first click** — a background
+  refresh landing mid-click used to swallow it.
+
 ## [0.5.0] - 2026-10-18
 
 ### Added
