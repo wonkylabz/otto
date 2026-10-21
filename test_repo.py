@@ -96,6 +96,8 @@ class PrCopyTests(unittest.TestCase):
         self.assertNotIn("ghp_0123456789", out["title"])
         self.assertNotIn("ghp_0123456789", body)
         self.assertNotIn("private DM", body)
+        out = engine.pr_copy(contracts.CARRIED_CONTEXT_MARK + "\nsomeone's private DM")
+        self.assertNotIn("private DM", out["title"] + out["body"])
 
     def test_a_fresh_pr_drafts_its_body_from_the_whole_request_not_the_title(self):
         # The title is request[:120]; drafting the body from it was vllm#65's real cut.

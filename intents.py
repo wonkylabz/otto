@@ -15,7 +15,7 @@ import facade
 import gateway
 import privacy
 import registry
-from contracts import _DATA_FENCE_PREAMBLE, _fenced, task_text
+from contracts import CARRIED_CONTEXT_MARK, _DATA_FENCE_PREAMBLE, _fenced, task_text
 from ui import trace
 
 
@@ -497,6 +497,8 @@ def pr_copy(request, summary=None, summary_is_error=False):
     errored attempt's `result` is a failure report about the RUN, never a description of the
     diff — and it is not always sentinel-shaped (a `claude -p` death hands back a raw stderr
     tail), so the flag decides and `_is_operational_sentinel` only backstops it."""
+    # Never task_text: it hands back the WHOLE request, carry included, when the task is empty.
+    request = (request or "").split(CARRIED_CONTEXT_MARK, 1)[0].strip()
     fallback = (request or "Otto automated change")[:120]
     if summary_is_error or _is_operational_sentinel(summary):
         summary = None
@@ -514,7 +516,7 @@ def pr_copy(request, summary=None, summary_is_error=False):
     body = ""
     if summary:
         body = _clip_words(summary.strip(), _PR_SUMMARY_CHARS) + "\n\n---\n"
-    req = task_text(request or "").strip()
+    req = request
     head = _clip_words(req.split("\n", 1)[0], _PR_REQUEST_LEAD_CHARS)
     body += f"_Automated by Otto for request:_ {head}"
     if head != req:
