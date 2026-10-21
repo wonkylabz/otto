@@ -69,6 +69,22 @@ class PrCopyTests(unittest.TestCase):
         self.assertIn("Pinned temporalio==1.30.0", out["body"])
         self.assertIn("_Automated by Otto for request:_", out["body"])
 
+    def test_a_long_request_is_never_cut_mid_word_in_the_body(self):
+        # vllm#65: the request carried an investigation, and a bare [:300] ended the body on
+        # "What you need to do — In the".
+        self._stub("Fix gateway-503 slide_by")
+        req = ("The latest New Relic alerts we deploy are failing. This is the investigation, "
+               "pls fix it\n\n" + "What you need to do — In the stg build log " * 40 + "END")
+        body = engine.pr_copy(req, summary="S " * 4000)["body"]
+        self.assertIn("pls fix it\n\n<details><summary>Full request</summary>", body)
+        self.assertIn("END\n\n</details>", body)
+        self.assertIn("S … _(truncated)_\n\n---", body)
+
+    def test_a_short_request_has_no_details_block(self):
+        self._stub("Pin versions")
+        body = engine.pr_copy("Pin the versions", summary="Done.")["body"]
+        self.assertTrue(body.endswith("_Automated by Otto for request:_ Pin the versions"))
+
     def test_a_supervisor_abort_summary_never_becomes_the_pr_description(self):
         # The result of a run whose LAST attempt was killed is just the abort sentinel — using
         # it to draft the title/body presents the failure as the change itself (PR #68's title
@@ -283,9 +299,9 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
 
     def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):
         src = workflow_src()
-        self.assertIn('"summary": (fix.get("result") or "")[:1500]', src)
+        self.assertIn('"summary": (fix.get("result") or "")[:8000]', src)
         self.assertIn('"summary_is_error": bool(fix.get("is_error"))', src)
-        self.assertIn('"summary": (result or "")[:1500],\n'
+        self.assertIn('"summary": (result or "")[:8000],\n'
                       '                     "summary_is_error": bool(out.get("is_error"))', src)
 
 

@@ -512,9 +512,29 @@ def pr_copy(request, summary=None, summary_is_error=False):
         title = fallback
     body = ""
     if summary:
-        body = summary.strip()[:1500] + "\n\n---\n"
-    body += f"_Automated by Otto for request:_ {(request or '').strip()[:300]}"
+        body = _clip_words(summary.strip(), _PR_SUMMARY_CHARS) + "\n\n---\n"
+    req = (request or "").strip()
+    head = _clip_words(req.split("\n", 1)[0], _PR_REQUEST_LEAD_CHARS)
+    body += f"_Automated by Otto for request:_ {head}"
+    if head != req:
+        body += ("\n\n<details><summary>Full request</summary>\n\n"
+                 f"{_clip_words(req, _PR_REQUEST_FULL_CHARS)}\n\n</details>")
     return {"title": title, "body": body}
+
+
+# A bare slice cut PR bodies mid-word with no marker (vllm#65). The workflow bounds the summary
+# at 8000, ABOVE _PR_SUMMARY_CHARS, so a long one is cut here, visibly.
+_PR_SUMMARY_CHARS = 6000
+_PR_REQUEST_LEAD_CHARS = 300
+_PR_REQUEST_FULL_CHARS = 20000
+
+
+def _clip_words(text, limit):
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    cut = cut[:max(cut.rfind(" "), cut.rfind("\n"), limit // 2)].rstrip()
+    return cut + " … _(truncated)_"
 
 
 def auto_engage_repo(request, repo_names, cap_name=None):

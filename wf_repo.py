@@ -146,7 +146,7 @@ class RepoFlowMixin:
         pr = await workflow.execute_activity(
             finalize_workspace,
             {"run_id": workflow.info().workflow_id, "title": request[:120],
-             "head": ws["head"], "summary": (result or "")[:1500],
+             "head": ws["head"], "summary": (result or "")[:8000],
              # The last rung's attempt ERRORED, so `result` is a report about the run (a turn
              # budget, a timeout, a stderr tail), not about the diff. The PR still opens — the
              # branch can hold real commits from an earlier rung — but its copy is drafted from
