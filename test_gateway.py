@@ -1604,6 +1604,9 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertEqual(nudges, [int(n * config.LOCAL_WRAP_UP_AT)], "told once, at the threshold")
         self.assertIn("tools", self.requests[-2])
         self.assertNotIn("tools", self.requests[-1])
+        saved = local_runtime._load_session(out["session_id"])
+        self.assertFalse([mm for mm in saved if "[Otto run budget]" in str(mm.get("content"))],
+                         "a resumed conversation would start under this run's stale budget")
 
     def test_the_wall_clock_also_triggers_the_wrap_up(self):
         t0 = 1000.0
