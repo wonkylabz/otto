@@ -40,6 +40,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import contextvars
+
 import attachments as attachments_mod
 import claude_cli
 import codex_cli
@@ -690,14 +692,91 @@ def _retry_after_s(e):
     return max(0.0, min(v, config.LOCAL_RETRY_MAX_BACKOFF_S)) if v >= 0 else None
 
 
+# The live draft of the reply (`claude_cli.PartialSink`), set by `run_json` for the run's turns.
+# None = nobody is watching, so `_post` asks for the plain non-streamed body.
+_PARTIAL = contextvars.ContextVar("otto_local_partial", default=None)
+# Endpoints that refused `stream`, by (base_url, model): learned once, never asked again.
+_NO_STREAM = set()
+
+
 def _post(m, body, timeout):
     """One raw POST to the local model's /chat/completions. Kept separate so tests can
-    script the model's turns without a network."""
+    script the model's turns without a network. Streams when a draft is being watched,
+    reassembled into the same non-streamed shape every caller reads."""
+    partial = _PARTIAL.get()
+    key = (m.get("base_url"), m.get("model"))
+    if partial is not None and key not in _NO_STREAM:
+        try:
+            return _post_stream(m, {**body, "stream": True,
+                                    "stream_options": {"include_usage": True}}, timeout, partial)
+        except urllib.error.HTTPError as e:
+            if e.code not in (400, 422):
+                raise
+            # Maybe the stream params, maybe the request: a plain retry tells the two apart.
+            data = _post_plain(m, body, timeout)
+            _NO_STREAM.add(key)
+            return data
+    return _post_plain(m, body, timeout)
+
+
+def _post_plain(m, body, timeout):
     req = urllib.request.Request(
         m["base_url"].rstrip("/") + "/chat/completions",
         method="POST", headers=gateway.request_headers(m), data=json.dumps(body).encode())
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
+
+
+def _post_stream(m, body, timeout, partial):
+    req = urllib.request.Request(
+        m["base_url"].rstrip("/") + "/chat/completions",
+        method="POST", headers=gateway.request_headers(m), data=json.dumps(body).encode())
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        if "text/event-stream" not in (r.headers.get("Content-Type") or ""):
+            return json.loads(r.read())     # the server ignored `stream`
+        partial.reset()
+        return _assemble_sse(r, partial)
+
+
+def _assemble_sse(lines, partial):
+    """SSE chunks -> the non-streamed `{"choices": [{"message", "finish_reason"}], "usage"}`.
+    Every string field of a delta concatenates (content, reasoning, …); tool calls merge by
+    index. Content deltas also feed the draft. Pure over an iterable of byte lines."""
+    msg, calls, finish, usage = {"role": "assistant"}, {}, None, None
+    for raw in lines:
+        line = raw.decode("utf-8", "replace").strip() if isinstance(raw, bytes) else raw.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        chunk = json.loads(payload)
+        if chunk.get("error"):
+            raise RuntimeError(f"stream error: {json.dumps(chunk['error'])[:400]}")
+        usage = chunk.get("usage") or usage
+        for choice in chunk.get("choices") or []:
+            finish = choice.get("finish_reason") or finish
+            delta = choice.get("delta") or {}
+            for k, v in delta.items():
+                if k == "tool_calls":
+                    for tc in v or []:
+                        cur = calls.setdefault(tc.get("index", len(calls)),
+                                               {"type": "function",
+                                                "function": {"name": "", "arguments": ""}})
+                        if tc.get("id"):
+                            cur["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        cur["function"]["name"] += fn.get("name") or ""
+                        cur["function"]["arguments"] += fn.get("arguments") or ""
+                elif isinstance(v, str) and k != "role":
+                    msg[k] = msg.get(k, "") + v
+                    if k == "content":
+                        partial.add(v)
+    partial.flush()
+    if calls:
+        msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+    msg.setdefault("content", None)
+    return {"choices": [{"message": msg, "finish_reason": finish}], "usage": usage or {}}
 
 
 def _context_fit(detail):
@@ -1190,6 +1269,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     wall_detail = None
     tools_used = set()             # tools this turn actually CALLED — the judge's real grant
     max_turns = m.get("max_turns") or config.LOCAL_RUNTIME_MAX_TURNS
+    draft = _PARTIAL.set(claude_cli.PartialSink(transcript) if transcript else None)
     try:
         for _turn in range(max_turns):
             if abort is not None and abort.is_set():
@@ -1365,6 +1445,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     except Exception as e:  # noqa: BLE001 - contract: an error dict, never a raise
         result, is_error = f"(local runtime error: {e})"[:500], True
     finally:
+        _PARTIAL.reset(draft)
         # Persist the session only for a SUCCESSFUL turn: saving on error left the failed
         # resume's unanswered user message (and duplicated context) in the stored history,
         # compounding on every retry (observed: a session with three stacked user turns).

@@ -177,6 +177,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._harness_stop = False
         self._published_stop = False
         self._spent = {"output": 0, "cost": 0.0}   # running token/cost total for the budget (Tier 1)
+        self._learned = 0                          # background LearnWorkflow children started
         # Per-run snapshot of the UI-editable runtime settings, taken once via the
         # snapshot_settings activity (see _run_impl). Deterministic code reads THIS, never
         # config.setting() — a live store read would let an Admin edit change a branch mid-run and
@@ -259,6 +260,36 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         if t is not None and t.get("dur") is None:
             t["dur"] = self._now_ms() - t["start"]
 
+    def _early_snapshot(self, params, resume, repo, unattended):
+        """Start the in-place-edit baseline WHILE routing runs — its repo refresh is network
+        time. None where no baseline is taken, or on a run recorded before the overlap."""
+        if (resume or repo or params.get("subtask") or unattended
+                or not workflow.patched("snapshot-alongside-routing")):
+            return None
+        return workflow.start_activity(snapshot_repos, {},
+                                       start_to_close_timeout=timedelta(seconds=300),
+                                       retry_policy=_RETRY)
+
+    async def _baseline_snapshot(self, early):
+        """The baseline the run is diffed against. A human wait (gate, clarification) makes an
+        early one stale — edits made meanwhile would read as the run's — so it is retaken."""
+        if early is not None and self._decision is None and self._clarification is None:
+            return await early
+        if early is not None:
+            early.cancel()
+        return await workflow.execute_activity(
+            snapshot_repos, {}, start_to_close_timeout=timedelta(seconds=300), retry_policy=_RETRY)
+
+    async def _settle_snapshot(self, early):
+        """Repo-mode needs no baseline, but the early one's refresh resets the managed clone
+        provisioning copies, so it must finish first."""
+        if early is None:
+            return
+        try:
+            await early
+        except exceptions.ActivityError:
+            pass
+
     async def _audit_attempt(self, payload, learn=False):
         """Audit one attempt, then — separately — learn from it.
 
@@ -288,11 +319,21 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
         if not learn:
             return
+        lesson = {k: payload.get(k) for k in ("request", "name", "result", "verdict", "repo")}
         try:
-            await workflow.execute_activity(
-                distil_memory, {k: payload.get(k)
-                                for k in ("request", "name", "result", "verdict", "repo")},
-                start_to_close_timeout=timedelta(seconds=420), retry_policy=_RETRY)
+            # An ABANDONED child, not an awaited activity: two tier calls sat between the reply
+            # and the reader on every turn, and nothing the run delivers depends on them.
+            if workflow.patched("learn-in-background"):
+                self._learned += 1
+                await workflow.start_child_workflow(
+                    LearnWorkflow.run, lesson,
+                    id=f"{workflow.info().workflow_id}-learn{self._learned}",
+                    parent_close_policy=workflow.ParentClosePolicy.ABANDON,
+                    execution_timeout=timedelta(minutes=30))
+            else:
+                await workflow.execute_activity(
+                    distil_memory, lesson,
+                    start_to_close_timeout=timedelta(seconds=420), retry_policy=_RETRY)
         except Exception:  # noqa: BLE001 - learning must never fail a delivered run
             pass
 
@@ -768,26 +809,41 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # the normal single-capability path below (no regression). Repo-mode (or a repo
             # candidate that may auto-engage it) is a focused single-cap task on one repo, so it
             # skips fan-out — parallel children would collide in the same clone anyway.
+            # A pinned capability (e.g. an event rule routing an alert straight to `incident`)
+            # skips Router #1; otherwise route normally. Pass the repo context (explicit or
+            # candidate) so repo-scoped project caps of that repo stay eligible (engine._repo_eligible).
+            route_args = {"request": request, "repo": repo or repo_hint}
+            routing = None
             self._enter("DECOMPOSE")
             if not pinned and not subtask and not repo and not repo_hint:
+                # Router #1 runs ALONGSIDE the decomposer, not after it: the two are independent
+                # and almost every request is one task, so serially the router's wait was pure
+                # latency. A fan-out discards the pick.
+                if workflow.patched("route-alongside-swarm"):
+                    self._enter("ROUTER")
+                    routing = workflow.start_activity(
+                        route_request, route_args,
+                        start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
                 plan = await workflow.execute_activity(
                     plan_swarm, request, start_to_close_timeout=timedelta(seconds=180),
                     retry_policy=_RETRY)
                 subtasks = plan.get("subtasks") or []
                 if len(subtasks) >= 2:
                     self._leave("DECOMPOSE")
+                    if routing is not None:
+                        routing.cancel()
                     swarm = await self._run_swarm(params, request, subtasks,
                                                   unattended, approval)
                     return swarm, None, request, None
             self._leave("DECOMPOSE")
 
-            # A pinned capability (e.g. an event rule routing an alert straight to `incident`)
-            # skips Router #1; otherwise route normally. Pass the repo context (explicit or
-            # candidate) so repo-scoped project caps of that repo stay eligible (engine._repo_eligible).
-            self._enter("ROUTER")
-            cap = pinned or await workflow.execute_activity(
-                route_request, {"request": request, "repo": repo or repo_hint},
-                start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+            if routing is not None:
+                cap = await routing
+            else:
+                self._enter("ROUTER")
+                cap = pinned or await workflow.execute_activity(
+                    route_request, route_args,
+                    start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
             self._cap = cap
             # Modifying a repo is inherently a write — force the gate even if the chosen cap
             # reads as read (the fresh-route write-intent guard below is then redundant for repo).
@@ -808,7 +864,18 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # reading (contracts._THINKING_PARTNER_FORMAT: "ending on a question is a complete
             # answer"). A separate clarify call ahead of it is a second LLM round-trip that
             # blocks the very first turn on a modal prompt — the opposite of what the mode is for.
-            if not subtask and not _is_brainstorm(cap) and (not unattended or params.get("clarify")):
+            classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))
+                            and not _is_brainstorm(cap))
+            clarify_due = (not subtask and not _is_brainstorm(cap)
+                           and (not unattended or params.get("clarify")))
+            # The write-intent guard reads only the request, so it runs WHILE clarify does; a
+            # clarification changes the request, and then it is asked again.
+            early_intent, asked = None, request
+            if classify_due and clarify_due and workflow.patched("classify-alongside-clarify"):
+                early_intent = workflow.start_activity(
+                    classify_request, {"request": request, "name": cap["name"]},
+                    start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+            if clarify_due:
                 self._enter("CLARIFY")
                 clar = await workflow.execute_activity(
                     clarify_request, {"request": request, "name": cap["name"],
@@ -843,13 +910,16 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # write-shaped musing ("should we just delete the QA loop?") would fall through to the
             # risk bump and park a conversation behind an approval card. The toolset is still the
             # real guard: cap.risk stays "read", so this turn holds no Edit/Write either way.
-            if (cap["risk"] == "read" and (not unattended or params.get("delegated"))
-                    and not _is_brainstorm(cap)):
-                intent = await workflow.execute_activity(
-                    classify_request, {"request": request, "name": cap["name"]},
-                    # 180s like route_request: an assistant redirect adds a router call
-                    # to the write-intent one (a timeout is not replayed — no patch needed).
-                    start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY)
+            if early_intent is not None and request != asked:
+                early_intent.cancel()
+                early_intent = None
+            if classify_due:
+                intent = (await early_intent if early_intent is not None
+                          else await workflow.execute_activity(
+                              classify_request, {"request": request, "name": cap["name"]},
+                              # 180s like route_request: an assistant redirect adds a router call
+                              # to the write-intent one (a timeout is not replayed — no patch needed).
+                              start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY))
                 if intent.get("write"):
                     if intent.get("redirect") and not pinned:
                         # The general assistant only ANSWERS (its prompt forbids acting), so a
@@ -967,6 +1037,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # left untouched (no needless clone). Allowlisting is enforced upstream (poll_board).
         repo_hint = params.get("repo_hint") if not resume else None
 
+        early_snap = self._early_snapshot(params, resume, repo, unattended)
         done, cap, request, subtask = await self._route_or_resume(
             params, request, resume, unattended, approval, reply_to, repo, repo_hint)
         if done is not None:
@@ -1146,6 +1217,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # it. Provisioned AFTER the gate, so a denied/skipped write never clones anything.
         ws, cwd, pre_snap = None, None, None
         if repo:
+            await self._settle_snapshot(early_snap)
             # WHICH BRANCH the clone starts from. Normally a fresh one off the default, but a
             # request naming an OPEN pull request in this repo is asking for work on THAT PR's
             # code, which only exists on its head branch (`workspace.pr_target`). Without this
@@ -1174,9 +1246,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # live checkout (via Bash) is flagged afterwards instead of happening silently — the
             # "forgot to pick a repo" case (issue #59). Unattended automation is deliberately
             # configured, so it's left unsnapshotted (a noted limitation).
-            snap = await workflow.execute_activity(
-                snapshot_repos, {}, start_to_close_timeout=timedelta(seconds=300), retry_policy=_RETRY)
-            pre_snap = snap.get("snap") or None
+            pre_snap = (await self._baseline_snapshot(early_snap)).get("snap") or None
 
         # Run under the REAL Temporal workflow id (not an engine-minted counter id), so the
         # audit trail, transcripts, and board cards all correlate on the same identifier.
@@ -1933,6 +2003,18 @@ class PrReviewPollWorkflow:
         return await workflow.execute_activity(
             poll_pr_reviews, {}, start_to_close_timeout=timedelta(minutes=10),
             heartbeat_timeout=_HEARTBEAT, retry_policy=_RETRY)
+
+
+@workflow.defn
+class LearnWorkflow:
+    """Memory distillation for one finished attempt, started ABANDONED by `_audit_attempt` so the
+    run delivers without waiting on it. Best-effort like the activity it wraps."""
+
+    @workflow.run
+    async def run(self, lesson) -> None:
+        await workflow.execute_activity(
+            distil_memory, lesson,
+            start_to_close_timeout=timedelta(seconds=420), retry_policy=_RETRY)
 
 
 @workflow.defn

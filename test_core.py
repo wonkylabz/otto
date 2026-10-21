@@ -4563,7 +4563,8 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 92807 -> 93096: a re-readied board card runs again as the next run generation.
     # 94372 -> 94612: a factory repo with code is assessed, never scaffolded over.
     # 94612 -> 94885: onboarding applies a profile as a full assignment, only as previewed.
-    MAX_RULES_BYTES = 94885   # fetched tier — bounded, but looser; it is not always loaded
+    # 94885 -> 95628: chat-flow — learning off the reply path, overlapped pre-run calls, live draft.
+    MAX_RULES_BYTES = 95628   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

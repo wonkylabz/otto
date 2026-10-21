@@ -176,7 +176,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
   // run that shows the human the actual operations at the approval gate. Two different passes
   // that both used to be called "PLAN" in this pipe, which is what made the diagram misrepresent
   // when the real planning work happens (it runs right before GATE, not right after INGRESS).
-  let decomposeDone=!!flags.decomposeDone, previewDone=false, swarmShown=false, isSwarm=false, progressTick=0;
+  let decomposeDone=!!flags.decomposeDone, previewDone=false, swarmShown=false, isSwarm=false, progressTick=0, drafting=false;
   // PLAN's node repaints on every 450ms poll but the transcript is tailed every 4th, so writing
   // the event count straight into setNode showed it one poll in four and blank for three. HOLD
   // the last detail line instead; RUN never had this because its setNode is latched behind
@@ -376,7 +376,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
     // "running" for all of it, so `runActive` cannot stand in for "there is a transcript to
     // tail". Derived, never a latched flag: it must go false again the moment PLAN finishes.
     const planActive = !previewDone && !gateDone && !!(times.PLAN && times.PLAN.start && times.PLAN.dur==null);
-    if((runActive || planActive) && st.state==="running" && !isSwarm && (progressTick++ % 4 === 0)){
+    if((runActive || planActive) && st.state==="running" && !isSwarm && (drafting || progressTick++ % 4 === 0)){
       try{
         const pg=await (await fetch("/api/progress?id="+encodeURIComponent(wid))).json();
         if(!alive()) return;
@@ -405,6 +405,9 @@ async function watchLoop(wid, chatId, content, sess, flags){
           // review read as a stalled attempt.
           const part=pg.part?(" · "+pg.part):"";
           setNode("RUN","active","executing…"+att+" · "+pg.events+" events");
+          // The reply as it streams: polled every tick once it starts, replaced by the result.
+          if(pg.partial){ drafting=true; showDraft(content, pg.partial); }
+          else if(drafting){ drafting=false; const d=content&&content.querySelector(".draft"); if(d) d.remove(); }
           if(pg.idle_s>180){
             showThinking(content,"⚠ no transcript activity for "+Math.round(pg.idle_s/60)+" min"+part+" — verifying, or possibly stuck");
           } else if(pg.last){
@@ -753,8 +756,16 @@ function showThinking(content, label){
     content.appendChild(el); }
   el.querySelector(".tlabel").textContent=label; scroll();
 }
+function showDraft(content, text){
+  if(!content) return;
+  let el=content.querySelector(".draft");
+  if(!el){ el=document.createElement("div"); el.className="result draft";
+    content.insertBefore(el, content.querySelector(".thinking")); }
+  el.innerHTML=renderMD(text); scroll();
+}
 function clearThinking(content){
   const el=content&&content.querySelector(".thinking"); if(el) el.remove();
+  const d=content&&content.querySelector(".draft"); if(d) d.remove();
   clearSupervisor(content);
 }
 /* Shadow-mode AI supervisor indicator (issue #143): a small pill in the message title (.who),

@@ -8,6 +8,9 @@
 - **The ORDER of a run's activity commands is its replay contract** — reordering, adding or dropping one NondeterminismErrors every run in flight, and no restart fixes it. A recorded history in `regress/fixtures/` guards it (`WorkflowReplayCompatibilityTests`).
 - **A snapshot missing a key poisons the run forever** — `self._settings` is a recorded activity result replayed verbatim, so a run in flight when a key was added KeyErrors on every replay. Only `temporal workflow terminate` + resubmit clears it.
 
+- **Learning never holds the reply** — `distil_memory` runs in an ABANDONED `LearnWorkflow` child (`BrainstormRunTests`).
+- **Independent pre-run calls OVERLAP** (router∥decomposer, write-intent∥clarify, repo baseline∥routing) — a clarification re-asks the guard, a human wait retakes the baseline (`PreRunOverlapTests`).
+
 ## Plan-first approval preview
 
 A read-only plan (`--permission-mode plan`, scoped tools) before running. Skipped whenever `approval:"auto"`, and on a discussion turn (routing-capabilities.md).

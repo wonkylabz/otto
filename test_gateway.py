@@ -11206,3 +11206,121 @@ class FastLaneReviewRoundTwoTests(unittest.TestCase):
                          "a channel the bot does not read grants nothing, however it was stored")
         self.assertFalse(slack.fast_lane_channel({}, "C0SANDBOX", slack.BOT), "default: DMs only")
         self.assertFalse(slack.fast_lane_channel(cfg, None, slack.BOT))
+
+
+class StreamingDraftTests(unittest.TestCase):
+    """The chat's live draft: both runtimes stream the reply into `<transcript>.partial`, and
+    `/api/progress` serves it for the run's own attempt only."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.transcript = os.path.join(self.tmp, "web-x-a1.jsonl")
+
+    def _sse(self, *chunks):
+        return [f"data: {json.dumps(c)}\n".encode() for c in chunks] + [b"data: [DONE]\n"]
+
+    def test_sse_reassembles_the_non_streamed_shape(self):
+        sink = claude_cli.PartialSink(self.transcript)
+        data = local_runtime._assemble_sse(self._sse(
+            {"choices": [{"delta": {"role": "assistant", "content": "Hel"}}]},
+            {"choices": [{"delta": {"content": "lo", "reasoning": "hm"}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "c1", "function": {"name": "Read", "arguments": '{"pa'}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": 'th":"x"}'}}]},
+                "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}}), sink)
+        msg = data["choices"][0]["message"]
+        self.assertEqual(msg["content"], "Hello")
+        self.assertEqual(msg["reasoning"], "hm")
+        self.assertEqual(msg["tool_calls"], [{"type": "function", "id": "c1",
+                                              "function": {"name": "Read",
+                                                           "arguments": '{"path":"x"}'}}])
+        self.assertEqual(data["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(data["usage"]["completion_tokens"], 3)
+        with open(claude_cli.partial_path(self.transcript)) as f:
+            self.assertEqual(f.read(), "Hello")
+
+    def test_a_stream_error_chunk_raises(self):
+        with self.assertRaises(RuntimeError):
+            local_runtime._assemble_sse(self._sse({"error": {"message": "boom"}}),
+                                        claude_cli.PartialSink(self.transcript))
+
+    def test_draft_is_scrubbed(self):
+        sink = claude_cli.PartialSink(self.transcript)
+        sink.add("key sk-ant-api03-" + "A" * 90)
+        sink.flush()
+        with open(sink.path) as f:
+            self.assertNotIn("A" * 90, f.read())
+
+    def test_claude_draft_skips_subagents_and_restarts_per_message(self):
+        sink = claude_cli.PartialSink(self.transcript)
+        delta = lambda t, parent=None: {"type": "stream_event", "parent_tool_use_id": parent,
+                                        "event": {"type": "content_block_delta",
+                                                  "delta": {"type": "text_delta", "text": t}}}
+        claude_cli._feed_partial(sink, delta("old"))
+        claude_cli._feed_partial(sink, {"type": "stream_event",
+                                        "event": {"type": "message_start"}})
+        claude_cli._feed_partial(sink, delta("new"))
+        claude_cli._feed_partial(sink, delta("sub", parent="toolu_1"))
+        self.assertEqual(sink.text, "new")
+
+    def test_a_refused_stream_falls_back_once_and_is_remembered(self):
+        m = {"base_url": "http://x", "model": "m-fallback"}
+        calls = []
+
+        def stream(*a):
+            calls.append("stream")
+            raise urllib.error.HTTPError("u", 400, "bad", {}, io.BytesIO(b"stream_options"))
+
+        def plain(*a):
+            calls.append("plain")
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        token = local_runtime._PARTIAL.set(claude_cli.PartialSink(self.transcript))
+        self.addCleanup(local_runtime._PARTIAL.reset, token)
+        self.addCleanup(local_runtime._NO_STREAM.discard, ("http://x", "m-fallback"))
+        with mock.patch.object(local_runtime, "_post_stream", stream), \
+                mock.patch.object(local_runtime, "_post_plain", plain):
+            local_runtime._post(m, {}, 5)
+            local_runtime._post(m, {}, 5)
+        self.assertEqual(calls, ["stream", "plain", "plain"])
+
+    def test_no_watcher_means_no_stream(self):
+        with mock.patch.object(local_runtime, "_post_stream") as stream, \
+                mock.patch.object(local_runtime, "_post_plain", return_value={}) as plain:
+            local_runtime._post({"base_url": "http://x", "model": "m"}, {}, 5)
+        stream.assert_not_called()
+        plain.assert_called_once()
+
+    def test_progress_serves_the_own_attempts_draft_only(self):
+        with mock.patch.object(claude_cli, "TRANSCRIPTS", self.tmp):
+            for name in ("web-x-a1", "web-x-rev0-a1"):
+                with open(os.path.join(self.tmp, name + ".jsonl"), "w") as f:
+                    f.write('{"type":"otto-meta"}\n')
+                with open(os.path.join(self.tmp, name + ".partial"), "w") as f:
+                    f.write("draft of " + name)
+            os.utime(os.path.join(self.tmp, "web-x-rev0-a1.jsonl"), (1, 1))
+            self.assertEqual(server._run_progress("web-x")["partial"], "draft of web-x-a1")
+            os.utime(os.path.join(self.tmp, "web-x-a1.jsonl"), (0, 0))
+            self.assertIsNone(server._run_progress("web-x")["partial"])
+
+
+
+class BrainstormHandoffSkipTests(unittest.TestCase):
+    def test_brainstorm_follow_up_skips_the_handoff_classifier(self):
+        """The handoff is a blocking LLM call ahead of every follow-up; brainstorm never pays it."""
+        asked, sent = [], []
+        h = object.__new__(server.Handler)
+        h._send = lambda code, body: sent.append(json.loads(body))
+        for name in (config.BRAINSTORM_CAP, "assistant"):
+            cap = types.SimpleNamespace(name=name, kind="skill", risk="read", description="")
+            with mock.patch.object(server, "CAPS", [cap]), \
+                    mock.patch.object(server.engine, "followup_handoff",
+                                      lambda *a: asked.append(name) or "do X"), \
+                    mock.patch.object(server.tc, "run", lambda c: c.close()):
+                h._post_continue({"cap": {"name": name}, "message": "go", "prev": "options",
+                                  "session_id": "s1"})
+        self.assertEqual(asked, ["assistant"])
+        self.assertEqual(sent[-1], {"handoff": {"request": "do X"}})
