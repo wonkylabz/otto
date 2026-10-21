@@ -1955,7 +1955,7 @@ class PlanPreviewLocalSessionTests(unittest.TestCase):
         offered = {t["function"]["name"]
                    for t in local_runtime._offered_tools(config.PLAN_TOOLS)}
         self.assertTrue(offered, "the local preview was handed no tools at all")
-        self.assertEqual(offered - {"Read", "Grep", "Glob", "Bash"}, set(),
+        self.assertEqual(offered - {"Read", "Grep", "Glob", "Bash", "Skill"}, set(),
                          "the local plan preview can act before the human approves anything")
         self.assertIn("Bash", offered,
                       "the scoped gh reads were dropped — a ticket-driven task plans blind")

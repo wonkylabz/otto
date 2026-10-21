@@ -10,7 +10,7 @@
 - **A def's credential is RESOLVED into `data/.mcp-*.json` (0600, read-denied family), never `${VAR}`** — the env is the only other lane and the run's own Bash inherits it, so wiring ONE server published that token to every run (`McpConfigResolutionTests`).
 - **A spawned server inherits the operator's env MINUS Otto's credentials** (`mcp_client._inherited_env`) — `run.sh` exports `.env` into the worker, so third-party code got the Slack tokens and `OTTO_SECRET_COMMAND`, the key to every other secret (`McpUserScopeSpawnTests`).
 - **`slack_mcp.py` imports NOTHING of Otto's** — it is spawned with `OTTO_*` stripped, so `config.secret` would find nothing and Temporal would load per run; its token arrives as the def's own `SLACK_TOKEN` (`SlackAdminMcpTests`, `SlackAdminMcpSpawnTests`).
-- **Servable/unservable is the whole design**: a stdio server (`command`+`args`) is a subprocess we spawn. A claude.ai *connector* (Gmail/Slack/Notion) is remote OAuth inside Claude Code's own session: nothing to spawn, no token. `servable()` refuses anything not stdio.
+- **Servable/unservable is the whole design**: a stdio server (`command`+`args`) is a subprocess we spawn; a claude.ai *connector* is OAuth inside Claude Code. `servable()` refuses non-stdio.
 - **A cap needing a connector must not run locally** — `mcp_client.unservable(cap)` keeps it on Claude (strict mode stops instead). The Admin Execution dropdown disables local options for such a cap.
 - **A connector blocks a local run by REQUEST, not only by declaration** (`mcp_client.connectors_named`) — the generalists declare no `tools:`, so the cap-side test is silent for the caps handed anything, and the model hunts credentials to hand-roll it (`LocalConnectorGapTests`).
 - **What the local backend CANNOT reach is declared in-context** (`mcp_client.connector_note`) — outside the stdio branch: a connector is absent either way. 4/4 without it the model plans to read `~/.netrc`; 4/4 with it, it reports the blocker (`LocalConnectorGapTests`).
@@ -19,9 +19,10 @@
 - **A declaration is `tools:` frontmatter ∪ Admin's per-cap `mcp`** (`POST /api/cap-mcp`) — frontmatter alone can't say it: it is the cap's COMPLETE grant on the Claude path, so naming a server there revokes Bash/Edit (`LocalMcpRegistryTests`).
 - **UNDECLARED = the REQUEST picks the fleet, and a pointer can't** — "work on this ticket \<url\>" matched one stopword, so a New Relic task got 2 k8s tools and 0 of 38 NR ones. Hence `_STOP` + `lexicon.tokens` (`LocalMcpToolBudgetTests`).
 - **`_rank(owner=)` takes from each server in TURN** — nothing scoring ties every tool, so a flat top-N cut drained them in order and the last server got none, invisibly (`LocalMcpToolBudgetTests`).
-- Tool catalogue is cached (`data/mcp-tools.json`, keyed on a sha256 of the def — never builtin `hash()`, which is salted per process, so the cache reads back empty in every other one) so ranking needn't spawn every server.
-- A server that can't start is negatively cached (`LOCAL_MCP_PROBE_TTL_S`) so one dead server doesn't force a cold-cache "spawn everything" fallback, and is declared in-context (not fatal). Kill switch `OTTO_LOCAL_MCP=0`; pool closed in `run_json`'s `finally`.
-- **Still missing** (env, not code): the worker has no `AWS_*`/`aws-vault`, so `aws-mcp`/EKS auth as nobody on either backend.
+- Tool catalogue is cached (`data/mcp-tools.json`, keyed on a def sha256 — builtin `hash()` is salted per process, so it reads back empty) — ranking spawns nothing.
+- A server that can't start is negatively cached (`LOCAL_MCP_PROBE_TTL_S`) so one dead server can't force a cold-cache spawn-all; declared in-context, not fatal. Kill switch `OTTO_LOCAL_MCP=0`; pool closed in `run_json`'s `finally`.
+- **An agent's `skills:` preload is LISTED, `Skill` local** (`contracts._skills_note`) — only Claude Code honours it; local models hand-rolled them (`LocalSkillToolTests`).
+- **Still missing** (env): the worker has no `AWS_*`/`aws-vault`, so `aws-mcp`/EKS auth as nobody on either backend.
 
 ## Tools + guardrails
 
