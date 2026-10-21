@@ -1588,6 +1588,30 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertTrue(out["is_error"])
         self.assertIn("turn budget", out["result"])
 
+    def test_a_run_near_its_turn_budget_is_told_to_report_and_its_last_turn_has_no_tools(self):
+        """evt-s-3b2da11165b3: a local run swept past its cap's own timebox toward the turn cap,
+        which returns an error and nothing it found. Near the cap it must deliver instead."""
+        n = 8
+        model = dict(self.MODEL, max_turns=n)
+        self._script([self._tool_call("Glob", {"pattern": "*"}, cid=f"c{i}") for i in range(n - 1)]
+                     + [{"role": "assistant", "content": "**TLDR** — preliminary: X, open: Y"}])
+        out = local_runtime.run_json("investigate", allowed_tools=config.READ_TOOLS,
+                                     model_entry=model, cwd=self.tmp)
+        self.assertFalse(out["is_error"], out["result"])
+        self.assertIn("preliminary", out["result"])
+        nudges = [i for i, b in enumerate(self.requests)
+                  if "[Otto run budget]" in str(b["messages"][-1].get("content"))]
+        self.assertEqual(nudges, [int(n * config.LOCAL_WRAP_UP_AT)], "told once, at the threshold")
+        self.assertIn("tools", self.requests[-2])
+        self.assertNotIn("tools", self.requests[-1])
+
+    def test_the_wall_clock_also_triggers_the_wrap_up(self):
+        t0 = 1000.0
+        with mock.patch.object(local_runtime.time, "time", return_value=t0 + 80):
+            self.assertEqual(local_runtime._budget_used(1, 60, t0, t0 + 100), "80% of its time")
+        with mock.patch.object(local_runtime.time, "time", return_value=t0 + 10):
+            self.assertEqual(local_runtime._budget_used(1, 60, t0, t0 + 100), "")
+
     def test_model_failure_is_an_error_dict_never_a_raise(self):
         def boom(m, body, timeout):
             raise OSError("connection refused")
