@@ -39,6 +39,63 @@ def transcript_path(wid, attempt):
     return os.path.join(TRANSCRIPTS, f"{wid}-a{attempt}.jsonl")
 
 
+def partial_path(transcript):
+    """The live DRAFT of the reply an attempt is writing, beside its transcript. Its own file,
+    not transcript lines: a token delta per line would bury every tool call the Debug drawer and
+    the supervisor read, and swell `events` into a number that measures nothing."""
+    return transcript[:-len(".jsonl")] + ".partial" if transcript else None
+
+
+class PartialSink:
+    """Accumulates the reply as it streams and rewrites the draft file, throttled. Scrubbed like
+    a transcript line and swapped in atomically, so a reader never sees half a write. Both
+    runtimes feed it; a write failure costs the draft, never the run."""
+
+    EVERY_S = 0.25
+
+    def __init__(self, transcript):
+        self.path = partial_path(transcript)
+        self.text, self._at = "", 0.0
+
+    def reset(self):
+        self.text = ""
+
+    def add(self, delta):
+        if not self.path or not delta:
+            return
+        self.text += delta
+        if time.time() - self._at >= self.EVERY_S:
+            self.flush()
+
+    def flush(self):
+        if not self.path or not self.text:
+            return
+        self._at = time.time()
+        try:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(privacy.redact(self.text))
+            os.replace(tmp, self.path)
+        except OSError:  # noqa: BLE001 - a lost draft must never break the run
+            pass
+
+
+def _feed_partial(partial, event):
+    """Route one top-level `stream_event` into the draft. A subagent's (`parent_tool_use_id`) is
+    not the reply, and a new message starts a new draft."""
+    if event.get("parent_tool_use_id"):
+        return
+    ev = event.get("event") or {}
+    if ev.get("type") == "message_start":
+        partial.reset()
+    elif ev.get("type") == "content_block_delta":
+        delta = ev.get("delta") or {}
+        if delta.get("type") == "text_delta":
+            partial.add(delta.get("text") or "")
+    elif ev.get("type") == "message_stop":
+        partial.flush()
+
+
 def keep_walled_transcript(transcript, wall):
     """Move a walled local pass's transcript aside before a Claude re-dispatch truncates it.
 
@@ -131,7 +188,7 @@ def gc_transcripts(ttl_h=None):
     for name in os.listdir(TRANSCRIPTS):
         p = os.path.join(TRANSCRIPTS, name)
         try:
-            if name.endswith(".jsonl") and os.path.getmtime(p) < cutoff:
+            if name.endswith((".jsonl", ".partial", ".partial.tmp")) and os.path.getmtime(p) < cutoff:
                 os.unlink(p)
         except OSError:
             pass
@@ -458,6 +515,9 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     # Only a transcript has a reader for thinking (the debug drawer); a cheap tier gains nothing.
     if transcript and config.setting("thinking_display") == "summarized":
         cmd += ["--thinking-display", "summarized"]
+    # Token deltas feed the chat's live draft (`PartialSink`); only a transcript has a reader.
+    if transcript:
+        cmd += ["--include-partial-messages"]
     # `--permission-mode plan` is how the read-only PLAN preview reads private tickets: without
     # it, a SCOPED Bash allow (e.g. Bash(gh issue view:*)) still trips Claude Code's command
     # classifier, which gates any NETWORK command to interactive approval that a headless
@@ -607,8 +667,15 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     # the judge the floor as if it were exhaustive is what made it call real Calendar/Gmail/Slack
     # results fabricated (see judging.verify).
     seen, worked, failed = {}, set(), set()
+    partial = PartialSink(transcript)
     try:
         for line in proc.stdout:
+            if line.startswith('{"type":"stream_event"'):
+                try:
+                    _feed_partial(partial, json.loads(line))
+                except ValueError:
+                    pass
+                continue
             if sink:
                 sink.write(transcript_line(line))
                 sink.flush()                     # live tailers (chat progress) see it now
@@ -640,6 +707,7 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
         _close_stdin()
         proc.wait()
     finally:
+        partial.flush()
         _close_stdin()
         watchdog.cancel()
         # A steer's transcript record is written by that thread AFTER the delivery that unblocks

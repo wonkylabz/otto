@@ -62,6 +62,8 @@
 
 - **Every transcript line is scrubbed as it is written** (`claude_cli.transcript_line`, the ONE writer for both backends) — a run handling a credential otherwise leaves it in plaintext for the whole TTL; forensics needs the shape, never the bytes (`RedactTests`).
 
+- **The reply's live draft is a SIDECAR** (`claude_cli.PartialSink`, `<attempt>.partial`), never transcript lines — a delta per line buries what Debug and the supervisor read. Scrubbed; own attempt only (`StreamingDraftTests`).
+
 Both backends append `data/transcripts/<wid>-a<attempt>.jsonl` (TTL `TRANSCRIPT_TTL_H`). Live: `/api/progress`; full: `/api/run/detail`.
 
 ## The trace log

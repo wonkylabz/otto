@@ -4778,10 +4778,10 @@ class BrainstormModeTests(unittest.TestCase):
         `intent["redirect"]` is skipped for a PINNED cap, so a write-shaped musing would fall
         through to the risk bump and park the conversation behind an approval card."""
         src = workflow_src()
-        self.assertIn('if not subtask and not _is_brainstorm(cap) and '
-                      '(not unattended or params.get("clarify")):', src)
-        self.assertIn('if (cap["risk"] == "read" and (not unattended or params.get("delegated"))\n'
-                      '                    and not _is_brainstorm(cap)):', src)
+        self.assertIn('clarify_due = (not subtask and not _is_brainstorm(cap)\n'
+                      '                           and (not unattended or params.get("clarify")))', src)
+        self.assertIn('classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))\n'
+                      '                            and not _is_brainstorm(cap))', src)
 
     def test_a_follow_up_never_re_classifies_out_of_the_mode(self):
         """A bound session has no redirect available, so an up-classify on turn 4 ("so we'd just

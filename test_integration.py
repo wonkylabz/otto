@@ -4560,6 +4560,83 @@ class PreAuthorizedGateTests(unittest.IsolatedAsyncioTestCase):
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class PreRunOverlapTests(unittest.IsolatedAsyncioTestCase):
+    """A fresh interactive turn's independent pre-run calls OVERLAP: the router runs while the
+    decomposer does, the write-intent guard while clarify does, and the repo baseline while
+    routing does. Each waits for the call it must overlap with, so the serial order deadlocks
+    into a recorded False instead of passing slowly."""
+
+    def setUp(self):
+        import threading
+        import activities
+        import workspace
+        self.activities, self.workspace = activities, workspace
+        cap = registry.Capability("skill", "demo-read", "answers questions")
+        cap.risk = "read"
+        self._orig = {n: getattr(engine, n) for n in
+                      ("plan", "decompose", "clarify", "run_attempt", "verify", "record_attempt",
+                       "request_write_intent", "candidate_repo")}
+        self._orig_ws = (workspace.snapshot, workspace.refresh_repos)
+        self._orig_caps = activities._caps
+        activities._caps = [cap]
+        ev = {k: threading.Event() for k in ("routed", "classified", "snapped")}
+        self.overlap = {}
+
+        def waits(name, on):
+            self.overlap[name] = ev[on].wait(5)
+
+        def route(request, caps, project_root=None):
+            waits("route_vs_snapshot", "snapped")
+            ev["routed"].set()
+            return cap
+        engine.plan = route
+        engine.decompose = lambda request, caps, project_root=None: waits(
+            "swarm_vs_route", "routed") or []
+        engine.clarify = lambda request, c, **k: waits("clarify_vs_classify", "classified")
+        engine.request_write_intent = lambda request, c: ev["classified"].set() or False
+        engine.candidate_repo = lambda request, names: None
+        workspace.refresh_repos = lambda *a, **k: None
+        workspace.snapshot = lambda: ev["snapped"].set() or {}
+        engine.verify = lambda *a, **k: {"passed": True, "critique": ""}
+        engine.record_attempt = lambda *a, **k: None
+        engine.run_attempt = lambda request, cap, **k: {
+            "workflow": k.get("wid") or "wf-ov", "result": "answer", "cost": 0.0,
+            "session_id": "s", "model": "m", "attempt": k.get("attempt", 1)}
+
+    def tearDown(self):
+        for n, fn in self._orig.items():
+            setattr(engine, n, fn)
+        self.workspace.snapshot, self.workspace.refresh_repos = self._orig_ws
+        self.activities._caps = self._orig_caps
+
+    async def test_independent_pre_run_calls_overlap(self):
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, classify_request, deliver_result,
+                                detect_repo_changes, finalize_terminal, notify_human, open_chat,
+                                plan_swarm, record_attempt, record_chat, route_request,
+                                snapshot_settings, run_capability, snapshot_repos,
+                                verify_capability)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                async with Worker(
+                    env.client, task_queue="ovq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, plan_swarm, clarify_request,
+                                classify_request, run_capability, verify_capability,
+                                record_attempt, snapshot_repos, detect_repo_changes,
+                                deliver_result, record_chat, open_chat, notify_human,
+                                finalize_terminal],
+                    activity_executor=ex,
+                ):
+                    out = await env.client.execute_workflow(
+                        OttoWorkflow.run, {"request": "why is the build red?"},
+                        id="ov-" + uuid.uuid4().hex[:8], task_queue="ovq")
+        self.assertEqual(out["result"], "answer")
+        self.assertEqual(self.overlap, {"route_vs_snapshot": True, "swarm_vs_route": True,
+                                        "clarify_vs_classify": True})
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
 class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
     """A FRESH request that Router #1 misroutes to a READ-classified capability, but which
     actually asks to mutate something ("create a ticket and add it to the board"), must still
@@ -5041,6 +5118,9 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("did[sub B]", out["result"])
         self.assertEqual(len(out["swarm"]), 2)           # one part per sub-task
         self.assertEqual(self.merge_audience, [None])    # no reply target -> operator report
+        # The router ran alongside the decomposer; its span must close, or the board's stage
+        # chip reads "routing" for the whole fan-out.
+        self.assertIsNotNone(out["times"]["ROUTER"]["dur"])
 
     async def test_a_dead_child_names_its_cause_and_needs_a_human(self):
         """Issue #37: the parent rendered `(sub-task failed: ChildWorkflowError)` — Temporal's
@@ -8251,6 +8331,46 @@ class BrainstormRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["result"], "Two options, and I'd take the second.")
         self.assertNotIn("⚠", out["result"])
         self.assertEqual(out["cap"]["name"], config.BRAINSTORM_CAP)
+
+    async def test_the_reply_does_not_wait_for_memory_learning(self):
+        """Learning runs in an ABANDONED child (`LearnWorkflow`): the run returns while
+        `distil_memory` is still busy, instead of holding the reply for two tier calls."""
+        import asyncio
+        import threading
+        import uuid
+        from temporalio import activity
+        from workflows import LearnWorkflow, OttoWorkflow
+        from activities import (estop_check, record_attempt, record_chat, run_capability,
+                                snapshot_repos, snapshot_settings, detect_repo_changes)
+        release, started = threading.Event(), threading.Event()
+
+        @activity.defn(name="distil_memory")
+        def slow_distil(payload):
+            started.set()
+            release.wait(30)
+            return {}
+
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="bsl", workflows=[OttoWorkflow, LearnWorkflow],
+                    activities=[snapshot_settings, estop_check, run_capability, record_attempt,
+                                snapshot_repos, detect_repo_changes, record_chat, slow_distil],
+                    activity_executor=ex,
+                ):
+                    try:
+                        out = await asyncio.wait_for(env.client.execute_workflow(
+                            OttoWorkflow.run,
+                            {"request": "should we split the gate out?",
+                             "cap": {"name": config.BRAINSTORM_CAP, "kind": "custom",
+                                     "risk": "read"}},
+                            id="bs-" + uuid.uuid4().hex[:8], task_queue="bsl"), 10)
+                        self.assertEqual(out["result"], "Two options, and I'd take the second.")
+                        self.assertTrue(await asyncio.to_thread(started.wait, 10),
+                                        "learning never started")
+                        self.assertFalse(release.is_set())
+                    finally:
+                        release.set()
 
     async def test_the_mode_outranks_a_conversational_delivery_target(self):
         """A pinned /brainstorm from Slack is still a brainstorm: the capability decides the

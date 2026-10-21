@@ -13,7 +13,7 @@ import os
 
 import activities
 from workflows import (BoardPollWorkflow, FactorySprintWorkflow, OttoWorkflow,
-                       PrReviewPollWorkflow, ReaperWorkflow, SlackPollWorkflow)
+                       PrReviewPollWorkflow, ReaperWorkflow, SlackPollWorkflow, LearnWorkflow)
 
 TASK_QUEUE = os.environ.get("OTTO_TASK_QUEUE", "otto")
 
@@ -53,7 +53,7 @@ async def main():
         worker = Worker(
             client,
             task_queue=TASK_QUEUE,
-            workflows=[OttoWorkflow, BoardPollWorkflow, PrReviewPollWorkflow, ReaperWorkflow,
+            workflows=[OttoWorkflow, LearnWorkflow, BoardPollWorkflow, PrReviewPollWorkflow, ReaperWorkflow,
                        SlackPollWorkflow, FactorySprintWorkflow],
             activities=ACTIVITIES,
             activity_executor=executor,

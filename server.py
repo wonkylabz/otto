@@ -339,9 +339,26 @@ def _run_progress(wid):
             supervisor_last = {"at_s": event.get("at_s"), "verdict": event.get("verdict"),
                                "critique": event.get("critique")}
             break
+    # The reply streaming into its draft file writes no transcript line, so the draft's mtime
+    # counts as activity too, or a long answer reads as a stalled run.
+    # Only the run's OWN attempt drafts the reply the reader gets; a preview, a post-PR round or
+    # a delegate's report is not what lands in the chat.
+    partial, mtime = None, stat.st_mtime
+    try:
+        if os.path.basename(best) != f"{wid}-a{best_attempt}.jsonl":
+            raise OSError
+        with open(claude_cli.partial_path(best)) as f:
+            partial = f.read()[-_PARTIAL_CHARS:]
+        mtime = max(mtime, os.stat(claude_cli.partial_path(best)).st_mtime)
+    except (OSError, TypeError):
+        pass
     return {"found": True, "attempt": best_attempt, "events": events_n, "part": best_part,
-            "idle_s": max(0.0, round(time.time() - stat.st_mtime, 1)), "last": last,
-            "supervised": supervised, "supervisor_last": supervisor_last}
+            "idle_s": max(0.0, round(time.time() - mtime, 1)), "last": last,
+            "supervised": supervised, "supervisor_last": supervisor_last,
+            "partial": partial or None}
+
+
+_PARTIAL_CHARS = 40000
 
 
 _TERMINAL_OUTCOMES = ("needs_human", "workflow_error", "delivery_failed")
@@ -2012,7 +2029,10 @@ class Handler(BaseHTTPRequestHandler):
         # previous reply (`prev`) for reference resolution — a client that doesn't
         # send it keeps plain resume semantics.
         prev = (body.get("prev") or "").strip()
-        if prev and not body.get("no_handoff"):
+        # Brainstorm never hands off: a blocking classifier call ahead of every turn of a
+        # conversation is the latency the mode exists to avoid, and its replies offer
+        # directions, which is exactly what reads as "delegate this" to the classifier.
+        if prev and not body.get("no_handoff") and cap.name != config.BRAINSTORM_CAP:
             task = engine.followup_handoff(body["message"], prev, cap)
             if task:
                 self._send(200, json.dumps({"handoff": {"request": task}}))

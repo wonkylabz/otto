@@ -1632,3 +1632,6 @@
                  cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; }
 .toast .tclose:hover { color: var(--text); }
 @keyframes toastin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; } }
+
+/* The reply while it streams (showDraft) — the finished result replaces it. */
+.result.draft{opacity:.85}
