@@ -626,7 +626,37 @@ def verify(request, cap, result, project=None, local=False, unattended=False, au
     return verdict
 
 
-def qa_review_request(pr_url, repo, request, checkout=None, checkout_error=None):
+# Per earlier round, how much of its findings and of the fix's own reply the next pass reads.
+_PRIOR_FINDINGS_CHARS = 3_000
+_PRIOR_FIX_CHARS = 1_500
+
+
+def prior_rounds_note(noun, prior):
+    """What earlier rounds of a post-PR loop raised and what each fix round did, for the next
+    pass. Pure. A cold pass re-reviewed from scratch, so findings moved every round and one asked
+    to remove three regions the round before had asked to add (runbook-rb-e0f48559)."""
+    if not prior:
+        return ""
+    from plans import _clipped_input
+    parts = []
+    for i, r in enumerate(prior, 1):
+        found, cut = _clipped_input(r.get("findings"), _PRIOR_FINDINGS_CHARS)
+        fix, fcut = _clipped_input(r.get("fix") or "(no reply)", _PRIOR_FIX_CHARS)
+        parts.append(f"Round {i} — findings raised:\n{found}{cut}\n\n"
+                     f"Round {i} — what the fix round reported doing:\n{fix}{fcut}")
+    return (
+        f"\n\nThis is a follow-up {noun}: earlier rounds raised findings and a fix round "
+        "was pushed to the same branch after each. Check FIRST whether each earlier finding is "
+        "now resolved in the current diff, and say so per finding.\n"
+        "Never ask to undo a change an earlier round required (removing what it asked to add, "
+        "or the reverse) unless you name that earlier finding and give the concrete reason it "
+        "was wrong; an unexplained reversal makes the loop oscillate and never finish. Raise a "
+        "NEW finding only if it is must-fix or should-fix on its own merits.\n\n"
+        + "\n\n".join(parts))
+
+
+def qa_review_request(pr_url, repo, request, checkout=None, checkout_error=None,
+                      prior=None):
     """The instruction handed to the QA capability (default agent:sre-qa) for the post-PR
     loop. Pure (unit-testable). Tells QA to validate the PR empirically in dev/staging,
     tear down, confirm zero residue, and end with a one-word verdict the judge can parse.
@@ -639,7 +669,8 @@ def qa_review_request(pr_url, repo, request, checkout=None, checkout_error=None)
         "plainly in your report.\n\n" if checkout_error else "")
     return (
         f"QA this pull request{repo} before it merges: {pr_url}\n\n"
-        f"It was opened to satisfy this request:\n{request}\n\n{where}"
+        f"It was opened to satisfy this request:\n{request}{prior_rounds_note('QA', prior)}"
+        f"\n\n{where}"
         "Design and run a reversible empirical test in a safe environment (dev/staging only), "
         "prove whether the change actually behaves as intended, then tear everything down and "
         "confirm it left zero residue. Do NOT mark the PR ready or merge it — only validate.\n\n"
@@ -734,7 +765,7 @@ def judge_qa(request, qa_result, project=None, checks=""):
     return _judge_transcript("qa", request, qa_result, project, checks)
 
 
-def review_request(pr_url, repo, request):
+def review_request(pr_url, repo, request, prior=None):
     """The instruction handed to the review capability (default: the stock code-reviewer) for the
     post-PR review loop. Pure (unit-testable). Tells the reviewer to read the PR diff and
     review it strictly WITHOUT changing anything — the platform folds any findings into a fix
@@ -743,7 +774,8 @@ def review_request(pr_url, repo, request):
     repo = f" in repo `{repo}`" if repo else ""
     return (
         f"Review this pull request{repo} as a strict code reviewer before it merges: {pr_url}\n\n"
-        f"It was opened to satisfy this request:\n{request}\n\n"
+        f"It was opened to satisfy this request:\n{request}"
+        f"{prior_rounds_note('review', prior)}\n\n"
         "Fetch the diff with `gh pr diff` / `gh pr view` (and `gh api` for anything else about "
         "the PR) and review THAT — do not clone, `cd` into, or read files from any local "
         "checkout, even one you can find on this machine. A local checkout can be on the wrong "

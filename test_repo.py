@@ -1533,6 +1533,32 @@ class ReviewRequestTests(unittest.TestCase):
         self.assertNotIn("in repo ``", req)
 
 
+class PriorRoundsNoteTests(unittest.TestCase):
+    """A re-review sees earlier rounds' findings and fixes, so it cannot silently demand the
+    reverse of a fix it asked for (runbook-rb-e0f48559: round 3 asked to add three regions,
+    round 4 called them out of scope)."""
+
+    PRIOR = [{"findings": "declare the three empty regions", "fix": "added us-east-2"}]
+
+    def test_first_round_is_unchanged(self):
+        self.assertEqual(engine.review_request("u", "r", "x"),
+                         engine.review_request("u", "r", "x", prior=[]))
+        self.assertNotIn("follow-up", engine.review_request("u", "r", "x"))
+
+    def test_both_loops_carry_findings_fixes_and_the_no_reversal_rule(self):
+        for req in (engine.review_request("u", "r", "x", prior=self.PRIOR),
+                    engine.qa_review_request("u", "r", "x", prior=self.PRIOR)):
+            self.assertIn("declare the three empty regions", req)
+            self.assertIn("added us-east-2", req)
+            self.assertIn("Never ask to undo a change an earlier round required", req)
+            # Still ends on the verdict contract the judge parses.
+            self.assertIn("INCONCLUSIVE", req.rsplit("\n\n", 1)[-1])
+
+    def test_a_long_round_is_cut_with_a_marker(self):
+        req = engine.review_request("u", "r", "x", prior=[{"findings": "f" * 9000, "fix": "ok"}])
+        self.assertIn("[CUT at 3000 of 9000 characters", req)
+
+
 class PrBranchRecoveryTests(unittest.TestCase):
     """Recovering a resumed repo-mode run's branch from the PR its original run opened, when the
     chat didn't record git_branch (agent-managed branch / older chat). Exact, never a guess, and

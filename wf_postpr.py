@@ -159,6 +159,9 @@ class PostPrMixin:
         rounds = max(0, self._setting(spec["rounds_setting"]) if rounds is None else rounds)
         run_id = workflow.info().workflow_id
         cap_field, cap_name = spec["cap_field"], None
+        # Each judging pass sees what earlier rounds raised and what the fixes did, or a cold
+        # reviewer moves the goalposts and can demand the reverse of a fix it asked for.
+        prior = []
         for rnd in range(rounds + 1):    # round 0 = the initial pass; then up to `rounds` fix+redo
             setattr(self, spec["attr"], {"state": spec["source"], "round": rnd})
             # Patched: a history recorded before this command must still replay (`regress/fixtures/`).
@@ -176,7 +179,7 @@ class PostPrMixin:
                 out = await workflow.execute_activity(
                     spec["capability"],
                     {"pr_url": pr_url, "repo": repo, "request": request,
-                     "wid": f"{run_id}-{spec['wid']}{tag}{rnd}"},
+                     "wid": f"{run_id}-{spec['wid']}{tag}{rnd}", "prior": list(prior)},
                     start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY_EXEC)
                 if out.get("missing"):
@@ -266,6 +269,7 @@ class PostPrMixin:
                 return {"state": "inconclusive", "rounds": rnd, cap_field: cap_name,
                         "critique": f"{spec['unfinished_lead']} the fix round did not finish — "
                                     f"{self._fix_error(fix)}\n" + critique}
+            prior.append({"findings": critique, "fix": fix.get("result") or ""})
         return {"state": "fail", "rounds": rounds, cap_field: cap_name}
 
     async def _auto_merge(self, params, pr, review, qa, notes, request=None, cap=None, repo=None):
