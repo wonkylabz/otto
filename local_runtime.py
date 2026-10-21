@@ -48,6 +48,7 @@ import error_classifier
 import file_safety
 import gateway
 import mcp_client
+import registry
 import storage
 from ui import trace
 
@@ -56,6 +57,7 @@ SESSIONS = os.path.join(config.DATA_DIR, "local-sessions")
 # Bounds. Tool output is truncated (a huge `cat` would blow the local model's context);
 # the turn budget stops a model that loops forever re-running the same command.
 _TOOL_OUT_CHARS = 16_000
+_SKILL_CHARS = 24_000     # a skill is instructions, not output: bounded like an inlined cap
 _READ_MAX_LINES = 2_000
 _WEB_MAX_CHARS = 8_000
 _MAX_CONTINUATIONS = 3   # stitch at most this many max_tokens-cut final answers
@@ -132,6 +134,14 @@ _TOOL_SCHEMAS = {
     "WebFetch": {"description": "HTTP GET a URL and return the (truncated) body text.",
                  "parameters": {"type": "object", "properties": {
                      "url": {"type": "string"}}, "required": ["url"]}},
+    "Skill": {"description": "Load a skill's instructions by name (e.g. `k8s-health` or "
+                         "`plugin:k8s-health`). When your instructions say to invoke or use a "
+                         "skill, call this and then follow what it returns yourself, with your "
+                         "other tools.",
+              "parameters": {"type": "object", "properties": {
+                  "skill": {"type": "string"},
+                  "args": {"type": "string", "description": "what to apply it to"}},
+                  "required": ["skill"]}},
     "Edit": {"description": "Replace an exact string in a file (must match exactly once "
                             "unless replace_all).",
              "parameters": {"type": "object", "properties": {
@@ -421,8 +431,24 @@ def _t_write(args, cwd):
     return f"wrote {path}"
 
 
+def _t_skill(args, cwd):
+    cap = registry.find_skill(args.get("skill"))
+    if cap is None:
+        raise ValueError(f"no single installed skill is named {args.get('skill')!r}")
+    with open(cap.path, errors="replace") as f:
+        body = f.read()
+    if body.startswith("---"):
+        end = body.find("\n---", 3)
+        body = body[end + 4:] if end != -1 else body
+    body = body.strip()
+    if len(body) > _SKILL_CHARS:
+        body = body[:_SKILL_CHARS] + f"\n[CUT at {_SKILL_CHARS} of {len(body)} characters.]"
+    return (f"Skill '{cap.name}' — base directory: {os.path.dirname(cap.path)}\n"
+            f"Apply it to: {args.get('args') or '(the current task)'}\n\n{body}")
+
+
 _TOOL_IMPL = {"Bash": _t_bash, "Read": _t_read, "Grep": _t_grep, "Glob": _t_glob,
-              "WebFetch": _t_webfetch, "Edit": _t_edit, "Write": _t_write}
+              "WebFetch": _t_webfetch, "Edit": _t_edit, "Write": _t_write, "Skill": _t_skill}
 
 
 def _offered_tools(allowed_tools, mcp_specs=(), bash_mode=None):
@@ -442,6 +468,8 @@ def _offered_tools(allowed_tools, mcp_specs=(), bash_mode=None):
     allowed = set(allowed_tools or [])
     _bare, scoped = config.scoped_bash_rules(allowed_tools)
     names = [n for n in _TOOL_IMPL if n in allowed or (n == "Bash" and scoped)]
+    if names and "Skill" not in names:        # instructions only: grants nothing the rest doesn't
+        names.append("Skill")
     out = []
     for n in names:
         schema = _TOOL_SCHEMAS[n]
@@ -497,7 +525,7 @@ def _run_tool(name, args, cwd, offered_names, mcp=None, bash_mode=None, bash_rul
         out = f"Error: {name} timed out after {config.LOCAL_TOOL_TIMEOUT_S:.0f}s"
     except Exception as e:  # noqa: BLE001 - tool failures are data for the model, not crashes
         out = f"Error: {e}"
-    return _clip(out)
+    return out if name == "Skill" else _clip(out)
 
 
 def _clip(out):

@@ -93,6 +93,7 @@ class Capability:
         self.path = None                               # source .md of an agent/skill — inlined when the LOCAL runtime executes it
         self.declared_tools = []                       # frontmatter `tools:` grant, verbatim (mcp_client reads it to pick servers)
         self.declared_mcp = []                         # Admin-set MCP servers (policy override; see apply_policy)
+        self.declared_skills = []                      # frontmatter `skills:` preload list, verbatim (local runs list them)
 
     def score(self, request):
         """This cap's lexical relevance to `request`, scored on its own. Prefer `rank()` for a
@@ -215,9 +216,17 @@ def _declared_tools(fm):
     return [t.strip() for t in re.split(r"[,\s]+", raw) if t.strip()]
 
 
+def _declared_skills(fm):
+    """The frontmatter `skills:` list — YAML `- a` items or a comma list, both flattened by
+    `_parse_frontmatter` into one string."""
+    raw = (fm or {}).get("skills") or ""
+    return [t.strip() for t in re.split(r"[,\s]+", raw) if t.strip() and t.strip() != "-"]
+
+
 def _grant(cap, fm):
-    """Record a cap's frontmatter `tools:` grant and re-classify its risk against it."""
+    """Record a cap's frontmatter `tools:`/`skills:` grant and re-classify its risk against it."""
     cap.declared_tools = _declared_tools(fm)
+    cap.declared_skills = _declared_skills(fm)
     cap.risk = classify(cap.name, cap.description, cap.declared_tools)
 
 
@@ -626,6 +635,8 @@ def load():
         cap.mcp_config = mcp
         cap.source = "project"
         cap.path = path
+        if kind == "agent":
+            cap.declared_skills = _declared_skills(_frontmatter(path))
         caps.append(cap)
     # Otto-added custom capabilities (a named prompt run via claude -p)
     if os.path.exists(CUSTOM_FILE):
@@ -682,6 +693,23 @@ def load():
         seen.add(c.name)
         unique.append(c)
     return unique
+
+
+def find_skill(name, caps=None):
+    """The skill cap a model means by `name`: exact name, then invoke name, then the one skill
+    whose bare name (after `plugin:`) matches — instructions say "the `k8s-health` skill" for
+    `oncall-toolkit:k8s-health`. Ambiguous or unknown -> None."""
+    want = (name or "").strip().lstrip("/")
+    if not want:
+        return None
+    skills = [c for c in (caps if caps is not None else load()) if c.kind == "skill" and c.path]
+    for key in (lambda c: c.name, lambda c: c.invoke_name):
+        hit = [c for c in skills if key(c) == want]
+        if hit:
+            return hit[0]
+    bare = want.split(":")[-1]
+    hit = [c for c in skills if c.name.split(":")[-1] == bare]
+    return hit[0] if len(hit) == 1 else None
 
 
 ASSISTANT_NAME = "assistant"

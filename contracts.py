@@ -384,6 +384,24 @@ def _cap_body(cap):
     return body or cap.description
 
 
+def _skills_note(cap):
+    """The agent's `skills:` preload, which Claude Code would inject and no other backend can.
+    Listed with paths rather than inlined: five ~20 kB skills would fill a local context."""
+    names = getattr(cap, "declared_skills", None) or []
+    if not names:
+        return ""
+    caps = registry.load()
+    lines = []
+    for n in names:
+        sk = registry.find_skill(n, caps)
+        desc = sk and (sk.description if len(sk.description) <= 160 else sk.description[:160] + "…")
+        lines.append(f"- {n}: {desc} (file: {sk.path})" if sk
+                     else f"- {n}: NOT INSTALLED here — say so where your instructions rely on it")
+    return ("--- SKILLS ---\nWhere your instructions say to invoke or use one of these skills, "
+            "load it (the Skill tool, or Read its file) and follow it yourself:\n"
+            + "\n".join(lines) + "\n--- END SKILLS ---\n\n")
+
+
 def _local_invocation(cap, request):
     """Invocation for the LOCAL runtime: there is no Claude Code around the model to resolve
     `/skill` or spawn a subagent, so a skill/agent cap's own markdown instructions (minus
@@ -395,7 +413,7 @@ def _local_invocation(cap, request):
             f"Its instructions follow between the markers; apply them to the request "
             f"using the tools available to you, then report the final result.\n"
             f"--- INSTRUCTIONS ---\n{_cap_body(cap)}\n--- END INSTRUCTIONS ---\n\n"
-            f"Request: {request}")
+            f"{_skills_note(cap)}Request: {request}")
 
 
 def _plan_invocation(cap, request):

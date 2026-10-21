@@ -1180,6 +1180,44 @@ class LocalInvocationTests(unittest.TestCase):
         self.assertIn("investigates ghosts", engine._local_invocation(cap, "boo"))
 
 
+class LocalSkillPreloadTests(unittest.TestCase):
+    """An agent's `skills:` frontmatter is a preload only Claude Code honours; inlined for another
+    backend it was dropped, so "invoke the k8s-health skill" sent a local model hand-rolling the
+    sweep in raw Bash (evt-s-3b2da11165b3: 98 tool calls against a 40-call timebox)."""
+
+    def test_agent_frontmatter_skills_are_parsed_from_a_yaml_list(self):
+        fm = registry._parse_frontmatter(
+            "---\nname: a\nskills:\n  - plug:k8s-health\n  - aws-health\ntools: Bash\n---\n")
+        self.assertEqual(registry._declared_skills(fm), ["plug:k8s-health", "aws-health"])
+
+    def test_declared_skills_are_listed_with_their_files_and_a_missing_one_is_named(self):
+        tmp = tempfile.mkdtemp(prefix="otto-lsp-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        agent = os.path.join(tmp, "agent.md")
+        with open(agent, "w") as f:
+            f.write("---\nname: insp\n---\nInvoke the `k8s-health` skill.")
+        cap = registry.Capability("agent", "insp", "d")
+        cap.path, cap.declared_skills = agent, ["plug:k8s-health", "plug:gone"]
+        sk = registry.Capability("skill", "plug:k8s-health", "cluster sweep")
+        sk.path = "/skills/k8s-health/SKILL.md"
+        with mock.patch.object(registry, "load", return_value=[sk]):
+            inv = engine._local_invocation(cap, "why is stg unhealthy")
+        self.assertIn("/skills/k8s-health/SKILL.md", inv)
+        self.assertIn("plug:gone: NOT INSTALLED", inv)
+        self.assertLess(inv.index("--- SKILLS ---"), inv.index("Request: why is stg unhealthy"))
+
+    def test_bare_name_resolves_only_when_unambiguous(self):
+        def skill(n):
+            c = registry.Capability("skill", n, "d")
+            c.path = f"/{n}/SKILL.md"
+            return c
+        caps = [skill("a:k8s-health"), skill("a:dup"), skill("b:dup")]
+        self.assertEqual(registry.find_skill("k8s-health", caps).name, "a:k8s-health")
+        self.assertEqual(registry.find_skill("/a:k8s-health", caps).name, "a:k8s-health")
+        self.assertIsNone(registry.find_skill("dup", caps))
+        self.assertEqual(registry.find_skill("b:dup", caps).name, "b:dup")
+
+
 class RuntimeSettingsStoreTests(unittest.TestCase):
     """UI-editable runtime settings (config._SETTING_SPECS): resolution is env > store > code
     default. Env winning is load-bearing — .env/systemd stays the escape hatch, and Admin renders an

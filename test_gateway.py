@@ -1872,6 +1872,38 @@ class ToolsUsedThreadingTests(unittest.TestCase):
             self.assertIn(f'"{key}"', self._fn_src("activities.py", "run_capability"))
 
 
+class LocalSkillToolTests(unittest.TestCase):
+    """The local runtime serves Claude Code's `Skill` tool, since caps' instructions name it; a
+    skill is instructions, so it rides beside any grant and is never clipped like tool output."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="otto-lsk-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.path = os.path.join(self.tmp, "SKILL.md")
+        with open(self.path, "w") as f:
+            f.write("---\nname: k8s-health\n---\n" + "Sweep the cluster. " * 1200)
+        cap = registry.Capability("skill", "plug:k8s-health", "d")
+        cap.path = self.path
+        p = mock.patch.object(registry, "load", return_value=[cap])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_skill_is_offered_beside_any_builtin_and_never_alone(self):
+        names = [t["function"]["name"] for t in local_runtime._offered_tools(["Read"])]
+        self.assertEqual(names, ["Read", "Skill"])
+        self.assertEqual(local_runtime._offered_tools([]), [])
+
+    def test_skill_returns_its_body_whole_by_bare_name(self):
+        out = local_runtime._run_tool("Skill", {"skill": "k8s-health"}, None, {"Skill"})
+        self.assertIn(f"base directory: {self.tmp}", out)
+        self.assertNotIn("name: k8s-health", out)
+        self.assertGreater(len(out), local_runtime._TOOL_OUT_CHARS)
+
+    def test_unknown_skill_is_an_error_the_model_reads(self):
+        out = local_runtime._run_tool("Skill", {"skill": "nope"}, None, {"Skill"})
+        self.assertTrue(out.startswith("Error:"), out)
+
+
 class LocalToolIncapableLadderTests(unittest.TestCase):
     """Once the local execution backend proves it can't serve a cap (the vLLM server rejects
     tool calls), the loop latches `local_disabled` and forces the REST of the ladder — final
@@ -9388,7 +9420,7 @@ class LocalPlanModeTests(unittest.TestCase):
         the boundary — the two layers are different instruments and must not read alike."""
         offered = {t["function"]["name"]: t["function"]
                    for t in local_runtime._offered_tools(config.PLAN_TOOLS, bash_mode="sandbox")}
-        self.assertEqual(set(offered), {"Bash", "Read", "Grep", "Glob"})
+        self.assertEqual(set(offered), {"Bash", "Read", "Grep", "Glob", "Skill"})
         self.assertIn("read-only", offered["Bash"]["description"])
         self.assertIn("full shell", offered["Bash"]["description"])
         fb = {t["function"]["name"]: t["function"]
