@@ -394,7 +394,8 @@ def _skills_note(cap):
     lines = []
     for n in names:
         sk = registry.find_skill(n, caps)
-        lines.append(f"- {n}: {sk.description[:160]} (file: {sk.path})" if sk
+        desc = sk and (sk.description if len(sk.description) <= 160 else sk.description[:160] + "…")
+        lines.append(f"- {n}: {desc} (file: {sk.path})" if sk
                      else f"- {n}: NOT INSTALLED here — say so where your instructions rely on it")
     return ("--- SKILLS ---\nWhere your instructions say to invoke or use one of these skills, "
             "load it (the Skill tool, or Read its file) and follow it yourself:\n"
