@@ -520,7 +520,7 @@ def pr_copy(request, summary=None, summary_is_error=False):
     if head != req:
         body += ("\n\n<details><summary>Full request</summary>\n\n"
                  f"{_clip_words(req, _PR_REQUEST_FULL_CHARS)}\n\n</details>")
-    return {"title": title, "body": privacy.redact(body)}
+    return {"title": privacy.redact(title), "body": privacy.redact(body)}
 
 
 # A bare slice cut PR bodies mid-word with no marker (vllm#65). The workflow bounds the summary

@@ -90,14 +90,17 @@ class PrCopyTests(unittest.TestCase):
         self._stub("Fix it")
         req = ("Fix the alert\nuse ghp_0123456789abcdefghijABCDEFGHIJ0123\n\n"
                + contracts.CARRIED_CONTEXT_MARK + "\nsomeone's private DM")
-        body = engine.pr_copy(req)["body"]
+        self._stub("x")  # too short: the raw-request fallback is the title
+        out = engine.pr_copy(req)
+        body = out["body"]
+        self.assertNotIn("ghp_0123456789", out["title"])
         self.assertNotIn("ghp_0123456789", body)
         self.assertNotIn("private DM", body)
 
     def test_a_fresh_pr_drafts_its_body_from_the_whole_request_not_the_title(self):
         # The title is request[:120]; drafting the body from it was vllm#65's real cut.
         self.assertIn('"plan": self._plan, "request": request,', workflow_src())
-        self.assertIn('engine.pr_copy(payload.get("request") or payload.get("title")',
+        self.assertIn('engine.pr_copy(payload.get("request") or payload.get("title") or "",',
                       inspect.getsource(activities))
 
     def test_a_supervisor_abort_summary_never_becomes_the_pr_description(self):
