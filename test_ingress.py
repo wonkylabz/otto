@@ -8396,6 +8396,29 @@ class SlackTriggerTests(unittest.TestCase):
             "match": r"(?i)opened: (?P<condition>[^\n]+)", "key": r"Issue ID: (\w+)",
             "cap": "incident-responder"}])[0]
 
+    def test_an_ignored_post_never_fires_even_with_no_match_pattern(self):
+        """evt-s-3fe94beb4f69: the rule said "ignore a closing message" in its TEMPLATE, so the
+        close post started a full investigation anyway; only a pattern decides before a run."""
+        rule = self.st.save_rules([{"channels": ["C1"], "bots": ["New Relic"],
+                                    "template": "Investigate: {text}",
+                                    "ignore": r"(?i)\bis closed\b"}])[0]
+        closed = self._post(self.NOW, "Issue: <https://x/issues/e74e|K8s Warning Events Rate "
+                                      "is above 100 staging: stg> is closed")
+        opened = self._post(self.NOW, "Critical priority issue is active <https://x/issues/e74e|"
+                                      "K8s Warning Events Rate is above 100 staging: stg>")
+        self.assertIsNone(self.st.pick([rule], closed, self.NOW, "C1"))
+        self.assertIsNotNone(self.st.pick([rule], opened, self.NOW, "C1"))
+
+    def test_an_unparseable_ignore_pattern_refuses_the_rule(self):
+        self.assertIsNone(self.st.normalize({"channels": ["C1"], "bots": ["b"], "template": "t",
+                                             "ignore": "(unclosed"}))
+
+    def test_the_form_round_trips_the_ignore_pattern(self):
+        src = ui_src()
+        self.assertIn('id="st-ignore"', src)
+        self.assertIn('set("st-ignore",r.ignore||"")', src)
+        self.assertIn('ignore:val("st-ignore")', src)
+
     def _post(self, ts, text, bot="New Relic", bot_id="B1", attachments=None):
         m = {"ts": f"{ts:.6f}", "text": text, "attachments": attachments or []}
         if bot_id:
