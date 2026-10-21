@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Post-PR review and QA rounds no longer move the goalposts.** Each re-review is now told what
+  earlier rounds found and what each fix did, so it checks those first and can't silently ask
+  to undo a fix it asked for. Before, a PR could use up every round and land on Needs-you with
+  findings that contradicted the round before. **Restart the worker after upgrading.**
+
 ## [0.6.0] - 2026-10-21
 
 ### Added
