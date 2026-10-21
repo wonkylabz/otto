@@ -6523,7 +6523,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                              extra_tools=None, mcp_config_path=None, resume_session=None,
                              wid=None, cwd=None, recall=False, project=None, **kwargs):
             self.runs.append({"cap": cap.name, "critique": critique, "cwd": cwd,
-                              "local_disabled": kwargs.get("local_disabled")})
+                              "local_disabled": kwargs.get("local_disabled"), "request": request})
             res = "review transcript" if cap.name == config.REVIEW_CAP else "edited the code"
             # A fix round is a worker run carrying the reviewer's critique.
             if self.fix_errors and cap.name == config.WORKER_CAP and critique:
@@ -6678,6 +6678,10 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         # A fix run of the worker cap folded in the review critique.
         fix_runs = [r for r in self.runs if r["cap"] == config.WORKER_CAP and r["critique"]]
         self.assertTrue(any("hardcoded region" in (r["critique"] or "") for r in fix_runs))
+        # The re-review is told what round 1 raised and what the fix did; round 1 is cold.
+        self.assertNotIn("follow-up review", review_runs[0]["request"])
+        self.assertIn("hardcoded region string", review_runs[1]["request"])
+        self.assertIn("edited the code", review_runs[1]["request"])
         # The fix re-provisioned the EXISTING branch and pushed to the EXISTING PR (no new PR).
         self.assertTrue(any(p["from_branch"] for p in self.provisions))
         self.assertTrue(any(f["existing_pr"] for f in self.finalizes))

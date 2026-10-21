@@ -787,7 +787,8 @@ def _post_pr_capability(kind, payload):
              else {"checkout_error": ws["error"]} if ws else {})
     ws = ws if ws and ws.get("path") else None
     req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
-                                           payload["request"], **extra)
+                                           payload["request"], prior=payload.get("prior"),
+                                           **extra)
     try:
         att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                                  mcp_config_path=mcp_path, wid=payload.get("wid"),
