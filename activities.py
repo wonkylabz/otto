@@ -467,7 +467,7 @@ def finalize_workspace(payload: dict) -> dict:
     title, body = payload.get("title"), None
     existing = bool(payload.get("existing_pr"))
     if not existing or workspace._dirty(workspace.workspace_path(payload["run_id"])):
-        copy = engine.pr_copy(payload.get("title") or "", summary=payload.get("summary"),
+        copy = engine.pr_copy(payload.get("request") or payload.get("title") or "", summary=payload.get("summary"),
                               summary_is_error=bool(payload.get("summary_is_error")))
         title = copy["title"]
         body = None if existing else copy["body"]

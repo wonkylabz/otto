@@ -13,6 +13,7 @@ import re
 import config
 import facade
 import gateway
+import privacy
 import registry
 from contracts import _DATA_FENCE_PREAMBLE, _fenced, task_text
 from ui import trace
@@ -513,17 +514,17 @@ def pr_copy(request, summary=None, summary_is_error=False):
     body = ""
     if summary:
         body = _clip_words(summary.strip(), _PR_SUMMARY_CHARS) + "\n\n---\n"
-    req = (request or "").strip()
+    req = task_text(request or "").strip()
     head = _clip_words(req.split("\n", 1)[0], _PR_REQUEST_LEAD_CHARS)
     body += f"_Automated by Otto for request:_ {head}"
     if head != req:
         body += ("\n\n<details><summary>Full request</summary>\n\n"
                  f"{_clip_words(req, _PR_REQUEST_FULL_CHARS)}\n\n</details>")
-    return {"title": title, "body": body}
+    return {"title": title, "body": privacy.redact(body)}
 
 
 # A bare slice cut PR bodies mid-word with no marker (vllm#65). The workflow bounds the summary
-# at 8000, ABOVE _PR_SUMMARY_CHARS, so a long one is cut here, visibly.
+# at 8000 and leaves the request whole, ABOVE these, so a long one is cut here, visibly.
 _PR_SUMMARY_CHARS = 6000
 _PR_REQUEST_LEAD_CHARS = 300
 _PR_REQUEST_FULL_CHARS = 20000
@@ -533,7 +534,8 @@ def _clip_words(text, limit):
     if len(text) <= limit:
         return text
     cut = text[:limit]
-    cut = cut[:max(cut.rfind(" "), cut.rfind("\n"), limit // 2)].rstrip()
+    at = max(cut.rfind(" "), cut.rfind("\n"))
+    cut = (cut[:at] if at > limit // 2 else cut).rstrip()
     return cut + " … _(truncated)_"
 
 

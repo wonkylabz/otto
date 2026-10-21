@@ -85,6 +85,21 @@ class PrCopyTests(unittest.TestCase):
         body = engine.pr_copy("Pin the versions", summary="Done.")["body"]
         self.assertTrue(body.endswith("_Automated by Otto for request:_ Pin the versions"))
 
+    def test_the_body_is_redacted_and_drops_the_carried_conversation(self):
+        import contracts
+        self._stub("Fix it")
+        req = ("Fix the alert\nuse ghp_0123456789abcdefghijABCDEFGHIJ0123\n\n"
+               + contracts.CARRIED_CONTEXT_MARK + "\nsomeone's private DM")
+        body = engine.pr_copy(req)["body"]
+        self.assertNotIn("ghp_0123456789", body)
+        self.assertNotIn("private DM", body)
+
+    def test_a_fresh_pr_drafts_its_body_from_the_whole_request_not_the_title(self):
+        # The title is request[:120]; drafting the body from it was vllm#65's real cut.
+        self.assertIn('"plan": self._plan, "request": request,', workflow_src())
+        self.assertIn('engine.pr_copy(payload.get("request") or payload.get("title")',
+                      inspect.getsource(activities))
+
     def test_a_supervisor_abort_summary_never_becomes_the_pr_description(self):
         # The result of a run whose LAST attempt was killed is just the abort sentinel — using
         # it to draft the title/body presents the failure as the change itself (PR #68's title
