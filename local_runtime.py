@@ -30,6 +30,7 @@ needs one on the Claude backend rather than letting it discover the gap one hall
 at a time. Caps that need a repo `.mcp.json` (`cap.mcp_config`) also stay on Claude.
 """
 import glob as globmod
+import io
 import json
 import os
 import re
@@ -710,9 +711,12 @@ def _post(m, body, timeout):
             return _post_stream(m, {**body, "stream": True,
                                     "stream_options": {"include_usage": True}}, timeout, partial)
         except urllib.error.HTTPError as e:
-            if e.code not in (400, 422):
-                raise
-            # Maybe the stream params, maybe the request: a plain retry tells the two apart.
+            raw = e.read() if e.code in (400, 422) else b""
+            if b"stream" not in raw.lower():
+                # A complaint about the REQUEST: re-raised readable, never re-sent plain — the
+                # overflow prune loop would otherwise pay every over-long prompt twice.
+                raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs,
+                                             io.BytesIO(raw)) if raw else e from None
             data = _post_plain(m, body, timeout)
             _NO_STREAM.add(key)
             return data
@@ -735,15 +739,18 @@ def _post_stream(m, body, timeout, partial):
         if "text/event-stream" not in (r.headers.get("Content-Type") or ""):
             return json.loads(r.read())     # the server ignored `stream`
         partial.reset()
-        return _assemble_sse(r, partial)
+        # `timeout` bounds each READ, so a trickling stream would outlive the run's deadline.
+        return _assemble_sse(r, partial, until=time.time() + timeout)
 
 
-def _assemble_sse(lines, partial):
+def _assemble_sse(lines, partial, until=None):
     """SSE chunks -> the non-streamed `{"choices": [{"message", "finish_reason"}], "usage"}`.
     Every string field of a delta concatenates (content, reasoning, …); tool calls merge by
     index. Content deltas also feed the draft. Pure over an iterable of byte lines."""
     msg, calls, finish, usage = {"role": "assistant"}, {}, None, None
     for raw in lines:
+        if until is not None and time.time() > until:
+            raise TimeoutError("stream outlived its timeout")
         line = raw.decode("utf-8", "replace").strip() if isinstance(raw, bytes) else raw.strip()
         if not line.startswith("data:"):
             continue

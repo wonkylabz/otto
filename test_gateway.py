@@ -11287,6 +11287,29 @@ class StreamingDraftTests(unittest.TestCase):
             local_runtime._post(m, {}, 5)
         self.assertEqual(calls, ["stream", "plain", "plain"])
 
+    def test_a_request_error_is_not_resent_plain(self):
+        """Only a refusal NAMING `stream` falls back; any other 400 reaches `_chat_step` intact."""
+        def stream(*a):
+            raise urllib.error.HTTPError("u", 400, "bad", {},
+                                         io.BytesIO(b"maximum context length is 8192 tokens"))
+        token = local_runtime._PARTIAL.set(claude_cli.PartialSink(self.transcript))
+        self.addCleanup(local_runtime._PARTIAL.reset, token)
+        with mock.patch.object(local_runtime, "_post_stream", stream), \
+                mock.patch.object(local_runtime, "_post_plain") as plain:
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                local_runtime._post({"base_url": "http://x", "model": "m2"}, {}, 5)
+        plain.assert_not_called()
+        self.assertIn(b"maximum context length", cm.exception.read())
+
+    def test_a_trickling_stream_is_bounded_in_total(self):
+        def slow():
+            for _ in range(3):
+                time.sleep(0.05)
+                yield b'data: {"choices": [{"delta": {"content": "x"}}]}\n'
+        with self.assertRaises(TimeoutError):
+            local_runtime._assemble_sse(slow(), claude_cli.PartialSink(self.transcript),
+                                        until=time.time() + 0.06)
+
     def test_no_watcher_means_no_stream(self):
         with mock.patch.object(local_runtime, "_post_stream") as stream, \
                 mock.patch.object(local_runtime, "_post_plain", return_value={}) as plain:

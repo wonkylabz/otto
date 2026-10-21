@@ -113,6 +113,15 @@ def _verified_of(verdict):
     return verdict["passed"] if verdict else None
 
 
+def _abandon(handle):
+    """Drop an overlapped activity's result. Never `cancel()`: a cancel racing the activity's
+    own completion fails the workflow activation (ACTIVITY_UNKNOWN) and wedges the run. Its
+    outcome is retrieved so a failure is not reported as never-awaited."""
+    if handle is not None:
+        handle.add_done_callback(lambda t: t.cancelled() or t.exception())
+    return None
+
+
 def _is_brainstorm(cap):
     """True for a run pinned to the built-in brainstorm capability — the read-only conversational
     MODE (config.BRAINSTORM_CAP). PURE dict lookup, so it is safe on the replayed workflow path.
@@ -275,8 +284,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         early one stale — edits made meanwhile would read as the run's — so it is retaken."""
         if early is not None and self._decision is None and self._clarification is None:
             return await early
-        if early is not None:
-            early.cancel()
+        _abandon(early)
         return await workflow.execute_activity(
             snapshot_repos, {}, start_to_close_timeout=timedelta(seconds=300), retry_policy=_RETRY)
 
@@ -830,8 +838,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 subtasks = plan.get("subtasks") or []
                 if len(subtasks) >= 2:
                     self._leave("DECOMPOSE")
-                    if routing is not None:
-                        routing.cancel()
+                    _abandon(routing)
                     swarm = await self._run_swarm(params, request, subtasks,
                                                   unattended, approval)
                     return swarm, None, request, None
@@ -911,8 +918,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # risk bump and park a conversation behind an approval card. The toolset is still the
             # real guard: cap.risk stays "read", so this turn holds no Edit/Write either way.
             if early_intent is not None and request != asked:
-                early_intent.cancel()
-                early_intent = None
+                early_intent = _abandon(early_intent)
             if classify_due:
                 intent = (await early_intent if early_intent is not None
                           else await workflow.execute_activity(

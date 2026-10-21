@@ -188,7 +188,7 @@ def gc_transcripts(ttl_h=None):
     for name in os.listdir(TRANSCRIPTS):
         p = os.path.join(TRANSCRIPTS, name)
         try:
-            if name.endswith((".jsonl", ".partial")) and os.path.getmtime(p) < cutoff:
+            if name.endswith((".jsonl", ".partial", ".partial.tmp")) and os.path.getmtime(p) < cutoff:
                 os.unlink(p)
         except OSError:
             pass
