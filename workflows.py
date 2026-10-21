@@ -838,6 +838,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 subtasks = plan.get("subtasks") or []
                 if len(subtasks) >= 2:
                     self._leave("DECOMPOSE")
+                    self._leave("ROUTER")    # an open span is the board's stage chip
                     _abandon(routing)
                     swarm = await self._run_swarm(params, request, subtasks,
                                                   unattended, approval)

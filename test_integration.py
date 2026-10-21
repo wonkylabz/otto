@@ -5118,6 +5118,9 @@ class WorkflowSwarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("did[sub B]", out["result"])
         self.assertEqual(len(out["swarm"]), 2)           # one part per sub-task
         self.assertEqual(self.merge_audience, [None])    # no reply target -> operator report
+        # The router ran alongside the decomposer; its span must close, or the board's stage
+        # chip reads "routing" for the whole fan-out.
+        self.assertIsNotNone(out["times"]["ROUTER"]["dur"])
 
     async def test_a_dead_child_names_its_cause_and_needs_a_human(self):
         """Issue #37: the parent rendered `(sub-task failed: ChildWorkflowError)` — Temporal's
