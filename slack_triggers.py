@@ -15,6 +15,7 @@ Rules live in `data/slack-triggers.json`:
        "channels": ["C0123ABCD"],          # every channel this rule watches
        "bots": ["B01NEWRELIC"],            # bot_id / app_id / app name allowed to fire it (required)
        "match": "(?i)\\bopened\\b",        # regex over the post's text; empty = every post
+       "ignore": "(?i)\\bis closed\\b",    # a post this matches never fires, whatever else does
        "key": "Issue ID: (\\w+)",          # group 1 dedupes; absent = one run per post
        "template": "Investigate this alert: {text}",
        "cap": "incident-responder",    # optional pin, resolved against the trusted registry
@@ -69,7 +70,7 @@ def normalize(rule):
     bots = [b for b in (str(x).strip().strip(".,;") for x in (rule.get("bots") or [])) if b]
     if not (channels and template and bots):
         return None
-    for pat in (rule.get("match"), rule.get("key")):
+    for pat in (rule.get("match"), rule.get("ignore"), rule.get("key")):
         if pat:
             try:
                 re.compile(pat)
@@ -84,7 +85,7 @@ def normalize(rule):
            "approval": rule.get("approval") if rule.get("approval") in _APPROVALS else "ask",
            "identity": "user" if rule.get("identity") == "user" else "bot",
            "reply_in_thread": rule.get("reply_in_thread", True) is not False}
-    for k in ("match", "key", "cap"):
+    for k in ("match", "ignore", "key", "cap"):
         if str(rule.get(k) or "").strip():
             out[k] = str(rule[k]).strip()
     try:
@@ -149,7 +150,10 @@ def author_ok(rule, m):
 
 
 def match(rule, text):
-    """The regex's named groups (possibly empty) on a match, else None."""
+    """The regex's named groups (possibly empty) on a match, else None. An `ignore` hit is None:
+    a filter left to the template's prose ("ignore a closing message") still starts a run."""
+    if rule.get("ignore") and re.search(rule["ignore"], text or ""):
+        return None
     pat = rule.get("match")
     if not pat:
         return {}

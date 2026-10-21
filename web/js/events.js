@@ -923,7 +923,7 @@ async function loadSlackTriggers(){
     <div class="jreq">${esc(r.template||'')}</div>
     <div class="jstatus">${r.cap?`&rarr; <b>${esc(r.cap)}</b>`:'auto-route'} ·
       ${({auto:'<span class="warn">auto-approves writes</span>',ask:'writes need Board approval',skip:'writes skipped'})[r.approval||'ask']}
-      ${r.match?` · match <code>${esc(r.match)}</code>`:''}${r.key?` · dedupe <code>${esc(r.key)}</code>`:''}
+      ${r.match?` · match <code>${esc(r.match)}</code>`:''}${r.ignore?` · ignore <code>${esc(r.ignore)}</code>`:''}${r.key?` · dedupe <code>${esc(r.key)}</code>`:''}
       · reads as ${esc(r.identity||'bot')}${tok[r.identity||'bot']?'':' <span class="warn">(no token)</span>'}</div>
   </div>`).join("");
   const closed=evCollapsed()['ev-slacktrig'];
@@ -960,6 +960,7 @@ function showSlackTriggerForm(idx){
     <label>Channel ids &mdash; comma-separated</label><input id="st-channel" placeholder="C0123ABCD, C0456EFGH">
     <label>Bots allowed to fire it &mdash; bot id, app id or app name, comma-separated</label><input id="st-bots" placeholder="New Relic">
     <label>Match (optional) &mdash; regex over the post; named groups become template tokens</label><input id="st-match" placeholder="(?i)opened: (?P&lt;condition&gt;.+)">
+    <label>Ignore (optional) &mdash; regex; a post it matches never fires, e.g. the alert closing</label><input id="st-ignore" placeholder="(?i)&#92;bis closed&#92;b">
     <label>Dedupe key (optional) &mdash; regex, group 1 is the incident key; blank = one run per post</label><input id="st-key" placeholder="Issue ID: (&#92;w+)">
     <label>Request template &mdash; {text}, {bot}, {key}, {ts} and your named groups (the post is appended if {text} is omitted)</label>
     <textarea id="st-template" placeholder="Investigate this alert and propose a fix: {text}"></textarea>
@@ -982,7 +983,7 @@ function showSlackTriggerForm(idx){
   const set=(id,v)=>{ document.getElementById(id).value=v; };
   if(editing){
     set("st-channel",(r.channels||[]).join(", ")); set("st-bots",(r.bots||[]).join(", "));
-    set("st-match",r.match||""); set("st-key",r.key||""); set("st-template",r.template||"");
+    set("st-match",r.match||""); set("st-ignore",r.ignore||""); set("st-key",r.key||""); set("st-template",r.template||"");
     set("st-cap",r.cap||""); set("st-identity",r.identity||"bot"); set("st-age",r.max_age_s||"");
     document.getElementById("st-thread").checked=r.reply_in_thread!==false;
   }
@@ -991,7 +992,7 @@ function showSlackTriggerForm(idx){
   document.getElementById("st-save").onclick=async()=>{
     const rule={id:r.id, channels:val("st-channel").split(",").map(s=>s.trim()).filter(Boolean), template:document.getElementById("st-template").value.trim(),
       bots:val("st-bots").split(",").map(s=>s.trim()).filter(Boolean),
-      match:val("st-match"), key:val("st-key"), cap:val("st-cap"),
+      match:val("st-match"), ignore:val("st-ignore"), key:val("st-key"), cap:val("st-cap"),
       approval:val("st-approval"), identity:val("st-identity"),
       reply_in_thread:document.getElementById("st-thread").checked};
     const age=val("st-age"); if(age) rule.max_age_s=+age;
