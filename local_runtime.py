@@ -528,6 +528,16 @@ def _run_tool(name, args, cwd, offered_names, mcp=None, bash_mode=None, bash_rul
     return out if name == "Skill" else _clip(out)
 
 
+def _budget_used(turn, max_turns, started, deadline):
+    """'N of M turns' / 'N% of its time' once either crosses `LOCAL_WRAP_UP_AT`, else ''."""
+    if turn >= max(1, int(max_turns * config.LOCAL_WRAP_UP_AT)):
+        return f"{turn} of {max_turns} turns"
+    span = deadline - started
+    if span > 0 and time.time() - started >= span * config.LOCAL_WRAP_UP_AT:
+        return f"{round(100 * (time.time() - started) / span)}% of its time"
+    return ""
+
+
 def _clip(out):
     """Bound one tool result. Applies to MCP results too — a `pods_list` or an NRQL dump is
     exactly the kind of payload that would otherwise eat a small local context window."""
@@ -1164,6 +1174,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     result, is_error = None, False
     parts, continuations = [], 0   # stitched final answer across max_tokens cutoffs
     nudged = False                 # one shot at converting a reasoning-only turn into an answer
+    started, wrap_msg = time.time(), None   # one budget wrap-up per run (config.WRAP_UP_MESSAGE)
     tools_unsupported = False      # server rejects the tools param → engine re-dispatches to Claude
     # The endpoint could not be reached at all after the backoffs. Distinct from the model
     # answering badly: retrying it on the same server fails identically, so the engine latches
@@ -1197,13 +1208,20 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                                      "content": config.STEER_MESSAGE.format(instruction=instruction)})
                     _emit(sink, on_event, {"type": "otto-steer", "text": instruction,
                                            "delivered": True})
+            used = _budget_used(_turn, max_turns, started, deadline)
+            if wrap_msg is None and used:
+                wrap_msg = {"role": "user", "content": config.WRAP_UP_MESSAGE.format(used=used)}
+                messages.append(wrap_msg)
+                _emit(sink, on_event, {"type": "otto-wrap-up", "used": used})
+            last = max_turns > 1 and _turn == max_turns - 1   # no tools on the last turn: it must answer
             # gateway.chat_body, never a literal dict: the parameter NAMES are per-endpoint
             # (issue #10 — OpenAI's newer models reject `max_tokens` and a non-default
             # `temperature`), and a body built here would speak a dialect the other three
             # call sites had already learned was wrong.
             body = gateway.chat_body(m, _wire(messages),
                                      learned.get("out_cap", config.LOCAL_EXEC_MAX_TOKENS),
-                                     reasoning_effort=effort_level or None, tools=tools or None)
+                                     reasoning_effort=effort_level or None,
+                                     tools=None if last else (tools or None))
             data, compacted = _chat_step(m, body,
                                          min(config.LOCAL_EXEC_TIMEOUT_S,
                                              max(1, deadline - time.time())), deadline=deadline,
@@ -1351,8 +1369,9 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         # resume's unanswered user message (and duplicated context) in the stored history,
         # compounding on every retry (observed: a session with three stacked user turns).
         if not is_error:
+            # The wrap-up is this run's budget, not the conversation's: a resume must not inherit it.
             _save_session(sid, [_without_images(mm, image_labels) for mm in messages
-                                if isinstance(mm, dict)], m.get("name"))
+                                if isinstance(mm, dict) and mm != wrap_msg], m.get("name"))
             # A completed turn proves the server is serving — clears an earlier unhealthy mark
             # without any separate reset path (gateway._set_health is last-write-wins).
             gateway.record_health(m.get("name"), True, "completed an execution turn")

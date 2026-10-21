@@ -1054,6 +1054,13 @@ PLAN_TIMEOUT_S = float(os.environ.get("OTTO_PLAN_TIMEOUT_S", "900"))
 #   `max_turns` (data/models.json) overrides it, since "non-Claude" spans everything from a
 #   small local vLLM model to a frontier remote API and one number doesn't fit both.
 LOCAL_RUNTIME_MAX_TURNS = int(os.environ.get("OTTO_LOCAL_RUNTIME_MAX_TURNS", "60"))
+# Share of the turn budget (or of the wall clock) after which a local run is told to stop and
+# report. Hitting the cap returns an error and nothing found, so a run near it must deliver.
+LOCAL_WRAP_UP_AT = float(os.environ.get("OTTO_LOCAL_WRAP_UP_AT", "0.75"))
+WRAP_UP_MESSAGE = (
+    "[Otto run budget] You have used {used} of this run's budget. Stop gathering now and "
+    "write your final report from what you already have. Name anything you did not get to "
+    "check as an open question; do not start new lines of investigation.")
 LOCAL_TOOL_TIMEOUT_S = float(os.environ.get("OTTO_LOCAL_TOOL_TIMEOUT_S", "120"))
 # TRANSIENT-availability backoff for the local runtime: a 502/503/504 or a connection-level
 # error means the server is momentarily loading/restarting/overloaded ("try again later"),
