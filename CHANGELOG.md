@@ -13,6 +13,10 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **PR descriptions are no longer cut off mid-sentence.** A long request now shows its first
+  line in the body, and the full text sits in a collapsed "Full request" block. A long run
+  summary ends on a word with a visible "(truncated)" note. **Restart the worker after
+  upgrading.**
 - **Post-PR review and QA rounds no longer move the goalposts.** Each re-review is now told what
   earlier rounds found and what each fix did, so it checks those first and can't silently ask
   to undo a fix it asked for. Before, a PR could use up every round and land on Needs-you with

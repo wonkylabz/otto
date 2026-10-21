@@ -13,8 +13,9 @@ import re
 import config
 import facade
 import gateway
+import privacy
 import registry
-from contracts import _DATA_FENCE_PREAMBLE, _fenced, task_text
+from contracts import CARRIED_CONTEXT_MARK, _DATA_FENCE_PREAMBLE, _fenced, task_text
 from ui import trace
 
 
@@ -496,6 +497,8 @@ def pr_copy(request, summary=None, summary_is_error=False):
     errored attempt's `result` is a failure report about the RUN, never a description of the
     diff — and it is not always sentinel-shaped (a `claude -p` death hands back a raw stderr
     tail), so the flag decides and `_is_operational_sentinel` only backstops it."""
+    # Never task_text: it hands back the WHOLE request, carry included, when the task is empty.
+    request = (request or "").split(CARRIED_CONTEXT_MARK, 1)[0].strip()
     fallback = (request or "Otto automated change")[:120]
     if summary_is_error or _is_operational_sentinel(summary):
         summary = None
@@ -512,9 +515,30 @@ def pr_copy(request, summary=None, summary_is_error=False):
         title = fallback
     body = ""
     if summary:
-        body = summary.strip()[:1500] + "\n\n---\n"
-    body += f"_Automated by Otto for request:_ {(request or '').strip()[:300]}"
-    return {"title": title, "body": body}
+        body = _clip_words(summary.strip(), _PR_SUMMARY_CHARS) + "\n\n---\n"
+    req = request
+    head = _clip_words(req.split("\n", 1)[0], _PR_REQUEST_LEAD_CHARS)
+    body += f"_Automated by Otto for request:_ {head}"
+    if head != req:
+        body += ("\n\n<details><summary>Full request</summary>\n\n"
+                 f"{_clip_words(req, _PR_REQUEST_FULL_CHARS)}\n\n</details>")
+    return {"title": privacy.redact(title), "body": privacy.redact(body)}
+
+
+# A bare slice cut PR bodies mid-word with no marker (vllm#65). The workflow bounds the summary
+# at 8000 and leaves the request whole, ABOVE these, so a long one is cut here, visibly.
+_PR_SUMMARY_CHARS = 6000
+_PR_REQUEST_LEAD_CHARS = 300
+_PR_REQUEST_FULL_CHARS = 20000
+
+
+def _clip_words(text, limit):
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    at = max(cut.rfind(" "), cut.rfind("\n"))
+    cut = (cut[:at] if at > limit // 2 else cut).rstrip()
+    return cut + " … _(truncated)_"
 
 
 def auto_engage_repo(request, repo_names, cap_name=None):

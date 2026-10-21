@@ -1164,7 +1164,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                      "existing_pr": True, "branch": ws["branch"],
                      # A follow-up's words ("yes, go ahead") say nothing about the diff; the
                      # turn's result drafts its commit message.
-                     "summary": (result or "")[:1500],
+                     "summary": (result or "")[:8000],
                      "summary_is_error": bool(out.get("is_error"))},
                     start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
                     retry_policy=_RETRY)

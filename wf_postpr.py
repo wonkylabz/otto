@@ -241,7 +241,7 @@ class PostPrMixin:
                  "existing_pr": True, "branch": ws["branch"],
                  # The fix's own result drafts its commit message — the request alone would
                  # title every round after the original task.
-                 "summary": (fix.get("result") or "")[:1500],
+                 "summary": (fix.get("result") or "")[:8000],
                  "summary_is_error": bool(fix.get("is_error"))},
                 start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY)
