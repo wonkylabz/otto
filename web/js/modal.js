@@ -37,7 +37,7 @@ document.addEventListener("keydown",e=>{ if(e.key==="Escape" && !document.getEle
    Native confirm()/alert()/prompt() are banned: Chrome can return false in 0ms without ever
    painting the dialog, so a destructive button silently does nothing. Resolves true/false (or the
    text / null). Its own overlay, above formModal, so asking never wipes an open form. */
-let ASK_DONE=null;
+let ASK_DONE=null, ASK_FROM=null;
 document.body.insertAdjacentHTML("beforeend",`<div class="modalOverlay askOverlay" id="askModal" hidden>
   <div class="modalBox askBox" role="dialog" aria-modal="true"><div class="modalBody">
     <p class="askMsg" id="askMsg"></p>
@@ -52,10 +52,12 @@ function askModal(msg, {ok="OK", danger=false, text=null}={}){
   okBtn.textContent=ok;
   okBtn.className="btn sm "+(danger?"danger":"approve");
   input.hidden=text===null; input.value=text??"";
+  ASK_FROM=ASK_FROM||document.activeElement;
   m.hidden=false;
   (text===null?okBtn:input).focus();
   return new Promise(resolve=>{
-    ASK_DONE=v=>{ ASK_DONE=null; m.hidden=true; resolve(v); };
+    ASK_DONE=v=>{ ASK_DONE=null; m.hidden=true; resolve(v);
+      const from=ASK_FROM; ASK_FROM=null; if(from && from.isConnected) from.focus(); };
   });
 }
 function askAnswer(yes){
@@ -71,5 +73,9 @@ document.getElementById("askModal").addEventListener("click",e=>{ if(e.target.id
 document.addEventListener("keydown",e=>{
   if(!ASK_DONE) return;
   if(e.key==="Escape"){ e.stopImmediatePropagation(); askAnswer(false); }
+  else if(e.key==="Tab"){   // trap focus: Space on a control under the scrim would still fire it
+    const f=[...document.querySelectorAll("#askModal textarea:not([hidden]), #askModal button")];
+    const i=f.indexOf(document.activeElement);
+    e.preventDefault(); f[(i+(e.shiftKey?-1:1)+f.length)%f.length].focus(); }
   else if(e.key==="Enter" && document.getElementById("askInput").hidden){ e.preventDefault(); askAnswer(true); }
 }, true);
