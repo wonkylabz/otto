@@ -18,30 +18,51 @@
   background: var(--warn-soft); color: var(--warn); }
 .hwarn.bad { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
 
-/* Tiles wrap to as many columns as fit: seven at desktop width, two on a phone. */
-.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; margin-bottom: 12px; }
+/* auto-FIT, not auto-fill: the five tiles stretch to the cards' full width instead of leaving an
+   empty track at the right edge, and wrap to two columns on a phone. */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 8px; }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px;
   animation: kpiin .32s cubic-bezier(.2,.9,.3,1.2) both; }
 .kpi:nth-child(2) { animation-delay: .03s; } .kpi:nth-child(3) { animation-delay: .06s; }
 .kpi:nth-child(4) { animation-delay: .09s; } .kpi:nth-child(5) { animation-delay: .12s; }
 .kpi:nth-child(6) { animation-delay: .15s; } .kpi:nth-child(7) { animation-delay: .18s; }
 @keyframes kpiin { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
-.klabel { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.klabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
 .kval { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin: 2px 0 1px; color: var(--text); }
 .kdelta { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim); }
 .kdelta.good { color: var(--ok); }
 .kdelta.bad { color: var(--danger); }
 
-.hcols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 8px; margin-bottom: 12px; }
-@media (max-width: 720px) { .hcols { grid-template-columns: minmax(0, 1fr); } }
-.hcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; min-width: 0; }
+.hcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px;
+  min-width: 0; margin-bottom: 8px; }
+/* The chart and what changed share ONE card: two cards of equal height left the short list
+   floating in an empty box beside the chart. */
+.hsum { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 18px; }
+.hnotes { border-left: 1px solid var(--line); padding-left: 16px; display: flex; flex-direction: column; }
+.hmeta { margin: auto 0 0; padding-top: 8px; font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.hmeta b { color: var(--text-2); font-weight: 600; }
+@media (max-width: 720px) { .hsum { grid-template-columns: minmax(0, 1fr); }
+  .hnotes { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 10px; } }
+.htabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--line); margin: -4px -4px 8px; }
+.htab { background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 6px 10px;
+  font: inherit; font-size: 12.5px; color: var(--dim); cursor: pointer; }
+.htab span { font-size: 11px; color: var(--dim); margin-left: 3px; font-variant-numeric: tabular-nums; }
+.htab:hover { color: var(--text); }
+.htab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.hchanges .dim { color: var(--dim); list-style: none; margin-left: -18px; cursor: help; }
+.hall { margin-top: 6px; font-size: 12px; }
+/* app.css bleeds a section title 10px past its content for the hover band; on this page every
+   other block is flush, so the token breakdown lines up with them instead. */
+#auditview .tokwrap .asection h3 { margin-left: 0; margin-right: 0; }
+.apager { display: flex; align-items: center; justify-content: center; gap: 12px; margin: 12px 0 4px; }
+.apager .addbtn[disabled] { opacity: .4; cursor: default; }
 .hcard h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
 .hchanges { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.55; }
 .hquiet { margin: 0; }
 
 /* Runs per day: the bar is the run count against the busiest day, the inner fill is the SHARE
    of that day's rows needing attention — both from zero, so no baseline overstates a ratio. */
-.hdays { display: flex; align-items: flex-end; gap: 3px; height: 84px; }
+.hdays { display: flex; align-items: flex-end; gap: 3px; height: 96px; }
 .hday { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
 .hday i { display: flex; flex-direction: column; justify-content: flex-end; width: 100%; max-width: 22px;
   background: var(--accent-soft); border: 1px solid var(--accent-line); border-bottom: 0;
@@ -66,6 +87,5 @@
 .htable .bad { color: var(--danger); font-weight: 600; }
 .htable .hdec { display: flex; flex-wrap: wrap; gap: 4px; }
 .htable .hchip { font-size: 11px; }
-.ahealth .asection { margin-bottom: 8px; }
 
 @media (prefers-reduced-motion: reduce) { .kpi, .hday i { animation: none; } }

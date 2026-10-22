@@ -1138,11 +1138,14 @@ def _insights(days):
     return r
 
 
-def _audit_view(wid="", cap="", verified=""):
+def _audit_view(wid="", cap="", verified="", offset=0, limit=0):
     """The Audit tab's payload (issue #95): entries across ALL rotated segments, newest first,
     server-side filtered by workflow id / capability / verify verdict. `capabilities` lists the
     distinct cap names over the UNFILTERED trail so the filter dropdown doesn't shrink as you
-    narrow. Token totals/segments reflect the filtered view."""
+    narrow. Token totals/segments reflect the filtered view.
+
+    `offset`/`limit` page the ENTRIES only (limit 0 = all): `count`, the cost and the token
+    totals stay over the whole filtered view, so the header doesn't shrink to one page's sum."""
     entries, all_caps = [], set()
     for e in engine.iter_audit_entries():
         if e.get("capability"):
@@ -1171,9 +1174,13 @@ def _audit_view(wid="", cap="", verified=""):
         for k in total_tokens:
             agg[k] += tok.get(k, 0) or 0
             total_tokens[k] += tok.get(k, 0) or 0
+    newest = list(reversed(entries))
+    offset = max(0, offset)
     return {
-        "entries": list(reversed(entries)),
+        "entries": newest[offset:offset + limit] if limit > 0 else newest[offset:],
         "count": len(entries),
+        "offset": offset,
+        "limit": limit,
         "total_cost": round(sum(e.get("cost_usd", 0) or 0 for e in entries), 4),
         "tokens_by_model": by_model,
         "total_tokens": total_tokens,
@@ -1548,9 +1555,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(_audit_content(wid, at, attempt)))
         elif self.path.startswith("/api/audit"):
             q = parse_qs(urlparse(self.path).query)
+            num = lambda k: int(v) if (v := (q.get(k) or [""])[0]).isdigit() else 0
             self._send(200, json.dumps(_audit_view(
                 wid=(q.get("wid") or [""])[0], cap=(q.get("cap") or [""])[0],
-                verified=(q.get("verified") or [""])[0])))
+                verified=(q.get("verified") or [""])[0],
+                offset=num("offset"), limit=min(num("limit"), 1000))))
         elif self.path == "/api/models":
             cfg = gateway.load()
             # The Admin view asking for the models IS the refresh trigger. Safe to keep inline

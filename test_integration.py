@@ -3721,6 +3721,13 @@ class AuditViewFilterTests(unittest.TestCase):
         # the dropdown list stays unfiltered so narrowing doesn't hide options
         self.assertEqual(both["capabilities"], ["agent:beta", "skill:alpha"])
 
+    def test_paging_slices_entries_but_totals_cover_the_whole_view(self):
+        page = self.server._audit_view(offset=1, limit=1)
+        self.assertEqual([e["at"] for e in page["entries"]], ["2026-07-01T11:00:00"])
+        self.assertEqual((page["count"], page["total_cost"]), (3, 3))
+        self.assertEqual(self.server._audit_view(offset=5, limit=2)["entries"], [])
+        self.assertEqual(len(self.server._audit_view(limit=0)["entries"]), 3)
+
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
 class ExecRetryPolicyTests(unittest.IsolatedAsyncioTestCase):

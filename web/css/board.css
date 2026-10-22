@@ -36,9 +36,13 @@
 .bcard.t-wait.fresh { animation: bcardin .42s cubic-bezier(.2,.9,.3,1.3) both, bnudge .5s .5s ease-in-out 1; }
 @keyframes bnudge { 0%, 100% { transform: none; } 30% { transform: rotate(-1deg); } 60% { transform: rotate(1deg); } }
 
-.bempty { text-align: center; padding: 14px 6px 10px; font-size: 12.5px; }
-.bc-needs .bempty::before, .bc-wait .bempty::before { content: "\2713"; display: block; font-size: 18px;
-  color: var(--ok); margin-bottom: 3px; }
+/* Every empty column is the same box: an icon slot in all four (not only the two with good news)
+   and one fixed height, so their sizes stop depending on which column it is or how its copy wraps. */
+.bempty { text-align: center; padding: 0 6px; margin: 0; font-size: 12.5px; height: 62px; box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bempty::before { content: "\2013"; display: block; font-size: 18px; line-height: 22px; color: var(--dim); margin-bottom: 3px; }
+.bc-needs .bempty::before, .bc-wait .bempty::before { content: "\2713"; color: var(--ok); }
 
 @media (prefers-reduced-motion: reduce) {
   .bcard, .bcard.fresh, .bcard.t-wait.fresh { animation: none; transition: none; }

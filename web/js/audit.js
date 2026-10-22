@@ -115,18 +115,19 @@ function renderInsights(r){
   (h.unhealthy_models||[]).forEach(m=>{ const uses=[...(m.phases||[]),...(m.caps||[])];
     warns.push(`<span class="hwarn bad" title="${esc(m.detail||'')}">● ${esc(m.name||m.model||'a model')} last failed${uses.length?' · used by '+esc(uses.join(', ')):''}</span>`); });
   Object.entries(h.down||{}).forEach(([m,s])=>warns.push(`<span class="hwarn" title="skipped until the cooldown ends">○ ${esc(m)} marked down for ${Math.ceil(s/60)}m</span>`));
-  const changes=(r.changes||[]).length
-    ?`<ul class="hchanges">${r.changes.map(c=>`<li>${esc(c)}</li>`).join("")}</ul>`
+  // The five biggest moves; the rest wait behind a tooltip rather than stretching the card.
+  const ch=r.changes||[], chMore=ch.length>5?`<li class="dim" title="${esc(ch.slice(5).join("\n"))}">+${ch.length-5} more</li>`:'';
+  const changes=ch.length
+    ?`<ul class="hchanges">${ch.slice(0,5).map(c=>`<li>${esc(c)}</li>`).join("")}${chMore}</ul>`
     :`<p class="sub hquiet">Nothing moved beyond noise against the previous ${d} days.</p>`;
   const days=r.by_day||[], dmax=Math.max(1,...days.map(x=>x.runs));
   const spark=days.length?`<div class="hdays" role="img" aria-label="runs per day">${days.map((x,i)=>{
       const hgt=x.runs?Math.max(4,(x.runs/dmax)*100):0, att=x.runs?(x.attention/x.runs)*100:0;
       return `<div class="hday${x.runs?'':' quiet'}" title="${esc(x.day)}: ${x.runs} runs · ${x.attention} needing attention · ≈ $${x.cost_usd.toFixed(2)}"><i style="height:${hgt.toFixed(0)}%"><b style="height:${att.toFixed(0)}%"></b></i><span>${(days.length<=14||i%5===0)?esc(x.day.slice(8)):'&nbsp;'}</span></div>`;
     }).join("")}</div><div class="hlegend"><span class="lk runs"></span>runs <span class="lk att"></span>share needing attention</div>`:'';
-  const sect=(key,title,count,body)=>`<div class="asection coll${INSIGHT_OPEN[key]?'':' collapsed'}" data-isect="${key}">
-      <h3><span class="secttoggle"><span class="gcaret">&#9662;</span>${title}</span><span class="sectcount">${count}</span></h3>
-      <div class="asection-body">${body}</div></div>`;
-  const tbl=(head,rows)=>rows.length?`<table class="htable"><thead><tr>${head.map(x=>`<th${x[1]?` class="num"`:''}>${x[0]}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`:`<p class="memempty">None in this window.</p>`;
+  const HROWS=8;
+  const tbl=(head,rows)=>rows.length?`<table class="htable"><thead><tr>${head.map(x=>`<th${x[1]?` class="num"`:''}>${x[0]}</th>`).join("")}</tr></thead><tbody>${(INSIGHT_ALL?rows:rows.slice(0,HROWS)).join("")}</tbody></table>`
+      +(rows.length>HROWS?`<button class="linkbtn hall" data-iall>${INSIGHT_ALL?'show fewer':`show all ${rows.length}`}</button>`:''):`<p class="memempty">None in this window.</p>`;
   const cause=tbl([["Cause"],["Count",1],["Before",1]], (r.attention||[]).map(a=>{
       const lbl=a.outcome==="needs_human"?auReason(a.reason):(a.reason&&a.reason!==a.outcome?auReason(a.reason):a.outcome.replace(/_/g," "));
       return `<tr><td title="${esc(a.outcome+(a.reason?' / '+a.reason:''))}">${esc(lbl)}</td><td class="num">${a.count}</td><td class="num dim">${a.prev}</td></tr>`;}));
@@ -139,6 +140,15 @@ function renderInsights(r){
   const caps=tbl([["Capability"],["Judged",1],["Pass",1],["Overruled",1],["Escalated",1],["Avg $",1]], (r.caps||[]).filter(c=>c.runs).map(c=>
       `<tr><td title="${esc(c.capability)}">${esc(c.name)}</td><td class="num">${c.runs}</td><td class="num${c.pass_rate!=null&&c.pass_rate<.7?' bad':''}">${auPct(c.pass_rate)}</td><td class="num" title="failed runs a human accepted — a judge problem, not a capability problem">${c.accepted||0}</td><td class="num">${auPct(c.escalation_rate)}</td><td class="num">${c.avg_cost_usd!=null?c.avg_cost_usd.toFixed(2):'—'}</td></tr>`));
   const ledgerNote=r.ledger_covers?`<p class="sub">Tier-call ledger holds calls since ${esc(shortWhen(r.ledger_covers))}.</p>`:'';
+  // One breakdown at a time behind tabs: five stacked collapsibles read as five more sections of
+  // the page, all the same weight as the trail below them.
+  const tabs=[["cause","Causes",(r.attention||[]).length,cause],
+    ["judges","Judges",(r.fail_sources||[]).length,judges],
+    ["caps","Capabilities",(r.caps||[]).filter(c=>c.runs).length,caps],
+    ["stages","Stages",((r.stages||{}).stages||[]).length,stages],
+    ["tiers","Tier calls",(r.tiers||[]).length,ledgerNote+tiers]];
+  const cur=tabs.find(t=>t[0]===INSIGHT_TAB)||tabs[0];
+  const meta=`attempt p50 <b>${auDur(n.attempt_p50_s)||'—'}</b> · p90 <b>${auDur(n.attempt_p90_s)||'—'}</b> · <b>${n.fallbacks??0}</b> fallback${n.fallbacks===1?'':'s'}`;
   return `<div class="hhead"><h2>Health</h2>
       <div class="hseg" role="group" aria-label="window">${[7,30].map(x=>`<button class="addbtn${x===d?' on':''}" data-idays="${x}" aria-pressed="${x===d}">${x}d</button>`).join("")}</div>
       <button class="addbtn" id="ins-refresh" title="re-read the trail now">refresh</button></div>
@@ -146,21 +156,16 @@ function renderInsights(r){
     <div class="kpis">
       ${kpi("Runs",n.runs??0,auDelta(n.runs,p.runs,true),"distinct runs with any row in the window")}
       ${kpi("Judged pass",auPct(n.pass_rate),auDelta(n.pass_rate,p.pass_rate,true,auPct),"runs a JUDGE passed, over runs a judge decided — supervisor kills and harness deaths excluded")}
-      ${kpi("Needs attention",n.attention??0,auDelta(n.attention,p.attention,false),"rows that were not routine work: needs-human, supervisor actions, declines, overrides")}
-      ${kpi("Judge overruled",n.accepted??0,auDelta(n.accepted,p.accepted,false),"failed runs a human accepted — each one is a judge that was wrong")}
-      ${kpi("Fallbacks",n.fallbacks??0,auDelta(n.fallbacks,p.fallbacks,false),"attempts whose chosen model could not run and another substituted")}
-      ${kpi("Attempt p50",auDur(n.attempt_p50_s),auDelta(n.attempt_p50_s,p.attempt_p50_s,false,auDur),"median wall time of one execution attempt (p90 "+auDur(n.attempt_p90_s)+")")}
+      ${kpi("Attention",n.attention??0,auDelta(n.attention,p.attention,false),"rows that were not routine work: needs-human, supervisor actions, declines, overrides")}
+      ${kpi("Overruled",n.accepted??0,auDelta(n.accepted,p.accepted,false),"failed runs a human accepted — each one is a judge that was wrong")}
       ${kpi("Spend",`$${(n.cost_usd||0).toFixed(2)}`,auDelta(n.cost_usd,p.cost_usd,false,v=>'$'+(v||0).toFixed(2)),"API-equivalent estimate — on a subscription this is not billed")}
     </div>
-    <div class="hcols"><div class="hcard"><h4>What changed</h4>${changes}</div>
-      <div class="hcard"><h4>Last ${d} days</h4>${spark||'<p class="memempty">No runs.</p>'}</div></div>
-    ${sect("cause","Needs attention, by cause",(r.attention||[]).length,cause)}
-    ${sect("judges","Adverse verdicts, by who reached them",(r.fail_sources||[]).length,judges)}
-    ${sect("caps","Capabilities",(r.caps||[]).filter(c=>c.runs).length,caps)}
-    ${sect("stages","Where the time goes",((r.stages||{}).stages||[]).length,stages)}
-    ${sect("tiers","Routing, clarify and judge calls",(r.tiers||[]).length,ledgerNote+tiers)}`;
+    <div class="hcard hsum"><div class="hchart"><h4>Last ${d} days</h4>${spark||'<p class="memempty">No runs.</p>'}</div>
+      <div class="hnotes"><h4>What changed</h4>${changes}<p class="hmeta">${meta}</p></div></div>
+    <div class="hcard hbreak"><div class="htabs" role="tablist">${tabs.map(t=>`<button role="tab" class="htab${t===cur?' on':''}" data-itab="${t[0]}" aria-selected="${t===cur}">${t[1]} <span>${t[2]}</span></button>`).join("")}</div>
+      ${cur[3]}</div>`;
 }
-let INSIGHT_OPEN={cause:true, judges:true};
+let INSIGHT_TAB="cause", INSIGHT_ALL=false;
 function wireInsights(){
   const box=document.getElementById("au-health"); if(!box) return;
   box.querySelectorAll("[data-idays]").forEach(b=>b.addEventListener("click",()=>{
@@ -169,12 +174,17 @@ function wireInsights(){
     loadInsights();
   }));
   const rf=box.querySelector("#ins-refresh"); if(rf) rf.addEventListener("click",()=>loadInsights(true));
-  enhanceToggles(box,".secttoggle",".asection","collapsed");
-  box.querySelectorAll(".asection[data-isect]").forEach(sec=>sec.querySelector(".secttoggle").addEventListener("click",()=>{
-    INSIGHT_OPEN[sec.dataset.isect]=!sec.classList.toggle("collapsed");
+  box.querySelectorAll("[data-itab]").forEach(b=>b.addEventListener("click",()=>{
+    INSIGHT_TAB=b.dataset.itab; INSIGHT_ALL=false; box.innerHTML=renderInsights(AU_INSIGHT.data); wireInsights();
   }));
+  const all=box.querySelector("[data-iall]");
+  if(all) all.addEventListener("click",()=>{ INSIGHT_ALL=!INSIGHT_ALL; box.innerHTML=renderInsights(AU_INSIGHT.data); wireInsights(); });
 }
 
+// The trail is paged on the server: the whole trail was one response and one <tbody>, which
+// grows without bound on an install that never clears it (the trail is immutable).
+const AU_PAGE=50;
+let AUDIT_OFFSET=0;
 async function loadAudit(){
   const el=document.getElementById("auditview");
   el.innerHTML=`<p class="sub">loading…</p>`;
@@ -183,7 +193,8 @@ async function loadAudit(){
   if(AUDIT_FILTER.wid) qs.set("wid",AUDIT_FILTER.wid);
   if(AUDIT_FILTER.cap) qs.set("cap",AUDIT_FILTER.cap);
   if(AUDIT_FILTER.verified) qs.set("verified",AUDIT_FILTER.verified);
-  try { data=await (await fetch("/api/audit"+(qs.toString()?"?"+qs.toString():""))).json(); }
+  qs.set("offset",String(AUDIT_OFFSET)); qs.set("limit",String(AU_PAGE));
+  try { data=await (await fetch("/api/audit?"+qs.toString())).json(); }
   catch(e){ el.innerHTML=`<p class="err">Couldn't load audit (${esc(e.message)}).</p>`; return; }
   const rows=data.entries.map((e,i)=>{
     const capRaw=(e.capability||"").split(":").pop();
@@ -286,19 +297,27 @@ async function loadAudit(){
         title="filter by workflow id (press Enter)" style="min-width:180px">
       ${(AUDIT_FILTER.wid||AUDIT_FILTER.cap||AUDIT_FILTER.verified)?'<button class="addbtn" id="af-clear">clear filters</button>':''}
     </div>
-    ${rows ? table : '<p class="memempty">No actions match.</p>'}`;
-  el.querySelector("#af-cap").addEventListener("change",e=>{AUDIT_FILTER.cap=e.target.value; loadAudit();});
-  el.querySelector("#af-ver").addEventListener("change",e=>{AUDIT_FILTER.verified=e.target.value; loadAudit();});
+    ${rows ? table : '<p class="memempty">No actions match.</p>'}
+    ${data.count>AU_PAGE?`<div class="apager"><button class="addbtn" data-apage="-1"${AUDIT_OFFSET?'':' disabled'}>‹ Newer</button>
+      <span class="sub">${AUDIT_OFFSET+1}–${Math.min(AUDIT_OFFSET+AU_PAGE,data.count)} of ${data.count}</span>
+      <button class="addbtn" data-apage="1"${AUDIT_OFFSET+AU_PAGE<data.count?'':' disabled'}>Older ›</button></div>`:''}`;
+  el.querySelector("#af-cap").addEventListener("change",e=>{AUDIT_FILTER.cap=e.target.value; AUDIT_OFFSET=0; loadAudit();});
+  el.querySelector("#af-ver").addEventListener("change",e=>{AUDIT_FILTER.verified=e.target.value; AUDIT_OFFSET=0; loadAudit();});
   el.querySelector("#af-wid").addEventListener("keydown",e=>{
-    if(e.key==="Enter"){AUDIT_FILTER.wid=e.target.value.trim(); loadAudit();}});
+    if(e.key==="Enter"){AUDIT_FILTER.wid=e.target.value.trim(); AUDIT_OFFSET=0; loadAudit();}});
   const clr=el.querySelector("#af-clear");
-  if(clr) clr.addEventListener("click",()=>{AUDIT_FILTER={wid:"",cap:"",verified:""}; loadAudit();});
+  if(clr) clr.addEventListener("click",()=>{AUDIT_FILTER={wid:"",cap:"",verified:""}; AUDIT_OFFSET=0; loadAudit();});
   const tokSec=el.querySelector('.asection[data-sect="au-tokens"]');
   enhanceToggles(el,".secttoggle",".asection","collapsed");
   if(tokSec){ tokSec.querySelector(".secttoggle").addEventListener("click",()=>{
     TOK_OPEN=!tokSec.classList.toggle("collapsed");
     try { localStorage.setItem("ottoTokOpen",TOK_OPEN?"1":"0"); } catch(e){}
   }); }
+  el.querySelectorAll("[data-apage]").forEach(b=>b.addEventListener("click",async()=>{
+    AUDIT_OFFSET=Math.max(0,AUDIT_OFFSET+(+b.dataset.apage)*AU_PAGE);
+    await loadAudit();
+    const head=document.querySelector("#auditview .atrailhead"); if(head) head.scrollIntoView({block:"start"});
+  }));
   loadInsights();
   el.querySelectorAll("tr.arec").forEach(r=>{
     const open=()=>openAuditDetail(data.entries[+r.dataset.i]);
