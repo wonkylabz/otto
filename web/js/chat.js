@@ -307,7 +307,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
       // rendering it identically to a clean, verified success.
       const flag = declined ? null
         : (st.needs_human || (st.verified===false ? "verify_exhausted" : null));
-      setNode("RUN", flag?"failed":"done", declined?"skipped":(flag?(NEEDS_LABEL[flag]||"needs review"):"done"));
+      setNode("RUN", flag?"failed":"done", declined?"skipped":(flag?(NEEDS_LABEL[flag]||"needs a look"):"done"));
       setNode("AUDIT","done", declined?"recorded: declined":"recorded");
       clearThinking(content);
       if(!flag && !declined) mascotReact("dab","all done", "", MASCOT_DAB_MS);
@@ -665,10 +665,10 @@ function showResult(node, text, sessionId, ts, durationMs, flag){
   // the workflow's own text banner so it isn't shown twice, and keep the recorded text intact.
   let shown = text || "(no output)";
   if(flag){
-    const label=NEEDS_LABEL[flag]||"needs review";
+    const label=NEEDS_LABEL[flag]||"needs a look";
     const hint=NEEDS_HINT[flag]||NEEDS_HINT[label]||"This run did not complete cleanly — review it before trusting the result.";
     node.insertAdjacentHTML("afterbegin",
-      `<div class="needsflag"><span class="nf-ic">⚠️</span><span><span class="nf-t">Needs review — ${esc(label)}</span><span class="nf-h">${esc(hint)}</span></span></div>`);
+      `<div class="needsflag"><span class="nf-ic">⚠️</span><span><span class="nf-t">Needs a look — ${esc(label)}</span><span class="nf-h">${esc(hint)}</span></span></div>`);
     shown = shown.replace(NEEDS_BANNER_RE,"");
   }
   node.querySelector(".result").innerHTML = renderMD(shown);
