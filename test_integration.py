@@ -1276,6 +1276,9 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(p["approval"], "auto")             # rule's auto_approve → auto
         self.assertEqual(p["cap"]["name"], "demo-write")    # pinned cap resolved from registry…
         self.assertEqual(p["cap"]["risk"], "write")         # …with trusted risk (not from the rule)
+        # Its own Chat thread, keyed on its own run id — not one shared per rule, and not none.
+        self.assertEqual(p["chat_key"], self.started[0]["id"])
+        self.assertEqual(p["chat_labels"], ["event"])
 
     @unittest.skipUnless(_HAS_TEMPORAL, "event ingress needs TEMPORAL_OK")
     def test_event_without_a_timestamp_is_refused(self):
@@ -2913,6 +2916,39 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.opened[0][1]["labels"], ["scheduled-job"])
         # The judge is told the run is unattended (dead-end questions must FAIL verify).
         self.assertEqual(self.verify_unattended, [True])
+
+    async def test_each_job_firing_opens_its_own_chat(self):
+        """A job used to append every firing to ONE `chat-<rid>` thread, so its sidebar entry was
+        an ever-growing log. `chat_per_run` makes the workflow suffix the prefix with its OWN id,
+        and the status it reports (what a retry reattaches by) is that per-run key."""
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, open_chat, record_attempt,
+                                record_chat, record_skip, route_request, snapshot_settings,
+                                run_capability, resolve_pr_target, check_grounding,
+                                verify_capability)
+        wids = ["sch-" + uuid.uuid4().hex[:8] for _ in range(2)]
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="chatq2", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request, run_capability,
+                                resolve_pr_target, check_grounding, verify_capability,
+                                record_attempt, record_skip, deliver_result, open_chat, record_chat],
+                    activity_executor=ex,
+                ):
+                    for wid in wids:
+                        res = await env.client.execute_workflow(
+                            OttoWorkflow.run,
+                            {"request": "check builds", "scheduled": True,
+                             "cap": {"name": "evt-write", "kind": "skill", "risk": "write"},
+                             "auto_approve": True, "chat_key": "chat-sched1",
+                             "chat_per_run": True, "chat_title": "check builds",
+                             "chat_labels": ["scheduled-job"]},
+                            id=wid, task_queue="chatq2")
+                        self.assertEqual(res.get("chat_key"), f"chat-sched1-{wid}")
+        self.assertEqual([o[0][0] for o in self.opened], [f"chat-sched1-{w}" for w in wids])
+        self.assertEqual([r[0][0] for r in self.recorded], [f"chat-sched1-{w}" for w in wids])
 
     async def test_a_workflow_error_tells_the_asker(self):
         """Issue #98: the catch-all in `run()` was the ONE terminal path that never delivered.
@@ -7110,6 +7146,8 @@ class ScheduleReconcileTests(unittest.IsolatedAsyncioTestCase):
                                                    "cron": "0 9 * * *", "auto_approve": True}})
         self.assertIn("otto-bbb", fake.updated)
         self.assertEqual(fake.actions["otto-bbb"]["chat_key"], "chat-otto-bbb")
+        # A prefix, not one shared thread: every firing opens its own (workflow mints the suffix).
+        self.assertTrue(fake.actions["otto-bbb"]["chat_per_run"])
         self.assertEqual(fake.actions["otto-bbb"]["chat_labels"], ["scheduled-job"])
 
     async def test_reconcile_deletes_orphans(self):

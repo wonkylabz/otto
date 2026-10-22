@@ -1021,6 +1021,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # record their own turns). `chat_key` is a stable id (e.g. the schedule id) so the first
         # run creates the chat and later runs append; `chat_labels` tag its provenance.
         chat_key = params.get("chat_key")
+        if chat_key and params.pop("chat_per_run", False):
+            # A job/event firing gets its OWN thread: the ingress hands a prefix, this run's id
+            # makes it unique (see scheduler._args). Popped so a retry, which reattaches by the
+            # recorded key, never suffixes it twice. Workflow id is replay-stable.
+            chat_key = params["chat_key"] = f"{chat_key}-{workflow.info().workflow_id}"
         self._chat_key = chat_key
         # Open the Chat thread NOW (before routing/execution) so an unattended run is visible and
         # accessible the moment Otto starts the ticket, not only when it finishes. _record_chat

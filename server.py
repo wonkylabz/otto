@@ -1877,8 +1877,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, json.dumps({"error": f"rule pins unknown capability '{norm['cap']}'"})); return
                 cap = c.ref()
             wid = "evt-" + uuid.uuid4().hex
+            # Each delivery opens its OWN Chat thread (keyed on its own wid): without one an
+            # event run reached the audit trail and nobody's sidebar.
             tc.run(_wf_start(wid, {"request": norm["request"], "cap": cap, "unattended": True,
-                                   "approval": norm["approval"], "reply_to": norm.get("reply_to")}))
+                                   "approval": norm["approval"], "reply_to": norm.get("reply_to"),
+                                   "chat_key": wid, "chat_title": f"{source}: {norm['request']}"[:80],
+                                   "chat_labels": ["event"]}))
             committed = True
             self._send(202, json.dumps({"id": wid, "request": norm["request"]}))
         finally:
