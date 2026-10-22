@@ -298,7 +298,17 @@ if(mBubble) mBubble.addEventListener("click", e=>{
   // He is reporting on something that isn't on screen - take the human to it.
   if(!MOOD.turn && (MOOD.fleet||{}).sub) activateTab("board");
 });
-if(mFig) mFig.addEventListener("click", ()=>{ if(mFig.blink) mFig.blink(); });
+if(mFig) mFig.addEventListener("click", ()=>{ if(mFig.blink) mFig.blink(); if(mFig.hearts) mFig.hearts(); });
+/* Hello, and welcome back. Gestures, not moods - they never touch MOOD or the state attribute
+   (applyMood is his one writer), and wave() itself refuses anything but a resting pose, so a
+   greeting can never interrupt him mid-plan. "Back" means away long enough to have left. */
+const MASCOT_AWAY_MS=10*60*1000;
+let mascotHiddenAt=0;
+if(mFig) setTimeout(()=>{ if(mFig.wave) mFig.wave(); }, 900);
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden){ mascotHiddenAt=Date.now(); return; }
+  if(mascotHiddenAt && Date.now()-mascotHiddenAt>=MASCOT_AWAY_MS && mFig && mFig.wave) setTimeout(()=>mFig.wave(), 400);
+});
 // Drag him anywhere; double-click sends him home. Both grips move the same dock.
 [mBubble, mFig].forEach(el=>{
   if(!el) return;
