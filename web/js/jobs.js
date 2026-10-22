@@ -173,7 +173,7 @@ function wireJobs(el){
     loadJobs();
   }));
   el.querySelectorAll("[data-deljob]").forEach(b=>b.addEventListener("click",async()=>{
-    if(!confirm("Remove this runbook?")) return;
+    if(!await askConfirm("Remove this runbook?",{ok:"Remove",danger:true})) return;
     await postOr("/api/runbooks/remove",{id:b.dataset.deljob},"removing that runbook");
     loadJobs();
   }));
@@ -295,7 +295,7 @@ function showParamForm(job){
 async function openJobForm(id){
   let full=null;
   try { full=(await (await fetch("/api/runbook/"+encodeURIComponent(id))).json()).runbook; }
-  catch(e){ alert("Couldn't load that runbook."); return; }
+  catch(e){ toast("Couldn't load that runbook."); return; }
   showJobForm(Object.assign({id}, full));
 }
 

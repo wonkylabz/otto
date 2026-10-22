@@ -7655,6 +7655,15 @@ class UiAssetLayoutTests(unittest.TestCase):
         self.assertNotIn("function ", doc, "logic came back inline")
         self.assertNotRegex(doc, r"<script>\s*\n", "an inline script block came back")
 
+    def test_no_native_browser_dialog(self):
+        """Chrome returned `confirm()` false in 0ms without painting it (measured: Evict GC,
+        DevTools closed), so a confirm-gated button silently did nothing. Use askConfirm/askText."""
+        import re
+        src = re.sub(r"/\*.*?\*/|<!--.*?-->", "", ui_src(), flags=re.S)
+        hits = re.findall(r"(?<![\w.$])(?:window\.)?(?:confirm|alert|prompt)\(", src)
+        self.assertEqual(hits, [], "native dialog — use askConfirm/askText from modal.js")
+        self.assertIn('id="askModal"', ui_src())
+
     def test_a_silent_board_repaint_waits_out_a_held_press(self):
         """A rebuild between mousedown and mouseup drops the click, so Terminate/Retry needed
         several tries while runs were live. The skip is time-bounded so a lost pointerup

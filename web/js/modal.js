@@ -32,3 +32,50 @@ function afterFormModal(fn){ FORM_MODAL_THEN=fn; }
 document.getElementById("formModalClose").addEventListener("click",closeFormModal);
 document.getElementById("formModal").addEventListener("click",e=>{ if(e.target.id==="formModal") closeFormModal(); });
 document.addEventListener("keydown",e=>{ if(e.key==="Escape" && !document.getElementById("formModal").hidden) closeFormModal(); });
+
+/* ---- in-app confirm / prompt ----
+   Native confirm()/alert()/prompt() are banned: Chrome can return false in 0ms without ever
+   painting the dialog, so a destructive button silently does nothing. Resolves true/false (or the
+   text / null). Its own overlay, above formModal, so asking never wipes an open form. */
+let ASK_DONE=null, ASK_FROM=null;
+document.body.insertAdjacentHTML("beforeend",`<div class="modalOverlay askOverlay" id="askModal" hidden>
+  <div class="modalBox askBox" role="dialog" aria-modal="true"><div class="modalBody">
+    <p class="askMsg" id="askMsg"></p>
+    <textarea class="askInput" id="askInput" rows="4" hidden></textarea>
+    <div class="askActions"><button class="btn decline sm" id="askCancel">Cancel</button><button class="btn approve sm" id="askOk">OK</button></div>
+  </div></div></div>`);
+function askModal(msg, {ok="OK", danger=false, text=null}={}){
+  if(ASK_DONE) ASK_DONE(null);   // a second ask supersedes an unanswered one
+  const m=document.getElementById("askModal"), okBtn=document.getElementById("askOk");
+  const input=document.getElementById("askInput");
+  document.getElementById("askMsg").textContent=msg;
+  okBtn.textContent=ok;
+  okBtn.className="btn sm "+(danger?"danger":"approve");
+  input.hidden=text===null; input.value=text??"";
+  ASK_FROM=ASK_FROM||document.activeElement;
+  m.hidden=false;
+  (text===null?okBtn:input).focus();
+  return new Promise(resolve=>{
+    ASK_DONE=v=>{ ASK_DONE=null; m.hidden=true; resolve(v);
+      const from=ASK_FROM; ASK_FROM=null; if(from && from.isConnected) from.focus(); };
+  });
+}
+function askAnswer(yes){
+  if(!ASK_DONE) return;
+  const input=document.getElementById("askInput");
+  ASK_DONE(yes ? (input.hidden ? true : input.value) : (input.hidden ? false : null));
+}
+function askConfirm(msg, opts){ return askModal(msg, opts); }
+function askText(msg, value, opts){ return askModal(msg, {...opts, text:value||""}); }
+document.getElementById("askOk").addEventListener("click",()=>askAnswer(true));
+document.getElementById("askCancel").addEventListener("click",()=>askAnswer(false));
+document.getElementById("askModal").addEventListener("click",e=>{ if(e.target.id==="askModal") askAnswer(false); });
+document.addEventListener("keydown",e=>{
+  if(!ASK_DONE) return;
+  if(e.key==="Escape"){ e.stopImmediatePropagation(); askAnswer(false); }
+  else if(e.key==="Tab"){   // trap focus: Space on a control under the scrim would still fire it
+    const f=[...document.querySelectorAll("#askModal textarea:not([hidden]), #askModal button")];
+    const i=f.indexOf(document.activeElement);
+    e.preventDefault(); f[(i+(e.shiftKey?-1:1)+f.length)%f.length].focus(); }
+  else if(e.key==="Enter" && document.getElementById("askInput").hidden){ e.preventDefault(); askAnswer(true); }
+}, true);

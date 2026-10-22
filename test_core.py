@@ -3975,7 +3975,7 @@ class RuleEnforcementTests(unittest.TestCase):
         # --- ui.md (3) ---
         "ui.md:An in-flight flag for a long action lives OUTSIDE the render",
         "ui.md:CSS.escape() is for identifiers, never inside a quoted attribute selec",
-        "ui.md:Verifying UI changes headlessly",
+        "ui.md:Headless UI checks",
     })
 
     @classmethod
