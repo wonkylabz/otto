@@ -15,7 +15,10 @@ const AU_REASON_LABELS={workflow_error:"workflow crashed",delivery_failed:"deliv
   local_fallback_disabled:"local model failed, Claude fallback is off",
   claude_auth_expired:"Claude could not authenticate",
   supervisor_retry:"supervisor killed & retried",
-  supervisor_would_retry:"supervisor flagged (shadow mode)",terminated:"terminated by a human"};
+  supervisor_would_retry:"supervisor flagged (shadow mode)",terminated:"terminated by a human",
+  supervisor_steer:"supervisor steered the attempt",claude_usage_limit:"Claude usage limit reached",
+  factory_no_pr:"factory run opened no PR",
+  merge_failed:"merge refused",harness_exhausted:"the harness kept dying",gate_timeout:"approval timed out",merge_unreviewed:"merge without a passing review"};
 const auReason=r=>{if(!r) return ""; if(AU_REASON_LABELS[r]) return AU_REASON_LABELS[r];
   const rv=/^review_(.+)$/.exec(r); if(rv) return "code review: "+rv[1];
   const qa=/^qa_(.+)$/.exec(r); if(qa) return "QA: "+qa[1];
@@ -65,6 +68,111 @@ async function openAuditDetail(e){
   const det=c.detail?`<div class="dbgsec">detail</div><div class="dbgresult">${esc(typeof c.detail==="string"?c.detail:JSON.stringify(c.detail,null,2))}</div>`:"";
   body.querySelector(".sub").outerHTML=req+res+det
     +(truncated?'<div class="aout-trunc">… output truncated to 50k chars — full text in data/audit-content.log</div>':'');
+}
+
+/* ---- health report (insights.report via /api/insights) ----
+   What broke this window, by cause and by WHO judged it, against the window before — the
+   questions the audit-runs skill used to answer with hand-written SQL. Cached OUTSIDE the
+   render: a filter change rebuilds the whole tab, and re-scanning the trail for an unchanged
+   window on every keystroke is the cost /api/stats already avoids. */
+let AU_INSIGHT={days:7, data:null, at:0, busy:null};
+try { const d=+localStorage.getItem("ottoInsightDays"); if(d===7||d===30) AU_INSIGHT.days=d; } catch(e){}
+const auPct=v=>v==null?"—":Math.round(v*100)+"%";
+const auMs=ms=>ms==null?"—":ms<1000?ms+"ms":ms<60000?(ms/1000).toFixed(1)+"s":(ms/60000).toFixed(1)+"m";
+// The arrow says which way it moved; the colour says whether that is good. For most numbers
+// down is good (failures, spend); `up` names the ones where rising is the good direction.
+function auDelta(now, prev, up, fmt){
+  if(now==null || prev==null || now===prev) return `<span class="kdelta flat" title="previous window: ${esc(fmt?fmt(prev):String(prev??"—"))}">=</span>`;
+  const rose=now>prev, good=up?rose:!rose;
+  return `<span class="kdelta ${good?'good':'bad'}" title="previous window: ${esc(fmt?fmt(prev):String(prev))}">${rose?'▲':'▼'} from ${esc(fmt?fmt(prev):String(prev))}</span>`;
+}
+async function fetchInsights(force){
+  const fresh=AU_INSIGHT.data && AU_INSIGHT.data.window && AU_INSIGHT.data.window.days===AU_INSIGHT.days
+              && Date.now()-AU_INSIGHT.at<60000;
+  if(fresh && !force) return AU_INSIGHT.data;
+  if(AU_INSIGHT.busy) return AU_INSIGHT.busy;
+  AU_INSIGHT.busy=getJSON("/api/insights?days="+AU_INSIGHT.days)
+    .then(d=>{ AU_INSIGHT.data=d; AU_INSIGHT.at=Date.now(); return d; })
+    .finally(()=>{ AU_INSIGHT.busy=null; });
+  return AU_INSIGHT.busy;
+}
+async function loadInsights(force){
+  const box=document.getElementById("au-health");
+  if(!box) return;
+  if(!AU_INSIGHT.data) box.innerHTML=`<p class="sub">reading the trail…</p>`;
+  let r;
+  try { r=await fetchInsights(force); }
+  catch(e){ box.innerHTML=`<p class="err">Couldn't build the health report (${esc(e.message)}).</p>`; return; }
+  const live=document.getElementById("au-health");      // the tab may have re-rendered meanwhile
+  if(live) live.innerHTML=renderInsights(r);
+  wireInsights();
+}
+function renderInsights(r){
+  const n=r.now||{}, p=r.prev||{}, d=AU_INSIGHT.days, h=r.health||{};
+  const kpi=(label,val,delta,title)=>`<div class="kpi" title="${esc(title)}"><div class="klabel">${label}</div><div class="kval">${val}</div>${delta}</div>`;
+  const warns=[];
+  if(h.estop&&h.estop.engaged) warns.push(`<span class="hwarn bad">● Global pause is ON — nothing new starts</span>`);
+  (h.unhealthy_models||[]).forEach(m=>{ const uses=[...(m.phases||[]),...(m.caps||[])];
+    warns.push(`<span class="hwarn bad" title="${esc(m.detail||'')}">● ${esc(m.name||m.model||'a model')} last failed${uses.length?' · used by '+esc(uses.join(', ')):''}</span>`); });
+  Object.entries(h.down||{}).forEach(([m,s])=>warns.push(`<span class="hwarn" title="skipped until the cooldown ends">○ ${esc(m)} marked down for ${Math.ceil(s/60)}m</span>`));
+  const changes=(r.changes||[]).length
+    ?`<ul class="hchanges">${r.changes.map(c=>`<li>${esc(c)}</li>`).join("")}</ul>`
+    :`<p class="sub hquiet">Nothing moved beyond noise against the previous ${d} days.</p>`;
+  const days=r.by_day||[], dmax=Math.max(1,...days.map(x=>x.runs));
+  const spark=days.length?`<div class="hdays" role="img" aria-label="runs per day">${days.map((x,i)=>{
+      const hgt=x.runs?Math.max(4,(x.runs/dmax)*100):0, att=x.runs?(x.attention/x.runs)*100:0;
+      return `<div class="hday${x.runs?'':' quiet'}" title="${esc(x.day)}: ${x.runs} runs · ${x.attention} needing attention · ≈ $${x.cost_usd.toFixed(2)}"><i style="height:${hgt.toFixed(0)}%"><b style="height:${att.toFixed(0)}%"></b></i><span>${(days.length<=14||i%5===0)?esc(x.day.slice(8)):'&nbsp;'}</span></div>`;
+    }).join("")}</div><div class="hlegend"><span class="lk runs"></span>runs <span class="lk att"></span>share needing attention</div>`:'';
+  const sect=(key,title,count,body)=>`<div class="asection coll${INSIGHT_OPEN[key]?'':' collapsed'}" data-isect="${key}">
+      <h3><span class="secttoggle"><span class="gcaret">&#9662;</span>${title}</span><span class="sectcount">${count}</span></h3>
+      <div class="asection-body">${body}</div></div>`;
+  const tbl=(head,rows)=>rows.length?`<table class="htable"><thead><tr>${head.map(x=>`<th${x[1]?` class="num"`:''}>${x[0]}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`:`<p class="memempty">None in this window.</p>`;
+  const cause=tbl([["Cause"],["Count",1],["Before",1]], (r.attention||[]).map(a=>{
+      const lbl=a.outcome==="needs_human"?auReason(a.reason):(a.reason&&a.reason!==a.outcome?auReason(a.reason):a.outcome.replace(/_/g," "));
+      return `<tr><td title="${esc(a.outcome+(a.reason?' / '+a.reason:''))}">${esc(lbl)}</td><td class="num">${a.count}</td><td class="num dim">${a.prev}</td></tr>`;}));
+  const judges=tbl([["Who decided"],["Model"],["Fails",1]], (r.fail_sources||[]).map(f=>
+      `<tr><td>${esc(f.source)}</td><td title="${esc(f.model)}">${esc(f.model?auTier(f.model):'—')}</td><td class="num">${f.count}</td></tr>`));
+  const tiers=tbl([["Tier"],["Calls",1],["Failed",1],["Fell back",1],["p50",1],["Top decisions"]], (r.tiers||[]).map(t=>
+      `<tr><td>${esc(t.tier)}</td><td class="num">${t.calls}</td><td class="num${t.failed?' bad':''}">${t.failed}</td><td class="num">${t.fell_back}</td><td class="num">${auMs(t.p50_ms)}</td><td class="hdec">${t.decisions.slice(0,3).map(x=>`<span class="hchip" title="${esc(x.decision)}">${esc(x.decision.slice(0,28))} ×${x.count}</span>`).join("")}</td></tr>`));
+  const stages=tbl([["Stage"],["Runs",1],["Median",1],["p90",1]], ((r.stages||{}).stages||[]).map(s=>
+      `<tr><td>${esc(s.stage.toLowerCase())}</td><td class="num">${s.runs}${s.open?` <span class="dim" title="still open on the last row written">+${s.open}</span>`:''}</td><td class="num">${auMs(s.p50_ms)}</td><td class="num">${auMs(s.p90_ms)}</td></tr>`));
+  const caps=tbl([["Capability"],["Judged",1],["Pass",1],["Overruled",1],["Escalated",1],["Avg $",1]], (r.caps||[]).filter(c=>c.runs).map(c=>
+      `<tr><td title="${esc(c.capability)}">${esc(c.name)}</td><td class="num">${c.runs}</td><td class="num${c.pass_rate!=null&&c.pass_rate<.7?' bad':''}">${auPct(c.pass_rate)}</td><td class="num" title="failed runs a human accepted — a judge problem, not a capability problem">${c.accepted||0}</td><td class="num">${auPct(c.escalation_rate)}</td><td class="num">${c.avg_cost_usd!=null?c.avg_cost_usd.toFixed(2):'—'}</td></tr>`));
+  const ledgerNote=r.ledger_covers?`<p class="sub">Tier-call ledger holds calls since ${esc(shortWhen(r.ledger_covers))}.</p>`:'';
+  return `<div class="hhead"><h2>Health</h2>
+      <div class="hseg" role="group" aria-label="window">${[7,30].map(x=>`<button class="addbtn${x===d?' on':''}" data-idays="${x}" aria-pressed="${x===d}">${x}d</button>`).join("")}</div>
+      <button class="addbtn" id="ins-refresh" title="re-read the trail now">refresh</button></div>
+    ${warns.length?`<div class="hwarns">${warns.join("")}</div>`:''}
+    <div class="kpis">
+      ${kpi("Runs",n.runs??0,auDelta(n.runs,p.runs,true),"distinct runs with any row in the window")}
+      ${kpi("Judged pass",auPct(n.pass_rate),auDelta(n.pass_rate,p.pass_rate,true,auPct),"runs a JUDGE passed, over runs a judge decided — supervisor kills and harness deaths excluded")}
+      ${kpi("Needs attention",n.attention??0,auDelta(n.attention,p.attention,false),"rows that were not routine work: needs-human, supervisor actions, declines, overrides")}
+      ${kpi("Judge overruled",n.accepted??0,auDelta(n.accepted,p.accepted,false),"failed runs a human accepted — each one is a judge that was wrong")}
+      ${kpi("Fallbacks",n.fallbacks??0,auDelta(n.fallbacks,p.fallbacks,false),"attempts whose chosen model could not run and another substituted")}
+      ${kpi("Attempt p50",auDur(n.attempt_p50_s),auDelta(n.attempt_p50_s,p.attempt_p50_s,false,auDur),"median wall time of one execution attempt (p90 "+auDur(n.attempt_p90_s)+")")}
+      ${kpi("Spend",`$${(n.cost_usd||0).toFixed(2)}`,auDelta(n.cost_usd,p.cost_usd,false,v=>'$'+(v||0).toFixed(2)),"API-equivalent estimate — on a subscription this is not billed")}
+    </div>
+    <div class="hcols"><div class="hcard"><h4>What changed</h4>${changes}</div>
+      <div class="hcard"><h4>Last ${d} days</h4>${spark||'<p class="memempty">No runs.</p>'}</div></div>
+    ${sect("cause","Needs attention, by cause",(r.attention||[]).length,cause)}
+    ${sect("judges","Adverse verdicts, by who reached them",(r.fail_sources||[]).length,judges)}
+    ${sect("caps","Capabilities",(r.caps||[]).filter(c=>c.runs).length,caps)}
+    ${sect("stages","Where the time goes",((r.stages||{}).stages||[]).length,stages)}
+    ${sect("tiers","Routing, clarify and judge calls",(r.tiers||[]).length,ledgerNote+tiers)}`;
+}
+let INSIGHT_OPEN={cause:true, judges:true};
+function wireInsights(){
+  const box=document.getElementById("au-health"); if(!box) return;
+  box.querySelectorAll("[data-idays]").forEach(b=>b.addEventListener("click",()=>{
+    AU_INSIGHT.days=+b.dataset.idays;
+    try { localStorage.setItem("ottoInsightDays",String(AU_INSIGHT.days)); } catch(e){}
+    loadInsights();
+  }));
+  const rf=box.querySelector("#ins-refresh"); if(rf) rf.addEventListener("click",()=>loadInsights(true));
+  enhanceToggles(box,".secttoggle",".asection","collapsed");
+  box.querySelectorAll(".asection[data-isect]").forEach(sec=>sec.querySelector(".secttoggle").addEventListener("click",()=>{
+    INSIGHT_OPEN[sec.dataset.isect]=!sec.classList.toggle("collapsed");
+  }));
 }
 
 async function loadAudit(){
@@ -150,8 +258,10 @@ async function loadAudit(){
   }).join("");
   const tokTotTitle=`${(tt.output||0)} output · ${(tt.input||0)} input · ${(tt.cache_read||0)} cache-read · ${(tt.cache_write||0)} cache-write`;
   el.innerHTML=`
-    <div class="phead"><h1>Audit trail <span class="immutable">append-only</span></h1>
-      <p class="sub">Every action, including declined writes and failures. Click any row to inspect its request and output.</p></div>
+    <div class="phead"><h1>Audit</h1>
+      <p class="sub">How Otto is doing, then every action it took — including declined writes and failures. Click any row to inspect its request and output.</p></div>
+    <section id="au-health" class="ahealth" aria-label="health report"></section>
+    <h2 class="atrailhead">Trail <span class="immutable">append-only</span></h2>
     <div class="memhead">
       <span class="memstat"><b>${data.count}</b> actions</span>
       <span class="memstat" title="${esc(tokTotTitle)}">output tokens <b class="gold">${auTok(tt.output)}</b></span>
@@ -189,6 +299,7 @@ async function loadAudit(){
     TOK_OPEN=!tokSec.classList.toggle("collapsed");
     try { localStorage.setItem("ottoTokOpen",TOK_OPEN?"1":"0"); } catch(e){}
   }); }
+  loadInsights();
   el.querySelectorAll("tr.arec").forEach(r=>{
     const open=()=>openAuditDetail(data.entries[+r.dataset.i]);
     r.addEventListener("click",open);

@@ -1,0 +1,71 @@
+/* The Audit tab's health report (audit.js renderInsights, /api/insights).
+   Its own file: app.css sits at its ratchet with no seam left to cut (UiAssetLayoutTests), and
+   every rule here is new — nothing in app.css is overridden, so load order cannot change it.
+   Colours are the palette tokens only, so all five themes and dark mode come for free. */
+.ahealth { margin: 4px 0 22px; }
+.hhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.hhead h2, .atrailhead { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em; }
+.hhead h2 { margin-right: auto; }
+.atrailhead { margin: 6px 0 8px; }
+.hseg { display: inline-flex; gap: 0; }
+.hseg .addbtn { border-radius: 0; }
+.hseg .addbtn:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.hseg .addbtn:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; margin-left: -1px; }
+.hseg .addbtn.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+
+.hwarns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.hwarn { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--warn-line);
+  background: var(--warn-soft); color: var(--warn); }
+.hwarn.bad { border-color: var(--danger-line); background: var(--danger-soft); color: var(--danger); }
+
+/* Tiles wrap to as many columns as fit: seven at desktop width, two on a phone. */
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px;
+  animation: kpiin .32s cubic-bezier(.2,.9,.3,1.2) both; }
+.kpi:nth-child(2) { animation-delay: .03s; } .kpi:nth-child(3) { animation-delay: .06s; }
+.kpi:nth-child(4) { animation-delay: .09s; } .kpi:nth-child(5) { animation-delay: .12s; }
+.kpi:nth-child(6) { animation-delay: .15s; } .kpi:nth-child(7) { animation-delay: .18s; }
+@keyframes kpiin { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+.klabel { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.kval { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin: 2px 0 1px; color: var(--text); }
+.kdelta { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim); }
+.kdelta.good { color: var(--ok); }
+.kdelta.bad { color: var(--danger); }
+
+.hcols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 8px; margin-bottom: 12px; }
+@media (max-width: 720px) { .hcols { grid-template-columns: minmax(0, 1fr); } }
+.hcard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; min-width: 0; }
+.hcard h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.hchanges { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.55; }
+.hquiet { margin: 0; }
+
+/* Runs per day: the bar is the run count against the busiest day, the inner fill is the SHARE
+   of that day's rows needing attention — both from zero, so no baseline overstates a ratio. */
+.hdays { display: flex; align-items: flex-end; gap: 3px; height: 84px; }
+.hday { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+.hday i { display: flex; flex-direction: column; justify-content: flex-end; width: 100%; max-width: 22px;
+  background: var(--accent-soft); border: 1px solid var(--accent-line); border-bottom: 0;
+  border-radius: 3px 3px 0 0; overflow: hidden; transform-origin: bottom; animation: hgrow .45s ease-out both; }
+.hday i b { display: block; background: var(--warn); opacity: .55; }
+.hday span { font-size: 10px; color: var(--dim); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.hday:hover i { background: var(--accent-line); }
+.hday.quiet i { border: 0; }
+@keyframes hgrow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.hlegend { font-size: 11px; color: var(--dim); margin-top: 6px; display: flex; align-items: center; gap: 5px; }
+.hlegend .lk { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.hlegend .lk.runs { background: var(--accent-soft); border: 1px solid var(--accent-line); }
+.hlegend .lk.att { background: var(--warn); opacity: .55; margin-left: 8px; }
+
+.htable { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: auto; }
+.htable th { text-align: left; font-weight: 600; font-size: 11px; color: var(--dim); text-transform: uppercase;
+  letter-spacing: .05em; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.htable td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+.htable tr:last-child td { border-bottom: 0; }
+.htable .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.htable .dim { color: var(--dim); }
+.htable .bad { color: var(--danger); font-weight: 600; }
+.htable .hdec { display: flex; flex-wrap: wrap; gap: 4px; }
+.htable .hchip { font-size: 11px; }
+.ahealth .asection { margin-bottom: 8px; }
+
+@media (prefers-reduced-motion: reduce) { .kpi, .hday i { animation: none; } }

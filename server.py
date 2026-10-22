@@ -43,7 +43,9 @@ import estop
 import events
 import factory
 import gateway
+import insights
 import knowledge
+import ledger
 import local_runtime
 import mcp_client
 import onboarding
@@ -1123,6 +1125,19 @@ def _stats():
             "stages": audit.stage_timings(entries)}
 
 
+def _insights(days):
+    """`insights.report` plus the live health it cannot derive from the trail: which pool models
+    last failed, which are marked down, and whether the global pause is engaged."""
+    r = insights.report(engine.iter_audit_entries(), ledger.calls(limit=100000), days=days)
+    try:
+        unhealthy = gateway.unhealthy_models()
+    except Exception:  # noqa: BLE001 - a broken models.json must not blank the whole report
+        unhealthy = []
+    r["health"] = {"unhealthy_models": unhealthy, "down": gateway.stats().get("down") or {},
+                   "estop": estop.status()}
+    return r
+
+
 def _audit_view(wid="", cap="", verified=""):
     """The Audit tab's payload (issue #95): entries across ALL rotated segments, newest first,
     server-side filtered by workflow id / capability / verify verdict. `capabilities` lists the
@@ -1647,6 +1662,13 @@ class Handler(BaseHTTPRequestHandler):
             # Per-capability reliability scorecard (issue #102), aggregated from the audit log
             # (no Temporal needed) plus the gateway's per-tier fallback counters.
             self._send(200, json.dumps(_stats()))
+        elif self.path.startswith("/api/insights"):
+            # The Audit tab's health report: by cause, by judge, by tier, against the window
+            # before it. One trail scan, like /api/stats.
+            q = parse_qs(urlparse(self.path).query)
+            raw = (q.get("days") or ["7"])[0]
+            days = int(raw) if raw.isdigit() and 0 < int(raw) <= 365 else 7
+            self._send(200, json.dumps(_insights(days)))
         elif self.path == "/api/board-health":
             # Cheap health strip for the Board tab (schedules + cost only — no per-workflow queries).
             self._send(200, json.dumps(_board_health()))
@@ -2227,7 +2249,7 @@ class Handler(BaseHTTPRequestHandler):
             params["chat_labels"] = ["retry"]
         tc.run(_wf_start(new_id, params))
         _record_retry(wid, new_id)
-        # Retrying IS acknowledging the card: dismiss it so it leaves "Needs review"
+        # Retrying IS acknowledging the card: dismiss it so it leaves "Needs a look"
         # immediately — the retry shows up under Running as its own card. Leaving the
         # old card in place read as "did my click even work?" (user-reported).
         _dismiss(wid)

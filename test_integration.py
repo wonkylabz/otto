@@ -1280,6 +1280,18 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(p["chat_key"], self.started[0]["id"])
         self.assertEqual(p["chat_labels"], ["event"])
 
+    def test_insights_route_serves_the_windowed_report_with_live_health(self):
+        """The Audit tab's health report. A bad `days` falls back to 7 rather than 500ing, and
+        the live half (model health, the pause) rides beside the trail-derived half."""
+        st, r = _get(self.base, "/api/insights?days=30")
+        self.assertEqual(st, 200)
+        self.assertEqual(r["window"]["days"], 30)
+        for key in ("now", "prev", "attention", "fail_sources", "tiers", "stages", "changes"):
+            self.assertIn(key, r)
+        self.assertIn("estop", r["health"])
+        st, r = _get(self.base, "/api/insights?days=;drop")
+        self.assertEqual((st, r["window"]["days"]), (200, 7))
+
     @unittest.skipUnless(_HAS_TEMPORAL, "event ingress needs TEMPORAL_OK")
     def test_event_without_a_timestamp_is_refused(self):
         """The header is required and signed now (issue #5). A body-only MAC — the whole of the
@@ -1807,7 +1819,7 @@ class NeedsYouActionsTests(unittest.TestCase):
 
     def test_retry_endpoint_dismisses_the_source_card(self):
         # Retrying IS acknowledging the card: the endpoint must dismiss the source run so it
-        # leaves "Needs review" — a card lingering after the click read as "did that work?".
+        # leaves "Needs a look" — a card lingering after the click read as "did that work?".
         engine.record_terminal("wf-4", "do it again", {"kind": "skill", "name": "demo-write"},
                                "workflow_error")
         started = []

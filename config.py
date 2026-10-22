@@ -928,7 +928,10 @@ ATTACHMENT_MAX_COUNT = int(os.environ.get("OTTO_ATTACHMENT_MAX_COUNT", "10"))
 ATTACHMENT_TTL_H = float(os.environ.get("OTTO_ATTACHMENT_TTL_H", "168"))
 
 # The tier-call ledger (`ledger.py`, issue #130) is telemetry, not the trail: swept after this TTL.
-TIER_LEDGER_TTL_H = float(os.environ.get("OTTO_TIER_LEDGER_TTL_H", "168"))
+# 30 days, not 7: `insights.report` compares a window with the one before it, and a 7-day TTL
+# deleted the routing/judge decisions before any weekly comparison could read them. Rows are a
+# decision string and a few numbers — never prompt or reply text.
+TIER_LEDGER_TTL_H = float(os.environ.get("OTTO_TIER_LEDGER_TTL_H", "720"))
 
 # The durable trace log (issue #128): `ui.trace` is the richest debug stream Otto produces —
 # routing decisions, wall reasons, non-reproduced adverse verdicts, supervisor verdicts, local
