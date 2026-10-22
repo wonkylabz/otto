@@ -52,10 +52,11 @@ in `audit_content` or the transcript says why.
 1. **Scope the window.** Use the aggregate above, then list the runs behind a cause:
    ```bash
    sqlite3 -readonly data/otto.db "SELECT workflow, at, json_extract(data,'$.reason') FROM audit
-     WHERE json_extract(data,'$.outcome')='needs_human' AND at >= date('now','-7 days') ORDER BY id DESC"
+     WHERE json_extract(data,'$.outcome')='needs_human' AND at >= date('now','localtime','-7 days') ORDER BY id DESC"
    sqlite3 -readonly data/otto.db "SELECT data FROM audit WHERE workflow = '<wid>'"
    sqlite3 -readonly data/otto.db "SELECT tier, decision, ok, error FROM tier_calls WHERE wid = '<wid>'"
    ```
+   `at` is LOCAL time, so the window needs `'localtime'` (SQLite's `now` is UTC).
    The last one answers "why did it route there / why did the judge fail it" for one run.
 
 2. **Flag the interesting outcomes.** Not every `verified: false` is a bug — a repo-mode run with

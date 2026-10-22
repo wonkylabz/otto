@@ -1757,7 +1757,8 @@ class InsightsReportTests(unittest.TestCase):
     def test_attention_is_grouped_by_outcome_and_reason_against_the_previous_window(self):
         r = self._report()
         rows = {(a["outcome"], a["reason"]): (a["count"], a["prev"]) for a in r["attention"]}
-        self.assertEqual(rows[("needs_human", "verify_exhausted")], (2, 0))
+        # w2 wrote verify_exhausted twice: ONE run, as on the KPI and the day chart.
+        self.assertEqual(rows[("needs_human", "verify_exhausted")], (1, 0))
         self.assertEqual(rows[("human_accepted", "")], (1, 0))
         self.assertNotIn(("ran", ""), rows)          # routine work is not "attention"
 
@@ -1781,6 +1782,12 @@ class InsightsReportTests(unittest.TestCase):
         self.assertIn(("supervisor_shadow", "supervisor_would_retry"), keys)
         # w2's three rows are ONE run, matching the day chart: w2 + w5.
         self.assertEqual(rep["now"]["attention"], 2)
+
+    def test_an_mcp_registry_change_is_not_a_run(self):
+        import insights
+        rows = self._trail() + [self._row("2026-10-22T09:00:00", "wf-ab12cd-0001",
+                                          capability="admin:mcp-add", outcome="ran")]
+        self.assertEqual(insights.report(rows, days=7, now=self.NOW)["now"]["runs"], 3)
 
     def test_a_legacy_adverse_row_is_attributed_like_scorecard_does(self):
         import insights
@@ -1814,7 +1821,8 @@ class InsightsReportTests(unittest.TestCase):
     def test_changes_report_movement_and_stay_quiet_on_noise(self):
         import insights
         r = self._report()
-        self.assertTrue(any("needs_human/verify_exhausted: 0 → 2" in c for c in r["changes"]))
+        # One run writing a terminal row twice must not cross the noise floor on its own.
+        self.assertFalse(any("verify_exhausted" in c for c in r["changes"]))
         # Identical windows move nothing: what `--changes-only` stays silent on.
         same = [{**e, "at": e["at"].replace("2026-10-1", "2026-10-2", 1)} for e in self._trail()
                 if e["at"].startswith("2026-10-1")]

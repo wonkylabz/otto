@@ -161,7 +161,7 @@ function renderInsights(r){
     <div class="kpis">
       ${kpi("Runs",n.runs??0,auDelta(n.runs,p.runs,true),"distinct runs with any row in the window")}
       ${kpi("Judged pass",auPct(n.pass_rate),auDelta(n.pass_rate,p.pass_rate,true,auPct),"runs a JUDGE passed, over runs a judge decided — supervisor kills and harness deaths excluded")}
-      ${kpi("Attention",n.attention??0,auDelta(n.attention,p.attention,false),"rows that were not routine work: needs-human, supervisor actions, declines, overrides")}
+      ${kpi("Attention",n.attention??0,auDelta(n.attention,p.attention,false),"runs that were not routine work: needs-human, supervisor kills, steers and would-retry calls, declines, overrides")}
       ${kpi("Overruled",n.accepted??0,auDelta(n.accepted,p.accepted,false),"failed runs a human accepted — each one is a judge that was wrong")}
       ${kpi("Spend",`$${(n.cost_usd||0).toFixed(2)}`,auDelta(n.cost_usd,p.cost_usd,false,v=>'$'+(v||0).toFixed(2)),"API-equivalent estimate — on a subscription this is not billed")}
     </div>

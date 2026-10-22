@@ -24,6 +24,11 @@ import audit
 _ROUTINE = {"ran", "plan_preview"}
 
 
+# An MCP-registry change (`audit.audit_mcp_change`) mints a wid but has no run behind it, so it
+# would read as Otto activity on every runs figure.
+_CONFIG_ROW = re.compile(r":mcp-[\w-]+$")
+
+
 def _needs_attention(r):
     """The ONE attention predicate. A shadow row is written for EVERY supervised attempt (SHADOW
     is the default mode), so only one whose supervisor would have retried is a signal; counting
@@ -70,7 +75,7 @@ def _window_stats(rows):
         # RUNS, like the day chart's, so the two figures named attention reconcile on screen.
         "attention": len({r.get("workflow") or f"?{id(r)}" for r in rows if _needs_attention(r)}),
         "cost_usd": round(sum((r.get("cost_usd") or 0) for r in rows), 4),
-        "fallbacks": sum(1 for r in rows if r.get("fallback_from")),
+        "fallbacks": len({r.get("workflow") or f"?{id(r)}" for r in rows if r.get("fallback_from")}),
         "accepted": sum(1 for r in rows if r.get("outcome") == "human_accepted"),
         "attempt_p50_s": _pct(durs, 0.5), "attempt_p90_s": _pct(durs, 0.9),
     }
@@ -83,6 +88,18 @@ def _counted(rows, key):
         if k is not None:
             out[k] = out.get(k, 0) + 1
     return out
+
+
+def _runs_by(rows, key):
+    """Like `_counted`, but DISTINCT RUNS per key — what every attention and fallback figure
+    counts, so a run whose terminal row was written twice (record_terminal, then the reaper) is
+    one run on every tile, tab and change line, never two."""
+    out = {}
+    for r in rows:
+        k = key(r)
+        if k is not None:
+            out.setdefault(k, set()).add(r.get("workflow") or f"?{id(r)}")
+    return {k: len(v) for k, v in out.items()}
 
 
 def _attention_key(r):
@@ -167,7 +184,7 @@ def _changes(now, prev, attention, prev_attention):
                        f"{prev['pass_rate']:.0%} → {now['pass_rate']:.0%}")
     for key in sorted(set(attention) | set(prev_attention)):
         a, b = attention.get(key, 0), prev_attention.get(key, 0)
-        # Absolute AND relative: 32 → 35 supervisor shadows is a normal week, 0 → 3 is not.
+        # Absolute AND relative: 32 → 35 runs on a cause is a normal week, 0 → 3 is not.
         if a - b >= max(_MIN_DELTA, 0.25 * b):
             out.append(f"{_label(key)}: {b} → {a}")
     if prev["cost_usd"] and now["cost_usd"] > 1.5 * prev["cost_usd"] and now["cost_usd"] - prev["cost_usd"] >= 1:
@@ -193,14 +210,16 @@ def report(entries, calls=(), *, days=7, now=None, ledger_oldest=None):
     prev_at, since_at, until_at = _cutoffs(days, now)
     cur, prev = [], []
     for e in entries:
+        if _CONFIG_ROW.search(e.get("capability") or ""):
+            continue
         at = e.get("at") or ""
         if since_at <= at <= until_at:
             cur.append(e)
         elif prev_at <= at < since_at:
             prev.append(e)
-    attention, prev_attention = _counted(cur, _attention_key), _counted(prev, _attention_key)
+    attention, prev_attention = _runs_by(cur, _attention_key), _runs_by(prev, _attention_key)
     fails = _counted(cur, _fail_key(audit.killed_attempts(cur)))
-    fell = _counted(cur, lambda r: r.get("fallback_reason") if r.get("fallback_from") else None)
+    fell = _runs_by(cur, lambda r: r.get("fallback_reason") if r.get("fallback_from") else None)
     calls_now = [c for c in calls if since_at <= (c.get("at") or "") <= until_at]
     stats_now, stats_prev = _window_stats(cur), _window_stats(prev)
     caps = audit.scorecard(cur)
@@ -229,7 +248,8 @@ def render_text(r):
     """Plain-text form for the CLI and a Slack/ntfy post: no tables (Slack renders none)."""
     n, p, w = r["now"], r["prev"], r["window"]
     pr = lambda v: "—" if v is None else f"{v:.0%}"
-    lines = [f"Otto health, last {w['days']}d (vs the {w['days']}d before)",
+    span = (f"{w['days'] * 24:g}h" if w["days"] < 1 else f"{w['days']:g}d")
+    lines = [f"Otto health, last {span} (vs the {span} before)",
              f"- runs {n['runs']} (was {p['runs']}), judged pass rate {pr(n['pass_rate'])} "
              f"(was {pr(p['pass_rate'])})",
              f"- needs attention {n['attention']} (was {p['attention']}), humans overruled the "

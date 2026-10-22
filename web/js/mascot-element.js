@@ -793,7 +793,7 @@
 }`;
 
   class OttoMascot extends HTMLElement {
-    static get observedAttributes() { return ['size', 'color', 'speed']; }
+    static get observedAttributes() { return ['size', 'color', 'speed', 'state']; }
 
     constructor() {
       super();
@@ -810,7 +810,11 @@
       this._sync();
     }
 
-    attributeChangedCallback() { if (this._wave) { this._wave.cancel(); this._wave = null; } this._sync(); }
+    attributeChangedCallback(name, was, now) {
+      // A state change hands the arm back at once: mid-plan it holds the marker.
+      if (name === 'state' && was !== now && this._wave) { this._wave.cancel(); this._wave = null; }
+      this._sync();
+    }
 
     _sync() {
       const size = this.getAttribute('size');

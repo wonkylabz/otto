@@ -1976,6 +1976,16 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(len([c for c in chats.list_summaries() if not c["pinned"]]),
                          chats.MAX_CHATS)
 
+    def test_job_and_event_threads_never_evict_a_persons_chat(self):
+        """A job opens a thread per firing, so a shared cap let a 15-minute cron delete every
+        unpinned conversation in about a day. They are trimmed in their own pool."""
+        chats.save({"id": "mine", "title": "a person's chat", "messages": []})
+        for i in range(chats.MAX_RUN_CHATS + 12):
+            chats.save({"id": f"j{i}", "title": "job", "labels": ["scheduled-job"], "messages": []})
+        self.assertIsNotNone(chats.get("mine"))
+        jobs = [c for c in chats.list_summaries() if "scheduled-job" in c["labels"]]
+        self.assertEqual(len(jobs), chats.MAX_RUN_CHATS)
+
     def test_labels_persist_across_upsert(self):
         chats.save({"id": "L", "title": "t", "labels": ["scheduled-job"], "messages": []})
         self.assertEqual(chats.get("L")["labels"], ["scheduled-job"])
