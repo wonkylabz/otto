@@ -10,57 +10,80 @@ through `claude -p` or a local model, verifies the result, and records everythin
 investigates what actually happened on past runs by reading Otto's own logs — it never needs
 the web UI or a running server.
 
+## Start with the aggregate
+
+Before opening any single run, get the shape of the window. `insights.py` groups the trail by
+cause, by WHO reached each adverse verdict (judge model, review, QA, supervisor, harness), by
+tier call (routing/clarify/judge decisions from the ledger), by stage and by capability — each
+against the window before it:
+
+```bash
+./.venv/bin/python insights.py --since 7d          # or 24h, 30d; --json for the full report
+./.venv/bin/python insights.py --since 7d --changes-only   # prints nothing if nothing moved
+```
+
+The same report is the Audit tab's Health section (`/api/insights?days=7`). Its "What changed"
+list is the place to start: a cause that rose, a pass rate that fell, humans overruling the judge
+more often. Only then pick runs to dig into.
+
 ## Where the evidence lives
 
 | Source | Contents | Format |
 |---|---|---|
-| `data/otto.db`'s `audit` table (issue #103, SQLite/WAL) | Every attempt, verdict, supervisor action, terminal outcome — one row per event, `data` column is the full JSON entry | columns: `id`, `at`, `workflow`, `capability`, `verified`, `data`; also promoted inside `data`: `outcome`, `risk`, `attempt`, `cost_usd`, `model`, `backend`, `reason`, `duration_s` |
-| `data/otto.db`'s `audit_content` table | Same `workflow`+`at` keys, but with the FULL result text/critique (the `audit` table only has metadata) | columns: `id`, `at`, `workflow`, `attempt`, `data` |
-| `data/audit.log` / `data/audit-content.log` (pre-migration history, frozen) | Same shape as above, one JSON object per line — only present if this install predates the SQLite migration; not written to anymore | JSON lines |
-| `data/transcripts/<wid>-a<attempt>.jsonl` | The raw `claude -p` / local-runtime stream for one attempt — every tool call, tool result, and the final `result` event | JSON lines, `otto-meta` first line has `cwd` + the full prompt |
-| `data/logs/<stream>-<date>.log` | Trace lines from the worker and the server (`[RUN]`, `[VERIFY]`, `[SUPERVISE]`, `[ESCALATE]`, `[GATE]`, `[ROUTER]`, `[WORKSPACE]`...) — durable across restarts, scrubbed, TTL `TRACE_LOG_TTL_H` | `<iso ts> [<wid>] [TAG] msg`; the wid is present whenever a run was in scope |
-| `/tmp/otto-worker.log`, `/tmp/otto-server.log`, `/tmp/otto-temporal.log` | RAW stdio for each process — tracebacks and third-party chatter that never went through `ui.trace`. Appended, so a restart keeps the history, but cleared by the OS on reboot | Plain text |
-| `data/service.log` | Process-level: service start/stop, crashes, port binding | Plain text |
-| `data/dismissed.json`, `/api/needs-you` (if server is up) | Runs currently flagged for human attention | JSON |
+| `data/otto.db` `audit` table (SQLite/WAL) | Every attempt, verdict, supervisor action, terminal outcome — one row per event; `data` is the full JSON entry | columns `id`, `at`, `workflow`, `capability`, `verified`, `needs_human`, `data`. Inside `data`: `outcome`, `reason`, `risk`, `attempt`, `cost_usd`, `model`, `backend`, `duration_s`, `tokens`, `times` (per-stage spans), `verdict_source`, `verdict_model`, `fallback_from`/`fallback_reason`/`fallback_detail`, `repo`, `mcp` |
+| `data/otto.db` `audit_content` table | Same `workflow`+`at` keys, with the FULL request/result/critique | columns `id`, `at`, `workflow`, `attempt`, `data` |
+| `data/otto.db` `tier_calls` table (`ledger.py`) | One row per cheap-tier call — routing, clarify, write-intent, verify/supervise samples, plan, memory GC — with its parsed `decision`. TTL `OTTO_TIER_LEDGER_TTL_H` (30 days) | `at`, `wid`, `tier`, `model`, `duration_ms`, `cost_usd`, `ok`, `fell_back`, `error`, `decision` |
+| `data/transcripts/<wid>-a<attempt>.jsonl` | The raw `claude -p` / local-runtime stream for one attempt; `otto-meta` first line has `cwd`, the prompt and `system_context` | JSON lines |
+| `data/logs/<stream>-<date>.log` | `ui.trace` lines (`[RUN]`, `[VERIFY]`, `[SUPERVISE]`, `[ESCALATE]`, `[GATE]`, `[ROUTER]`, `[WORKSPACE]`…), scrubbed, durable across restarts | `<iso ts> [<wid>] [TAG] msg` |
+| `/tmp/otto-worker.log`, `/tmp/otto-server.log`, `/tmp/otto-temporal.log` | RAW stdio — tracebacks that never went through `ui.trace`. Cleared on reboot | Plain text |
+| `data/audit.log` / `data/audit-content.log` | Pre-SQLite history, frozen; only on old installs | JSON lines |
+| `/api/needs-you`, `/api/stats` (scorecard + `false_fails`), `/api/costs` | Live views, if the server is up | JSON |
 
-The `audit` table is the index — query it first to find workflow ids worth digging into, then
-pull the matching transcript(s) for the actual root cause. `audit` rows alone never explain WHY
-something failed (e.g. `"verified": false` doesn't say if it was a wrong answer, a context-window
-crash, or a supervisor kill) — always cross-reference the transcript or the critique in
-`audit_content` before concluding.
+**Open the DB read-only**: `sqlite3 -readonly data/otto.db "…"`. If that says `unable to open
+database file`, the WAL index (`otto.db-shm`) does not exist yet — a read-only handle cannot
+create it; use `insights.py --json` instead of opening it writable.
+
+The `audit` table is the index; it never explains WHY. `"verified": false` can be a wrong answer,
+a context-window crash or a supervisor kill — `verdict_source` says who decided, and the critique
+in `audit_content` or the transcript says why.
 
 ## Workflow
 
-1. **Scope the window.** Default to the last 24h unless the user names a run or a wider range.
+1. **Scope the window.** Use the aggregate above, then list the runs behind a cause:
    ```bash
-   sqlite3 data/otto.db "SELECT data FROM audit ORDER BY id DESC LIMIT 300"
+   sqlite3 -readonly data/otto.db "SELECT workflow, at, json_extract(data,'$.reason') FROM audit
+     WHERE json_extract(data,'$.outcome')='needs_human' AND at >= date('now','-7 days') ORDER BY id DESC"
+   sqlite3 -readonly data/otto.db "SELECT data FROM audit WHERE workflow = '<wid>'"
+   sqlite3 -readonly data/otto.db "SELECT tier, decision, ok, error FROM tier_calls WHERE wid = '<wid>'"
    ```
-   If a workflow id was mentioned, or you need earlier history, filter instead:
-   ```bash
-   sqlite3 data/otto.db "SELECT data FROM audit WHERE workflow = '<wid>'"
-   sqlite3 data/otto.db "SELECT COUNT(*) FROM audit WHERE json_extract(data, '$.outcome') = 'supervisor_kill'"
-   ```
+   The last one answers "why did it route there / why did the judge fail it" for one run.
 
-2. **Flag the interesting outcomes.** Not every `verified: false` is a bug — repo-mode runs with
-   an opened PR are *advisory-only by design* (CLAUDE.md: unverified PR → Review column, not
-   Blocked). Focus on:
-   - `"outcome": "supervisor_kill"` — a mid-run abort; read its `reason`/critique from
-     `audit_content` (same `workflow`+`at`) to judge if it was a legitimate catch or a
-     false positive (e.g. confusing an isolated workspace clone path for the wrong repo —
-     a known failure mode, see `supervisor.py`'s `_prompt`).
-   - Consecutive `"verified": false` across all attempts up to `MAX_VERIFY_ATTEMPTS` (3 by
-     default) with no PR opened → real `needs_human` (`reason: verify_exhausted`).
-   - `"reason": "budget_exceeded"` — cost ceiling hit mid-ladder.
-   - `"outcome": "denied"` — a human declined the write gate (not a bug, just note it).
-   - Any `is_error`/errored attempt — pull the transcript's last `result` event; local-runtime
-     errors are self-describing (`context window full`, `tools rejected`, `local model server
-     unavailable`) and point at a model/config issue rather than an Otto logic bug.
-   - `review_fail` / `qa_fail` / `delivery_failed` / `workflow_error` — read
-     `_NEEDS_HUMAN_BANNER` reasons in `workflows.py` if the label is unfamiliar.
+2. **Flag the interesting outcomes.** Not every `verified: false` is a bug — a repo-mode run with
+   an open PR is advisory-only by design (`.claude/rules/repo-work.md`, "Terminal state").
+   `outcome` values: `ran`, `plan_preview`, `denied`, `needs_human`, `human_accepted`,
+   `supervisor_kill`, `supervisor_shadow`, `supervisor_steer`. On a `needs_human` row, `reason`
+   is the cause; the human-facing wording for each is `_NEEDS_HUMAN_BANNER` in `wf_runtime.py`:
+   - `verify_exhausted` — every rung failed the judge, no PR to fall back on.
+   - `published_unverified` — failed AFTER posting, so not retried (a retry posts twice).
+   - `harness_exhausted` — the harness kept dying; not a judgement of the cap.
+   - `review_fail` / `review_inconclusive` / `qa_fail` / `qa_inconclusive` — post-PR loops.
+   - `budget_exceeded`, `gate_timeout`, `merge_failed`, `merge_unreviewed`, `factory_no_pr`.
+   - `claude_usage_limit` / `claude_auth_expired` — walls: a limit resets in hours, a login
+     needs re-authenticating; neither is an Otto bug.
+   - `delivery_failed`, `workflow_error`, `terminated` (a human hard-stopped it).
+   - `human_accepted` (its own outcome) — a human overruled the judges. A cluster of these on one
+     judge model is a JUDGE problem: it feeds `false_fails` on the scorecard.
+   - `supervisor_kill` — read its critique in `audit_content` (same `workflow`+`at`) to judge a
+     real catch from a false positive (e.g. an isolated workspace clone path mistaken for the
+     wrong repo, see `supervisor.py`'s `_prompt`).
+   - Errored attempts — the transcript's last `result` names the failure; local-runtime errors
+     are self-describing (`context window full`, `tools rejected`, `local model server
+     unavailable`). A critique starting `prior attempt errored or timed out` is a HARNESS death;
+     exclude those from any model-quality claim.
 
 3. **Pull the transcript for anything non-obvious.** For a given `<wid>` and attempt `<n>`:
    ```bash
-   python3 -c "
+   ./.venv/bin/python -c "
    import json
    with open('data/transcripts/<wid>-a<n>.jsonl') as f:
        for line in f:

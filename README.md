@@ -54,6 +54,11 @@ launchd LaunchAgent on macOS; both run as you, not root):
 Re-running it is safe (idempotent) — e.g. after `git pull`, or to recover a `.venv`
 broken by a system Python upgrade. See `./install.sh --help` for details.
 
+**Rather be walked through it?** Open Claude Code in this checkout and say *"set up Otto"*. The
+`otto-setup` skill (`.claude/skills/otto-setup/`) asks what you want — models, repos, MCP
+servers, jobs, events, Slack — and configures it through Otto's own API, leaving secrets to a
+prompt that never echoes them.
+
 `--guided` runs `setup_wizard.py`, which walks what `python3 doctor.py` reports as
 unconfigured and offers a fix for each: register a project repo, generate the event-ingress
 key and the ntfy topic, paste a Slack token, `gh auth login`. It never overwrites a value
