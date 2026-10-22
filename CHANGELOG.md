@@ -11,6 +11,31 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **A health report on the Audit tab.** Runs, judged pass rate, what needs attention and why,
+  how often you overruled the judge, and spend, each against the previous 7 or 30 days, with a
+  per-day chart and breakdowns by cause, judge, capability, stage and tier call. The same report
+  runs from a terminal: `./.venv/bin/python insights.py --since 7d` (`--changes-only` prints
+  nothing in a quiet week, so it suits a weekly job). **Restart the server after upgrading.**
+- **The audit trail is paged**, 50 actions at a time; totals still cover the whole trail.
+- **An `otto-setup` skill.** In a Claude Code session in the Otto checkout, ask it to "set up
+  Otto" and it configures models, repos, MCP servers, jobs, events and Slack through Otto's own
+  API. It never asks you to paste a secret.
+
+### Changed
+
+- **Each job firing and each webhook event opens its own chat thread.** Jobs used to pile every
+  firing into one chat, and webhook runs recorded no chat at all. **Restart the worker after
+  upgrading.**
+- **Routing and judge decisions are kept 30 days** (was 7), so the health report can compare a
+  full month. `OTTO_TIER_LEDGER_TTL_H` still overrides it.
+- **The board's "Needs review" column is now "Needs a look"** — a failed code review lands
+  there, and the old name read as the review stage. Each column has its own colour, new cards
+  animate in, and empty columns are all the same size.
+- **The `audit-runs` skill starts from the health report** and reads which judge failed a run.
+- Otto waves hello, shows hearts when clicked, and plans on a landscape whiteboard.
+
 ## [0.6.3] - 2026-10-22
 
 ### Fixed
