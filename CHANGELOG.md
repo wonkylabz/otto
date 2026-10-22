@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-22
+
 ### Changed
 
 - **A runbook's Request is now a multi-line box.** Long requests wrap instead of scrolling
@@ -286,7 +288,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/wonkylabz/otto/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/wonkylabz/otto/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/wonkylabz/otto/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/wonkylabz/otto/compare/v0.3.0...v0.4.0
