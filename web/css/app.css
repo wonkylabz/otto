@@ -740,6 +740,8 @@
      same two inherited constraints as `.codearea`: the composer's app-wide `textarea` 120px cap
      and `.aform`'s flex column shrinking it to min-height. Same overrides, proportional font. */
   .aform textarea.prosearea { min-height: 190px; flex: 0 0 auto; max-height: none; }
+  /* A runbook's request wraps instead of scrolling sideways; same two overrides as `.prosearea`. */
+  .aform textarea.reqarea { min-height: 72px; flex: 0 0 auto; max-height: none; }
   .aform .frow { display: flex; gap: 12px; }
   .aform .frow > div { flex: 1; display: flex; flex-direction: column; gap: 8px; }
   .aform .ferr { color: var(--danger); font-size: 12px; }
