@@ -21,6 +21,7 @@ scripts, one per tab plus `util`/`markdown`/`modal` (shared) and `boot` (startup
 - **Nothing that shells out belongs in a request the panel's spinner awaits.** `loadAdmin` fans out 6 fetches in one `Promise.all`, so the slowest is the load time: `/api/policy` serves CACHED MCP health, topped up by `refreshMcpHealth` (`…never_triggers_the_slow_health_check`).
 - **`policy.all_mcps` must read `_mcp_status` ONCE** — it needs the result twice and `claude mcp list` health-checks every server (~8s) (`…one_status_read_serves_both_consumers`).
 - **Every mutating fetch goes through `util.postJSON`** (`postOr` to toast it, `postForm` for a modal's own error slot) — 51 sites fired a POST then re-rendered, so a 400, a 409 or a 403 from `_csrf_ok` painted the old value back and said nothing (`UiAssetLayoutTests`).
+- **No native `confirm`/`alert`/`prompt`** — Chrome skips them unseen: `askConfirm`/`toast` (`UiAssetLayoutTests`).
 - **`CSS.escape()` is for identifiers, never inside a quoted attribute selector** — `[data-x="${CSS.escape(p)}"]` injects backslashes the literal value doesn't have. Key a row's live cell by a `data-` attribute on the CELL, not on its buttons, which a busy state may not render.
 - **A repeating timer goes through `util.poll`, not a bare `setInterval`** — it pauses while `document.hidden` and doubles on consecutive failures (60s cap). Three outcomes: throw/`false` fails, `POLL_SKIP` (view elsewhere) holds the backoff, else success (`PollerBackoffTests`).
 - **Onboarding applies a profile as a FULL assignment of its keys, only as previewed** (`onboarding.apply(expect=)`) — a delta strands a prior profile's values, a re-run must change nothing. Integrations are detected and pointed at, never configured (`OnboardingTests`).
@@ -35,7 +36,7 @@ scripts, one per tab plus `util`/`markdown`/`modal` (shared) and `boot` (startup
 - **A Run-mode control the pipeline would IGNORE is disabled, never left tickable** (`applyModeExclusions`) — repo forces write, so Brainstorm + a repo pick ran neither. The workflow resolves it too (`BrainstormModeTests`).
 - **Codex is its own optgroup in the Execution select, with no tool-free option** (`codexModels`) — `tool_free` is one completion against `/chat/completions`, which this backend does not have, so offering it is a control the pipeline ignores (`CodexWiringTests`).
 - **Two counters for the same noun must reconcile on screen.** The header counts ENABLED caps, Admin every discovered one (`enabled / total`); a memory ROW holds up to 3 facts, so its badge counts facts. `applyCaps` owns both counts; never recount inline (`HeaderCounterTests`).
-- **Verifying UI changes headlessly**: body is `overflow:hidden`, tabs scroll internally, no hash routing — drive it via a same-origin proxy injecting a script, then `activateTab(...)`, click, and read results back through `document.title`.
+- **Headless UI checks**: no hash routing, tabs scroll inside — inject a script, `activateTab(...)`, read back via `document.title`.
 
 ## Where the UI writes
 

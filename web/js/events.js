@@ -97,7 +97,7 @@ async function loadEvents(){
   }));
   el.querySelectorAll("[data-editrule]").forEach(b=>b.addEventListener("click",()=>showRuleForm(+b.dataset.editrule)));
   el.querySelectorAll("[data-delrule]").forEach(b=>b.addEventListener("click",async()=>{
-    if(!confirm("Remove this rule?")) return;
+    if(!await askConfirm("Remove this rule?",{ok:"Remove",danger:true})) return;
     EVENT_RULES.splice(+b.dataset.delrule,1); await saveRules(); loadEvents();
   }));
   document.getElementById("add-rule").addEventListener("click",()=>showRuleForm(-1));
@@ -170,7 +170,7 @@ async function loadSlackConfig(){
   if(sw) sw.addEventListener("click",async()=>{
     // enabling with no allowlisted user/channel would listen to nobody — same guard the form applies
     if(!c.enabled && !nUsers && !nChans && !c.allow_self){
-      alert("Add at least one allowed user or channel (or turn on test mode) in configure first."); return; }
+      toast("Add at least one allowed user or channel (or turn on test mode) in configure first."); return; }
     await postOr("/api/slack-config",{config:{...c, enabled:!c.enabled}},"switching the Slack listener");
     loadSlackConfig();
   });
@@ -275,7 +275,7 @@ function wireSlackBotCard(host,d,c){
     const nU=slackIds(c.bot_allow_users).length, nC=slackIds(c.bot_allow_channels).length;
   const nA=slackIds(c.bot_approvers).length;
     if(!c.bot_enabled && !nU && !nC){
-      alert("Add at least one allowed channel (or a user allowed to DM the bot) in configure first."); return; }
+      toast("Add at least one allowed channel (or a user allowed to DM the bot) in configure first."); return; }
     await postOr("/api/slack-config",{config:{...c, bot_enabled:!c.bot_enabled}},"switching the Slack bot");
     loadSlackConfig();
   });
@@ -663,9 +663,9 @@ async function prReviewDismiss(key, dismissed){
   if(eventsVisible()) loadPrReviews();
 }
 async function prReviewPost(key, willApprove){
-  if(!confirm(willApprove
+  if(!await askConfirm(willApprove
       ? "APPROVE this PR and post the review, as you?"
-      : "Post this review to the PR as your review comment?")) return;
+      : "Post this review to the PR as your review comment?",{ok:willApprove?"Approve":"Post"})) return;
   const bar=document.getElementById("prbar");
   if(bar) bar.innerHTML=`<span class="sdot"></span>${willApprove?'approving':'posting'}&hellip;`;
   let out={};
@@ -944,7 +944,7 @@ async function loadSlackTriggers(){
   }));
   host.querySelectorAll("[data-edittrig]").forEach(b=>b.addEventListener("click",()=>showSlackTriggerForm(+b.dataset.edittrig)));
   host.querySelectorAll("[data-deltrig]").forEach(b=>b.addEventListener("click",async()=>{
-    if(!confirm("Remove this trigger?")) return;
+    if(!await askConfirm("Remove this trigger?",{ok:"Remove",danger:true})) return;
     SLACK_TRIGGERS.splice(+b.dataset.deltrig,1); await saveSlackTriggers(); loadSlackTriggers();
   }));
 }

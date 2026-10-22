@@ -89,7 +89,7 @@ function memRender(key){
       <div class="esrc">learned from <b>${esc(memSrc(e))}</b> · <span title="${esc(e.at||'')}">${esc(shortWhen(e.at))}</span> · &ldquo;${esc((e.request||'').slice(0,70))}&rdquo;</div>
     </div>`,"Nothing matches.");
     if(list) list.querySelectorAll(".factdel").forEach(b=>b.addEventListener("click",async()=>{
-      if(!confirm("Forget this fact?\n\n"+b.dataset.fact)) return;
+      if(!await askConfirm("Forget this fact?\n\n"+b.dataset.fact,{ok:"Forget",danger:true})) return;
       if(!await postOr("/api/memory/delete",{id:b.dataset.id,fact:b.dataset.fact},"forgetting that fact")) return;
       mascotEvict(1);
       loadMemory();
@@ -119,7 +119,7 @@ function memRender(key){
         loadMemory();
       }));
       list.querySelectorAll(".ruleedit").forEach(b=>b.addEventListener("click",async()=>{
-        const next=prompt("Edit rule:",b.dataset.rule); if(next===null) return;
+        const next=await askText("Edit rule:",b.dataset.rule,{ok:"Save"}); if(next===null) return;
         await postOr("/api/behaviors/update",{id:b.dataset.id,rule:next},"saving that rule");
         loadMemory();
       }));
@@ -190,7 +190,7 @@ async function gcTick(){
   GC_RUNNING=false; GC_STARTED=null;
   const r=s.result||{};
   GC=r.candidates||[]; GC_META={scanned:r.scanned||0,verify_skipped:r.verify_skipped||0,ran:true};
-  if(r.error) alert("GC run failed: "+r.error);
+  if(r.error) toast("GC run failed: "+r.error);
   refreshGCSection();
 }
 function gcSetAll(checked){
@@ -218,7 +218,7 @@ async function runGC(){
 async function evictGC(){
   const picks=[...document.querySelectorAll(".gcpick:checked")].map(el=>GC[+el.dataset.i]).filter(Boolean);
   if(!picks.length) return;
-  if(!confirm(`Evict ${picks.length} item(s)? This can't be undone (the audit trail keeps a record).`)) return;
+  if(!await askConfirm(`Evict ${picks.length} item(s)? This can't be undone (the audit trail keeps a record).`,{ok:"Evict",danger:true})) return;
   try{ await postJSON("/api/memory/gc/evict",{candidates:picks}); }
   catch(e){ toast("Eviction failed: "+e.message); return; }
   mascotEvict(picks.length);
@@ -295,12 +295,12 @@ async function loadMemory(){
   }));
   const cb=document.getElementById("mem-clear");
   if(cb) cb.addEventListener("click",async()=>{
-    if(!confirm("Clear working memory? The audit trail is kept.")) return;
+    if(!await askConfirm("Clear working memory? The audit trail is kept.",{ok:"Clear",danger:true})) return;
     await postOr("/api/memory/clear",{},"clearing working memory"); loadMemory();
   });
   const sc=document.getElementById("sol-clear");
   if(sc) sc.addEventListener("click",async()=>{
-    if(!confirm("Clear all stored solution approaches?")) return;
+    if(!await askConfirm("Clear all stored solution approaches?",{ok:"Clear",danger:true})) return;
     await postOr("/api/solutions/clear",{},"clearing the solutions store"); loadMemory();
   });
   const addRule=document.getElementById("bx-add");

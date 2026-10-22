@@ -503,7 +503,7 @@ function wireModels(el){
       ? `\n\nThis is the last Claude model. Claude fallback, escalation and the plan preview will `
         +`use ${MODEL_STATE.router_model||"the built-in default"}, which is not in the pool.`
       : "";
-    if(!confirm(`Remove model "${name}"?${warn}`)) return;
+    if(!await askConfirm(`Remove model "${name}"?${warn}`,{ok:"Remove",danger:true})) return;
     MODEL_STATE.pool=MODEL_STATE.pool.filter(p=>p.name!==name);
     repointAssignments([name]);
     await saveModels(); loadAdmin();
@@ -564,8 +564,8 @@ function wireModels(el){
     const on=MODEL_STATE.pool.filter(p=>p.endpoint===name).map(p=>p.name);
     // Deleting the endpoint out from under its models would leave them dialling nowhere, and the
     // only symptom is a failing health pill — so remove them together, named, or not at all.
-    if(!confirm(on.length?`Remove endpoint "${name}" and its ${on.length} model(s): ${on.join(", ")}?`
-                         :`Remove endpoint "${name}"?`)) return;
+    if(!await askConfirm(on.length?`Remove endpoint "${name}" and its ${on.length} model(s): ${on.join(", ")}?`
+                         :`Remove endpoint "${name}"?`,{ok:"Remove",danger:true})) return;
     MODEL_STATE.pool=MODEL_STATE.pool.filter(p=>p.endpoint!==name);
     MODEL_STATE.endpoints=(MODEL_STATE.endpoints||[]).filter(e=>e.name!==name);
     repointAssignments(on);
@@ -1477,7 +1477,7 @@ ${sessionsSection()}
       const def=await (await fetch("/api/mcp/def?name="+encodeURIComponent(b.dataset.editmcp))).json();
       if(!def||!def.name) throw new Error("no stored definition for this server");
       showMcpForm(def);
-    }catch(err){ alert("Couldn't open this server for editing: "+(err.message||err)); }
+    }catch(err){ toast("Couldn't open this server for editing: "+(err.message||err)); }
     finally{ b.disabled=false; }
   }));
   el.querySelectorAll("[data-actmcp]").forEach(b=>b.addEventListener("click",async()=>{
@@ -1539,7 +1539,7 @@ ${sessionsSection()}
 }
 
 async function removeItem(path, body){
-  if(!confirm(`Remove "${body.name||body.path}"?`)) return;
+  if(!await askConfirm(`Remove "${body.name||body.path}"?`,{ok:"Remove",danger:true})) return;
   await postOr(path, body, `removing "${body.name||body.path}"`);
   loadAdmin();
 }

@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Buttons that ask "are you sure?" work again.** Evict selected, forget, remove, terminate,
+  clear and post-review could silently do nothing in Chrome because the browser cancelled its own
+  confirmation popup without showing it. They now ask in an in-app dialog. Takes effect on a page
+  refresh.
+
 ## [0.6.2] - 2026-10-22
 
 ### Fixed

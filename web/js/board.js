@@ -256,7 +256,7 @@ async function loadBoard(silent){
     // Chat tab and refreshes the sidebar).
     let chat; try { chat=await (await fetch("/api/chats/get?id="+encodeURIComponent(key))).json(); } catch(err){ chat=null; }
     if(chat&&chat.id) openChat(key);
-    else alert("No conversation was recorded for this run.");
+    else toast("No conversation was recorded for this run.");
   }));
   focusPendingRun();
 }
@@ -372,7 +372,7 @@ async function needsYouRetry(id,btn){
   loadBoard(true);   // repaint: the retried run appears under Running with its new id
 }
 async function boardTerminate(id,btn){
-  if(!confirm("Terminate this run? It stops immediately — no cleanup, no result — and the card disappears. This can't be undone (you can Retry the same request later from the audit trail).")) return;
+  if(!await askConfirm("Terminate this run? It stops immediately — no cleanup, no result — and the card disappears. This can't be undone (you can Retry the same request later from the audit trail).",{ok:"Terminate",danger:true})) return;
   if(btn){ btn.disabled=true; btn.textContent="Terminating…"; }
   try { await postJSON("/api/wf/terminate",{id}); }
   catch(e){ toast("Couldn't terminate: "+e.message); if(btn){ btn.disabled=false; btn.textContent="Terminate"; } return; }
@@ -390,7 +390,7 @@ async function needsYouAccept(id,btn){
   loadBoard(true);
 }
 async function needsYouDismiss(id){
-  if(!confirm("Dismiss this run? It disappears from the board (nothing about the run itself is deleted).")) return;
+  if(!await askConfirm("Dismiss this run? It disappears from the board (nothing about the run itself is deleted).",{ok:"Dismiss"})) return;
   if(!await postOr("/api/needs-you/dismiss",{id},"dismissing this run")) return;
   const b=byData(document,"data-dismiss",id);
   if(b){ const c=b.closest(".bcard"); if(c) c.remove(); }

@@ -206,6 +206,13 @@
   /* Config forms in a modal: the modal already supplies the surface, border and padding, so the
      .aform chrome would double up. Slightly wider than a read-only modal for the two-column rows. */
   .formModalBox { max-width: 760px; }
+  .askOverlay { z-index: 300; }
+  .askBox { max-width: 460px; }
+  .askMsg { font-size: 14px; color: var(--text); line-height: 1.5; margin: 0 0 14px; white-space: pre-wrap;
+    word-break: break-word; }
+  .askInput { width: 100%; margin-bottom: 14px; font: inherit; font-size: 13px; color: var(--text);
+    background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; }
+  .askActions { display: flex; justify-content: flex-end; gap: 8px; }
   .formModalBox .aform, .loginBox .aform { background: transparent; border: none; border-radius: 0; padding: 0; margin: 0; }
   .formModalBox .factions { position: sticky; bottom: 0; background: var(--surface); padding-top: 12px;
     margin-top: 2px; border-top: 1px solid var(--line); }
