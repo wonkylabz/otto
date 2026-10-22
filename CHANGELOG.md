@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-22
+
 ### Fixed
 
 - **Buttons that ask "are you sure?" work again.** Evict selected, forget, remove, terminate,
@@ -304,7 +306,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/wonkylabz/otto/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/wonkylabz/otto/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/wonkylabz/otto/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/wonkylabz/otto/compare/v0.5.0...v0.6.0
