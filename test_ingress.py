@@ -7777,9 +7777,8 @@ class UiAssetLayoutTests(unittest.TestCase):
         1. `.aform` is a flex COLUMN inside a max-height modal, so a textarea is a flex item
            and shrinks to its min-height once the form is taller than the box (inline 208px,
            rendered 96px).
-        2. The bare `textarea` rule written for the chat composer caps EVERY textarea in the
-           app at 120px, and `.aform textarea` never overrode it (inline 208px, rendered
-           120px).
+        2. The chat composer's `textarea` rule, when it was bare, capped EVERY textarea in the
+           app at 120px (inline 208px, rendered 120px).
 
         Either one alone puts a ten-line argv back behind a scrollbar."""
         css = "\n".join(open(p, encoding="utf-8").read()
@@ -7792,6 +7791,15 @@ class UiAssetLayoutTests(unittest.TestCase):
                       "the composer's app-wide 120px textarea cap still applies here")
         self.assertIn("white-space: pre", rule,
                       "one logical line must stay one visual line — that is the field's rule")
+
+    def test_the_composer_textarea_rule_is_scoped_to_the_composer(self):
+        """Bare, it stripped every form textarea's border and background and capped it at
+        120px: a runbook's Request and Notes rendered as borderless 15px text beside 13px
+        bordered inputs."""
+        css = "\n".join(open(p, encoding="utf-8").read()
+                        for p in sorted(self._assets().values()) if p.endswith(".css"))
+        self.assertNotRegex(css, r"(?m)^\s*textarea\s*\{",
+                            "a bare textarea rule restyles every form field in the app")
 
     def test_the_code_fields_are_sized_to_their_content(self):
         """A ten-argument argv in the shared 64px prose box shows three lines behind a
