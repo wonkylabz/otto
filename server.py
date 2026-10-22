@@ -1875,7 +1875,7 @@ class Handler(BaseHTTPRequestHandler):
                 c = next((c for c in CAPS if c.name == norm["cap"]), None)
                 if c is None:
                     self._send(400, json.dumps({"error": f"rule pins unknown capability '{norm['cap']}'"})); return
-                cap = {"name": c.name, "kind": c.kind, "risk": c.risk}
+                cap = c.ref()
             wid = "evt-" + uuid.uuid4().hex
             tc.run(_wf_start(wid, {"request": norm["request"], "cap": cap, "unattended": True,
                                    "approval": norm["approval"], "reply_to": norm.get("reply_to")}))
@@ -1958,7 +1958,7 @@ class Handler(BaseHTTPRequestHandler):
         # script — curl, a test, a run's own Bash — and must not skip the gate on our credit.
         params = {"request": req, "trusted_asker": bool(self.headers.get("Origin"))}
         if cap:
-            params["cap"] = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
+            params["cap"] = cap.ref()
         atts, err = self._attachments_param(body)
         if err:
             self._send(400, json.dumps({"error": err})); return
@@ -2037,7 +2037,7 @@ class Handler(BaseHTTPRequestHandler):
             if task:
                 self._send(200, json.dumps({"handoff": {"request": task}}))
                 return
-        trusted_cap = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
+        trusted_cap = cap.ref()
         params = {"request": body["message"], "resume": body["session_id"],
                   "cap": trusted_cap}
         # Same composer toggle as /api/submit: a follow-up can be re-classified from
@@ -2154,7 +2154,7 @@ class Handler(BaseHTTPRequestHandler):
         if capname and ":" in capname:
             cap = next((c for c in CAPS if c.name == capname.split(":", 1)[1]), None)
             if cap:
-                params["cap"] = {"name": cap.name, "kind": cap.kind, "risk": cap.risk}
+                params["cap"] = cap.ref()
         if repo and workspace.resolve(repo):
             params["repo"] = repo
         # Carry the ORIGINAL run's reply target across, so a retry returns to the thread
@@ -2958,7 +2958,7 @@ class Handler(BaseHTTPRequestHandler):
         c = next((c for c in CAPS if c.name == name), None)
         if c is None:
             return None, f"unknown capability '{name}'"
-        return {"name": c.name, "kind": c.kind, "risk": c.risk}, None
+        return c.ref(), None
 
     def _check_caps(self, body):
         """Every capability a runbook names — its own and each step's — must exist NOW. Caught at

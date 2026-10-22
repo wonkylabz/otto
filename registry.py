@@ -95,6 +95,14 @@ class Capability:
         self.declared_mcp = []                         # Admin-set MCP servers (policy override; see apply_policy)
         self.declared_skills = []                      # frontmatter `skills:` preload list, verbatim (local runs list them)
 
+    def ref(self):
+        """The trusted `{name, kind, risk}` a workflow pins on. A project cap adds `home`, its own
+        git repo: the clone target, or the run edits the live checkout it executes from."""
+        ref = {"name": self.name, "kind": self.kind, "risk": self.risk}
+        if self.source == "project" and self.cwd and os.path.isdir(os.path.join(self.cwd, ".git")):
+            ref["home"] = os.path.basename(self.cwd.rstrip("/"))
+        return ref
+
     def score(self, request):
         """This cap's lexical relevance to `request`, scored on its own. Prefer `rank()` for a
         real routing decision — scored against the whole catalogue it can tell a discriminating

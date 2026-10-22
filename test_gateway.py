@@ -11338,7 +11338,8 @@ class BrainstormHandoffSkipTests(unittest.TestCase):
         h = object.__new__(server.Handler)
         h._send = lambda code, body: sent.append(json.loads(body))
         for name in (config.BRAINSTORM_CAP, "assistant"):
-            cap = types.SimpleNamespace(name=name, kind="skill", risk="read", description="")
+            cap = registry.Capability("skill", name, "")
+            cap.risk = "read"
             with mock.patch.object(server, "CAPS", [cap]), \
                     mock.patch.object(server.engine, "followup_handoff",
                                       lambda *a: asked.append(name) or "do X"), \

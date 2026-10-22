@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A project capability no longer edits your own checkout.** A write run of a capability that
+  lives in a registered repo's `.claude/` now works in an isolated clone of that repo and opens
+  a draft PR — including runbook, schedule and Slack runs, which used to run in (and branch and
+  commit on) the live checkout. **Restart the worker after upgrading.**
+
 ## [0.6.1] - 2026-10-22
 
 ### Changed
