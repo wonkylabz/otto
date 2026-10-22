@@ -146,7 +146,7 @@ def route_request(payload) -> dict:
     request = payload if isinstance(payload, str) else payload.get("request", "")
     cap = engine.plan(request, _capabilities(), project_root=_project_root(payload))
     activity.logger.info(f"routed -> [{cap.kind}] {cap.name} ({cap.risk})")
-    return {"kind": cap.kind, "name": cap.name, "risk": cap.risk}
+    return cap.ref()
 
 
 @activity.defn
@@ -248,7 +248,7 @@ def resolve_pinned_cap(payload: dict) -> dict:
     come from the registry as it is NOW, never from whoever saved the runbook (issue #29). Same
     trusted `_cap` lookup the board and Slack ingresses already use for a pinned name."""
     c = _cap(payload.get("name"))
-    return {"cap": {"name": c.name, "kind": c.kind, "risk": c.risk} if c else None}
+    return {"cap": c.ref() if c else None}
 
 
 @activity.defn
@@ -394,7 +394,7 @@ def classify_request(payload: dict) -> dict:
     if write and cap is not None:
         swap = engine.assistant_write_redirect(cap, _capabilities(), payload["request"])
         if swap is not None:
-            out["redirect"] = {"kind": swap.kind, "name": swap.name, "risk": swap.risk}
+            out["redirect"] = swap.ref()
     return out
 
 
@@ -1131,7 +1131,7 @@ def poll_board(payload: dict) -> dict:
         # (mirrors the event ingress in server._handle_event).
         if params.get("cap"):
             c = _cap(params["cap"])
-            params["cap"] = ({"name": c.name, "kind": c.kind, "risk": c.risk} if c else None)
+            params["cap"] = (c.ref() if c else None)
         # Repo-mode only for an allowlisted (registered) repo; otherwise run without it. Same
         # guard for `repo` (explicit repo-edit label) and `repo_hint` (the auto-engage candidate)
         # — never clone an unregistered repo (mirrors the event-ingress allowlist).
@@ -1305,7 +1305,7 @@ def poll_slack(payload: dict) -> dict:
 
     def _trigger_cap(name):
         c = _cap(name)
-        return {"name": c.name, "kind": c.kind, "risk": c.risk} if c else None
+        return c.ref() if c else None
     # Before the listener's enabled check: triggers keep this schedule alive on their own.
     trig = slack_triggers.poll(_trigger_cap) if slack_triggers.any_active() else {}
     cfg = slack.load()
@@ -1465,8 +1465,7 @@ def poll_slack(payload: dict) -> dict:
         if session and bound and front:
             if bound.name == front.name:
                 params = {**slack.to_followup(
-                    msg, {**rec, "cap": {"name": front.name, "kind": front.kind,
-                                         "risk": front.risk}}, cfg), "frontman": True}
+                    msg, {**rec, "cap": front.ref()}, cfg), "frontman": True}
                 resume = True
         elif session and bound:
             # A NEW task inside an existing conversation must not run inside the bound session (see
@@ -1477,8 +1476,7 @@ def poll_slack(payload: dict) -> dict:
                 # Re-resolve the bound capability from the TRUSTED registry (the stored copy is
                 # Otto's own, but the cap may have been renamed, disabled or removed since).
                 params = slack.to_followup(
-                    msg, {**rec, "cap": {"name": bound.name, "kind": bound.kind,
-                                         "risk": bound.risk}}, cfg)
+                    msg, {**rec, "cap": bound.ref()}, cfg)
                 resume = True
         if params is None:
             # A fresh run: no resumable session, or a handoff that must be routed from scratch.
@@ -1501,7 +1499,7 @@ def poll_slack(payload: dict) -> dict:
             # Resolve a pinned cap from the TRUSTED registry — never take risk from a Slack payload.
             if params.get("cap"):
                 c = _cap(params["cap"])
-                params["cap"] = ({"name": c.name, "kind": c.kind, "risk": c.risk} if c else None)
+                params["cap"] = (c.ref() if c else None)
             if rec and rec.get("wid"):
                 params["chat_key"] = rec["wid"]         # same conversation, new session
         wid = slack.wid_for(msg)
@@ -1674,7 +1672,7 @@ def poll_pr_reviews(payload: dict) -> dict:
                 f"pr-review: cap '{params.get('cap')}' is not available — skipping {key}")
             skipped.append(key)
             continue
-        params["cap"] = {"name": c.name, "kind": c.kind, "risk": c.risk}
+        params["cap"] = c.ref()
         pr_review.update_entry(key, {"wid": wid, "chat_key": params["chat_key"],
                                      "cap": c.name, "posted_at": None, "dismissed": False})
         if pr_review.start_run(wid, params):

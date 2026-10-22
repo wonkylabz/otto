@@ -2622,6 +2622,37 @@ class CapResolutionTests(unittest.TestCase):
         self.assertIsNotNone(self.activities._cap(config.REVIEW_CAP))
 
 
+class ProjectCapHomeRepoTests(unittest.TestCase):
+    """`Capability.ref`'s `home`: a project cap's own git repo rides on every trusted cap dict, so
+    the workflow can clone it without guessing — attended or not."""
+
+    def _cap(self, root, source="project"):
+        c = registry.Capability("skill", "infra:eks-upgrade", "upgrade a cluster")
+        c.source, c.cwd = source, root
+        return c
+
+    def test_a_project_cap_names_its_own_repo(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "infra")
+            os.makedirs(os.path.join(root, ".git"))
+            self.assertEqual(self._cap(root + "/").ref(),
+                             {"name": "infra:eks-upgrade", "kind": "skill",
+                              "risk": self._cap(root).risk, "home": "infra"})
+
+    def test_no_home_without_a_git_repo_or_for_any_other_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertNotIn("home", self._cap(d).ref())
+            os.makedirs(os.path.join(d, ".git"))
+            self.assertNotIn("home", self._cap(d, source="builtin").ref())
+
+    def test_every_trusted_cap_dict_is_built_by_ref(self):
+        import re
+        hand = re.compile(r'"risk": \w+\.risk\}')
+        for f in ("activities.py", "runbooks.py", "server.py"):
+            with open(f) as fh:
+                self.assertEqual(hand.findall(fh.read()), [], f"{f} hand-builds a cap dict")
+
+
 class SupervisorVerdictTests(unittest.TestCase):
     """Shadow supervisor (issue #143): the verdict parser is a STRICT enum that defaults to
     CONTINUE on anything unparseable — the supervisor reads untrusted transcript data, so an

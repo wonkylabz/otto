@@ -269,6 +269,18 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         if t is not None and t.get("dur") is None:
             t["dur"] = self._now_ms() - t["start"]
 
+    async def _repo_candidate(self, params, request, cap, unattended):
+        """The repo a fresh write auto-engages repo-mode on, or None. A project cap's `home` is
+        certain, so it wins attended or not; guessing from the request stays interactive."""
+        if cap.get("home") and workflow.patched("project-cap-home-repo"):
+            return cap["home"]
+        if unattended and not params.get("delegated"):
+            return None
+        sug = await workflow.execute_activity(
+            suggest_repo, {"request": request, "name": cap["name"]},
+            start_to_close_timeout=timedelta(seconds=90), retry_policy=_RETRY)
+        return sug.get("repo")
+
     def _early_snapshot(self, params, resume, repo, unattended):
         """Start the in-place-edit baseline WHILE routing runs — its repo refresh is network
         time. None where no baseline is taken, or on a run recorded before the overlap."""
@@ -1057,12 +1069,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # edit-intent LLM) and, if so, set repo_hint so we auto-engage below — transparently (the
         # gate shows the clone target). The picker stays as an explicit OVERRIDE. Skipped on resume
         # (repo-mode is fresh-only) and for sub-tasks; the board path already carries repo_hint.
-        if (not repo and not repo_hint and not resume and not subtask
-                and (not unattended or params.get("delegated")) and cap["risk"] == "write"):
-            sug = await workflow.execute_activity(
-                suggest_repo, {"request": request, "name": cap["name"]},
-                start_to_close_timeout=timedelta(seconds=90), retry_policy=_RETRY)
-            repo_hint = sug.get("repo")
+        if not repo and not repo_hint and not resume and not subtask and cap["risk"] == "write":
+            repo_hint = await self._repo_candidate(params, request, cap, unattended)
 
         # Auto-engage repo-mode: a fresh WRITE run tied to a registered repo candidate runs in an
         # ISOLATED clone (+ draft PR) instead of mutating the live local checkout — even without an

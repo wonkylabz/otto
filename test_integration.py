@@ -5691,6 +5691,38 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["repo"], "myrepo")                              # repo-mode engaged
         self.assertEqual(len(self.cleaned), 1)                               # workspace torn down
 
+    async def test_an_unattended_project_cap_runs_in_a_clone_of_its_home(self):
+        """`runbook-rb-658636d9-f1e230`: a runbook pinned a project cap with no repo_hint, so it
+        ran from the live checkout and branched + committed there. `home` engages repo-mode with
+        no `suggest_repo` (unregistered here: an unattended run must never guess)."""
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (cleanup_workspace, clarify_request, classify_request,
+                                finalize_workspace, merge_results, plan_capability, plan_swarm,
+                                provision_workspace, resolve_pr_target,
+            check_grounding, record_attempt, record_skip,
+                                route_request, snapshot_settings, run_capability, verify_capability)
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                async with Worker(
+                    env.client, task_queue="homeq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, plan_swarm, merge_results, clarify_request,
+                                classify_request, plan_capability, provision_workspace, resolve_pr_target, check_grounding,
+                                finalize_workspace, cleanup_workspace, run_capability,
+                                verify_capability, record_attempt, record_skip],
+                    activity_executor=ex,
+                ):
+                    out = await env.client.execute_workflow(
+                        OttoWorkflow.run,
+                        {"request": "Perform the upgrade end-to-end", "unattended": True,
+                         "approval": "auto", "review": False,
+                         "cap": {"name": "sre-minion", "kind": "agent", "risk": "write",
+                                 "home": "myrepo"}},
+                        id="home-" + uuid.uuid4().hex[:8], task_queue="homeq")
+        self.assertTrue(self.cwds and self.cwds[0].startswith("/tmp/ws/"))   # ran in the clone
+        self.assertEqual(out["repo"], "myrepo")
+        self.assertIn("https://github.com/o/r/pull/1", out["result"])
+
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
 class WorkflowRepoModeResumeTests(unittest.IsolatedAsyncioTestCase):

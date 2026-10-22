@@ -303,7 +303,7 @@ def resolve_cap(name):
     if c is None and ":" in name:                 # tolerate a "kind:name" form
         bare = name.split(":", 1)[1]
         c = next((c for c in _caps() if c.name == bare), None)
-    return {"name": c.name, "kind": c.kind, "risk": c.risk} if c else None
+    return c.ref() if c else None
 
 
 # --- store -----------------------------------------------------------------
