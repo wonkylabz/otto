@@ -336,7 +336,7 @@ function showJobForm(job){
     <label>Name</label><input id="jf-name" placeholder="Rotate VPN certs">
     <label>Request</label>
     <span class="sub" style="margin:-2px 0 4px;font-size:12px">The overall task. With steps below, this is the orientation they all share.</span>
-    <input id="jf-req" placeholder="Rotate the client VPN certs in {{env}}">
+    <textarea id="jf-req" class="reqarea" rows="3" placeholder="Rotate the client VPN certs in {{env}}"></textarea>
     <label>Capability</label>
     <span class="sub" style="margin:-2px 0 4px;font-size:12px">Pin one to skip routing — required for a <b>project</b> skill. Steps can override it individually.</span>
     <select id="jf-cap">${capOpts}</select>

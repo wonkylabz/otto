@@ -408,7 +408,7 @@
   .slashitem small { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .field { display: flex; gap: 12px; align-items: flex-end; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 10px 12px; transition: border-color .15s; }
   .field:focus-within { border-color: var(--accent); }
-  textarea { flex: 1; resize: none; background: none; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; max-height: 120px; outline: none; }
+  .field textarea { flex: 1; resize: none; background: none; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; max-height: 120px; outline: none; }
   textarea::placeholder { color: var(--dim); }
   .send { flex: none; background: var(--accent); color: var(--on-accent); border: none; width: 40px; height: 40px; border-radius: var(--r-md); cursor: pointer; font-size: 17px; transition: filter .15s, background .15s; }
   .send:hover { filter: brightness(1.08); }
@@ -729,17 +729,14 @@
      content by `growArea`. */
   .aform textarea.codearea { font-family: var(--mono); font-size: 12.5px;
     white-space: pre; overflow-wrap: normal; overflow-x: auto; min-height: 96px;
-    /* Two inherited constraints fight `growArea`, both measured rather than guessed.
-       `.aform` is a flex COLUMN in a max-height modal, so a textarea SHRINKS to its
-       min-height once the form is taller than the box (style 208px, rendered 96px); and the
-       bare `textarea` rule up in the composer's styles caps every textarea in the app at
-       120px, which `.aform textarea` never overrode (style 208px, rendered 120px). The
+    /* `.aform` is a flex COLUMN in a max-height modal, so a textarea SHRINKS to its
+       min-height once the form is taller than the box (style 208px, rendered 96px). The
        modal body scrolls, this field does not, and `growArea`'s own 320px is the cap. */
     flex: 0 0 auto; max-height: none; }
-  /* A prose field a form is mostly ABOUT (a capability prompt, a knowledge document) fights the
-     same two inherited constraints as `.codearea`: the composer's app-wide `textarea` 120px cap
-     and `.aform`'s flex column shrinking it to min-height. Same overrides, proportional font. */
+  /* A prose field a form is mostly ABOUT (a capability prompt, a knowledge document) is shrunk
+     by the same flex column as `.codearea`. Same override, proportional font. */
   .aform textarea.prosearea { min-height: 190px; flex: 0 0 auto; max-height: none; }
+  .aform textarea.reqarea { min-height: 72px; flex: 0 0 auto; max-height: none; }
   .aform .frow { display: flex; gap: 12px; }
   .aform .frow > div { flex: 1; display: flex; flex-direction: column; gap: 8px; }
   .aform .ferr { color: var(--danger); font-size: 12px; }

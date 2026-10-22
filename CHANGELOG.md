@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **A runbook's Request is now a multi-line box.** Long requests wrap instead of scrolling
+  sideways in Jobs → Add/Edit runbook. Multi-line fields in every form also get the same
+  border as the other inputs, and Notes is no longer capped at five lines. Takes effect on a
+  page refresh.
+
 ### Fixed
 
 - **PR descriptions are no longer cut off mid-sentence.** A long request now shows its first
