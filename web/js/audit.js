@@ -196,6 +196,9 @@ async function loadAudit(){
   qs.set("offset",String(AUDIT_OFFSET)); qs.set("limit",String(AU_PAGE));
   try { data=await (await fetch("/api/audit?"+qs.toString())).json(); }
   catch(e){ el.innerHTML=`<p class="err">Couldn't load audit (${esc(e.message)}).</p>`; return; }
+  // A server older than the paging (assets ship on refresh, the route only on restart) ignores
+  // offset/limit and sends the whole trail; page it here so the pager never lies.
+  if(data.limit==null) data.entries=data.entries.slice(AUDIT_OFFSET,AUDIT_OFFSET+AU_PAGE);
   const rows=data.entries.map((e,i)=>{
     const capRaw=(e.capability||"").split(":").pop();
     const cap=(!capRaw||capRaw==="?")?"unknown":capRaw;
