@@ -721,7 +721,10 @@
     margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
   .aform label { font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: -4px; }
   .aform input, .aform textarea, .aform select { padding: 9px 11px; }
-  .aform textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
+  /* Re-assert the shared control look: the composer's bare `textarea` rule strips border and background. */
+  .aform textarea { resize: vertical; min-height: 64px; line-height: 1.5;
+    background: var(--raised); border: 1px solid var(--line); font-size: 13px; }
+  .aform textarea:focus { border-color: var(--accent); }
   /* A one-per-line list of arguments or NAME=value pairs is code, not prose: 64px shows
      three of ten lines behind a scrollbar, and a proportional font hides where a space
      or a stray character actually is. Lines never wrap — one logical line stays one
