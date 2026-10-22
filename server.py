@@ -45,7 +45,6 @@ import factory
 import gateway
 import insights
 import knowledge
-import ledger
 import local_runtime
 import mcp_client
 import onboarding
@@ -1128,7 +1127,8 @@ def _stats():
 def _insights(days):
     """`insights.report` plus the live health it cannot derive from the trail: which pool models
     last failed, which are marked down, and whether the global pause is engaged."""
-    r = insights.report(engine.iter_audit_entries(), ledger.calls(limit=100000), days=days)
+    calls, oldest = insights.ledger_rows(days)
+    r = insights.report(engine.iter_audit_entries(), calls, days=days, ledger_oldest=oldest)
     try:
         unhealthy = gateway.unhealthy_models()
     except Exception:  # noqa: BLE001 - a broken models.json must not blank the whole report
@@ -1555,7 +1555,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(_audit_content(wid, at, attempt)))
         elif self.path.startswith("/api/audit"):
             q = parse_qs(urlparse(self.path).query)
-            num = lambda k: int(v) if (v := (q.get(k) or [""])[0]).isdigit() else 0
+            num = lambda k: int(v) if (v := (q.get(k) or [""])[0]).isdecimal() else 0
             self._send(200, json.dumps(_audit_view(
                 wid=(q.get("wid") or [""])[0], cap=(q.get("cap") or [""])[0],
                 verified=(q.get("verified") or [""])[0],
@@ -1676,7 +1676,7 @@ class Handler(BaseHTTPRequestHandler):
             # before it. One trail scan, like /api/stats.
             q = parse_qs(urlparse(self.path).query)
             raw = (q.get("days") or ["7"])[0]
-            days = int(raw) if raw.isdigit() and 0 < int(raw) <= 365 else 7
+            days = int(raw) if raw.isdecimal() and 0 < int(raw) <= 365 else 7
             self._send(200, json.dumps(_insights(days)))
         elif self.path == "/api/board-health":
             # Cheap health strip for the Board tab (schedules + cost only — no per-workflow queries).

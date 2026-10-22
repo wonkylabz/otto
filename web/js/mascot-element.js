@@ -810,7 +810,7 @@
       this._sync();
     }
 
-    attributeChangedCallback() { this._sync(); }
+    attributeChangedCallback() { if (this._wave) { this._wave.cancel(); this._wave = null; } this._sync(); }
 
     _sync() {
       const size = this.getAttribute('size');
@@ -840,12 +840,13 @@
 
     /** A little wave with the right arm. A one-off GESTURE, not a state: it rides the Web
      *  Animations API, which composites above the CSS state animation and hands the arm back
-     *  when it ends. Only from a resting pose - mid-plan that arm is holding the marker. */
+     *  when it ends. Only from a resting pose - mid-plan that arm is holding the marker - and any
+     *  state change cancels it, so a run starting mid-wave gets the arm back at once. */
     wave() {
       if (!['idle', 'sleeping'].includes(this.state) || this._reduced()) return;
       const arm = this.shadowRoot.querySelector('.arm-r');
       if (!arm) return;
-      arm.animate(
+      this._wave = arm.animate(
         [{ transform: 'rotate(0deg)', easing: 'ease-out' }, { transform: 'rotate(-150deg)', offset: .22, easing: 'ease-in-out' },
          { transform: 'rotate(-128deg)', offset: .36, easing: 'ease-in-out' }, { transform: 'rotate(-156deg)', offset: .5, easing: 'ease-in-out' },
          { transform: 'rotate(-128deg)', offset: .64 }, { transform: 'rotate(-150deg)', offset: .78, easing: 'ease-in' },

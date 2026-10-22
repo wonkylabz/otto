@@ -130,8 +130,12 @@ api /api/runbooks/run '{"id":"<id>"}'          # fire it once now so they see it
 ```
 
 Each firing opens its own chat thread. A runbook that writes stays gated unless they explicitly
-asked for `auto_approve`. A good first job is the weekly health check:
-`./.venv/bin/python insights.py --since 7d --changes-only` posts nothing in a quiet week.
+asked for `auto_approve`.
+
+The weekly health check is NOT a runbook: a run is read-denied Otto's own `data/` (the trail
+included), and its reply is delivered even in a quiet week. Suggest the operator's own cron
+instead — `./.venv/bin/python insights.py --since 7d --changes-only` prints nothing when nothing
+moved — or the Audit tab's Health section.
 
 ### 7. Events (webhooks and Slack triggers)
 

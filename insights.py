@@ -6,7 +6,7 @@ and the tier-call ledger (routing/clarify/judge decisions) had no reader outside
 
 Pure over `(entries, calls)` like `scorecard`, so it is testable against a fixture trail. The
 server serves it at `/api/insights`; `python insights.py --since 7d` is the CLI twin the skill
-and a weekly runbook call instead of SQL.
+and a weekly cron call instead of SQL.
 
 Window boundaries compare the trail's own `at` strings (local, `isoformat(timespec="seconds")`),
 never a parsed datetime — the same spelling both ends, so no timezone guess can shift a row.
@@ -22,6 +22,16 @@ import audit
 
 # Rows that are a normal day's work, not something a person should look at.
 _ROUTINE = {"ran", "plan_preview"}
+
+
+def _needs_attention(r):
+    """The ONE attention predicate. A shadow row is written for EVERY supervised attempt (SHADOW
+    is the default mode), so only one whose supervisor would have retried is a signal; counting
+    the rest made Attention track the attempt count."""
+    o = r.get("outcome")
+    if o in _ROUTINE:
+        return False
+    return o != "supervisor_shadow" or r.get("reason") == "supervisor_would_retry"
 # A comparison that moves by less than this many rows is noise, never a "change".
 _MIN_DELTA = 2
 
@@ -57,7 +67,8 @@ def _window_stats(rows):
     return {
         "runs": len(wids), "judged": judged,
         "pass_rate": round(passed / judged, 3) if judged else None,
-        "attention": sum(1 for r in rows if r.get("outcome") not in _ROUTINE),
+        # RUNS, like the day chart's, so the two figures named attention reconcile on screen.
+        "attention": len({r.get("workflow") or f"?{id(r)}" for r in rows if _needs_attention(r)}),
         "cost_usd": round(sum((r.get("cost_usd") or 0) for r in rows), 4),
         "fallbacks": sum(1 for r in rows if r.get("fallback_from")),
         "accepted": sum(1 for r in rows if r.get("outcome") == "human_accepted"),
@@ -75,17 +86,24 @@ def _counted(rows, key):
 
 
 def _attention_key(r):
-    if r.get("outcome") in _ROUTINE:
+    if not _needs_attention(r):
         return None
     return (r.get("outcome") or "?", r.get("reason") or "")
 
 
-def _fail_key(r):
+def _fail_key(killed):
     # An adverse verdict, attributed to WHO reached it — a bad capability and a bad judge leave
-    # identical rows otherwise (memory-privacy.md, Scorecard).
-    if r.get("attempt") is None or r.get("verified") is not False:
-        return None
-    return (r.get("verdict_source") or "judge", r.get("verdict_model") or "")
+    # identical rows otherwise (memory-privacy.md, Scorecard). A row older than
+    # `verdict_source` is attributed through `audit.by_judge`, the one predicate scorecard uses,
+    # so a kill or a post-PR round is never blamed on the judge.
+    def key(r):
+        if r.get("attempt") is None or r.get("verified") is not False:
+            return None
+        src = r.get("verdict_source") or (
+            "judge" if audit.by_judge(r, killed) else
+            "supervisor" if (r.get("workflow"), r.get("attempt")) in killed else "post_pr")
+        return (src, r.get("verdict_model") or "")
+    return key
 
 
 def _tiers(calls):
@@ -125,7 +143,7 @@ def _by_day(rows, since_at, until_at):
         d = days.setdefault(day, {"runs": set(), "attention": set(), "cost_usd": 0.0})
         wid = r.get("workflow") or f"?{id(r)}"
         d["runs"].add(wid)
-        if r.get("outcome") not in _ROUTINE:
+        if _needs_attention(r):
             d["attention"].add(wid)
         d["cost_usd"] += r.get("cost_usd") or 0
     out, day = [], datetime.date.fromisoformat(since_at[:10])
@@ -139,7 +157,7 @@ def _by_day(rows, since_at, until_at):
 
 
 def _changes(now, prev, attention, prev_attention):
-    """The few movements worth a person's attention — what a weekly runbook posts, or stays
+    """The few movements worth a person's attention — what a weekly cron prints, or stays
     silent on. Empty means nothing moved beyond noise."""
     out = []
     if now["pass_rate"] is not None and prev["pass_rate"] is not None:
@@ -162,7 +180,15 @@ def _label(key):
     return f"{outcome}/{reason}" if reason and reason != outcome else outcome
 
 
-def report(entries, calls=(), *, days=7, now=None):
+def ledger_rows(days, now=None):
+    """The ledger calls `report` reads — only the current window's, filtered in SQL — and how far
+    back the ledger reaches. One door for the route and the CLI."""
+    import ledger
+    _, since_at, _ = _cutoffs(days, now)
+    return ledger.calls(since=since_at, limit=10_000_000), ledger.oldest_at()
+
+
+def report(entries, calls=(), *, days=7, now=None, ledger_oldest=None):
     """The whole report for the last `days`, compared with the `days` before it."""
     prev_at, since_at, until_at = _cutoffs(days, now)
     cur, prev = [], []
@@ -173,7 +199,7 @@ def report(entries, calls=(), *, days=7, now=None):
         elif prev_at <= at < since_at:
             prev.append(e)
     attention, prev_attention = _counted(cur, _attention_key), _counted(prev, _attention_key)
-    fails = _counted(cur, _fail_key)
+    fails = _counted(cur, _fail_key(audit.killed_attempts(cur)))
     fell = _counted(cur, lambda r: r.get("fallback_reason") if r.get("fallback_from") else None)
     calls_now = [c for c in calls if since_at <= (c.get("at") or "") <= until_at]
     stats_now, stats_prev = _window_stats(cur), _window_stats(prev)
@@ -194,7 +220,7 @@ def report(entries, calls=(), *, days=7, now=None):
         "caps": caps,
         "stages": audit.stage_timings(cur),
         "tiers": _tiers(calls_now),
-        "ledger_covers": min((c.get("at") or "" for c in calls), default=None),
+        "ledger_covers": ledger_oldest or min((c.get("at") or "" for c in calls), default=None),
         "changes": _changes(stats_now, stats_prev, attention, prev_attention),
     }
 
@@ -243,8 +269,8 @@ def main(argv=None):
     ap.add_argument("--changes-only", action="store_true",
                     help="print nothing (exit 0) unless something moved beyond noise")
     a = ap.parse_args(argv)
-    import ledger
-    r = report(audit.iter_audit_entries(), ledger.calls(limit=100000), days=a.since)
+    calls, oldest = ledger_rows(a.since)
+    r = report(audit.iter_audit_entries(), calls, days=a.since, ledger_oldest=oldest)
     if a.changes_only and not r["changes"]:
         return 0
     sys.stdout.write((json.dumps(r, indent=2) if a.json else render_text(r)) + "\n")

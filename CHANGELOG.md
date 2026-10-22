@@ -17,7 +17,7 @@ changelog that restates it is a second copy of `git log`.
   how often you overruled the judge, and spend, each against the previous 7 or 30 days, with a
   per-day chart and breakdowns by cause, judge, capability, stage and tier call. The same report
   runs from a terminal: `./.venv/bin/python insights.py --since 7d` (`--changes-only` prints
-  nothing in a quiet week, so it suits a weekly job). **Restart the server after upgrading.**
+  nothing in a quiet week, so it suits a weekly cron). **Restart the server after upgrading.**
 - **The audit trail is paged**, 50 actions at a time; totals still cover the whole trail.
 - **An `otto-setup` skill.** In a Claude Code session in the Otto checkout, ask it to "set up
   Otto" and it configures models, repos, MCP servers, jobs, events and Slack through Otto's own

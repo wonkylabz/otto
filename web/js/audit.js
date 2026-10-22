@@ -90,11 +90,15 @@ async function fetchInsights(force){
   const fresh=AU_INSIGHT.data && AU_INSIGHT.data.window && AU_INSIGHT.data.window.days===AU_INSIGHT.days
               && Date.now()-AU_INSIGHT.at<60000;
   if(fresh && !force) return AU_INSIGHT.data;
-  if(AU_INSIGHT.busy) return AU_INSIGHT.busy;
-  AU_INSIGHT.busy=getJSON("/api/insights?days="+AU_INSIGHT.days)
-    .then(d=>{ AU_INSIGHT.data=d; AU_INSIGHT.at=Date.now(); return d; })
-    .finally(()=>{ AU_INSIGHT.busy=null; });
-  return AU_INSIGHT.busy;
+  // An in-flight request is reused only for the SAME window: switching 7d→30d mid-load
+  // otherwise painted the 7-day report under the 30-day label.
+  const days=AU_INSIGHT.days;
+  if(AU_INSIGHT.busy && AU_INSIGHT.busyDays===days) return AU_INSIGHT.busy;
+  const req=getJSON("/api/insights?days="+days)
+    .then(d=>{ if(AU_INSIGHT.days===days){ AU_INSIGHT.data=d; AU_INSIGHT.at=Date.now(); } return d; })
+    .finally(()=>{ if(AU_INSIGHT.busy===req) AU_INSIGHT.busy=null; });
+  AU_INSIGHT.busy=req; AU_INSIGHT.busyDays=days;
+  return req;
 }
 async function loadInsights(force){
   const box=document.getElementById("au-health");
@@ -103,12 +107,13 @@ async function loadInsights(force){
   let r;
   try { r=await fetchInsights(force); }
   catch(e){ box.innerHTML=`<p class="err">Couldn't build the health report (${esc(e.message)}).</p>`; return; }
+  if(r.window && r.window.days!==AU_INSIGHT.days) return;   // superseded by a later window pick
   const live=document.getElementById("au-health");      // the tab may have re-rendered meanwhile
   if(live) live.innerHTML=renderInsights(r);
   wireInsights();
 }
 function renderInsights(r){
-  const n=r.now||{}, p=r.prev||{}, d=AU_INSIGHT.days, h=r.health||{};
+  const n=r.now||{}, p=r.prev||{}, d=(r.window&&r.window.days)||AU_INSIGHT.days, h=r.health||{};
   const kpi=(label,val,delta,title)=>`<div class="kpi" title="${esc(title)}"><div class="klabel">${label}</div><div class="kval">${val}</div>${delta}</div>`;
   const warns=[];
   if(h.estop&&h.estop.engaged) warns.push(`<span class="hwarn bad">● Global pause is ON — nothing new starts</span>`);

@@ -1767,6 +1767,32 @@ class InsightsReportTests(unittest.TestCase):
         self.assertEqual(got, {("judge", "claude-haiku-5-5"): 1, ("supervisor", ""): 1})
         self.assertEqual(r["fallbacks"], [{"reason": "unreachable", "count": 1}])
 
+    def test_routine_supervision_is_not_attention_and_attention_counts_runs(self):
+        import insights
+        r = self._row
+        trail = self._trail() + [
+            # SHADOW writes one row per supervised attempt; only a would-retry one is a signal.
+            r("2026-10-22T12:00:00", "w4", attempt=1, outcome="supervisor_shadow"),
+            r("2026-10-22T12:01:00", "w5", attempt=1, outcome="supervisor_shadow",
+              reason="supervisor_would_retry")]
+        rep = insights.report(trail, days=7, now=self.NOW)
+        keys = {(a["outcome"], a["reason"]) for a in rep["attention"]}
+        self.assertNotIn(("supervisor_shadow", ""), keys)
+        self.assertIn(("supervisor_shadow", "supervisor_would_retry"), keys)
+        # w2's three rows are ONE run, matching the day chart: w2 + w5.
+        self.assertEqual(rep["now"]["attention"], 2)
+
+    def test_a_legacy_adverse_row_is_attributed_like_scorecard_does(self):
+        import insights
+        r = self._row
+        trail = [
+            r("2026-10-22T10:00:00", "k1", attempt=1, verified=False, outcome="ran"),
+            r("2026-10-22T10:00:01", "k1", attempt=1, outcome="supervisor_kill"),
+            r("2026-10-22T11:00:00", "web-x-rev1", attempt=1, verified=False, outcome="ran"),
+            r("2026-10-22T12:00:00", "j1", attempt=1, verified=False, outcome="ran")]
+        got = {f["source"] for f in insights.report(trail, days=7, now=self.NOW)["fail_sources"]}
+        self.assertEqual(got, {"supervisor", "post_pr", "judge"})
+
     def test_tier_calls_are_windowed_and_their_decisions_counted(self):
         calls = [{"at": "2026-10-22T09:00:00", "tier": "routing", "ok": 1, "fell_back": 0,
                   "duration_ms": 900, "decision": "assistant"},

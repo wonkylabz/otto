@@ -5566,6 +5566,14 @@ class TierCallLedgerTests(unittest.TestCase):
         self.assertEqual(row["tokens"], 145)
         self.assertIsNone(row["decision"])
 
+    def test_calls_filter_on_time_in_sql_and_oldest_says_how_far_back_it_reaches(self):
+        gateway.complete("routing", "x")
+        gateway.complete("routing", "y")
+        with storage.sqlite_connect(config.DB_PATH) as conn:
+            conn.execute("UPDATE tier_calls SET at='2026-01-01T00:00:00' WHERE id=1")
+        self.assertEqual(len(ledger.calls(since="2026-06-01T00:00:00")), 1)
+        self.assertEqual(ledger.oldest_at(), "2026-01-01T00:00:00")
+
     def test_neither_the_prompt_nor_the_reply_is_stored(self):
         gateway.complete("routing", "route this SECRET-PROMPT")
         gateway.decided("routing", "assistant")
