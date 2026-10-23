@@ -1020,8 +1020,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # Persist this run into a Chat sidebar thread (scheduled/event runs have no browser to
         # record their own turns). `chat_key` is a stable id (e.g. the schedule id) so the first
         # run creates the chat and later runs append; `chat_labels` tag its provenance.
-        chat_key = params.get("chat_key")
-        self._chat_key = chat_key
+        chat_key = self._chat_key = self._bind_chat_key(params)
         # Open the Chat thread NOW (before routing/execution) so an unattended run is visible and
         # accessible the moment Otto starts the ticket, not only when it finishes. _record_chat
         # finalizes it later. An UNATTENDED resume (a Slack thread follow-up) appends its turn to
@@ -1810,6 +1809,16 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 retry_policy=RetryPolicy(maximum_attempts=3 if blocking else 1))
         except Exception:  # noqa: BLE001 - strictly best-effort
             pass
+
+    def _bind_chat_key(self, params):
+        """This run's Chat thread key. A job firing gets its OWN thread: the ingress hands a
+        prefix plus `chat_per_run`, and this run's id makes it unique (see scheduler._args — a
+        schedule's args are frozen, so the key cannot be minted there). Popped so a retry, which
+        reattaches by the recorded key, never suffixes it twice. Workflow id is replay-stable."""
+        key = params.get("chat_key")
+        if key and params.pop("chat_per_run", False):
+            key = params["chat_key"] = f"{key}-{workflow.info().workflow_id}"
+        return key
 
     async def _open_chat(self, params, request):
         """Create this run's Chat sidebar thread up front (request + pending placeholder) so it's

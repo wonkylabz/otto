@@ -20,6 +20,7 @@
  * JS:  otto.state = 'thinking'      // or otto.setAttribute('state', 'thinking')
  *      otto.blink()                 // one-off blink
  *      otto.react('success')        // play a state for 1.6s, then return to previous
+ *      otto.wave() / otto.hearts()  // one-off gestures; never change the state
  *
  * Respects prefers-reduced-motion: motion is reduced to a slow float.
  */
@@ -34,14 +35,14 @@
     <ellipse cx="121" cy="272" rx="17" ry="2.8" opacity="0.7"></ellipse>
   </g>
   <g class="board">
-    <rect x="126" y="48" width="108" height="164" rx="4"></rect>
-    <path class="ink i1" d="M 140 82 L 208 82"></path>
-    <path class="ink i2" d="M 140 100 L 192 100"></path>
-    <path class="ink i3" d="M 140 118 L 204 118"></path>
-    <rect class="ink i4" x="140" y="136" width="36" height="22" rx="2"></rect>
-    <path class="ink i5" d="M 182 147 L 212 147"></path>
-    <path class="ink i5" d="M 206 142 L 212 147 L 206 152"></path>
-    <path class="ink i6" d="M 140 176 L 196 176"></path>
+    <rect x="120" y="30" width="116" height="84" rx="4"></rect>
+    <path class="ink i1" d="M 130 44 L 190 44"></path>
+    <path class="ink i2" d="M 130 56 L 168 56"></path>
+    <rect class="ink i3" x="130" y="68" width="24" height="16" rx="2"></rect>
+    <path class="ink i4" d="M 158 76 L 176 76"></path>
+    <path class="ink i4" d="M 171 72 L 176 76 L 171 80"></path>
+    <rect class="ink i5" x="180" y="68" width="24" height="16" rx="2"></rect>
+    <path class="ink i6" d="M 130 98 L 214 98"></path>
   </g>
   <g class="figure">
     <g class="noggin">
@@ -255,6 +256,11 @@
     <path d="M 198 70 L 208 62"></path>
     <path d="M 172 54 L 166 44"></path>
   </g>
+  <g class="hearts">
+    <path class="heart" d="M 190 58 C 182 51, 185 44, 190 48 C 195 44, 198 51, 190 58 Z"></path>
+    <path class="heart" d="M 206 46 C 200 41, 202 35, 206 38 C 210 35, 212 41, 206 46 Z"></path>
+    <path class="heart" d="M 174 42 C 169 38, 171 33, 174 35.5 C 177 33, 179 38, 174 42 Z"></path>
+  </g>
 </svg>`;
 
   const CSS = `
@@ -312,16 +318,20 @@
    face (eyes, chest core, the skirt and hatching) hides and a head seam plus a back panel
    take their place. Cheaper than a second figure, and it cannot drift out of proportion
    with the front one.
-   He also steps aside: the board needs the right half of the canvas, and standing him in
-   front of his own diagram would hide the thing he is drawing. The offset lives INSIDE the
+   The board is LANDSCAPE and hangs high, above his shoulder: a plan is a flow read left to
+   right (box, arrow, box), and a portrait sheet beside him read as a door. That is also where
+   his writing hand already reaches, so the arm keyframes did not change.
+   He also steps aside: the board needs the right of the canvas, and standing him in front of
+   his own diagram would hide the thing he is drawing. 50px clears its left edge and still keeps
+   his hanging hand inside the frame. The offset lives INSIDE the
    float keyframes because .figure already animates transform - a second animation on the
    same property does not compose, it replaces. */
 @keyframes otto-float-aside {
-  0%, 100% { transform: translate(-44px, 0); }
-  50%      { transform: translate(-44px, -6px); } }
+  0%, 100% { transform: translate(-50px, 0); }
+  50%      { transform: translate(-50px, -6px); } }
 @keyframes otto-shadow-aside {
-  0%, 100% { transform: translate(-44px, 0) scale(1); opacity: .45; }
-  50%      { transform: translate(-44px, 0) scale(1.06); opacity: .3; } }
+  0%, 100% { transform: translate(-50px, 0) scale(1); opacity: .45; }
+  50%      { transform: translate(-50px, 0) scale(1.06); opacity: .3; } }
 /* The writing hand sweeps a short arc across the board, pausing at each end - a marker
    travelling at a constant speed reads as wiping, not writing. */
 @keyframes otto-write {
@@ -771,6 +781,10 @@
 :host([state="sleeping"]) .zzz path { animation: otto-dots calc(3s / var(--otto-speed)) ease-in-out infinite; }
 :host([state="sleeping"]) .zzz path:nth-child(2) { animation-delay: calc(.6s / var(--otto-speed)); }
 
+/* Hearts: a one-off for a click (hearts() below), never a state - applyMood stays his only
+   state writer. Accent-filled, so they wear the active palette like the antenna does. */
+.hearts .heart { fill: var(--otto-accent); stroke: none; opacity: 0; transform-box: fill-box; transform-origin: center; }
+
 :host([shadow="off"]) .shadow { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -779,7 +793,7 @@
 }`;
 
   class OttoMascot extends HTMLElement {
-    static get observedAttributes() { return ['size', 'color', 'speed']; }
+    static get observedAttributes() { return ['size', 'color', 'speed', 'state']; }
 
     constructor() {
       super();
@@ -796,7 +810,11 @@
       this._sync();
     }
 
-    attributeChangedCallback() { this._sync(); }
+    attributeChangedCallback(name, was, now) {
+      // A state change hands the arm back at once: mid-plan it holds the marker.
+      if (name === 'state' && was !== now && this._wave) { this._wave.cancel(); this._wave = null; }
+      this._sync();
+    }
 
     _sync() {
       const size = this.getAttribute('size');
@@ -822,6 +840,41 @@
           { duration: 180, easing: 'ease-in-out' }
         );
       });
+    }
+
+    /** A little wave with the right arm. A one-off GESTURE, not a state: it rides the Web
+     *  Animations API, which composites above the CSS state animation and hands the arm back
+     *  when it ends. Only from a resting pose - mid-plan that arm is holding the marker - and any
+     *  state change cancels it, so a run starting mid-wave gets the arm back at once. */
+    wave() {
+      if (!['idle', 'sleeping'].includes(this.state) || this._reduced()) return;
+      const arm = this.shadowRoot.querySelector('.arm-r');
+      if (!arm) return;
+      this._wave = arm.animate(
+        [{ transform: 'rotate(0deg)', easing: 'ease-out' }, { transform: 'rotate(-150deg)', offset: .22, easing: 'ease-in-out' },
+         { transform: 'rotate(-128deg)', offset: .36, easing: 'ease-in-out' }, { transform: 'rotate(-156deg)', offset: .5, easing: 'ease-in-out' },
+         { transform: 'rotate(-128deg)', offset: .64 }, { transform: 'rotate(-150deg)', offset: .78, easing: 'ease-in' },
+         { transform: 'rotate(0deg)' }],
+        // Easing PER KEYFRAME: on the options it warps the whole timeline, so the arm never
+        // got past horizontal before it was already coming back down.
+        { duration: 1500 });
+      this.blink();
+    }
+
+    /** Three hearts float up off his head. */
+    hearts() {
+      if (this._reduced()) return;
+      this.shadowRoot.querySelectorAll('.heart').forEach((h, i) => {
+        h.animate(
+          [{ opacity: 0, transform: 'translateY(6px) scale(.4)' },
+           { opacity: 1, transform: 'translateY(-4px) scale(1.15)', offset: .3 },
+           { opacity: 0, transform: 'translateY(-26px) scale(.9)' }],
+          { duration: 1200, delay: i * 140, easing: 'ease-out' });
+      });
+    }
+
+    _reduced() {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     }
 
     /** Play a state for `ms`, then go back to where it was. */

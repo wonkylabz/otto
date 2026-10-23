@@ -43,6 +43,7 @@ import estop
 import events
 import factory
 import gateway
+import insights
 import knowledge
 import local_runtime
 import mcp_client
@@ -1123,11 +1124,28 @@ def _stats():
             "stages": audit.stage_timings(entries)}
 
 
-def _audit_view(wid="", cap="", verified=""):
+def _insights(days):
+    """`insights.report` plus the live health it cannot derive from the trail: which pool models
+    last failed, which are marked down, and whether the global pause is engaged."""
+    calls, oldest = insights.ledger_rows(days)
+    r = insights.report(engine.iter_audit_entries(), calls, days=days, ledger_oldest=oldest)
+    try:
+        unhealthy = gateway.unhealthy_models()
+    except Exception:  # noqa: BLE001 - a broken models.json must not blank the whole report
+        unhealthy = []
+    r["health"] = {"unhealthy_models": unhealthy, "down": gateway.stats().get("down") or {},
+                   "estop": estop.status()}
+    return r
+
+
+def _audit_view(wid="", cap="", verified="", offset=0, limit=0):
     """The Audit tab's payload (issue #95): entries across ALL rotated segments, newest first,
     server-side filtered by workflow id / capability / verify verdict. `capabilities` lists the
     distinct cap names over the UNFILTERED trail so the filter dropdown doesn't shrink as you
-    narrow. Token totals/segments reflect the filtered view."""
+    narrow. Token totals/segments reflect the filtered view.
+
+    `offset`/`limit` page the ENTRIES only (limit 0 = all): `count`, the cost and the token
+    totals stay over the whole filtered view, so the header doesn't shrink to one page's sum."""
     entries, all_caps = [], set()
     for e in engine.iter_audit_entries():
         if e.get("capability"):
@@ -1156,9 +1174,13 @@ def _audit_view(wid="", cap="", verified=""):
         for k in total_tokens:
             agg[k] += tok.get(k, 0) or 0
             total_tokens[k] += tok.get(k, 0) or 0
+    newest = list(reversed(entries))
+    offset = max(0, offset)
     return {
-        "entries": list(reversed(entries)),
+        "entries": newest[offset:offset + limit] if limit > 0 else newest[offset:],
         "count": len(entries),
+        "offset": offset,
+        "limit": limit,
         "total_cost": round(sum(e.get("cost_usd", 0) or 0 for e in entries), 4),
         "tokens_by_model": by_model,
         "total_tokens": total_tokens,
@@ -1533,9 +1555,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(_audit_content(wid, at, attempt)))
         elif self.path.startswith("/api/audit"):
             q = parse_qs(urlparse(self.path).query)
+            num = lambda k: int(v) if (v := (q.get(k) or [""])[0]).isdecimal() else 0
             self._send(200, json.dumps(_audit_view(
                 wid=(q.get("wid") or [""])[0], cap=(q.get("cap") or [""])[0],
-                verified=(q.get("verified") or [""])[0])))
+                verified=(q.get("verified") or [""])[0],
+                offset=num("offset"), limit=min(num("limit"), 1000))))
         elif self.path == "/api/models":
             cfg = gateway.load()
             # The Admin view asking for the models IS the refresh trigger. Safe to keep inline
@@ -1647,6 +1671,13 @@ class Handler(BaseHTTPRequestHandler):
             # Per-capability reliability scorecard (issue #102), aggregated from the audit log
             # (no Temporal needed) plus the gateway's per-tier fallback counters.
             self._send(200, json.dumps(_stats()))
+        elif self.path.startswith("/api/insights"):
+            # The Audit tab's health report: by cause, by judge, by tier, against the window
+            # before it. One trail scan, like /api/stats.
+            q = parse_qs(urlparse(self.path).query)
+            raw = (q.get("days") or ["7"])[0]
+            days = int(raw) if raw.isdecimal() and 0 < int(raw) <= 365 else 7
+            self._send(200, json.dumps(_insights(days)))
         elif self.path == "/api/board-health":
             # Cheap health strip for the Board tab (schedules + cost only — no per-workflow queries).
             self._send(200, json.dumps(_board_health()))
@@ -1877,8 +1908,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, json.dumps({"error": f"rule pins unknown capability '{norm['cap']}'"})); return
                 cap = c.ref()
             wid = "evt-" + uuid.uuid4().hex
+            # Each delivery opens its OWN Chat thread (keyed on its own wid): without one an
+            # event run reached the audit trail and nobody's sidebar.
             tc.run(_wf_start(wid, {"request": norm["request"], "cap": cap, "unattended": True,
-                                   "approval": norm["approval"], "reply_to": norm.get("reply_to")}))
+                                   "approval": norm["approval"], "reply_to": norm.get("reply_to"),
+                                   "chat_key": wid, "chat_title": f"{source}: {norm['request']}"[:80],
+                                   "chat_labels": ["event"]}))
             committed = True
             self._send(202, json.dumps({"id": wid, "request": norm["request"]}))
         finally:
@@ -2223,7 +2258,7 @@ class Handler(BaseHTTPRequestHandler):
             params["chat_labels"] = ["retry"]
         tc.run(_wf_start(new_id, params))
         _record_retry(wid, new_id)
-        # Retrying IS acknowledging the card: dismiss it so it leaves "Needs review"
+        # Retrying IS acknowledging the card: dismiss it so it leaves "Needs a look"
         # immediately — the retry shows up under Running as its own card. Leaving the
         # old card in place read as "did my click even work?" (user-reported).
         _dismiss(wid)

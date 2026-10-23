@@ -57,13 +57,15 @@ async function pollBoardBadge(){
 }
 poll(pollBoardBadge, 15000);
 pollBoardBadge();
-// A run "needs review" when it ended needing a human: verify/QA/budget flagged it (needs_human),
+// A run "needs a look" when it ended needing a human: verify/QA/budget flagged it (needs_human),
 // it was delivered unverified, or the workflow failed outright. Those are pulled OUT of the
-// Finished column into a dedicated "Needs review" column so nothing rots silently. Distinct
+// Finished column into a dedicated "Needs a look" column so nothing rots silently — not "Needs
+// review", which a review_fail card sat under and read as the code-REVIEW stage. Distinct
 // from "Awaiting your input": that's a run still IN FLIGHT, paused on an approve/deny or
-// clarification signal to continue — "Needs review" is already done/dead and won't move on
+// clarification signal to continue — "Needs a look" is already done/dead and won't move on
 // its own (Retry/Dismiss are the only ways forward). Module-level (not just loadBoard-local)
 // so the card detail modal can reuse the same labels/hints.
+const BOARD_SEEN=new Set();
 const NEEDS_LABEL={verify_exhausted:"unverified",published_unverified:"posted, unverified",qa_fail:"QA failed",qa_inconclusive:"QA inconclusive",
                    review_fail:"review findings",review_inconclusive:"review inconclusive",merge_failed:"merge refused",factory_no_pr:"no PR",
                    budget_exceeded:"over budget",workflow_error:"run failed",delivery_failed:"delivery failed",
@@ -119,11 +121,11 @@ async function loadBoard(silent){
   if(silent && _boardPress && Date.now()-_boardPress<5000) return;   // a rebuild between mousedown and mouseup drops the click; sig stays stale so the next poll repaints
   _boardSig=sig;
   const needsYou=it=>{
-    if(it.needs_human) return NEEDS_LABEL[it.needs_human]||"needs review";
+    if(it.needs_human) return NEEDS_LABEL[it.needs_human]||"needs a look";
     // A repo-mode run that opened a draft PR is DONE — the PR is the deliverable and its review
     // happens on GitHub, so a failed automated verify is advisory, not an Otto hold (it shows a
     // soft "unverified" badge in Finished instead). Only an unverified run with no PR to catch a
-    // bad result lands in "Needs review".
+    // bad result lands in "Needs a look".
     if(it.status==="COMPLETED" && it.verified===false && !it.pr) return "unverified";
     if(it.status!=="COMPLETED" && it.status!=="RUNNING") return "run failed";
     return null;
@@ -153,7 +155,7 @@ async function loadBoard(silent){
     // link is dropped and a chip says where the card is coming from instead of leaving a dead one.
     const link=(data.ui&&!it.archived)?`${data.ui}/namespaces/default/workflows/${encodeURIComponent(it.id)}/${encodeURIComponent(it.run_id)}/history`:null;
     const archived=it.archived?`<span class="bchip" title="Temporal no longer holds this run's history \u2014 the card is served from Otto's own board archive, kept for the retention window in Admin \u2192 Runtime settings">archived</span>`:'';
-    // verified===false is either a "Needs review" card (it._needs → its own ⚠ badge) or a
+    // verified===false is either a "Needs a look" card (it._needs → its own ⚠ badge) or a
     // done-with-PR card (the `advisory` link below) — so `sub` stays a plain "done" here.
     const sub=it.phase || (it.status==="COMPLETED"?(it.verified===true?"done · verified":"done"):it.status.toLowerCase());
     // in flight RIGHT NOW — RUNNING but not parked at the gate and not held for a human.
@@ -192,7 +194,7 @@ async function loadBoard(silent){
     const stage=(it.status==="RUNNING"&&it.stage)
       ?`<span class="bchip stage s-${esc(it.stage.toLowerCase())}" title="${esc(STAGE_HELP[it.stage]||'current pipeline stage')}">${esc(it.stage.toLowerCase())}</span>`:'';
     const hint=it._needs?NEEDS_HINT[it._needs]:null;
-    const needs=it._needs?`<span class="bchip warn" title="${esc(hint||'this run needs review')}">&#9888; ${esc(it._needs)}</span>`:'';
+    const needs=it._needs?`<span class="bchip warn" title="${esc(hint||'this run needs a look')}">&#9888; ${esc(it._needs)}</span>`:'';
     // A completed repo-mode run that opened a draft PR but didn't pass automated verify is DONE
     // (not held) — show a soft advisory so the human knows to review the PR extra carefully.
     const advisory=(!it._needs && it.status==="COMPLETED" && it.verified===false && it.pr)
@@ -206,7 +208,12 @@ async function loadBoard(silent){
     const truncated=(it.outcome||"").endsWith("…");
     const statusCls=it.verified===true?'ok':(failed?'bad':(it._needs?'warn':''));
     const chips=[needs,advisory,stage,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',isSub?'<span class="bchip">sub-task</span>':'',inplace,archived].filter(Boolean).join('');
-    return `<div class="bcard ${failed?'failed':''}" data-run="${esc(it.id)}">
+    // A tone per column for the card's left rail, and `fresh` only on a card this tab has not
+    // painted before: the board REBUILDS on every change, so an entrance on every card would
+    // replay the whole board each time one run moved.
+    const tone=it._needs?'t-needs':askApprove||askClarify?'t-wait':live?'t-live':it.verified===true?'t-ok':'t-done';
+    const fresh=BOARD_SEEN.size&&!BOARD_SEEN.has(it.id)?' fresh':'';
+    return `<div class="bcard ${tone}${fresh} ${failed?'failed':''}" data-run="${esc(it.id)}">
       <div class="btop"><span class="bcap">${esc(it.cap||'—')}</span>${risk}</div>
       <div class="bstatus${live?' live':''}"><span class="bdot ${statusCls}"></span>${esc(sub)}${live?'<span class="bell"><i>.</i><i>.</i><i>.</i></span>':''}</div>
       <div class="bchips">${chips}</div>
@@ -221,9 +228,12 @@ async function loadBoard(silent){
       <div class="bfoot"><span class="bwhen" title="${esc(it.end?`finished ${it.end} \u00b7 started ${it.start||'?'}`:`started ${it.start||'?'}`)}">${esc(shortWhen(it.end||it.start))}</span><a href="#" class="bdebug" data-debug="${esc(it.id)}" title="attempts, verify critiques, transcript, failure reason">🔍 Debug</a>${it.chat_key?`<a href="#" data-openchat="${esc(it.chat_key)}" title="open this run's conversation">Chat</a>`:''}${link?`<a href="${link}" target="_blank" rel="noopener">Temporal ↗</a>`:''}</div>
     </div>`;
   };
-  const col=(title,items,cls,tip)=>`<div class="bcol${items.length?'':' empty'}">
-    <div class="bcolhead ${cls}" title="${tip}">${title} <span>${items.length}</span></div>
-    ${items.map(card).join("") || '<p class="memempty">none</p>'}</div>`;
+  // An empty column says what its emptiness MEANS: nothing waiting on you is good news, and a
+  // bare "none" read the same in all four.
+  const EMPTY={wait:"nothing waiting on you", run:"nothing running", needs:"all clear", done:"nothing finished yet"};
+  const col=(title,items,cls,tip)=>`<div class="bcol bc-${cls}${items.length?'':' empty'}">
+    <div class="bcolhead ${cls}" title="${tip}">${title} <span class="bcount">${items.length}</span></div>
+    ${items.map(card).join("") || `<p class="memempty bempty">${EMPTY[cls]||"none"}</p>`}</div>`;
   el.innerHTML=`
     <div class="phead"><h1>Swarm board</h1>
       <p class="sub">Live Temporal runs, refreshed automatically.</p>
@@ -231,9 +241,11 @@ async function loadBoard(silent){
     <div class="board">
       ${col("Awaiting you",cols.waiting,"wait","paused mid-flight — approve, deny, or answer the clarification")}
       ${col("Running",cols.running,"run","in flight now")}
-      ${col("Needs review",cols.needs,"wait","finished or died needing a look — retry, accept, or dismiss")}
+      ${col("Needs a look",cols.needs,"needs","finished or died needing a look — retry, accept, or dismiss")}
       ${col("Finished",cols.done,"done","done, with each card's verify verdict")}
     </div>`;
+  // Seeded on the first paint (so opening the tab animates nothing), then grows with each card.
+  (data.items||[]).forEach(it=>BOARD_SEEN.add(it.id));
   loadBoardHealth();
   el.querySelectorAll("[data-plan]").forEach(x=>x.addEventListener("click",e=>{ e.preventDefault(); openPlanModal(byId[x.dataset.plan]); }));
   el.querySelectorAll("[data-approve]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.approve,true,b.dataset.rev)));
@@ -357,7 +369,7 @@ async function boardClarify(id, btn){
   catch(e){ btn.disabled=false; btn.textContent="Send"; if(input) input.disabled=false; toast("Couldn't send the answer: "+e.message); return; }
   loadBoard(true);   // repaint: the run leaves "Awaiting your input" and resumes under Running
 }
-/* "Needs review" card actions (#116): a dead/unverified run has no other way to act on it from
+/* "Needs a look" card actions (#116): a dead/unverified run has no other way to act on it from
    Otto itself — Retry re-submits the same request as a brand-new run (fresh routing,
    verification, and approval gate); Dismiss just hides the card (the underlying workflow +
    audit trail are untouched). */

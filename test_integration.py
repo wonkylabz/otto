@@ -1276,6 +1276,21 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(p["approval"], "auto")             # rule's auto_approve → auto
         self.assertEqual(p["cap"]["name"], "demo-write")    # pinned cap resolved from registry…
         self.assertEqual(p["cap"]["risk"], "write")         # …with trusted risk (not from the rule)
+        # Its own Chat thread, keyed on its own run id — not one shared per rule, and not none.
+        self.assertEqual(p["chat_key"], self.started[0]["id"])
+        self.assertEqual(p["chat_labels"], ["event"])
+
+    def test_insights_route_serves_the_windowed_report_with_live_health(self):
+        """The Audit tab's health report. A bad `days` falls back to 7 rather than 500ing, and
+        the live half (model health, the pause) rides beside the trail-derived half."""
+        st, r = _get(self.base, "/api/insights?days=30")
+        self.assertEqual(st, 200)
+        self.assertEqual(r["window"]["days"], 30)
+        for key in ("now", "prev", "attention", "fail_sources", "tiers", "stages", "changes"):
+            self.assertIn(key, r)
+        self.assertIn("estop", r["health"])
+        st, r = _get(self.base, "/api/insights?days=;drop")
+        self.assertEqual((st, r["window"]["days"]), (200, 7))
 
     @unittest.skipUnless(_HAS_TEMPORAL, "event ingress needs TEMPORAL_OK")
     def test_event_without_a_timestamp_is_refused(self):
@@ -1804,7 +1819,7 @@ class NeedsYouActionsTests(unittest.TestCase):
 
     def test_retry_endpoint_dismisses_the_source_card(self):
         # Retrying IS acknowledging the card: the endpoint must dismiss the source run so it
-        # leaves "Needs review" — a card lingering after the click read as "did that work?".
+        # leaves "Needs a look" — a card lingering after the click read as "did that work?".
         engine.record_terminal("wf-4", "do it again", {"kind": "skill", "name": "demo-write"},
                                "workflow_error")
         started = []
@@ -2914,6 +2929,39 @@ class WorkflowUnattendedTests(unittest.IsolatedAsyncioTestCase):
         # The judge is told the run is unattended (dead-end questions must FAIL verify).
         self.assertEqual(self.verify_unattended, [True])
 
+    async def test_each_job_firing_opens_its_own_chat(self):
+        """A job used to append every firing to ONE `chat-<rid>` thread, so its sidebar entry was
+        an ever-growing log. `chat_per_run` makes the workflow suffix the prefix with its OWN id,
+        and the status it reports (what a retry reattaches by) is that per-run key."""
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, open_chat, record_attempt,
+                                record_chat, record_skip, route_request, snapshot_settings,
+                                run_capability, resolve_pr_target, check_grounding,
+                                verify_capability)
+        wids = ["sch-" + uuid.uuid4().hex[:8] for _ in range(2)]
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="chatq2", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request, run_capability,
+                                resolve_pr_target, check_grounding, verify_capability,
+                                record_attempt, record_skip, deliver_result, open_chat, record_chat],
+                    activity_executor=ex,
+                ):
+                    for wid in wids:
+                        res = await env.client.execute_workflow(
+                            OttoWorkflow.run,
+                            {"request": "check builds", "scheduled": True,
+                             "cap": {"name": "evt-write", "kind": "skill", "risk": "write"},
+                             "auto_approve": True, "chat_key": "chat-sched1",
+                             "chat_per_run": True, "chat_title": "check builds",
+                             "chat_labels": ["scheduled-job"]},
+                            id=wid, task_queue="chatq2")
+                        self.assertEqual(res.get("chat_key"), f"chat-sched1-{wid}")
+        self.assertEqual([o[0][0] for o in self.opened], [f"chat-sched1-{w}" for w in wids])
+        self.assertEqual([r[0][0] for r in self.recorded], [f"chat-sched1-{w}" for w in wids])
+
     async def test_a_workflow_error_tells_the_asker(self):
         """Issue #98: the catch-all in `run()` was the ONE terminal path that never delivered.
         `finalize_terminal` writes the durable row and pushes ntfy to the OWNER, and its only
@@ -3672,6 +3720,13 @@ class AuditViewFilterTests(unittest.TestCase):
         self.assertEqual(both["count"], 1)
         # the dropdown list stays unfiltered so narrowing doesn't hide options
         self.assertEqual(both["capabilities"], ["agent:beta", "skill:alpha"])
+
+    def test_paging_slices_entries_but_totals_cover_the_whole_view(self):
+        page = self.server._audit_view(offset=1, limit=1)
+        self.assertEqual([e["at"] for e in page["entries"]], ["2026-07-01T11:00:00"])
+        self.assertEqual((page["count"], page["total_cost"]), (3, 3))
+        self.assertEqual(self.server._audit_view(offset=5, limit=2)["entries"], [])
+        self.assertEqual(len(self.server._audit_view(limit=0)["entries"]), 3)
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
@@ -7110,6 +7165,8 @@ class ScheduleReconcileTests(unittest.IsolatedAsyncioTestCase):
                                                    "cron": "0 9 * * *", "auto_approve": True}})
         self.assertIn("otto-bbb", fake.updated)
         self.assertEqual(fake.actions["otto-bbb"]["chat_key"], "chat-otto-bbb")
+        # A prefix, not one shared thread: every firing opens its own (workflow mints the suffix).
+        self.assertTrue(fake.actions["otto-bbb"]["chat_per_run"])
         self.assertEqual(fake.actions["otto-bbb"]["chat_labels"], ["scheduled-job"])
 
     async def test_reconcile_deletes_orphans(self):

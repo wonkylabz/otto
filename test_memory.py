@@ -1710,6 +1710,133 @@ class ScorecardTests(unittest.TestCase):
 
 
 
+class InsightsReportTests(unittest.TestCase):
+    """`insights.report`: the windowed health report the Audit tab, the skill and a weekly runbook
+    read instead of hand-written SQL. Pure over a fixture trail + ledger."""
+    NOW = __import__("datetime").datetime(2026, 10, 23, 12, 0, 0)
+
+    def _row(self, at, wid, **k):
+        return {"at": at, "workflow": wid, "capability": "skill:x", **k}
+
+    def _trail(self):
+        r = self._row
+        return [
+            # previous window (Oct 9-16): two clean judged runs
+            r("2026-10-10T10:00:00", "p1", attempt=1, verified=True, outcome="ran", cost_usd=1.0),
+            r("2026-10-11T10:00:00", "p2", attempt=1, verified=True, outcome="ran", cost_usd=1.0),
+            # this window: one pass, one exhausted ladder a human then accepted, one kill
+            r("2026-10-20T10:00:00", "w1", attempt=1, verified=True, outcome="ran",
+              cost_usd=2.0, duration_s=30.0, verdict_source="judge"),
+            r("2026-10-21T10:00:00", "w2", attempt=1, verified=False, outcome="ran",
+              verdict_source="judge", verdict_model="claude-haiku-5-5", duration_s=50.0),
+            r("2026-10-21T10:05:00", "w2", outcome="needs_human", reason="verify_exhausted"),
+            r("2026-10-21T10:06:00", "w2", outcome="needs_human", reason="verify_exhausted"),
+            r("2026-10-21T11:00:00", "w2", outcome="human_accepted"),
+            r("2026-10-22T10:00:00", "w3", attempt=1, verified=False, outcome="ran",
+              verdict_source="supervisor", fallback_from="local-q", fallback_reason="unreachable"),
+            # outside both windows: ignored
+            r("2026-09-01T10:00:00", "old", attempt=1, verified=False, outcome="ran"),
+        ]
+
+    def _report(self, calls=()):
+        import insights
+        return insights.report(self._trail(), calls, days=7, now=self.NOW)
+
+    def test_windows_split_on_the_trails_own_timestamps(self):
+        r = self._report()
+        self.assertEqual((r["now"]["runs"], r["prev"]["runs"]), (3, 2))
+        self.assertEqual(r["prev"]["cost_usd"], 2.0)
+
+    def test_pass_rate_counts_judge_verdicts_only(self):
+        # w3's failure was a supervisor's, not a judge's — the same predicate scorecard uses.
+        r = self._report()
+        self.assertEqual(r["now"]["judged"], 2)
+        self.assertEqual(r["now"]["pass_rate"], 0.5)
+        self.assertEqual(r["prev"]["pass_rate"], 1.0)
+
+    def test_attention_is_grouped_by_outcome_and_reason_against_the_previous_window(self):
+        r = self._report()
+        rows = {(a["outcome"], a["reason"]): (a["count"], a["prev"]) for a in r["attention"]}
+        # w2 wrote verify_exhausted twice: ONE run, as on the KPI and the day chart.
+        self.assertEqual(rows[("needs_human", "verify_exhausted")], (1, 0))
+        self.assertEqual(rows[("human_accepted", "")], (1, 0))
+        self.assertNotIn(("ran", ""), rows)          # routine work is not "attention"
+
+    def test_adverse_verdicts_name_who_reached_them(self):
+        r = self._report()
+        got = {(f["source"], f["model"]): f["count"] for f in r["fail_sources"]}
+        self.assertEqual(got, {("judge", "claude-haiku-5-5"): 1, ("supervisor", ""): 1})
+        self.assertEqual(r["fallbacks"], [{"reason": "unreachable", "count": 1}])
+
+    def test_routine_supervision_is_not_attention_and_attention_counts_runs(self):
+        import insights
+        r = self._row
+        trail = self._trail() + [
+            # SHADOW writes one row per supervised attempt; only a would-retry one is a signal.
+            r("2026-10-22T12:00:00", "w4", attempt=1, outcome="supervisor_shadow"),
+            r("2026-10-22T12:01:00", "w5", attempt=1, outcome="supervisor_shadow",
+              reason="supervisor_would_retry")]
+        rep = insights.report(trail, days=7, now=self.NOW)
+        keys = {(a["outcome"], a["reason"]) for a in rep["attention"]}
+        self.assertNotIn(("supervisor_shadow", ""), keys)
+        self.assertIn(("supervisor_shadow", "supervisor_would_retry"), keys)
+        # w2's three rows are ONE run, matching the day chart: w2 + w5.
+        self.assertEqual(rep["now"]["attention"], 2)
+
+    def test_an_mcp_registry_change_is_not_a_run(self):
+        import insights
+        rows = self._trail() + [self._row("2026-10-22T09:00:00", "wf-ab12cd-0001",
+                                          capability="admin:mcp-add", outcome="ran")]
+        self.assertEqual(insights.report(rows, days=7, now=self.NOW)["now"]["runs"], 3)
+
+    def test_a_legacy_adverse_row_is_attributed_like_scorecard_does(self):
+        import insights
+        r = self._row
+        trail = [
+            r("2026-10-22T10:00:00", "k1", attempt=1, verified=False, outcome="ran"),
+            r("2026-10-22T10:00:01", "k1", attempt=1, outcome="supervisor_kill"),
+            r("2026-10-22T11:00:00", "web-x-rev1", attempt=1, verified=False, outcome="ran"),
+            r("2026-10-22T12:00:00", "j1", attempt=1, verified=False, outcome="ran")]
+        got = {f["source"] for f in insights.report(trail, days=7, now=self.NOW)["fail_sources"]}
+        self.assertEqual(got, {"supervisor", "post_pr", "judge"})
+
+    def test_tier_calls_are_windowed_and_their_decisions_counted(self):
+        calls = [{"at": "2026-10-22T09:00:00", "tier": "routing", "ok": 1, "fell_back": 0,
+                  "duration_ms": 900, "decision": "assistant"},
+                 {"at": "2026-10-22T09:01:00", "tier": "routing", "ok": 0, "fell_back": 1,
+                  "duration_ms": 100, "decision": "assistant"},
+                 {"at": "2026-09-01T09:00:00", "tier": "routing", "ok": 1, "decision": "worker"}]
+        [t] = self._report(calls)["tiers"]
+        self.assertEqual((t["calls"], t["failed"], t["fell_back"]), (2, 1, 1))
+        self.assertEqual(t["decisions"], [{"decision": "assistant", "count": 2}])
+        self.assertEqual(t["p50_ms"], 100)           # nearest-rank, like stage_timings
+
+    def test_days_cover_the_whole_window_and_attention_is_a_share_of_runs(self):
+        days = {d["day"]: d for d in self._report()["by_day"]}
+        self.assertEqual(len(days), 8)                       # Oct 16..23 inclusive, quiet days too
+        self.assertEqual(days["2026-10-19"]["runs"], 0)
+        # w2 wrote three non-routine rows on the 21st: ONE run needing attention, not three.
+        self.assertEqual((days["2026-10-21"]["runs"], days["2026-10-21"]["attention"]), (1, 1))
+
+    def test_changes_report_movement_and_stay_quiet_on_noise(self):
+        import insights
+        r = self._report()
+        # One run writing a terminal row twice must not cross the noise floor on its own.
+        self.assertFalse(any("verify_exhausted" in c for c in r["changes"]))
+        # Identical windows move nothing: what `--changes-only` stays silent on.
+        same = [{**e, "at": e["at"].replace("2026-10-1", "2026-10-2", 1)} for e in self._trail()
+                if e["at"].startswith("2026-10-1")]
+        quiet = insights.report(self._trail()[:2] + same, days=7, now=self.NOW)
+        self.assertEqual(quiet["changes"], [])
+
+    def test_text_render_has_no_table_syntax(self):
+        # It is posted to Slack, which renders no tables (routing-capabilities.md, stock caps).
+        import insights
+        text = insights.render_text(self._report())
+        self.assertIn("judged pass rate 50%", text)
+        self.assertNotIn("|", text)
+
+
 class StageTimingTests(unittest.TestCase):
     """Per-stage run timings, persisted on the audit row (issue #129).
 

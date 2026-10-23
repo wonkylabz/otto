@@ -96,13 +96,16 @@ def _args(rid, rb, values=None, unattended=True):
     cwd (activities._cap reconstructs it), so no repo/clone is needed. Per-STEP caps are resolved
     the same way inside execute_plan.
 
-    `chat_key` ties every firing of this runbook to ONE Chat sidebar thread (created on the first
-    run, appended thereafter)."""
+    `chat_key` is the runbook's chat PREFIX, and `chat_per_run` makes every firing open its OWN
+    thread under it (`chat-<rid>-<run>`, minted by the workflow from its own id — a schedule's args
+    are frozen, so the key cannot be minted here). One thread appended forever made a job's
+    sidebar entry an ever-growing log where last week's answer sat above today's."""
     r = runbooks.render(rb, values)
     args = {"request": r["request"], "scheduled": unattended,
             "unattended": unattended,
             "auto_approve": bool(rb.get("auto_approve")),
-            "chat_key": f"chat-{rid}", "chat_title": (rb.get("name") or r["request"])[:80],
+            "chat_key": f"chat-{rid}", "chat_per_run": True,
+            "chat_title": (rb.get("name") or r["request"])[:80],
             # One label, not both: "scheduled-job" is what every existing scheduled chat is
             # already tagged with and what the sidebar filters on — re-tagging them all as
             # runbooks would churn history to say something the cron field already says.

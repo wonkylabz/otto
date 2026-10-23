@@ -5554,11 +5554,33 @@ class MascotStateTests(unittest.TestCase):
         comp = self._component()
         block = comp[comp.index("@keyframes otto-float-aside"):]
         block = block[:block.index("} }") + 3]
-        self.assertIn("translate(-44px, 0)", block, "the step-aside offset left the float keyframes")
+        self.assertIn("translate(-50px, 0)", block, "the step-aside offset left the float keyframes")
         self.assertIn("-6px", block, "the float itself is gone from the aside keyframes")
         rule = re.search(r':host\(\[state="planning"\]\) \.figure \{ animation: ([\w-]+)', comp)
         self.assertEqual(rule.group(1), "otto-float-aside",
                          "planning no longer drives .figure through the combined keyframes")
+
+    def test_the_whiteboard_is_landscape(self):
+        """A plan is a flow read left to right, and the portrait sheet beside him read as a
+        door. Pinned on the board's own rect so a redraw can't quietly turn it back."""
+        comp = self._component()
+        board = comp[comp.index('<g class="board">'):]
+        m = re.search(r'<rect x="[\d.]+" y="[\d.]+" width="([\d.]+)" height="([\d.]+)"', board)
+        self.assertGreater(float(m.group(1)), float(m.group(2)), "the whiteboard is portrait again")
+
+    def test_gestures_never_write_his_state(self):
+        """wave()/hearts() are one-offs on the Web Animations API. A gesture that set `state`
+        would be a second writer beside applyMood (`test_applymood_is_the_only_writer`), and a
+        wave from mid-plan would drop the marker."""
+        comp = self._component()
+        for name in ("wave()", "hearts()"):
+            body = comp[comp.index(f"    {name} {{"):]
+            body = body[:body.index("\n    }\n")]
+            self.assertNotIn("this.state =", body, f"{name} writes the state")
+            self.assertNotIn("setAttribute", body, f"{name} writes an attribute")
+        wave = comp[comp.index("    wave() {"):]
+        self.assertIn("['idle', 'sleeping'].includes(this.state)", wave[:300],
+                      "a wave can now interrupt a working pose")
 
     def test_the_board_fills_in_one_mark_at_a_time(self):
         """Every mark on the same delay appears as one flash, which reads as a slide, not as
@@ -7551,7 +7573,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # injected by JS appeared only after boot's awaits and was invisible to every grep guard.
     # -> 14_510: the Setup button drops the `.estop` class (its phone-width auto margin scattered
     # the header row); onboarding.css styles it on its own.
-    INDEX_MAX = 14_510
+    # -> 14_652 for three stylesheet tags: board.css, insights.css, motion.css. app.css is at
+    # its own ratchet with no seam left, so new rules arrive as new files, tagged here.
+    INDEX_MAX = 14_652
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:

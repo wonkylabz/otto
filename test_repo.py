@@ -1976,6 +1976,22 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(len([c for c in chats.list_summaries() if not c["pinned"]]),
                          chats.MAX_CHATS)
 
+    def test_job_and_event_threads_never_evict_a_persons_chat(self):
+        """A job opens a thread per firing, so a shared cap let a 15-minute cron delete every
+        unpinned conversation in about a day. They are trimmed in their own pool."""
+        chats.save({"id": "mine", "title": "a person's chat", "messages": []})
+        chats.save({"id": "back", "title": "retried", "labels": ["retry"], "messages": []})
+        chats.save({"id": "weekly", "title": "weekly report", "labels": ["scheduled-job"],
+                    "messages": []})
+        for i in range(chats.MAX_RUN_CHATS + 12):
+            chats.save({"id": f"j{i}", "title": "every 15m", "labels": ["scheduled-job"], "messages": []})
+            chats.save({"id": f"t{i}", "title": f"alert {i}", "labels": ["slack-trigger"], "messages": []})
+        for cid in ("mine", "back", "weekly"):        # nor does one busy job evict another job
+            self.assertIsNotNone(chats.get(cid), cid)
+        busy = [c for c in chats.list_summaries() if c["title"] == "every 15m"]
+        trig = [c for c in chats.list_summaries() if "slack-trigger" in c["labels"]]
+        self.assertEqual((len(busy), len(trig)), (chats.MAX_RUN_CHATS, chats.MAX_RUN_CHATS))
+
     def test_labels_persist_across_upsert(self):
         chats.save({"id": "L", "title": "t", "labels": ["scheduled-job"], "messages": []})
         self.assertEqual(chats.get("L")["labels"], ["scheduled-job"])

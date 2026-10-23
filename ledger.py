@@ -92,9 +92,12 @@ def decide(row_id, value):
         pass
 
 
-def calls(wid=None, tier=None, limit=200):
-    """Newest-first rows as dicts, optionally filtered by run and/or tier."""
+def calls(wid=None, tier=None, limit=200, since=None):
+    """Newest-first rows as dicts, optionally filtered by run, tier and/or `at >= since`."""
     where, args = [], []
+    if since:
+        where.append("at >= ?")
+        args.append(since)
     if wid:
         where.append("wid = ?")
         args.append(wid)
@@ -108,6 +111,16 @@ def calls(wid=None, tier=None, limit=200):
             return [dict(r) for r in conn.execute(sql, (*args, int(limit))).fetchall()]
     except sqlite3.Error:
         return []
+
+
+def oldest_at():
+    """When the oldest row still held was written — how far back the ledger reaches."""
+    try:
+        with _conn() as conn:
+            row = conn.execute("SELECT MIN(at) FROM tier_calls").fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
 
 
 def gc(ttl_h=None):
