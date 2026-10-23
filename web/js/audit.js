@@ -9,7 +9,7 @@ const auDur=s=>s==null?"":s<60?s.toFixed(1)+"s":(s/60).toFixed(1)+"m";
 // a decline) and carries Otto's own internal vocabulary (issue: "not sure what this is for") — map
 // the known codes to plain English; anything unmapped (a review_/qa_ state, or a future code)
 // falls back to the raw string rather than hiding it.
-const AU_REASON_LABELS={workflow_error:"workflow crashed",delivery_failed:"delivery failed",
+const AU_REASON_LABELS={in_place_edit:"edited a live checkout in place",workflow_error:"workflow crashed",delivery_failed:"delivery failed",
   budget_exceeded:"budget exceeded",verify_exhausted:"verify ladder exhausted",
   published_unverified:"failed after publishing, not retried",
   local_fallback_disabled:"local model failed, Claude fallback is off",

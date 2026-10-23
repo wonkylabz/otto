@@ -24,10 +24,23 @@ import storage
 
 _DB = config.DB_PATH
 MAX_CHATS = 100        # keep the most-recent N UNPINNED chats; older ones are dropped
-# Threads an unattended ingress opens get their OWN pool: a job or event opens one per run, so
-# a shared cap let a 15-minute cron evict every conversation the operator had in about a day.
-MAX_RUN_CHATS = 100
-RUN_LABELS = {"scheduled-job", "runbook", "event"}
+# Threads an ingress opens are trimmed apart from a person's own: a job, event or Slack trigger
+# opens one per run, so a shared cap let a 15-minute cron evict every conversation the operator
+# had in about a day. A web chat carries no label (a retry reattaching to one carries "retry"),
+# so ANY other label marks an ingress thread — no allowlist for the next ingress to miss.
+MAX_RUN_CHATS = 50
+HUMAN_LABELS = {"retry"}
+# A job's threads are pooled per JOB (its title is the runbook name), so one busy cron cannot
+# evict another job's history; every other ingress is pooled per label.
+_PER_TITLE = {"scheduled-job", "runbook"}
+
+
+def _pool(labels, title):
+    """None for a person's chat, else the key of the ingress pool it is trimmed in."""
+    ingress = [x for x in (labels or []) if x not in HUMAN_LABELS]
+    if not ingress:
+        return None
+    return (ingress[0], title if ingress[0] in _PER_TITLE else "")
 MAX_MESSAGES = 400     # per-chat safety cap
 
 
@@ -244,14 +257,14 @@ def _trim_chats(conn):
     """Cap the store: keep the MAX_CHATS most-recent UNPINNED chats and drop the rest. A pin
     is the user saying "don't lose this", so a pinned chat is exempt from the cap and does
     not consume a slot — the trim ranks by recency alone, which is the sidebar's order
-    within the unpinned group it is allowed to touch. Job/event threads (`RUN_LABELS`) are
-    capped in their own pool, so they never evict a person's conversations."""
-    kept, stale = {True: 0, False: 0}, []
-    for r in conn.execute("SELECT id, labels FROM chats WHERE pinned = 0 "
+    within the unpinned group it is allowed to touch. Ingress threads (`_pool`) are
+    capped in pools of their own, so they never evict a person's conversations or each other."""
+    kept, stale = {}, []
+    for r in conn.execute("SELECT id, title, labels FROM chats WHERE pinned = 0 "
                           "ORDER BY updated DESC, seq DESC"):
-        run = bool(RUN_LABELS & set(_decode(r["labels"]) or []))
-        if kept[run] < (MAX_RUN_CHATS if run else MAX_CHATS):
-            kept[run] += 1
+        pool = _pool(_decode(r["labels"]), r["title"])
+        if kept.get(pool, 0) < (MAX_CHATS if pool is None else MAX_RUN_CHATS):
+            kept[pool] = kept.get(pool, 0) + 1
         else:
             stale.append(r["id"])
     if stale:

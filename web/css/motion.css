@@ -14,7 +14,7 @@
 
 /* The newest turn rises into place. The last two only: loading a long chat appends every
    message at once, and forty of them floating up together reads as the page jumping. */
-.msg:nth-last-child(-n+2) { animation: mo-rise .24s ease-out both; }
+div.msg:nth-last-child(-n+2) { animation: mo-rise .24s ease-out both; }  /* div only: Admin warnings use span.msg */
 
 /* A tab badge appearing pops, once — it is the only signal a run needs you from another tab. */
 .tabbadge:not([hidden]) { animation: mo-pop .36s cubic-bezier(.3,1.6,.5,1); }

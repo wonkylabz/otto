@@ -29,11 +29,23 @@ _ROUTINE = {"ran", "plan_preview"}
 _CONFIG_ROW = re.compile(r":mcp-[\w-]+$")
 
 
+# A post-PR round (`-rev1`, `-qa1`), a swarm part (`-s2`) and a delegated child (`-d1`) are
+# pieces of their parent's run: one repo-mode run with three review rounds is ONE run.
+_CHILD = re.compile(r"(?:-(?:rev|qa|s|d)\d+)+$")
+
+
+def _run_of(r):
+    wid = r.get("workflow")
+    return _CHILD.sub("", wid) if wid else f"?{id(r)}"
+
+
 def _needs_attention(r):
     """The ONE attention predicate. A shadow row is written for EVERY supervised attempt (SHADOW
     is the default mode), so only one whose supervisor would have retried is a signal; counting
     the rest made Attention track the attempt count."""
     o = r.get("outcome")
+    if r.get("in_place"):                 # a run edited a live checkout outside its workspace
+        return True
     if o in _ROUTINE:
         return False
     return o != "supervisor_shadow" or r.get("reason") == "supervisor_would_retry"
@@ -60,7 +72,7 @@ def _pct(vals, q):
 def _window_stats(rows):
     """The headline numbers for ONE window's rows."""
     killed = audit.killed_attempts(rows)
-    wids = {r.get("workflow") for r in rows if r.get("workflow")}
+    wids = {_run_of(r) for r in rows if r.get("workflow")}
     runs = {}
     for r in rows:
         if r.get("attempt") is not None and r.get("verified") is not None and audit.by_judge(r, killed):
@@ -73,10 +85,10 @@ def _window_stats(rows):
         "runs": len(wids), "judged": judged,
         "pass_rate": round(passed / judged, 3) if judged else None,
         # RUNS, like the day chart's, so the two figures named attention reconcile on screen.
-        "attention": len({r.get("workflow") or f"?{id(r)}" for r in rows if _needs_attention(r)}),
+        "attention": len({_run_of(r) for r in rows if _needs_attention(r)}),
         "cost_usd": round(sum((r.get("cost_usd") or 0) for r in rows), 4),
-        "fallbacks": len({r.get("workflow") or f"?{id(r)}" for r in rows if r.get("fallback_from")}),
-        "accepted": sum(1 for r in rows if r.get("outcome") == "human_accepted"),
+        "fallbacks": len({_run_of(r) for r in rows if r.get("fallback_from")}),
+        "accepted": len({_run_of(r) for r in rows if r.get("outcome") == "human_accepted"}),
         "attempt_p50_s": _pct(durs, 0.5), "attempt_p90_s": _pct(durs, 0.9),
     }
 
@@ -98,13 +110,15 @@ def _runs_by(rows, key):
     for r in rows:
         k = key(r)
         if k is not None:
-            out.setdefault(k, set()).add(r.get("workflow") or f"?{id(r)}")
+            out.setdefault(k, set()).add(_run_of(r))
     return {k: len(v) for k, v in out.items()}
 
 
 def _attention_key(r):
     if not _needs_attention(r):
         return None
+    if r.get("in_place"):
+        return ("in_place_edit", "")
     return (r.get("outcome") or "?", r.get("reason") or "")
 
 
@@ -158,7 +172,7 @@ def _by_day(rows, since_at, until_at):
         if not day:
             continue
         d = days.setdefault(day, {"runs": set(), "attention": set(), "cost_usd": 0.0})
-        wid = r.get("workflow") or f"?{id(r)}"
+        wid = _run_of(r)
         d["runs"].add(wid)
         if _needs_attention(r):
             d["attention"].add(wid)
