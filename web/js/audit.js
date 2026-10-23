@@ -190,9 +190,12 @@ function wireInsights(){
 // grows without bound on an install that never clears it (the trail is immutable).
 const AU_PAGE=50;
 let AUDIT_OFFSET=0;
-async function loadAudit(){
+async function loadAudit(paging){
   const el=document.getElementById("auditview");
-  el.innerHTML=`<p class="sub">loading…</p>`;
+  // Turning a page keeps the Health section that is already on screen: blanking the view
+  // re-rendered it, reset the scroll and, past the cache window, re-scanned the whole trail.
+  const health=paging?document.getElementById("au-health"):null;
+  if(!health) el.innerHTML=`<p class="sub">loading…</p>`;
   let data;
   const qs=new URLSearchParams();
   if(AUDIT_FILTER.wid) qs.set("wid",AUDIT_FILTER.wid);
@@ -323,10 +326,11 @@ async function loadAudit(){
   }); }
   el.querySelectorAll("[data-apage]").forEach(b=>b.addEventListener("click",async()=>{
     AUDIT_OFFSET=Math.max(0,AUDIT_OFFSET+(+b.dataset.apage)*AU_PAGE);
-    await loadAudit();
+    await loadAudit(true);
     const head=document.querySelector("#auditview .atrailhead"); if(head) head.scrollIntoView({block:"start"});
   }));
-  loadInsights();
+  const slot=el.querySelector("#au-health");
+  if(health && slot) slot.replaceWith(health); else loadInsights();
   el.querySelectorAll("tr.arec").forEach(r=>{
     const open=()=>openAuditDetail(data.entries[+r.dataset.i]);
     r.addEventListener("click",open);

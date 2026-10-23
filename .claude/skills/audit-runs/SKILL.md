@@ -62,7 +62,12 @@ in `audit_content` or the transcript says why.
 2. **Flag the interesting outcomes.** Not every `verified: false` is a bug — a repo-mode run with
    an open PR is advisory-only by design (`.claude/rules/repo-work.md`, "Terminal state").
    `outcome` values: `ran`, `plan_preview`, `denied`, `needs_human`, `human_accepted`,
-   `supervisor_kill`, `supervisor_shadow`, `supervisor_steer`. On a `needs_human` row, `reason`
+   `supervisor_kill`, `supervisor_shadow`, `supervisor_steer`. `denied` covers BOTH a human
+   declining the gate and an unattended write skipped because approval is off (`record_skip`); a
+   gate that expired is `needs_human`/`gate_timeout`. The workflow RESULT says `skipped`,
+   `declined` or `gate_timeout`, but the trail never does — query `denied`. A run that edited a
+   live checkout outside its workspace is a `guard:in-place-edit` row with `in_place: true`
+   (outcome `ran`). On a `needs_human` row, `reason`
    is the cause; the human-facing wording for each is `_NEEDS_HUMAN_BANNER` in `wf_runtime.py`:
    - `verify_exhausted` — every rung failed the judge, no PR to fall back on.
    - `published_unverified` — failed AFTER posting, so not retried (a retry posts twice).

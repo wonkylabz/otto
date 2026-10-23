@@ -34,6 +34,8 @@ inside an Otto run: every run is denied the API token by design (`api_auth.py`).
 
 ```bash
 TOKEN=$(cat data/.api/token)                     # created on first server start
+PORT=$(lsof -nP -a -iTCP -sTCP:LISTEN -p "$(pgrep -f 'server.py' | head -1)" 2>/dev/null \
+       | awk -F: 'NR>1{print $NF+0; exit}')   # the server takes the first FREE port from 8765
 PORT=${PORT:-8765}
 api() { curl -sS -H "X-Otto-Token: $TOKEN" -H 'Content-Type: application/json' \
           "http://localhost:$PORT$1" ${2:+-d "$2"}; }
