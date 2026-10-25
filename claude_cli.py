@@ -377,8 +377,19 @@ def published_posts(paths, *, repo_mode=False):
     call's own input. The judge needs it because it otherwise sees only the final report — a cap
     whose contract shapes the POST was failed for a report not repeating what the post carried.
     The transcript is scrubbed as written (`transcript_line`), so this carries no raw secret."""
-    return [{"target": label, "text": _publish_body(name, tool_input)}
-            for name, tool_input, label in _publish_calls(paths, repo_mode=repo_mode)]
+    calls = _publish_calls(paths, repo_mode=repo_mode)
+    out, total = [], 0
+    for i, (name, tool_input, label) in enumerate(calls):
+        if total >= _POST_BODY_CHARS:
+            # The judge reads far less than this; a cap posting per item must not ride every
+            # rung's activity payload toward Temporal's size limit. Counted, never dropped silently.
+            out.append({"target": f"{len(calls) - i} more publish(es)",
+                        "text": "[NOT shown: past the content budget]"})
+            break
+        text = _publish_body(name, tool_input)
+        total += len(text)
+        out.append({"target": label, "text": text})
+    return out
 
 
 def _drain(stream, sink):

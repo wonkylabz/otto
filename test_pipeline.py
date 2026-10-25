@@ -4429,6 +4429,16 @@ class PublishedContentJudgeTests(unittest.TestCase):
         # Field-agnostic: whatever the server calls its body fields, they all reach the judge.
         self.assertEqual(posts[1]["text"], 'title: T\nlabels: ["bug"]')
 
+    def test_many_posts_are_bounded_in_total_and_the_rest_counted(self):
+        evs = []
+        for i in range(10):
+            evs += self._call(self.SEND, {"channel": "C", "text": "z" * 9_000}, f"t{i}")
+        posts = claude_cli.published_posts([self._transcript(evs)])
+        self.assertEqual(len(posts), 4)
+        self.assertEqual(posts[-1]["target"], "7 more publish(es)")
+        self.assertEqual(len(claude_cli.published_actions([self._transcript(evs)])), 10,
+                         "the ladder's stop still sees every publish")
+
     def test_the_judge_is_told_what_was_published_and_to_judge_post_rules_there(self):
         engine.verify("post 3 picks", self.cap, "Posted 3 picks.",
                       published_posts=[{"target": "#movies", "text": "IMDb: tt0000001"}])
