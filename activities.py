@@ -669,6 +669,8 @@ def run_capability(payload: dict) -> dict:
             "tools_failed": att.get("tools_failed") or [],
             # What the attempt published — whitelisted here or the workflow ladder retries it.
             "published": att.get("published") or [],
+            # ...and what each publish SENT, for the judge — whitelisted for the same reason.
+            "published_posts": att.get("published_posts") or [],
             # Corrections the mid-run supervisor delivered into this attempt. Listed HERE for the
             # same reason as tools_used — this dict is a whitelist, and the verify activity below
             # cannot judge an amended request it never hears about.
@@ -732,7 +734,8 @@ def verify_capability(payload: dict) -> dict:
                          attachments=payload.get("attachments"),
                          # The fast lane's whole grant — the judge must not read the risk floor.
                          fast_lane=payload.get("fast_lane"),
-                         backend=payload.get("backend"))
+                         backend=payload.get("backend"),
+                         published_posts=payload.get("published_posts"))
 
 
 # The two post-PR loops are one parameterised body in `wf_postpr._LOOPS`; this is the same seam,

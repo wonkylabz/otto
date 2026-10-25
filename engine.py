@@ -742,6 +742,10 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             # A retry would repeat it, so the ladder stops instead (ladder.next_step).
             "published": ([] if resume_session else
                           _published(transcript_path, cwd)),
+            # The same publishes WITH what they sent: the judge reads only the final report, so
+            # a contract shaping the post is otherwise judged against a summary of it.
+            "published_posts": ([] if resume_session else
+                                _published(transcript_path, cwd, posts=True)),
             "is_error": bool(out.get("is_error")), "supervision": supervision,
             # What the supervisor actually told the agent mid-run. Lifted out of `supervision`
             # because it is not observability: the verifier MUST see it, or it scores the output
@@ -766,14 +770,16 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
                             and gateway.model_kind(exec_entry) == "local")}
 
 
-def _published(transcript_path, cwd):
+def _published(transcript_path, cwd, posts=False):
     """`claude_cli.published_actions` over this attempt's transcript AND any walled pass kept
-    beside it — a local pass that posted before hitting its wall posted all the same."""
+    beside it — a local pass that posted before hitting its wall posted all the same.
+    `posts=True`: `published_posts` instead, the same publishes with their content."""
     paths = [transcript_path] + sorted(glob.glob(glob.escape(transcript_path[:-len(".jsonl")])
                                                  + "-walled-*.jsonl"))
     ws = os.path.realpath(workspace.WORKSPACES) + os.sep
     repo_mode = bool(cwd) and os.path.realpath(cwd).startswith(ws)
-    return claude_cli.published_actions(paths, repo_mode=repo_mode)
+    return (claude_cli.published_posts if posts else claude_cli.published_actions)(
+        paths, repo_mode=repo_mode)
 
 
 def _strict_stop_attempt(wid, attempt, exc, started):
@@ -789,7 +795,7 @@ def _strict_stop_attempt(wid, attempt, exc, started):
     return {"workflow": wid, "result": exc.message, "cost": 0,
             "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
             "session_id": None, "model": exc.model, "attempt": attempt, "is_error": True,
-            "supervision": None, "tools_used": [], "tools_failed": [], "published": [], "duration_s": time.monotonic() - started, "backend": "local",
+            "supervision": None, "tools_used": [], "tools_failed": [], "published": [], "published_posts": [], "duration_s": time.monotonic() - started, "backend": "local",
             "local_strict_stop": True, "auth_stop": False, "fallback_from": None,
             "fallback_reason": None, "fallback_detail": None,
             "local_incapable": False, "write_local": False}
@@ -877,7 +883,8 @@ def _ladder_core(request, cap, wid, *, recall, project, remember=True, write_esc
                                tools_used=att.get("tools_used"),
                                tools_failed=att.get("tools_failed"),
                                # Mirrored in OttoWorkflow._verify_ladder.
-                               steers=att.get("steers"), backend=att.get("backend")))
+                               steers=att.get("steers"), backend=att.get("backend"),
+                               published_posts=att.get("published_posts")))
         record_attempt(wid, request, cap, result, att["cost"], attempt, verdict,
                        remember=remember and (verdict["passed"] or final),
                        tokens=att.get("tokens"), model=att.get("model"), project=project,

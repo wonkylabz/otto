@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run that posts something is judged on what it posted.** A capability whose instructions
+  set the format of a Slack message, comment or ticket was failed when its closing summary
+  didn't repeat that format, even though the posts met it. Because a run that has already
+  posted is never retried, these runs landed in Needs you. **Restart the worker after upgrading.**
+
 ## [0.7.0] - 2026-10-23
 
 ### Added

@@ -4382,6 +4382,91 @@ class PublishedAttemptTests(unittest.TestCase):
         self.assertEqual(out["needs_human"], {"reason": ladder.PUBLISHED_UNVERIFIED})
 
 
+class PublishedContentJudgeTests(unittest.TestCase):
+    """The judge reads only the final report, so a contract shaping the POST was enforced against
+    the report: `runbook-rb-1af9985a-62a01e` posted three messages exactly to its cap's format
+    (IMDb line, a 👍 title per pick), was FAILed for a summary not repeating them, and — published,
+    so never retried — landed on a human who accepted it. The judge now sees what was sent."""
+
+    SEND = "mcp__Slack__post_message"
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="otto-pubjudge-")
+        self._complete = gateway.complete
+        self.prompts = []
+        gateway.complete = lambda task, prompt: (self.prompts.append(prompt), "PASS")[1]
+        self.cap = registry.Capability("agent", "poster", "posts picks")
+        self.cap.risk = "write"
+
+    def tearDown(self):
+        gateway.complete = self._complete
+
+    def _transcript(self, events):
+        path = os.path.join(self._tmp, "a1.jsonl")
+        with open(path, "w") as f:
+            for ev in events:
+                f.write(json.dumps(ev) + "\n")
+        return path
+
+    @staticmethod
+    def _call(name, inp, tid, error=False):
+        return [{"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": tid, "name": name, "input": inp}]}},
+                {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": tid, "is_error": error,
+                     "content": "x"}]}}]
+
+    def test_posts_carry_their_content_and_agree_with_the_labels(self):
+        path = self._transcript(
+            self._call(self.SEND, {"channel": "#movies", "text": "*Dune* IMDb: tt1"}, "a")
+            + self._call(self.SEND, {"channel": "#movies", "text": "refused"}, "b", error=True)
+            + self._call("mcp__Slack__channel_history", {"channel": "#movies"}, "c")
+            + self._call("mcp__x__create_issue", {"repo": "o/r", "title": "T",
+                                                  "labels": ["bug"]}, "d"))
+        posts = claude_cli.published_posts([path])
+        self.assertEqual([p["target"] for p in posts], claude_cli.published_actions([path]))
+        self.assertEqual(posts[0]["text"], "text: *Dune* IMDb: tt1")
+        # Field-agnostic: whatever the server calls its body fields, they all reach the judge.
+        self.assertEqual(posts[1]["text"], 'title: T\nlabels: ["bug"]')
+
+    def test_many_posts_are_bounded_in_total_and_the_rest_counted(self):
+        evs = []
+        for i in range(10):
+            evs += self._call(self.SEND, {"channel": "C", "text": "z" * 9_000}, f"t{i}")
+        posts = claude_cli.published_posts([self._transcript(evs)])
+        self.assertEqual(len(posts), 4)
+        self.assertEqual(posts[-1]["target"], "7 more publish(es)")
+        self.assertEqual(len(claude_cli.published_actions([self._transcript(evs)])), 10,
+                         "the ladder's stop still sees every publish")
+
+    def test_the_judge_is_told_what_was_published_and_to_judge_post_rules_there(self):
+        engine.verify("post 3 picks", self.cap, "Posted 3 picks.",
+                      published_posts=[{"target": "#movies", "text": "IMDb: tt0000001"}])
+        p = self.prompts[0]
+        self.assertIn("IMDb: tt0000001", p)
+        self.assertIn("PUBLISHED:", p)
+        self.assertIn("never FAIL it for not repeating", p)
+
+    def test_nothing_published_says_nothing(self):
+        engine.verify("answer", self.cap, "The answer.", published_posts=[])
+        self.assertNotIn("PUBLISHED:", self.prompts[0],
+                         "a rule about posts that never happened is a defect the judge can invent")
+
+    def test_an_oversized_post_is_clipped_with_a_marker(self):
+        engine.verify("post", self.cap, "Posted.",
+                      published_posts=[{"target": "C", "text": "y" * 50_000}])
+        self.assertIn("TRUNCATED FOR REVIEW", self.prompts[0])
+
+    def test_both_ladders_hand_the_posts_to_the_judge(self):
+        # Sync loop, the workflow ladder, and the activity whitelist between them: one missed
+        # door and the judge silently goes back to reading the report alone.
+        self.assertIn('published_posts=att.get("published_posts")', inspect.getsource(engine))
+        self.assertIn('"published_posts": out.get("published_posts")', workflow_src())
+        src = open("activities.py", encoding="utf-8").read()
+        self.assertIn('"published_posts": att.get("published_posts")', src)
+        self.assertIn('published_posts=payload.get("published_posts")', src)
+
+
 class LadderStateMachineTests(unittest.TestCase):
     """`ladder.py` is the ladder's control flow, consumed by BOTH runtimes.
 

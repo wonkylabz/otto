@@ -368,6 +368,60 @@ def _k_verify_passes_announced_departure(v):
                          else f"FAILED an explained departure — {v['critique'][:150]}")
 
 
+# --- runbook-rb-1af9985a-62a01e: the contract shapes the POST, the judge read only the report ---
+# The cap posted three messages exactly to its format, its short report did not repeat them, and the
+# judge FAILed the report for "no IMDb links" — published, so never retried, so a human accepted it.
+_POSTER_CONTRACT = (
+    "# Weekly picks\n\n## 1. Post\nPost each pick to #picks as its own message:\n"
+    "*<Title>* (<year>)\n_Why:_ <one sentence naming a title they liked>\n"
+    "_Link:_ <https://www.imdb.com/title/tt…/>\n\n"
+    "## 2. Final report\nAfter posting, reply with the three titles, one line each, and the "
+    "reason each was chosen. Never end with a question.")
+_POSTER_REPORT = (
+    "Posted this week's 3 picks to #picks as separate messages.\n"
+    "- **Arrival** (2016): slow, cerebral sci-fi like Interstellar.\n"
+    "- **Severance** (2022): workplace mystery like Black Mirror.\n"
+    "- **Paddington 2** (2017): warm comedy like The Grand Budapest Hotel.")
+
+
+def _poster_posts(link=True):
+    picks = [("Arrival", 2016, "Interstellar", "tt2543164"),
+             ("Severance", 2022, "Black Mirror", "tt11280740"),
+             ("Paddington 2", 2017, "The Grand Budapest Hotel", "tt4468740")]
+    return [{"target": "mcp__Slack__post_message (channel=#picks)",
+             "text": f"text: *{t}* ({y})\n_Why:_ For fans of {liked}."
+                     + (f"\n_Link:_ <https://www.imdb.com/title/{tt}/>" if link else "")}
+            for t, y, liked, tt in picks]
+
+
+def _poster_cap():
+    c = _cap("weekly-picks", "write", "recommends three titles and posts them to #picks")
+    c.prompt = _POSTER_CONTRACT
+    return c
+
+
+def _c_verify_reads_post_rules_off_the_posts():
+    return engine.verify("Recommend this week's 3 picks and post them to #picks.", _poster_cap(),
+                         _POSTER_REPORT, unattended=True, published_posts=_poster_posts())
+
+
+def _k_verify_reads_post_rules_off_the_posts(v):
+    return v["passed"], ("PASS" if v["passed"]
+                         else f"FAILED a report for not repeating its posts — {v['critique'][:150]}")
+
+
+def _c_verify_fails_posts_breaking_the_contract():
+    return engine.verify("Recommend this week's 3 picks and post them to #picks.", _poster_cap(),
+                         _POSTER_REPORT, unattended=True, published_posts=_poster_posts(False))
+
+
+def _k_verify_fails_posts_breaking_the_contract(v):
+    # The control: the posts are now JUDGED, not just credited — a post missing the contract's
+    # link line still fails, so the block is evidence, never a free pass.
+    return (not v["passed"]), (f"verdict=FAIL — {v['critique'][:150]}" if not v["passed"]
+                               else "PASSED posts missing the contract's link line")
+
+
 # DELIBERATELY NOT A CASE: "with no approved plan the verdict is unchanged". It reads like the
 # right control and is not testable this way — it asserts an LLM VERDICT stays put, and a strict
 # judge failed the same output three times for three unrelated reasons (uncovered ACs, then
@@ -1307,6 +1361,16 @@ CASES = [
     {"id": "verify-passes-announced-departure", "tier": "cheap", "incident": "the escape hatch",
      "what": "a departure the plan got wrong about the repo, flagged in the report, PASSES",
      "run": _c_verify_passes_announced_departure, "check": _k_verify_passes_announced_departure},
+    {"id": "verify-reads-post-rules-off-the-posts", "tier": "cheap",
+     "incident": "runbook-rb-1af9985a-62a01e",
+     "what": "posts carrying the contract's format PASS though the report doesn't repeat them",
+     "run": _c_verify_reads_post_rules_off_the_posts,
+     "check": _k_verify_reads_post_rules_off_the_posts},
+    {"id": "verify-fails-posts-breaking-the-contract", "tier": "cheap",
+     "incident": "runbook-rb-1af9985a-62a01e (the control)",
+     "what": "the same posts MISSING the contract's link line still FAIL",
+     "run": _c_verify_fails_posts_breaking_the_contract,
+     "check": _k_verify_fails_posts_breaking_the_contract},
     {"id": "plan-preview-phases-and-inlines", "tier": "slow", "incident": "web-5f9319cd, 2026-08-03",
      "what": "a real preview returns the plan INLINE, phases enforcement, and owns its assumptions",
      "run": _c_plan_preview_phases_and_inlines, "check": _k_plan_preview_phases_and_inlines},

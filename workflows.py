@@ -1752,7 +1752,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                      "fast_lane": self._fast_lane,
                      # Which runtime ran it: the local one has no WebSearch, so the judge's
                      # grant must not list it. Mirrors engine._ladder_core.
-                     "backend": out.get("backend")},
+                     "backend": out.get("backend"),
+                     # What the attempt posted, read off its own tool calls: a contract shaping
+                     # the POST is judged against it, not the report. Mirrors engine._ladder_core.
+                     "published_posts": out.get("published_posts")},
                     start_to_close_timeout=_JUDGE_CEILING, retry_policy=_RETRY)
             await self._audit_attempt(
                 {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],
