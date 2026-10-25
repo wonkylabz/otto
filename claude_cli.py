@@ -309,8 +309,10 @@ def _note_publish_event(ev, path, calls, failed, order):
             failed.add((path, str(block.get("tool_use_id"))))
 
 
-def published_actions(paths, *, repo_mode=False):
-    """Every publish an attempt's transcript(s) record, in order, as short labels.
+def _publish_calls(paths, *, repo_mode=False):
+    """(name, input, label) for every publish the transcript(s) record, in order — the one walk
+    `published_actions` and `published_posts` share, so the ladder's stop and the judge's evidence
+    can never disagree on what counted as a publish.
 
     Counted unless its result came back an ERROR: a call with no result at all (killed mid-call)
     may well have landed, and the cost of a phantom is one needs-you card, not a duplicate post.
@@ -335,10 +337,48 @@ def published_actions(paths, *, repo_mode=False):
         name, tool_input = calls[k]
         try:
             if is_publish(name, tool_input, repo_mode=repo_mode):
-                out.append(_publish_label(name, tool_input))
+                out.append((name, tool_input, _publish_label(name, tool_input)))
         except Exception:  # noqa: BLE001 - fail CLOSED: unclassifiable costs a card, not a repost
-            out.append(f"{name} (unclassified)")
+            out.append((name, tool_input, f"{name} (unclassified)"))
     return out
+
+
+def published_actions(paths, *, repo_mode=False):
+    """Every publish an attempt's transcript(s) record, in order, as short labels."""
+    return [label for _, _, label in _publish_calls(paths, repo_mode=repo_mode)]
+
+
+# A post's body is bounded here only so one runaway payload can't bloat the activity result; the
+# judge clips again, with its own marker, to its prompt budget.
+_POST_BODY_CHARS = 20_000
+
+
+def _publish_body(name, tool_input):
+    """What one publish put in front of people — every field of its input except the target keys
+    (already in the label). Field-agnostic on purpose: `text`, `message`, `body`, `markdown`,
+    `blocks` all occur, and a list of known names misses the next server's spelling."""
+    if not isinstance(tool_input, dict):
+        return str(tool_input or "")
+    if name in ("Bash", "shell"):
+        return str(tool_input.get("command") or "")
+    parts = []
+    for k, v in tool_input.items():
+        if k in _PUBLISH_TARGET_KEYS or v in (None, "", [], {}):
+            continue
+        parts.append(f"{k}: {v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)}")
+    body = "\n".join(parts)
+    if len(body) > _POST_BODY_CHARS:
+        body = body[:_POST_BODY_CHARS] + f"\n[CUT at {_POST_BODY_CHARS} of {len(body)} characters]"
+    return body
+
+
+def published_posts(paths, *, repo_mode=False):
+    """Every publish as {target, text}: the label plus the CONTENT it sent, read off the tool
+    call's own input. The judge needs it because it otherwise sees only the final report — a cap
+    whose contract shapes the POST was failed for a report not repeating what the post carried.
+    The transcript is scrubbed as written (`transcript_line`), so this carries no raw secret."""
+    return [{"target": label, "text": _publish_body(name, tool_input)}
+            for name, tool_input, label in _publish_calls(paths, repo_mode=repo_mode)]
 
 
 def _drain(stream, sink):
