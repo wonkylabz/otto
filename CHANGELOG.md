@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Code review and QA can now compare a PR against its base branch.** Each workspace Otto
+  cloned for a PR was missing the commit where the branch split off, so `git diff main...HEAD`
+  failed with "no merge base". QA marked clean PRs inconclusive and they landed in Needs you.
+  **Restart the worker after upgrading.**
+
 ## [0.7.2] - 2026-10-27
 
 ### Fixed

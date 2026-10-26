@@ -1194,6 +1194,38 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(info["branch"], "otto/wf-offline-1")
         self.assertTrue(os.path.isfile(os.path.join(info["path"], "base.txt")))   # local base kept
 
+    def test_every_provisioned_tree_has_a_merge_base_with_its_base_branch(self):
+        """A local-path clone ignores `--depth`, but a `fetch --depth 1` grafted the PR branch's
+        tip in as a parentless root, so a QA round could not `git diff main...HEAD` ("no merge
+        base") and went inconclusive on a clean PR (gh-issue-74). Both doors: a fresh run, and a
+        from_branch re-provision of the branch that run pushed."""
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        checkout, bare = self._git_repo_with_remote(tmp)
+        self._register(tmp, checkout)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+
+        def git(path, *a):
+            return subprocess.run(["git", "-C", path, *a], capture_output=True, text=True)
+
+        info = self.ws.provision("src", "wf-mb-1")
+        git(info["path"], "config", "user.email", "t@t"); git(info["path"], "config", "user.name", "t")
+        for i in range(2):
+            with open(os.path.join(info["path"], f"pr{i}.txt"), "w") as f:
+                f.write("pr work\n")
+            git(info["path"], "add", "-A"); git(info["path"], "commit", "-qm", f"pr {i}")
+        self.assertEqual(git(info["path"], "push", "-q", "origin", info["branch"]).returncode, 0)
+        self.assertEqual(git(info["path"], "merge-base", "HEAD", "origin/main").returncode, 0)
+
+        again = self.ws.provision("src", "wf-mb-1-qa0", from_branch=True, branch=info["branch"])
+        self.assertEqual(again["base"], "main")
+        mb = git(again["path"], "merge-base", "HEAD", "origin/main")
+        self.assertEqual(mb.returncode, 0, "a re-provisioned PR branch must diff against its base")
+        diff = git(again["path"], "diff", "--name-only", "origin/main...HEAD").stdout.split()
+        self.assertEqual(sorted(diff), ["pr0.txt", "pr1.txt"])
+
     def test_provision_rejects_flag_smuggling_branch_and_cleans_up(self):
         # `branch` on a from_branch=True re-provision can arrive from client-supplied chat state
         # — must never reach the git fetch/checkout argv unvalidated, and a rejected provision
