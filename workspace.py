@@ -218,6 +218,34 @@ def _refresh_base(path, default):
     return True
 
 
+_DEEPEN_STEPS = (50, 500)
+
+
+def _deepen_to_base(path, default, branch):
+    """Deepen a SHALLOW clone until the PR branch and `origin/<default>` share a commit.
+
+    A repo registered by URL is a depth-1 managed clone (`repos.ensure`), and git honours depth
+    when cloning a shallow source, so the default tip stays a parentless graft: a plain fetch
+    never moves an existing shallow boundary. Bounded steps first, then `--unshallow`.
+
+    Best-effort: a round that cannot diff its PR still beats one that cannot run."""
+    _, shallow, _ = _run(["git", "-C", path, "rev-parse", "--is-shallow-repository"])
+    if shallow.strip() != "true":
+        return True
+    refspecs = ["--", _tracking_refspec(default), _tracking_refspec(branch)]
+    for deepen in [f"--deepen={n}" for n in _DEEPEN_STEPS] + ["--unshallow"]:
+        if _run(["git", "-C", path, "merge-base", "HEAD", f"origin/{default}"])[0] == 0:
+            return True
+        rc, _, err = _run(["git", "-C", path, "fetch", deepen, "origin", *refspecs])
+        if rc != 0:
+            trace("WORKSPACE", f"deepen to origin/{default} failed: {err[:120]}")
+            return False
+    if _run(["git", "-C", path, "merge-base", "HEAD", f"origin/{default}"])[0] == 0:
+        return True
+    trace("WORKSPACE", f"no merge base with origin/{default} after unshallow")
+    return False
+
+
 def git_repos():
     """Registered project repos that are git working trees — the allowlist + UI picker source.
     Returns a list of {name, path, origin}."""
@@ -614,6 +642,14 @@ def provision(repo, run_id, from_branch=False, branch=None):
         if default:
             clone += ["--branch", default]
         rc, _, err = _run(clone + [r["path"], path])
+        if rc != 0 and from_branch and default:
+            # The default can name a branch the checkout holds only as `origin/<default>` (its
+            # local copy deleted), which a local-path clone cannot offer. A fresh run has no other
+            # base and fails; a from_branch round still has its PR branch, so it keeps the clone
+            # it always got: the checkout's current branch, unrefreshed.
+            shutil.rmtree(path, ignore_errors=True)
+            default = None
+            rc, _, err = _run(clone[:4] + [r["path"], path])
         if rc != 0:
             raise ValueError(f"clone failed: {err[:300]}")
         if r["origin"]:
@@ -648,6 +684,8 @@ def provision(repo, run_id, from_branch=False, branch=None):
             if rc != 0:
                 raise ValueError(f"fetch of existing branch {target_branch} failed: {err[:300]}")
             rc, _, err = _run(["git", "-C", path, "checkout", "-B", target_branch, "FETCH_HEAD"])
+            if rc == 0 and default and r["origin"]:
+                _deepen_to_base(path, default, target_branch)
         else:
             rc, _, err = _run(["git", "-C", path, "checkout", "-b", target_branch])
         if rc != 0:
