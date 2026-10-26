@@ -134,6 +134,51 @@ class AutoEngageRepoTests(unittest.TestCase):
             engine.repo_edit_target = orig
 
 
+class PlanEngageRepoTests(unittest.TestCase):
+    """`intents.plan_engage_repo`: the repo an APPROVED plan edits, for a write whose request
+    named none (`web-731212b3`: the plan edited infra, the run had no clone, delivered nothing)."""
+
+    PLAN = ("3. Flow logs: in `~/repositories/infra`, change `apps/proteus/serving/frankfurt.tf`.\n"
+            "7. You apply: run the deploy job in the ci repo for both stacks.")
+
+    def _run(self, plan, names, target=None, edits=True):
+        seen = {"target": [], "intent": []}
+        with mock.patch.object(engine, "repo_edit_target",
+                               lambda req, repos, layouts=None: (seen["target"].append(repos), target)[1]), \
+             mock.patch.object(engine, "repo_edit_intent",
+                               lambda req, repo: (seen["intent"].append((req, repo)), edits)[1]), \
+             mock.patch.object(registry, "projects", return_value=[]):
+            return intents.plan_engage_repo("fix the failing Vanta test", plan, names), seen
+
+    def test_a_context_repo_in_the_plan_goes_to_the_target_picker(self):
+        repo, seen = self._run(self.PLAN, ["infra", "ci", "otto"], target="infra")
+        self.assertEqual(repo, "infra")
+        self.assertEqual(seen["target"], [["infra", "ci"]])
+        req, confirmed = seen["intent"][0]
+        self.assertEqual(confirmed, "infra")
+        self.assertIn("frankfurt.tf", req)              # the classifier judged the PLAN too
+
+    def test_one_named_repo_still_needs_the_edit_classifier(self):
+        repo, seen = self._run("1. read the infra README and summarise it", ["infra"], edits=False)
+        self.assertIsNone(repo)
+        self.assertEqual(seen["target"], [])
+        self.assertEqual([r for _, r in seen["intent"]], ["infra"])
+
+    def test_a_plan_claiming_an_unregistered_repo_engages_nothing(self):
+        """The change may belong to the unregistered repo, so pinning the run to a clone of the
+        registered one would confine it to the wrong tree."""
+        repo, seen = self._run("1. edit the chart in the `billing` repository\n2. note it in infra",
+                               ["infra", "ci"], target="infra")
+        self.assertIsNone(repo)
+        self.assertEqual(seen, {"target": [], "intent": []})
+
+    def test_no_named_repo_or_an_undecided_picker_engages_nothing(self):
+        self.assertIsNone(self._run("1. deactivate the entity in Vanta", ["infra"])[0])
+        repo, seen = self._run(self.PLAN, ["infra", "ci"], target=None)
+        self.assertIsNone(repo)
+        self.assertEqual(seen["intent"], [])
+
+
 class RepoEditTargetTests(unittest.TestCase):
     """`intents.repo_edit_target`: unanimous over samples, else None — a wrong clone burns the
     run, None is the old behaviour."""

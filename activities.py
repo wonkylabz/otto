@@ -346,6 +346,9 @@ def suggest_repo(payload: dict) -> dict:
     name-match (candidate_repo) gates the (cheap) edit-intent LLM call, so the classifier only
     runs when a repo is actually named."""
     names = [r["name"] for r in workspace.git_repos()]
+    if payload.get("plan"):
+        import intents
+        return {"repo": intents.plan_engage_repo(payload.get("request", ""), payload["plan"], names)}
     repo = engine.auto_engage_repo(payload.get("request", ""), names, payload.get("name"))
     return {"repo": repo}
 

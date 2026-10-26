@@ -567,3 +567,25 @@ def auto_engage_repo(request, repo_names, cap_name=None):
         trace("REPO", f"worker run names '{repo}' -> engaging repo-mode (no classifier needed)")
         return repo
     return repo if _eng().repo_edit_intent(request, repo) else None
+
+
+def plan_engage_repo(request, plan, repo_names):
+    """The registered repo an APPROVED plan edits, or None — for a write whose request never
+    named one. `web-731212b3`: the plan said "in `~/repositories/infra`, change frankfurt.tf",
+    nothing read it, so the run had no clone, hit the live checkout's write deny and delivered
+    nothing. A plan names repos as context too (a CI apply), so several go to the target
+    picker; the edit classifier confirms either way."""
+    named = named_repos((plan or "").lower(), repo_names)
+    if (not named or len(named) > _MAX_TARGET_REPOS
+            or unregistered_repo_claims(plan, repo_names)):
+        return None
+    task = f"{task_text(request)}\n\nThe approved plan:\n{plan}"
+    repo = named[0]
+    if len(named) > 1:
+        paths = {os.path.basename(p.rstrip("/")): p for p in registry.projects()}
+        layouts = {n: repo_layout(paths[n]) for n in named if n in paths}
+        repo = _eng().repo_edit_target(task, named, layouts)
+    if repo and _eng().repo_edit_intent(task, repo):
+        trace("REPO", f"approved plan edits '{repo}' -> engaging repo-mode")
+        return repo
+    return None
