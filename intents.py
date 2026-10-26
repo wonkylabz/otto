@@ -576,7 +576,8 @@ def plan_engage_repo(request, plan, repo_names):
     nothing. A plan names repos as context too (a CI apply), so several go to the target
     picker; the edit classifier confirms either way."""
     named = named_repos((plan or "").lower(), repo_names)
-    if not named or len(named) > _MAX_TARGET_REPOS:
+    if (not named or len(named) > _MAX_TARGET_REPOS
+            or unregistered_repo_claims(plan, repo_names)):
         return None
     task = f"{task_text(request)}\n\nThe approved plan:\n{plan}"
     repo = named[0]

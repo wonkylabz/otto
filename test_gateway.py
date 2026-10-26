@@ -164,6 +164,14 @@ class PlanEngageRepoTests(unittest.TestCase):
         self.assertEqual(seen["target"], [])
         self.assertEqual([r for _, r in seen["intent"]], ["infra"])
 
+    def test_a_plan_claiming_an_unregistered_repo_engages_nothing(self):
+        """The change may belong to the unregistered repo, so pinning the run to a clone of the
+        registered one would confine it to the wrong tree."""
+        repo, seen = self._run("1. edit the chart in the `billing` repository\n2. note it in infra",
+                               ["infra", "ci"], target="infra")
+        self.assertIsNone(repo)
+        self.assertEqual(seen, {"target": [], "intent": []})
+
     def test_no_named_repo_or_an_undecided_picker_engages_nothing(self):
         self.assertIsNone(self._run("1. deactivate the entity in Vanta", ["infra"])[0])
         repo, seen = self._run(self.PLAN, ["infra", "ci"], target=None)

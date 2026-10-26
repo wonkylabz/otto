@@ -288,9 +288,12 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 or (unattended and not params.get("delegated"))
                 or not workflow.patched("plan-engages-repo")):
             return None
-        sug = await workflow.execute_activity(
-            suggest_repo, {"request": request, "name": cap["name"], "plan": self._plan},
-            start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+        try:
+            sug = await workflow.execute_activity(
+                suggest_repo, {"request": request, "name": cap["name"], "plan": self._plan},
+                start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+        except exceptions.ActivityError:
+            return None   # a dead classifier must not cost a run the human already approved
         repo = sug.get("repo")
         if repo:
             self._repo = repo

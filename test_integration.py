@@ -5763,7 +5763,12 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
         saved_ws = {n: getattr(self.workspace, n)
                     for n in ("git_repos", "refresh_repos", "snapshot", "diff")}
         engine.auto_engage_repo = lambda request, names, cap_name=None: None
-        intents.plan_engage_repo = lambda request, plan, names: (seen.append(plan), pick)[1]
+        def _pick(request, plan, names):
+            seen.append(plan)
+            if isinstance(pick, Exception):
+                raise pick
+            return pick
+        intents.plan_engage_repo = _pick
         self.workspace.git_repos = lambda: [{"name": "myrepo", "path": "/tmp/myrepo"}]
         self.workspace.refresh_repos = lambda *a, **k: None
         self.workspace.snapshot = lambda *a, **k: {}
@@ -5805,6 +5810,12 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.cwds and self.cwds[0].startswith("/tmp/ws/"))   # ran in the clone
         self.assertEqual(out["repo"], "myrepo")
         self.assertIn("https://github.com/o/r/pull/1", out["result"])
+
+    async def test_a_dead_plan_classifier_still_runs_the_approved_write(self):
+        out, seen = await self._drive_plan_engage(RuntimeError("classifier down"))
+        self.assertTrue(seen)                                                # it was asked
+        self.assertEqual(self.cwds, [None])                                  # ran, no clone
+        self.assertEqual(out["result"], "edited the code")
 
     async def test_a_plan_editing_no_repo_runs_without_a_clone(self):
         out, seen = await self._drive_plan_engage(None)
