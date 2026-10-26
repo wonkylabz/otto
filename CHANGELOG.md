@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-27
+
 ### Fixed
 
 - **An approved plan that edits one of your repos now runs in a clone and opens a draft PR.**
@@ -349,7 +351,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/wonkylabz/otto/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/wonkylabz/otto/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/wonkylabz/otto/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/wonkylabz/otto/compare/v0.6.2...v0.6.3
