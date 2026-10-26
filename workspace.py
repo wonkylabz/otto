@@ -236,7 +236,9 @@ def _deepen_to_base(path, default, branch):
     for deepen in [f"--deepen={n}" for n in _DEEPEN_STEPS] + ["--unshallow"]:
         if _run(["git", "-C", path, "merge-base", "HEAD", f"origin/{default}"])[0] == 0:
             return True
-        rc, _, err = _run(["git", "-C", path, "fetch", deepen, "origin", *refspecs])
+        # Bounded like `_refresh_base`: best-effort must not outlast the provision activity.
+        rc, _, err = _run(["git", "-C", path, "fetch", deepen, "origin", *refspecs],
+                          timeout=FETCH_TIMEOUT_S)
         if rc != 0:
             trace("WORKSPACE", f"deepen to origin/{default} failed: {err[:120]}")
             return False
