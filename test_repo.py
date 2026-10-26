@@ -1194,6 +1194,91 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(info["branch"], "otto/wf-offline-1")
         self.assertTrue(os.path.isfile(os.path.join(info["path"], "base.txt")))   # local base kept
 
+    def test_every_provisioned_tree_has_a_merge_base_with_its_base_branch(self):
+        """A local-path clone ignores `--depth`, but a `fetch --depth 1` grafted the PR branch's
+        tip in as a parentless root, so a QA round could not `git diff main...HEAD` ("no merge
+        base") and went inconclusive on a clean PR (gh-issue-74). Both doors: a fresh run, and a
+        from_branch re-provision of the branch that run pushed."""
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        checkout, bare = self._git_repo_with_remote(tmp)
+        self._register(tmp, checkout)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+
+        def git(path, *a):
+            return subprocess.run(["git", "-C", path, *a], capture_output=True, text=True)
+
+        info = self.ws.provision("src", "wf-mb-1")
+        git(info["path"], "config", "user.email", "t@t"); git(info["path"], "config", "user.name", "t")
+        for i in range(2):
+            with open(os.path.join(info["path"], f"pr{i}.txt"), "w") as f:
+                f.write("pr work\n")
+            git(info["path"], "add", "-A"); git(info["path"], "commit", "-qm", f"pr {i}")
+        self.assertEqual(git(info["path"], "push", "-q", "origin", info["branch"]).returncode, 0)
+        self.assertEqual(git(info["path"], "merge-base", "HEAD", "origin/main").returncode, 0)
+
+        again = self.ws.provision("src", "wf-mb-1-qa0", from_branch=True, branch=info["branch"])
+        self.assertEqual(again["base"], "main")
+        mb = git(again["path"], "merge-base", "HEAD", "origin/main")
+        self.assertEqual(mb.returncode, 0, "a re-provisioned PR branch must diff against its base")
+        diff = git(again["path"], "diff", "--name-only", "origin/main...HEAD").stdout.split()
+        self.assertEqual(sorted(diff), ["pr0.txt", "pr1.txt"])
+
+    def _pr_off_the_old_base(self, tmp):
+        """Push `feat` forked BEFORE main's last commit — main has moved past the PR's base."""
+        seed = os.path.join(tmp, "seed")
+
+        def g(*a):
+            subprocess.run(["git", "-C", seed, *a], check=True, capture_output=True, text=True)
+        g("checkout", "-qb", "feat", "HEAD~1")
+        with open(os.path.join(seed, "pr.txt"), "w") as f:
+            f.write("pr work\n")
+        g("add", "-A"); g("commit", "-qm", "pr"); g("push", "-q", "origin", "feat")
+
+    def _ws_root(self, tmp):
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+
+    def test_a_shallow_managed_source_is_deepened_to_the_merge_base(self):
+        """A repo registered by URL is a depth-1 managed clone, and cloning a SHALLOW source
+        honours depth — the default tip stays a parentless graft a plain fetch never deepens."""
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        _, bare = self._git_repo_with_remote(tmp)
+        self._pr_off_the_old_base(tmp)
+        managed = os.path.join(tmp, "shallow", "src")     # resolved by its directory name
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + bare, managed],
+                       check=True, capture_output=True, text=True)
+        self._register(tmp, managed)
+        self._ws_root(tmp)
+
+        info = self.ws.provision("src", "wf-mb-2", from_branch=True, branch="feat")
+        git = lambda *a: subprocess.run(["git", "-C", info["path"], *a],   # noqa: E731
+                                        capture_output=True, text=True)
+        self.assertEqual(git("merge-base", "HEAD", "origin/main").returncode, 0)
+        self.assertEqual(git("diff", "--name-only", "origin/main...HEAD").stdout.split(),
+                         ["pr.txt"])
+
+    def test_from_branch_survives_a_checkout_without_a_local_default_branch(self):
+        """`_default_branch` reads `origin/HEAD`, but a local-path clone offers only the
+        checkout's `refs/heads` — with local `main` deleted, `--branch main` cannot clone. A
+        from_branch round still has its PR branch, so it must not lose its checkout over it."""
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        checkout, _ = self._git_repo_with_remote(tmp)
+        self._pr_off_the_old_base(tmp)
+        for a in (["checkout", "-qb", "other"], ["branch", "-qD", "main"]):
+            subprocess.run(["git", "-C", checkout, *a], check=True, capture_output=True)
+        self._register(tmp, checkout)
+        self._ws_root(tmp)
+
+        info = self.ws.provision("src", "wf-mb-3", from_branch=True, branch="feat")
+        self.assertEqual(info["branch"], "feat")
+        self.assertTrue(os.path.isfile(os.path.join(info["path"], "pr.txt")))
+
     def test_provision_rejects_flag_smuggling_branch_and_cleans_up(self):
         # `branch` on a from_branch=True re-provision can arrive from client-supplied chat state
         # — must never reach the git fetch/checkout argv unvalidated, and a rejected provision

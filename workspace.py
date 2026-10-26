@@ -182,6 +182,11 @@ def refresh_repos(max_age_s=None):
     return done
 
 
+def _tracking_refspec(branch):
+    """Fetch `branch` into its remote-tracking ref, forced — a PR branch is routinely rebased."""
+    return f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+
+
 def _refresh_base(path, default):
     """Move a fresh clone's base onto the REMOTE's default-branch tip.
 
@@ -191,11 +196,17 @@ def _refresh_base(path, default):
     phantom conflicts, and a diff that re-does work already on master. The clone's `origin` has
     already been repointed at the real remote by this point, so one shallow fetch gets the true tip.
 
+    Never `--depth`: the clone came from a local path, which git clones IN FULL whatever depth is
+    asked, so a full fetch transfers only the commits it lacks — while a shallow one grafts the
+    tip in as a parentless root, and every `git diff <base>...HEAD` in the workspace then fails
+    with "no merge base". The remote-tracking ref is updated too, so `origin/<default>` is the
+    diff base a reviewer or QA run reaches for.
+
     Best-effort: on failure the clone keeps its local base (the old behaviour) and the run
     continues, since a PR from a slightly-old base still beats no run at all."""
     if not default:
         return False
-    rc, _, err = _run(["git", "-C", path, "fetch", "--depth", "1", "origin", "--", default],
+    rc, _, err = _run(["git", "-C", path, "fetch", "origin", "--", _tracking_refspec(default)],
                       timeout=FETCH_TIMEOUT_S)
     if rc != 0:
         trace("WORKSPACE", f"base refresh skipped ({default} not fetchable): {err[:120]}")
@@ -205,6 +216,36 @@ def _refresh_base(path, default):
         trace("WORKSPACE", f"base refresh skipped (reset failed): {err[:120]}")
         return False
     return True
+
+
+_DEEPEN_STEPS = (50, 500)
+
+
+def _deepen_to_base(path, default, branch):
+    """Deepen a SHALLOW clone until the PR branch and `origin/<default>` share a commit.
+
+    A repo registered by URL is a depth-1 managed clone (`repos.ensure`), and git honours depth
+    when cloning a shallow source, so the default tip stays a parentless graft: a plain fetch
+    never moves an existing shallow boundary. Bounded steps first, then `--unshallow`.
+
+    Best-effort: a round that cannot diff its PR still beats one that cannot run."""
+    _, shallow, _ = _run(["git", "-C", path, "rev-parse", "--is-shallow-repository"])
+    if shallow.strip() != "true":
+        return True
+    refspecs = ["--", _tracking_refspec(default), _tracking_refspec(branch)]
+    for deepen in [f"--deepen={n}" for n in _DEEPEN_STEPS] + ["--unshallow"]:
+        if _run(["git", "-C", path, "merge-base", "HEAD", f"origin/{default}"])[0] == 0:
+            return True
+        # Bounded like `_refresh_base`: best-effort must not outlast the provision activity.
+        rc, _, err = _run(["git", "-C", path, "fetch", deepen, "origin", *refspecs],
+                          timeout=FETCH_TIMEOUT_S)
+        if rc != 0:
+            trace("WORKSPACE", f"deepen to origin/{default} failed: {err[:120]}")
+            return False
+    if _run(["git", "-C", path, "merge-base", "HEAD", f"origin/{default}"])[0] == 0:
+        return True
+    trace("WORKSPACE", f"no merge base with origin/{default} after unshallow")
+    return False
 
 
 def git_repos():
@@ -597,18 +638,28 @@ def provision(repo, run_id, from_branch=False, branch=None):
         # branch explicitly (NOT the live checkout's current branch) so the workspace always starts
         # from a clean base — see `_default_branch`.
         clone = ["git", "clone", "--depth", "1"]
-        default = None if from_branch else _default_branch(r["path"])
+        # A from_branch clone starts on the default branch too: it is the diff base every
+        # reviewer/QA/fix round compares the PR against, and the `otto.baseBranch` recorded below.
+        default = _default_branch(r["path"])
         if default:
             clone += ["--branch", default]
         rc, _, err = _run(clone + [r["path"], path])
+        if rc != 0 and from_branch and default:
+            # The default can name a branch the checkout holds only as `origin/<default>` (its
+            # local copy deleted), which a local-path clone cannot offer. A fresh run has no other
+            # base and fails; a from_branch round still has its PR branch, so it keeps the clone
+            # it always got: the checkout's current branch, unrefreshed.
+            shutil.rmtree(path, ignore_errors=True)
+            default = None
+            rc, _, err = _run(clone[:4] + [r["path"], path])
         if rc != 0:
             raise ValueError(f"clone failed: {err[:300]}")
         if r["origin"]:
             _run(["git", "-C", path, "remote", "set-url", "origin", r["origin"]])
             # ... then re-base the clone on the REMOTE's default tip, not the local branch's.
-            # Skipped for from_branch: that path fetches an existing PR branch just below, and
-            # resetting to the default branch first would throw away the work it's resuming.
-            if not from_branch and _refresh_base(path, default):
+            # Safe for from_branch too: it resets the DEFAULT branch, and the existing PR branch
+            # is checked out over it just below.
+            if _refresh_base(path, default):
                 trace("WORKSPACE", f"base refreshed to origin/{default}")
         # Record the clone's BASE branch in its own git config, so `_agent_pr` (a separate
         # activity, a separate process, only the path in hand) can tell the branch the clone
@@ -627,12 +678,16 @@ def provision(repo, run_id, from_branch=False, branch=None):
             if not valid_branch(target_branch):
                 raise ValueError(f"invalid branch name: {target_branch!r}")
             # The branch only exists on the real remote (the original run pushed it), not in this
-            # shallow local clone — fetch its tip and check it out so the follow-up amends the
-            # same PR.
-            rc, _, err = _run(["git", "-C", path, "fetch", "--depth", "1", "origin", "--", target_branch])
+            # local clone — fetch it and check it out so the follow-up amends the same PR. With
+            # its history, never `--depth 1`: a shallow tip is a parentless root, so the round
+            # cannot diff the PR against its base (see `_refresh_base`).
+            rc, _, err = _run(["git", "-C", path, "fetch", "origin", "--",
+                               _tracking_refspec(target_branch)])
             if rc != 0:
                 raise ValueError(f"fetch of existing branch {target_branch} failed: {err[:300]}")
             rc, _, err = _run(["git", "-C", path, "checkout", "-B", target_branch, "FETCH_HEAD"])
+            if rc == 0 and default and r["origin"]:
+                _deepen_to_base(path, default, target_branch)
         else:
             rc, _, err = _run(["git", "-C", path, "checkout", "-b", target_branch])
         if rc != 0:
