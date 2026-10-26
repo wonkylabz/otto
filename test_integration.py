@@ -5746,6 +5746,72 @@ class WorkflowRepoModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["repo"], "myrepo")                              # repo-mode engaged
         self.assertEqual(len(self.cleaned), 1)                               # workspace torn down
 
+    async def _drive_plan_engage(self, pick):
+        """A write whose request names no repo, gated on a plan that does (`web-731212b3`)."""
+        import asyncio
+        import uuid
+        from workflows import OttoWorkflow
+        from activities import (cleanup_workspace, clarify_request, classify_request,
+                                detect_repo_changes, finalize_workspace, merge_results,
+                                plan_capability, plan_swarm, provision_workspace,
+                                resolve_pr_target, check_grounding, record_attempt, record_skip,
+                                route_request, snapshot_repos, snapshot_settings, suggest_repo,
+                                run_capability, verify_capability)
+        seen = []
+        import intents
+        saved = (engine.auto_engage_repo, intents.plan_engage_repo)
+        saved_ws = {n: getattr(self.workspace, n)
+                    for n in ("git_repos", "refresh_repos", "snapshot", "diff")}
+        engine.auto_engage_repo = lambda request, names, cap_name=None: None
+        intents.plan_engage_repo = lambda request, plan, names: (seen.append(plan), pick)[1]
+        self.workspace.git_repos = lambda: [{"name": "myrepo", "path": "/tmp/myrepo"}]
+        self.workspace.refresh_repos = lambda *a, **k: None
+        self.workspace.snapshot = lambda *a, **k: {}
+        self.workspace.diff = lambda *a, **k: []
+        try:
+            async with await _time_skipping_env() as env:
+                with ThreadPoolExecutor(max_workers=6) as ex:
+                    async with Worker(
+                        env.client, task_queue="planrepoq", workflows=[OttoWorkflow],
+                        activities=[route_request, snapshot_settings, plan_swarm, merge_results,
+                                    clarify_request, classify_request, plan_capability,
+                                    provision_workspace, resolve_pr_target, check_grounding,
+                                    finalize_workspace, cleanup_workspace, run_capability,
+                                    verify_capability, record_attempt, record_skip, suggest_repo,
+                                    snapshot_repos, detect_repo_changes],
+                        activity_executor=ex,
+                    ):
+                        h = await env.client.start_workflow(
+                            OttoWorkflow.run,
+                            {"request": "fix the failing Vanta test", "review": False,
+                             "cap": {"name": "sre-minion", "kind": "agent", "risk": "write"}},
+                            id="planrepo-" + uuid.uuid4().hex[:8], task_queue="planrepoq")
+                        for _ in range(200):
+                            if (await h.query(OttoWorkflow.status))["awaiting_approval"]:
+                                break
+                            await asyncio.sleep(0.05)
+                        else:
+                            self.fail("never reached the write-approval gate")
+                        await h.signal(OttoWorkflow.approve, True)
+                        return await h.result(), seen
+        finally:
+            engine.auto_engage_repo, intents.plan_engage_repo = saved
+            for n, fn in saved_ws.items():
+                setattr(self.workspace, n, fn)
+
+    async def test_the_approved_plan_engages_repo_mode_the_request_did_not(self):
+        out, seen = await self._drive_plan_engage("myrepo")
+        self.assertEqual(seen, ["1. edit the code"])                         # judged the PLAN
+        self.assertTrue(self.cwds and self.cwds[0].startswith("/tmp/ws/"))   # ran in the clone
+        self.assertEqual(out["repo"], "myrepo")
+        self.assertIn("https://github.com/o/r/pull/1", out["result"])
+
+    async def test_a_plan_editing_no_repo_runs_without_a_clone(self):
+        out, seen = await self._drive_plan_engage(None)
+        self.assertEqual(seen, ["1. edit the code"])
+        self.assertEqual(self.cwds, [None])
+        self.assertIsNone(out.get("repo"))
+
     async def test_an_unattended_project_cap_runs_in_a_clone_of_its_home(self):
         """`runbook-rb-658636d9-f1e230`: a runbook pinned a project cap with no repo_hint, so it
         ran from the live checkout and branched + committed there. `home` engages repo-mode with

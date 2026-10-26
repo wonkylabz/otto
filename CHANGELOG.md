@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An approved plan that edits one of your repos now runs in a clone and opens a draft PR.**
+  When a request didn't name the repo but the plan you approved did ("in `infra`, change
+  `frankfurt.tf`"), the run had no clone, couldn't write to your checkout, and delivered nothing.
+  **Restart the worker after upgrading.**
+
 ## [0.7.1] - 2026-10-25
 
 ### Fixed

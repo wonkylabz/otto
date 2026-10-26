@@ -281,6 +281,22 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             start_to_close_timeout=timedelta(seconds=90), retry_policy=_RETRY)
         return sug.get("repo")
 
+    async def _plan_repo(self, params, request, cap, unattended, resume, subtask):
+        """The repo the APPROVED plan edits, for a write the request never tied to one — so the
+        approved edits land in a clone + draft PR, not on the live checkout's write deny."""
+        if (resume or subtask or cap["risk"] != "write" or not self._plan
+                or (unattended and not params.get("delegated"))
+                or not workflow.patched("plan-engages-repo")):
+            return None
+        sug = await workflow.execute_activity(
+            suggest_repo, {"request": request, "name": cap["name"], "plan": self._plan},
+            start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+        repo = sug.get("repo")
+        if repo:
+            self._repo = repo
+            workflow.logger.info(f"approved plan engages repo-mode -> {repo}")
+        return repo
+
     def _early_snapshot(self, params, resume, repo, unattended):
         """Start the in-place-edit baseline WHILE routing runs — its repo refresh is network
         time. None where no baseline is taken, or on a run recorded before the overlap."""
@@ -1123,6 +1139,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 repo, git_run_id, resume, resume_ws, authored_doc)
             if done is not None:
                 return done
+            if not repo:
+                repo = await self._plan_repo(params, request, cap, unattended, resume, subtask)
 
         # A resumed session is a raw follow-up in an ongoing conversation, not a fresh
         # task to judge — run it once, no verification. Bracketed as its own RUN span (mirroring
