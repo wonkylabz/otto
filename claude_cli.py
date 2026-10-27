@@ -578,8 +578,11 @@ def run_json(prompt, allowed_tools=None, model=None, timeout=900, mcp_config_pat
     # (Write/Edit and outward-facing bash like `gh pr create`/`git push`), so it also hardens
     # the preview. (Blanket `Bash` in READ/WRITE_TOOLS bypasses the classifier, so normal
     # execution never hit this — the bug was isolated to the scoped PLAN_TOOLS pass.)
-    if permission_mode:
-        cmd += ["--permission-mode", permission_mode]
+    # ALWAYS explicit: omitted, the run inherits the OPERATOR's interactive `defaultMode` from
+    # ~/.claude/settings.json. Under "auto" a classifier vetted every Bash call of an unattended
+    # run and refused ordinary ones (a QA reproduction loop), which no headless run can answer.
+    # Otto's grant is `--allowedTools` + the `file_safety` deny rules + the approval gate.
+    cmd += ["--permission-mode", permission_mode or "default"]
     if allowed_tools:
         cmd += ["--allowedTools", *allowed_tools]
     # `--allowedTools` is a PERMISSION filter — every built-in tool, skill and agent stays in

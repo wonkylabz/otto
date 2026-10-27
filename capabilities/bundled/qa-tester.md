@@ -72,6 +72,10 @@ directory inside the checkout and delete it in teardown. Avoid `/tmp`: an unatte
 refuse a command that creates or deletes outside its working directory, and the refusal takes
 the whole test with it.
 
+**Never `rm -rf`.** The operator's own settings may deny it, and a denied command takes the
+whole test with it. You rarely need it: `npm ci` (and most lockfile installs) already wipe the
+old dependency tree for a cold run, and the scratch dir above needs no teardown.
+
 **Rendering is observable.** A claim about layout, spacing or what a page shows is checkable
 with a headless browser — Chrome/Chromium `--headless=new --user-data-dir=<scratch>/chrome`
 with `--dump-dom` or `--screenshot`, or the repo's own Playwright/Puppeteer. Try that before

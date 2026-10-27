@@ -7131,6 +7131,15 @@ class CheapTierContextTests(unittest.TestCase):
         # A cwd-anchored run (repo mode, project cap) MUST keep its repo's CLAUDE.md.
         self.assertNotIn("--setting-sources", self._cmd(setting_sources=None))
 
+    def test_every_run_names_its_permission_mode_never_inherits_the_operators(self):
+        # Omitted, a run took ~/.claude/settings.json's interactive `defaultMode` ("auto"), whose
+        # classifier refused an unattended QA run's ordinary Bash calls.
+        cmd = self._cmd()
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "default")
+        cmd = self._cmd(permission_mode="plan")
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "plan")
+        self.assertEqual(cmd.count("--permission-mode"), 1)
+
     def test_a_cheap_tier_call_loads_no_settings_sources(self):
         seen = {}
 

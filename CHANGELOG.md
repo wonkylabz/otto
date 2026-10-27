@@ -24,6 +24,11 @@ changelog that restates it is a second copy of `git log`.
   `.otto-scratch/` folder, and the QA tester is told to use it (not `/tmp`) and to try a
   headless browser before calling a layout claim unobservable. Its `/tmp` setups were refused
   mid-run, which marked rendering checks inconclusive.
+- **Otto's runs no longer pick up your interactive permission mode.** Each run now passes an
+  explicit permission mode, so a `"defaultMode": "auto"` in `~/.claude/settings.json` no longer
+  puts an auto-mode check in front of every shell command an unattended run makes. Your own
+  `permissions.deny` rules still apply, and the QA tester is told not to use `rm -rf`
+  (`npm ci` already gives a clean install).
 - **A running factory no longer sends its failed runs to Needs-you.** Its sprints already retry
   a Blocked ticket twice and then close it with a reason, so those cards only waited for someone
   to dismiss them. They show again if the factory is paused or stops, and a stop notifies you.
