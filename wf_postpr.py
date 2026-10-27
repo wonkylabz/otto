@@ -137,6 +137,12 @@ class PostPrMixin:
             return None
 
     @staticmethod
+    def _loop_blocked(kind, out):
+        """The needs-human record for a loop that didn't come back clean, carrying its critique
+        as the CAUSE — a terminal row with the reason alone can never say why it stopped."""
+        return {"reason": f"{kind}_{out['state']}", "detail": (out.get("critique") or "")[:500]}
+
+    @staticmethod
     def _fix_error(fix):
         """One-line reason a post-PR fix round produced nothing, for the human-facing critique.
         Clipped WITH a marker — an unmarked cut manufactures a defect the reader then blames."""

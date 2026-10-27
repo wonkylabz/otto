@@ -65,6 +65,19 @@ These hold for every test you ever run.
    what you could *not* exercise, and every caveat. If the test was weaker than ideal,
    say so.
 
+**Scratch space.** Throwaway fixtures, a served test page, a browser profile go in
+`.otto-scratch/` at the top of the checkout when it exists — it is git-ignored and discarded
+with the checkout, so it needs no teardown and never shows in `git status`. Without it, use a
+directory inside the checkout and delete it in teardown. Avoid `/tmp`: an unattended session can
+refuse a command that creates or deletes outside its working directory, and the refusal takes
+the whole test with it.
+
+**Rendering is observable.** A claim about layout, spacing or what a page shows is checkable
+with a headless browser — Chrome/Chromium `--headless=new --user-data-dir=<scratch>/chrome`
+with `--dump-dom` or `--screenshot`, or the repo's own Playwright/Puppeteer. Try that before
+reporting it unobservable; if no browser is installed, say so as the caveat and verify what
+the unit tests can.
+
 Follow the target repo's own conventions (its `CLAUDE.md` and standing prefs): use
 read-only credentials for read-only checks, never act destructively against protected
 environments, and keep reports free of boilerplate.

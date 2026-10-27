@@ -9124,6 +9124,84 @@ class FactoryModeTests(unittest.TestCase):
                           st["walls_seen_at"], st["merged_prs"], st["blind_ticks"]),
                          (-1, "", None, "", [], 0))
 
+    def _enable(self, **form):
+        import board
+        cols = {"ready": "Ready", "active": "In progress", "review": "In review", "done": "Done",
+                "blocked": "Blocked"}
+        meta = {"project_id": "P", "status_field_id": "F", "options": {c: c for c in cols.values()}}
+        with unittest.mock.patch.object(workspace, "resolve", return_value={"name": "game", "path": "/x"}), \
+                unittest.mock.patch.object(self.factory, "_repo_slug", return_value="me/game"), \
+                unittest.mock.patch.object(board, "load", return_value={"project": "me/7", "columns": cols}), \
+                unittest.mock.patch.object(board, "project_meta", return_value=meta), \
+                unittest.mock.patch.object(board, "save"), \
+                unittest.mock.patch.object(board, "reconcile_schedule", return_value="ok"), \
+                unittest.mock.patch.object(self.factory, "_seed_goals", return_value="kept"), \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                           return_value="created") as sched:
+            st = self.factory.enable({"repo": "game", "seed": "s", "budget_usd": 5, **form})
+        return st, sched
+
+    def test_saving_the_config_starts_nothing_until_start(self):
+        # A save fired the first sprint, before the operator had wired the GitHub events.
+        st, sched = self._enable()
+        self.assertTrue(st["enabled"] and st["held"])
+        self.assertNotIn(unittest.mock.call(trigger=True), sched.call_args_list)
+        self.assertEqual(self.factory.gate(), {"go": False, "why": "on hold"})
+        self.assertEqual(self.factory.pickup_room(self.factory.load(), {}, {}, {}),
+                         (0, "on hold"))
+        # An edit neither starts a held line nor holds a running one, and fires nothing.
+        self.factory._mutate(lambda s: s.update(held=None))
+        _st, sched = self._enable(budget_usd=9)
+        self.assertIsNone(self.factory.load()["held"])
+        self.assertNotIn(unittest.mock.call(trigger=True), sched.call_args_list)
+
+    def test_start_releases_the_hold_and_fires_a_sprint_and_pause_keeps_the_line(self):
+        import board
+        self._on(held={"since": "x"}, merged=2, sprint_n=4)
+        with unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                        return_value="updated, first sprint triggered") as sched:
+            st = self.factory.start()
+        sched.assert_called_once_with(trigger=True)
+        self.assertIsNone(st["held"])
+        self.assertNotIn("warning", st)
+        with unittest.mock.patch.object(board, "save") as save, \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule") as sched:
+            st = self.factory.hold()
+        # A pause is not Manual: the board, the schedule and the counters stay as they were.
+        save.assert_not_called()
+        sched.assert_not_called()
+        self.assertTrue(st["enabled"] and st["held"])
+        self.assertEqual((st["merged"], st["sprint_n"]), (2, 4))
+        # A start that could not fire says so instead of reading as started.
+        with unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                        return_value="skipped (timeout)"):
+            self.assertIn("next scheduled check", self.factory.start()["warning"])
+
+    def test_start_and_pause_refuse_a_factory_that_is_off_or_globally_paused(self):
+        import estop
+        with self.assertRaises(self.factory.Refused):
+            self.factory.start()
+        with self.assertRaises(self.factory.Refused):
+            self.factory.hold()
+        self._on(held={"since": "x"})
+        with unittest.mock.patch.object(estop, "engaged", return_value=True), \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule") as sched:
+            with self.assertRaises(self.factory.Refused):
+                self.factory.start()
+        sched.assert_not_called()
+        self.assertTrue(self.factory.load()["held"])
+
+    def test_the_mode_card_offers_start_or_pause_and_the_routes_exist(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn('id="mode-start"', ui)
+        self.assertIn('id="mode-hold"', ui)
+        self.assertIn('"/api/factory/start"', ui)
+        self.assertIn('"/api/factory/hold"', ui)
+        import server
+        self.assertIn("/api/factory/start", server._POST_ROUTES)
+        self.assertIn("/api/factory/hold", server._POST_ROUTES)
+
     def test_enable_without_a_sprint_schedule_is_refused_and_undone(self):
         import board
         import delivery

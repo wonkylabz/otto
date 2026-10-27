@@ -1352,7 +1352,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             self._leave("REVIEW")
             # A review that didn't come back clean needs a human (PR stays draft).
             if review.get("state") in ("fail", "inconclusive"):
-                self._needs_human = {"reason": f"review_{review['state']}"}
+                self._needs_human = self._loop_blocked("review", review)
 
         # Post-PR QA loop (opt-in): empirically validate the PR with the QA capability and, on a
         # FAIL, fold its findings into a fix on the SAME branch and re-QA — bounded rounds. The
@@ -1366,7 +1366,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             self._leave("QA")
             # QA that didn't cleanly pass needs a human (PR stays draft) — same Blocked routing.
             if qa.get("state") in ("fail", "inconclusive"):
-                self._needs_human = {"reason": f"qa_{qa['state']}"}
+                self._needs_human = self._loop_blocked("qa", qa)
 
         # Factory mode: a PR that passed review AND QA merges itself (wf_postpr._auto_merge).
         merged = await self._auto_merge(params, pr, review, qa, notes,
@@ -1430,7 +1430,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             await workflow.execute_activity(
                 finalize_terminal,
                 {"wid": wid, "request": request, "cap": cap,
-                 "reason": self._needs_human["reason"], "reply_to": reply_to, "repo": repo,
+                 "reason": self._needs_human["reason"], "detail": self._needs_human.get("detail", ""),
+                 "reply_to": reply_to, "repo": repo,
                  "unattended": unattended, "times": self._times},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
 

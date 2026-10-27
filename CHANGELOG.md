@@ -11,6 +11,23 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Saving the Factory config no longer starts the factory.** A new factory is saved on hold;
+  press **Start** in Admin → Mode once the GitHub events are wired. **Pause** stops new sprints
+  and tickets but keeps the budget, counters and board settings, and runs already going finish.
+  A factory already running when you upgrade keeps running.
+
+### Fixed
+
+- **QA can build and render test pages.** Every PR workspace now has a git-ignored
+  `.otto-scratch/` folder, and the QA tester is told to use it (not `/tmp`) and to try a
+  headless browser before calling a layout claim unobservable. Its `/tmp` setups were refused
+  mid-run, which marked rendering checks inconclusive.
+- **A Needs-you entry now records why it stopped.** Failed merges and review or QA findings
+  now save their cause in the audit trail. Before, the trail showed only the reason code.
+  **Restart the worker after upgrading.**
+
 ## [0.7.3] - 2026-10-27
 
 ### Fixed

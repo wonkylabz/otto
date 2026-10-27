@@ -1085,6 +1085,44 @@ class WorkspaceTests(unittest.TestCase):
         # feature branch's work must be ABSENT — the clone starts from the default branch
         self.assertFalse(os.path.isfile(os.path.join(info["path"], "feature.txt")))
 
+    def test_every_clone_has_a_git_ignored_scratch_dir(self):
+        # QA built its test page under /tmp and the session refused the teardown, so a layout
+        # claim a headless browser could measure went INCONCLUSIVE (gh-issue-66, -68).
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = self._git_repo(tmp)
+        self._register(tmp, repo)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+        info = self.ws.provision("src", "wf-test-scratch")
+        scratch = os.path.join(info["path"], self.ws.SCRATCH_DIR)
+        self.assertTrue(os.path.isdir(scratch))
+        with open(os.path.join(scratch, "page.html"), "w") as f:
+            f.write("<p>x</p>")
+        # Never shows as residue, never committed, no tracked file touched.
+        self.assertFalse(self.ws._dirty(info["path"]))
+        import subprocess
+        tracked = subprocess.run(["git", "-C", info["path"], "status", "--porcelain",
+                                  "--ignored=no"], capture_output=True, text=True).stdout
+        self.assertEqual(tracked, "")
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "capabilities", "bundled", "qa-tester.md")) as f:
+            cap = f.read()
+        self.assertIn(self.ws.SCRATCH_DIR, cap)
+
+    def test_a_needs_human_row_keeps_its_cause(self):
+        # finalize_terminal was handed the reason only: a merge_failed row said nothing else.
+        from test_support import workflow_src
+        src = workflow_src()
+        i = src.index('"reason": self._needs_human["reason"],')
+        self.assertIn('"detail": self._needs_human.get("detail", "")', src[i:i + 300])
+        for loop in ("review", "qa"):
+            self.assertIn(f'self._needs_human = self._loop_blocked("{loop}", {loop})', src)
+        from wf_postpr import PostPrMixin
+        self.assertEqual(PostPrMixin._loop_blocked("qa", {"state": "inconclusive", "critique": "c"}),
+                         {"reason": "qa_inconclusive", "detail": "c"})
+
     # --- staleness: a registered checkout is only as current as the user's last pull ------------
     def _git_repo_with_remote(self, tmp):
         """A registered checkout whose local `main` is BEHIND its remote — the real situation on

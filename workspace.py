@@ -695,11 +695,34 @@ def provision(repo, run_id, from_branch=False, branch=None):
     except ValueError:
         shutil.rmtree(path, ignore_errors=True)
         raise
+    _scratch(path)
     _, head, _ = _run(["git", "-C", path, "rev-parse", "HEAD"])
     trace("WORKSPACE", f"provisioned {r['name']} -> {path} on {target_branch}"
           + (" (existing)" if from_branch else ""))
     return {"path": path, "branch": target_branch, "repo": r["name"], "origin": r["origin"],
             "head": head, "base": base}
+
+
+SCRATCH_DIR = ".otto-scratch"
+
+
+def _scratch(path):
+    """A git-ignored scratch dir INSIDE the clone, for fixtures, a served page, a browser profile.
+
+    A QA run built its throwaway page under `/tmp` and tore it down with `rm -rf /tmp/...`; the
+    whole command was refused in the unattended session, so a layout claim a headless browser
+    could have measured went INCONCLUSIVE and parked the ticket (`gh-issue-66`, `-68`). Inside the
+    cwd it needs no teardown of its own (the clone goes, it goes), and `info/exclude` rather than
+    `.gitignore` keeps it out of `git status` and every commit without touching a tracked file.
+    Best-effort: a run without it still has the cwd."""
+    try:
+        os.makedirs(os.path.join(path, SCRATCH_DIR), exist_ok=True)
+        excl = os.path.join(path, ".git", "info", "exclude")
+        os.makedirs(os.path.dirname(excl), exist_ok=True)
+        with open(excl, "a", encoding="utf-8") as f:
+            f.write(f"\n/{SCRATCH_DIR}/\n")
+    except OSError as e:
+        trace("WORKSPACE", f"no scratch dir: {str(e)[:120]}")
 
 
 def _dirty(path):
