@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-10-27
+
 ### Fixed
 
 - **Code review and QA can now compare a PR against its base branch.** Each workspace Otto
@@ -358,7 +360,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/wonkylabz/otto/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/wonkylabz/otto/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/wonkylabz/otto/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/wonkylabz/otto/compare/v0.6.3...v0.7.0
