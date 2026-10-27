@@ -420,6 +420,28 @@ def mcp_allow_for(wid, state=None):
 # nothing and counted idle, so the factory stopped itself as "stalled" hours before the limit
 # reset, and the PM then rewrote the walled ticket as if it had failed, spending a retry on it.
 WALL_REASONS = ("claude_usage_limit", "claude_auth_expired")
+_SPRINT_WID_RE = re.compile(r"^factory-(\d+)-s(\d+)(?:-play)?$")
+
+
+def is_sprint(wid):
+    """A factory sprint (or its playtest) run id. Never retried by hand: the next scheduled
+    sprint re-reads the board as it is NOW, while a retry replays a stale brief as an ordinary
+    run — outside the factory's WIP cap and budget, and working the very tickets the line has
+    since re-readied (`web-bcb63055`, a retried sprint #3 closing PR #83 under #78's re-run)."""
+    return bool(_SPRINT_WID_RE.match(wid or ""))
+
+
+def superseded(wid, state=None):
+    """A sprint card nobody needs to look at: a LATER sprint of the same factory has run, and
+    that sprint re-read the board. Factory mode is meant to run without a human, so a dead
+    sprint must not wait in Needs-you for one to dismiss it."""
+    m = _SPRINT_WID_RE.match(wid or "")
+    if not m:
+        return False
+    s = state if state is not None else load()
+    return m.group(1) == tag(s) and int(s.get("sprint_n") or 0) > int(m.group(2))
+
+
 _ISSUE_WID_RE = re.compile(r"^gh-issue-(\d+)(?:-r\d+)?(?:-|$)")
 
 

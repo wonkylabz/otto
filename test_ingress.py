@@ -9191,6 +9191,29 @@ class FactoryModeTests(unittest.TestCase):
         sched.assert_not_called()
         self.assertTrue(self.factory.load()["held"])
 
+    def test_a_factory_sprint_card_is_never_retried_by_hand(self):
+        # A retried sprint #3 ran as a plain web run beside the factory's own sprint #5 and
+        # tried to close the PR the factory's re-run of the same ticket was building.
+        s = self.factory.is_sprint
+        self.assertTrue(s("factory-20261027120437-s3"))
+        self.assertTrue(s("factory-20261027120437-s15-play"))
+        for wid in ("gh-issue-78-msosas-zero-marketing", "web-bcb63055", "factory-sprint-run",
+                    "factory-x-s3-rev0", "", None):
+            self.assertFalse(s(wid), wid)
+        # ... nor waits for a human at all once a later sprint has run.
+        st = self._on(started_at="2026-10-27T12:04:37", sprint_n=5)
+        self.assertTrue(self.factory.superseded("factory-20261027120437-s3", st))
+        self.assertFalse(self.factory.superseded("factory-20261027120437-s5", st))
+        self.assertFalse(self.factory.superseded("factory-20261026130838-s3", st))  # another factory
+        self.assertFalse(self.factory.superseded("gh-issue-78", st))
+        import inspect
+        import server
+        src = inspect.getsource(server.Handler._post_needs_you_retry)
+        self.assertLess(src.index("factory.is_sprint(wid)"), src.index("_run_origin(wid)"))
+        self.assertIn('e["no_retry"] = factory.is_sprint(e["id"])', inspect.getsource(server))
+        from test_support import ui_src
+        self.assertIn("it.no_retry?''", ui_src())
+
     def test_the_mode_card_offers_start_or_pause_and_the_routes_exist(self):
         from test_support import ui_src
         ui = ui_src()

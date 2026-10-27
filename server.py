@@ -877,6 +877,7 @@ async def _board(limit=40):
     retries = _retries()
     for e in out:
         e["retried_to"] = retries.get(e["id"])
+        e["no_retry"] = factory.is_sprint(e["id"])
         # A run with no chat_key of its own (an interactive web-* run — the browser owns the
         # conversation — or a workflow-opened chat whose terminal status fell outside the
         # COMPLETED/RUNNING branches above) can still be traced back to its chat via the sticky
@@ -886,7 +887,9 @@ async def _board(limit=40):
         # into the archive — a chat can be reattached to a run long after the card stopped changing.
         if not e.get("chat_key"):
             e["chat_key"] = chats.find_by_run_origin(e["id"])
-    return [e for e in out if e["id"] not in dismissed]
+    fac = factory.load()
+    return [e for e in out if e["id"] not in dismissed
+            and not factory.superseded(e["id"], fac)]
 
 
 def _run_result(wid):
@@ -2182,6 +2185,11 @@ class Handler(BaseHTTPRequestHandler):
         if not TEMPORAL_OK:
             self._send(503, json.dumps({"error": "Temporal not available"})); return
         wid = (body.get("id") or "").strip()
+        if factory.is_sprint(wid):
+            self._send(409, json.dumps({"error": "a factory sprint is never retried by hand — "
+                                                 "the factory runs its own next sprint; dismiss "
+                                                 "this card"}))
+            return
         request, capname, repo, reached_run = _run_origin(wid)
         if not request:
             self._send(404, json.dumps({"error": "no audit history found for that run"})); return
