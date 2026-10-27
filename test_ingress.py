@@ -9208,7 +9208,8 @@ class FactoryModeTests(unittest.TestCase):
         self.assertFalse(self.factory.superseded("gh-issue-78", st))
         import inspect
         import server
-        self.assertIn('factory.triaged(e["id"], fac)', inspect.getsource(server))
+        self.assertIn('factory.triaged(e["id"], e.get("needs_human"), fac)',
+                      inspect.getsource(server))
         src = inspect.getsource(server.Handler._post_needs_you_retry)
         self.assertLess(src.index("factory.is_sprint(wid)"), src.index("_run_origin(wid)"))
         self.assertIn('e["no_retry"] = factory.is_sprint(e["id"])', inspect.getsource(server))
@@ -9218,14 +9219,38 @@ class FactoryModeTests(unittest.TestCase):
     def test_a_running_factory_answers_its_own_needs_you_cards(self):
         # Factory mode is meant to need no human: the PM retries or closes every Blocked card.
         t = self.factory.triaged
-        st = self._on(wids=["gh-issue-78-msosas-zero-marketing", "factory-20261010100000-s4"])
-        self.assertTrue(t("gh-issue-78-msosas-zero-marketing", st))
-        self.assertTrue(t("gh-issue-78-msosas-zero-marketing-qa0", st))      # its loops too
-        self.assertFalse(t("gh-issue-78-msosas-zero-marketing-r1", st))      # unclaimed generation
-        self.assertFalse(t("web-abc", st))                                   # not the factory's
+        t78 = "gh-issue-78-msosas-zero-marketing"
+        st = self._on(wids=[t78, "gh-issue-9-x", "factory-20261010100000-s4"],
+                      human_wids=["gh-issue-9-x"])
+        self.assertTrue(t(t78, "qa_inconclusive", st))
+        self.assertTrue(t(t78 + "-qa0", "qa_fail", st))                   # its loops too
+        self.assertTrue(t(t78, "claude_usage_limit", st))                # the pause re-readies it
+        self.assertFalse(t(t78 + "-r1", "qa_fail", st))                  # unclaimed generation
+        self.assertFalse(t("web-abc", "qa_fail", st))                    # not the factory's
+        # A card the run could not move to Blocked, or a human was asked to approve, stays: the PM
+        # never sees the first and is told never to touch the second (review round 3).
+        self.assertFalse(t(t78, "delivery_failed", st))
+        self.assertFalse(t(t78, "gate_timeout", st))
+        self.assertFalse(t(t78, None, st))
+        self.assertFalse(t("gh-issue-9-x", "qa_fail", st))               # under the hold label
         # Nobody triages a held or stopped line: its cards are a human's again.
-        self.assertFalse(t("gh-issue-78-msosas-zero-marketing", {**st, "held": {"since": "x"}}))
-        self.assertFalse(t("gh-issue-78-msosas-zero-marketing", {**st, "enabled": False}))
+        self.assertFalse(t(t78, "qa_fail", {**st, "held": {"since": "x"}}))
+        self.assertFalse(t(t78, "qa_fail", {**st, "enabled": False}))
+        # A superseded sprint is hidden whatever state it ended in, needs_human set or not.
+        import inspect
+        import server
+        src = inspect.getsource(server)
+        self.assertIn('and not factory.superseded(e["id"], fac)\n', src)
+        self.assertIn('factory.claim(wid, human=params.get("approval") == "ask")',
+                      inspect.getsource(__import__("activities")))
+
+    def test_a_hold_ticket_is_claimed_as_a_humans(self):
+        self._on()
+        self.factory.claim("gh-issue-3-x", human=True)
+        self.factory.claim("gh-issue-4-x")
+        st = self.factory.load()
+        self.assertEqual((st["wids"], st["human_wids"]), (["gh-issue-3-x", "gh-issue-4-x"],
+                                                          ["gh-issue-3-x"]))
 
     def test_the_mode_card_offers_start_or_pause_and_the_routes_exist(self):
         from test_support import ui_src

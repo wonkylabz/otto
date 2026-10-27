@@ -1170,7 +1170,7 @@ def poll_board(payload: dict) -> dict:
         if owned:
             # Claimed BEFORE it starts: an unclaimed factory run escapes the MCP allowlist and
             # the budget, and the next poll sees it running and never retries the claim.
-            factory.claim(wid)
+            factory.claim(wid, human=params.get("approval") == "ask")
         if board.start_run(wid, params):
             board.set_status(cfg, meta, issue.get("item_id"), (cfg.get("columns") or {}).get("active"))
             picked.append(n)

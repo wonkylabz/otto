@@ -60,6 +60,7 @@ _DEFAULTS = {
     "merged": 0,
     "merged_seen": 0,        # `merged` at the last sprint's end — the idle-sprint test
     "wids": [],              # every workflow this factory started (spend is summed over them)
+    "human_wids": [],        # the subset started under the board's `hold` label: a human's
     "status": "manual",
     "prev_board": None,
     "history": [],
@@ -331,11 +332,14 @@ def apply(params, state):
     return params
 
 
-def claim(wid):
-    """Record a workflow this factory started, so its spend counts against the budget."""
+def claim(wid, human=False):
+    """Record a workflow this factory started, so its spend counts against the budget. `human`:
+    it runs under the `hold` label, so its outcome is a person's to act on, never the PM's."""
     def _fn(s):
         if wid not in s["wids"]:
             s["wids"] = list(s["wids"]) + [wid]
+        if human and wid not in (s.get("human_wids") or []):
+            s["human_wids"] = list(s.get("human_wids") or []) + [wid]
     _mutate(_fn)
 
 
@@ -431,15 +435,25 @@ def is_sprint(wid):
     return bool(_SPRINT_WID_RE.match(wid or ""))
 
 
-def triaged(wid, state=None):
+# Needs-human reasons whose ticket card the run itself moves to Blocked, where the PM sprint
+# reads it, retries it (`factory-retry-N`) or closes it. NOT `delivery_failed` (the move is what
+# failed: the card sits In Progress and the gate waits on it forever) nor `gate_timeout` (a human
+# was asked to approve, and the PM is told never to touch a held card).
+_PM_TRIAGES = frozenset({"verify_exhausted", "published_unverified", "qa_fail", "qa_inconclusive",
+                         "review_fail", "review_inconclusive", "merge_failed", "merge_unreviewed",
+                         "factory_no_pr", "workflow_error"}) | frozenset(WALL_REASONS)
+
+
+def triaged(wid, reason, state=None):
     """A Needs-you card the FACTORY answers, not a human. While the line runs, the PM sprint
-    reads every Blocked card, retries it (`factory-retry-N`) or closes it with a reason, and a
-    line that cannot recover stops itself and notifies (`disable`) — at which point these cards
-    show again. On hold nobody is triaging, so they show then too."""
+    reads every Blocked card and retries or closes it, and a line that cannot recover stops
+    itself and notifies (`disable`) — at which point these cards show again. Never a card under
+    the `hold` label, a reason that leaves the card outside Blocked, or a held/stopped line."""
     s = state if state is not None else load()
-    if superseded(wid, s):
-        return True
-    return bool(enabled(s) and not s.get("held") and _owned(wid or "", s.get("wids") or []))
+    if reason not in _PM_TRIAGES or not enabled(s) or s.get("held"):
+        return False
+    wid = wid or ""
+    return _owned(wid, s.get("wids") or []) and not _owned(wid, s.get("human_wids") or [])
 
 
 def superseded(wid, state=None):
@@ -729,7 +743,7 @@ def enable(form):
             # one's clean playtest (and declares DONE untested) or its pause (and re-readies the
             # new repo's cards whose numbers match the old walled tickets).
             s.update({"started_at": _now(), "sprint_n": 0, "idle_sprints": 0, "merged": 0,
-                      "merged_seen": 0, "wids": [], "prev_board": bcfg, "paused": None,
+                      "merged_seen": 0, "wids": [], "human_wids": [], "prev_board": bcfg, "paused": None,
                       "walls_seen_at": "", "playtest_merged": -1, "playtest_verdict": "",
                       "blind_ticks": 0, "merged_prs": [], "held": {"since": _now()}})
         s["enabled"], s["status"] = True, "running"
