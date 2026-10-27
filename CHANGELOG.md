@@ -24,6 +24,9 @@ changelog that restates it is a second copy of `git log`.
   `.otto-scratch/` folder, and the QA tester is told to use it (not `/tmp`) and to try a
   headless browser before calling a layout claim unobservable. Its `/tmp` setups were refused
   mid-run, which marked rendering checks inconclusive.
+- **A running factory no longer sends its failed runs to Needs-you.** Its sprints already retry
+  a Blocked ticket twice and then close it with a reason, so those cards only waited for someone
+  to dismiss them. They show again if the factory is paused or stops, and a stop notifies you.
 - **A factory sprint card in Needs-you has no Retry button.** A retried sprint ran as an
   ordinary run beside the factory's own sprints, outside its budget and WIP cap, and worked the
   same tickets. The card now clears itself once the factory's next sprint has run.

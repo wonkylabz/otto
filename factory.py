@@ -431,6 +431,17 @@ def is_sprint(wid):
     return bool(_SPRINT_WID_RE.match(wid or ""))
 
 
+def triaged(wid, state=None):
+    """A Needs-you card the FACTORY answers, not a human. While the line runs, the PM sprint
+    reads every Blocked card, retries it (`factory-retry-N`) or closes it with a reason, and a
+    line that cannot recover stops itself and notifies (`disable`) — at which point these cards
+    show again. On hold nobody is triaging, so they show then too."""
+    s = state if state is not None else load()
+    if superseded(wid, s):
+        return True
+    return bool(enabled(s) and not s.get("held") and _owned(wid or "", s.get("wids") or []))
+
+
 def superseded(wid, state=None):
     """A sprint card nobody needs to look at: a LATER sprint of the same factory has run, and
     that sprint re-read the board. Factory mode is meant to run without a human, so a dead

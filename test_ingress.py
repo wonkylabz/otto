@@ -9208,11 +9208,24 @@ class FactoryModeTests(unittest.TestCase):
         self.assertFalse(self.factory.superseded("gh-issue-78", st))
         import inspect
         import server
+        self.assertIn('factory.triaged(e["id"], fac)', inspect.getsource(server))
         src = inspect.getsource(server.Handler._post_needs_you_retry)
         self.assertLess(src.index("factory.is_sprint(wid)"), src.index("_run_origin(wid)"))
         self.assertIn('e["no_retry"] = factory.is_sprint(e["id"])', inspect.getsource(server))
         from test_support import ui_src
         self.assertIn("it.no_retry?''", ui_src())
+
+    def test_a_running_factory_answers_its_own_needs_you_cards(self):
+        # Factory mode is meant to need no human: the PM retries or closes every Blocked card.
+        t = self.factory.triaged
+        st = self._on(wids=["gh-issue-78-msosas-zero-marketing", "factory-20261010100000-s4"])
+        self.assertTrue(t("gh-issue-78-msosas-zero-marketing", st))
+        self.assertTrue(t("gh-issue-78-msosas-zero-marketing-qa0", st))      # its loops too
+        self.assertFalse(t("gh-issue-78-msosas-zero-marketing-r1", st))      # unclaimed generation
+        self.assertFalse(t("web-abc", st))                                   # not the factory's
+        # Nobody triages a held or stopped line: its cards are a human's again.
+        self.assertFalse(t("gh-issue-78-msosas-zero-marketing", {**st, "held": {"since": "x"}}))
+        self.assertFalse(t("gh-issue-78-msosas-zero-marketing", {**st, "enabled": False}))
 
     def test_the_mode_card_offers_start_or_pause_and_the_routes_exist(self):
         from test_support import ui_src

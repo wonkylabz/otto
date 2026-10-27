@@ -889,7 +889,7 @@ async def _board(limit=40):
             e["chat_key"] = chats.find_by_run_origin(e["id"])
     fac = factory.load()
     return [e for e in out if e["id"] not in dismissed
-            and not factory.superseded(e["id"], fac)]
+            and not (e.get("needs_human") and factory.triaged(e["id"], fac))]
 
 
 def _run_result(wid):
