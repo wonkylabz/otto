@@ -1182,6 +1182,13 @@ def poll_board(payload: dict) -> dict:
         if wid is None:
             skipped.append(n)
             continue
+        # Both switches re-read at the last moment: this poll read the board config and the factory
+        # state at its top, and a factory stop in between (it restores the board first, then
+        # marks itself off) started the next Ready card as a PLAIN board run — no budget, every
+        # MCP server, four seconds after a budget stop (`gh-issue-99`).
+        if not board.enabled(board.load()) or (owned and not factory.enabled()):
+            activity.logger.info(f"board: stopped mid-poll — #{n} and the rest left for later")
+            break
         if owned:
             # Claimed BEFORE it starts: an unclaimed factory run escapes the MCP allowlist and
             # the budget, and the next poll sees it running and never retries the claim.

@@ -9673,6 +9673,41 @@ class FactoryModeTests(unittest.TestCase):
             self.assertFalse(start.called, f"counts={counts}")
             self.assertFalse(details.called, f"counts={counts}")
 
+    def test_a_stop_during_a_board_poll_starts_nothing_more(self):
+        # A budget stop restored the board config while a poll was mid-way: the poll still held
+        # the old (enabled) config and started the next Ready card as a plain board run.
+        import activities
+        import board
+        cfg = {"enabled": True, "project": "me/7", "columns": {"ready": "Ready", "active": "In Progress"}}
+        ready = [{"number": 3, "repo": "me/game", "item_id": "i3", "title": "t", "body": "", "labels": []}]
+        for factory_on in (False, True):
+            self._on(enabled=factory_on)
+            reads = []
+
+            def load():
+                reads.append(1)
+                if len(reads) == 1:
+                    return cfg
+                if not factory_on:          # the board was switched off after the first read
+                    return {**cfg, "enabled": False}
+                self.factory._mutate(lambda s: s.update(enabled=False))   # the factory stopped
+                return cfg
+            with unittest.mock.patch.object(board, "load", side_effect=load), \
+                    unittest.mock.patch.object(board, "project_meta", return_value={}), \
+                    unittest.mock.patch.object(board, "item_list", return_value={"items": []}), \
+                    unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
+                    unittest.mock.patch.object(board, "column_counts", return_value={}), \
+                    unittest.mock.patch.object(self.factory, "pickup_room", return_value=(1, "")), \
+                    unittest.mock.patch.object(board, "issue_details", return_value={"repo": "me/game"}), \
+                    unittest.mock.patch.object(board, "issue_to_request",
+                                               return_value={"request": "x", "reply_to": {}}), \
+                    unittest.mock.patch.object(self.factory, "apply"), \
+                    unittest.mock.patch.object(board, "next_run_id", return_value="gh-issue-3-me-game"), \
+                    unittest.mock.patch.object(board, "start_run") as start:
+                activities.poll_board({})
+            self.assertFalse(start.called, f"factory_on={factory_on}")
+            self.assertNotIn("gh-issue-3-me-game", self.factory.load()["wids"])
+
     def test_a_merged_ticket_moves_to_done_not_review(self):
         import board
         moved = []

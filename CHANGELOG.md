@@ -29,6 +29,10 @@ changelog that restates it is a second copy of `git log`.
   puts an auto-mode check in front of every shell command an unattended run makes. Your own
   `permissions.deny` rules still apply, and the QA tester is told not to use `rm -rf`
   (`npm ci` already gives a clean install).
+- **A factory stop can no longer leak one more ticket.** A board poll running at the moment the
+  factory stopped (at its budget, say) started the next Ready card as an ordinary board run,
+  outside the budget and with every MCP server. The poll now re-checks both switches just before
+  it starts each run.
 - **A running factory no longer sends its failed runs to Needs-you.** Its sprints already retry
   a Blocked ticket twice and then close it with a reason, so those cards only waited for someone
   to dismiss them. They show again if the factory is paused or stops, and a stop notifies you.
