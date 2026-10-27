@@ -4377,6 +4377,48 @@ class BoardTests(unittest.TestCase):
         finally:
             board._run = orig
 
+    def test_add_label_creates_a_label_the_repo_does_not_have_yet(self):
+        # Every repo starts without `needs-human`, so the stamp failed silently on each one.
+        import board
+        calls = []
+
+        def fake(argv, timeout=60):
+            calls.append(argv[:3])
+            if argv[:3] == ["gh", "issue", "edit"] and len(calls) == 1:
+                return 1, "", "failed to update: 'needs-human' not found"
+            return 0, "", ""
+        with unittest.mock.patch.object(board, "_run", side_effect=fake):
+            self.assertTrue(board.add_label("acme/widgets", 2, "needs-human"))
+        self.assertEqual(calls, [["gh", "issue", "edit"], ["gh", "label", "create"],
+                                 ["gh", "issue", "edit"]])
+        calls.clear()
+        with unittest.mock.patch.object(board, "_run", return_value=(1, "", "HTTP 502")) as r:
+            self.assertFalse(board.add_label("acme/widgets", 2, "needs-human"))
+            self.assertEqual(r.call_count, 1)        # only a missing label is created
+
+    def test_a_card_re_run_closes_its_earlier_generations_prs(self):
+        # zero-marketing#4 had three open PRs for one ticket. Every earlier generation's PR
+        # goes — legacy or repo-keyed — but never #41's, a web run's, or the new one.
+        import board
+        prs = [{"number": 12, "headRefName": "otto/gh-issue-4"},
+               {"number": 15, "headRefName": "otto/gh-issue-4-o-r-r1"},
+               {"number": 17, "headRefName": "otto/gh-issue-4-o-r-r2"},
+               {"number": 20, "headRefName": "otto/gh-issue-41"},
+               {"number": 21, "headRefName": "otto/web-abc"}]
+        calls = []
+
+        def fake(argv, timeout=60):
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                return 0, json.dumps(prs), ""
+            return 0, "", ""
+        with unittest.mock.patch.object(board, "_run", side_effect=fake):
+            closed = board.close_superseded("o/r", 4, "otto/gh-issue-4-o-r-r2", "https://x/17")
+        self.assertEqual(closed, [12, 15])
+        self.assertTrue(all("--delete-branch" not in c for c in calls))   # reopenable
+        with unittest.mock.patch.object(board, "_run", return_value=(1, "", "boom")):
+            self.assertEqual(board.close_superseded("o/r", 4, "b", "u"), [])
+
     def test_parse_items_filters_ready_issues_only(self):
         import board
         cfg = self._cfg()
@@ -4411,7 +4453,7 @@ class BoardTests(unittest.TestCase):
         # one is left untouched by the workflow (no needless clone).
         self.assertEqual(p["repo_hint"], "widgets")
         self.assertEqual(p["approval"], "auto")           # Ready == approved
-        self.assertEqual(p["chat_key"], "gh-issue-11")
+        self.assertEqual(p["chat_key"], "gh-issue-11-acme-widgets")
         self.assertEqual(p["reply_to"]["kind"], "github_issue")
         self.assertEqual(p["reply_to"]["number"], 11)
         self.assertFalse(p["reply_to"]["repo_edit"])
@@ -9607,10 +9649,10 @@ class FactoryModeTests(unittest.TestCase):
                 unittest.mock.patch.object(board, "start_run",
                                            side_effect=lambda wid, p: started.append((wid, p)) or True):
             out = activities.poll_board({})
-        self.assertEqual([w for w, _ in started], ["gh-issue-3"])
+        self.assertEqual([w for w, _ in started], ["gh-issue-3-me-game"])
         self.assertEqual(sorted(out["skipped"]), [5, 9])
         self.assertTrue(started[0][1]["auto_merge"])
-        self.assertIn("gh-issue-3", self.factory.load()["wids"])
+        self.assertIn("gh-issue-3-me-game", self.factory.load()["wids"])
 
     def test_board_poll_at_wip_or_unreadable_picks_no_factory_ticket(self):
         import activities
@@ -9769,6 +9811,33 @@ class FactoryModeTests(unittest.TestCase):
         with g([("gh-issue-11", "closed"), ("gh-issue-11-r1", "running")]):
             self.assertIsNone(board.next_run_id(11))                    # in flight: never doubled
             self.assertEqual(board.latest_run_id(11), "gh-issue-11-r1")
+
+    def test_a_cards_run_id_carries_its_repo(self):
+        # Three repos' issue #2 shared `gh-issue-2`: one chat thread, merged audit rows, and a
+        # reaper judging one repo's card by another's run.
+        import board
+        g = lambda gens: unittest.mock.patch.object(board, "_generations", return_value=gens)
+        with g([]):
+            self.assertEqual(board.next_run_id(2, "msosas/zero-marketing"),
+                             "gh-issue-2-msosas-zero-marketing")
+            self.assertNotEqual(board.next_run_id(2, "msosas/truco"),
+                                board.next_run_id(2, "msosas/tarot"))
+        self.assertEqual(board.run_id(2, 1, "o/r"), "gh-issue-2-o-r-r1")
+        self.assertEqual(board.issue_to_request(
+            {"number": 2, "title": "t", "body": "", "repo": "o/r"}, {})["chat_key"],
+            "gh-issue-2-o-r")
+
+    def test_a_card_started_before_repo_ids_is_still_judged_by_its_own_run(self):
+        # An In-Progress card from before the id change has only legacy generations; judging it
+        # by a repo-keyed id that never ran would leave it stuck forever.
+        import board
+        legacy = [("gh-issue-4", "running")]
+        with unittest.mock.patch.object(board, "_generations",
+                                        side_effect=lambda n, repo=None: [] if repo else legacy):
+            self.assertEqual(board.latest_run_id(4, "o/r"), "gh-issue-4")
+        with unittest.mock.patch.object(board, "_generations",
+                                        side_effect=lambda n, repo=None: [("gh-issue-4-o-r", "closed")] if repo else legacy):
+            self.assertEqual(board.latest_run_id(4, "o/r"), "gh-issue-4-o-r")
 
     def test_board_poll_skips_a_card_whose_run_is_still_going(self):
         import activities

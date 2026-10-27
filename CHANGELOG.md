@@ -32,6 +32,19 @@ changelog that restates it is a second copy of `git log`.
   same tickets. The card now clears itself once the factory's next sprint has run.
 - **A Needs-you entry now records why it stopped.** Failed merges and review or QA findings
   now save their cause in the audit trail. Before, the trail showed only the reason code.
+- **Board runs for the same issue number in different repos no longer share a run.** A board
+  run's id and chat thread now include the issue's repo (`gh-issue-2-owner-repo`). Before this,
+  issue #2 in two repos shared one chat thread and one audit history, and one could wait for the
+  other to finish. Cards already In Progress keep their old id and the reaper still finds them.
+  Old chat threads stay where they are; a re-readied card starts a new thread.
+- **One ticket, one open PR.** A run stopped by Claude's usage limit no longer pushes its
+  half-finished work as a PR. When a board card runs again, its new PR closes the earlier run's
+  PR (the branch is kept, so you can reopen it). Retry on a board card now starts the card's next
+  run instead of a separate one, and refuses while the card is already running again.
+- **A usage limit hit while judging is reported as the usage limit.** It used to show as
+  `workflow_error`, which looked like an Otto bug and invited a Retry that hit the same limit.
+- **The `needs-human` label now lands on repos that didn't have it.** Otto creates the label
+  when it is missing. Before this, a stuck or failed ticket in such a repo got no label.
   **Restart the worker after upgrading.**
 
 ## [0.7.3] - 2026-10-27

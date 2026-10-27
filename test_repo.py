@@ -281,6 +281,36 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         self.assertEqual(drafted, [])
 
     @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_walled_run_pushes_nothing_and_opens_no_pr(self):
+        # zero-marketing#12: the usage limit stopped the attempt mid-work and finalize still
+        # opened a PR of the half-done tree, red CI and all.
+        with mock.patch.object(workspace, "finalize") as fin, \
+                mock.patch.object(engine, "pr_copy") as copy:
+            out = activities.finalize_workspace({"run_id": "gh-issue-4", "title": "t",
+                                                 "walled": True})
+        fin.assert_not_called()
+        copy.assert_not_called()
+        self.assertFalse(out["pushed"])
+        self.assertIsNone(out["pr_url"])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_board_runs_fresh_pr_closes_the_cards_earlier_ones(self):
+        import board
+        issue = {"kind": "github_issue", "repo": "o/r", "number": 4}
+        opened = {"pr_url": "https://x/16", "branch": "otto/gh-issue-4-o-r-r1"}
+        with mock.patch.object(engine, "pr_copy", return_value={"title": "t", "body": "b"}), \
+                mock.patch.object(workspace, "finalize", return_value=opened), \
+                mock.patch.object(board, "close_superseded") as sup:
+            activities.finalize_workspace({"run_id": "gh-issue-4-o-r-r1", "issue": issue})
+            sup.assert_called_once_with("o/r", 4, "otto/gh-issue-4-o-r-r1", "https://x/16")
+            sup.reset_mock()
+            # A push to an EXISTING PR opens nothing, so it supersedes nothing.
+            with mock.patch.object(workspace, "_dirty", return_value=False):
+                activities.finalize_workspace({"run_id": "gh-issue-4-o-r-r1", "issue": issue,
+                                               "existing_pr": True, "branch": "b"})
+            sup.assert_not_called()
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
     def test_a_swarm_part_never_closes_the_shared_issue(self):
         got, _ = self._finalize_activity({"run_id": "web-abc-s2", "title": "t"})
         self.assertFalse(got["close_issue"])

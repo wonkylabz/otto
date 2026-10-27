@@ -1881,6 +1881,45 @@ class NeedsYouActionsTests(unittest.TestCase):
             self.server._wf_start, self.server.TEMPORAL_OK = _orig_start, _orig_ok
             self.server.tc.workflow_input = _orig_in
 
+    def test_retry_of_a_board_card_is_its_next_generation_never_a_side_run(self):
+        # zero-marketing#4: a Retry started `web-*` while the factory's re-ready of the same card
+        # was already running — two runs, two duplicate PRs.
+        engine.record_terminal("gh-issue-4-o-r", "GitHub issue #4",
+                               {"kind": "custom", "name": "demo-write"}, "workflow_error")
+        started = []
+
+        async def fake_wf_start(wid, params):
+            started.append({"id": wid, "params": params})
+        _orig_start, self.server._wf_start = self.server._wf_start, fake_wf_start
+        _orig_ok, self.server.TEMPORAL_OK = self.server.TEMPORAL_OK, True
+        _orig_in = self.server.tc.workflow_input
+        self.server.tc.workflow_input = lambda wid: {
+            "request": "GitHub issue #4", "qa": True, "auto_merge": True,
+            "reply_to": {"kind": "github_issue", "repo": "o/r", "number": 4}}
+        httpd = ThreadingTCPServer(("127.0.0.1", 0), self.server.Handler)
+        httpd.daemon_threads = True
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        try:
+            base = "http://127.0.0.1:%d" % httpd.server_address[1]
+            with unittest.mock.patch.object(self.server.board, "next_run_id", return_value=None):
+                st, _ = _post(base, "/api/needs-you/retry", {"id": "gh-issue-4-o-r"})
+            self.assertEqual(st, 409)                  # a generation is running: never doubled
+            self.assertEqual(started, [])
+            with unittest.mock.patch.object(self.server.board, "next_run_id",
+                                            return_value="gh-issue-4-o-r-r1") as nxt:
+                st, body = _post(base, "/api/needs-you/retry", {"id": "gh-issue-4-o-r"})
+            self.assertEqual(st, 200)
+            nxt.assert_called_with(4, "o/r")
+            self.assertEqual(body["id"], "gh-issue-4-o-r-r1")
+            self.assertEqual(started[0]["id"], "gh-issue-4-o-r-r1")
+            self.assertTrue(started[0]["params"].get("qa"))
+            self.assertNotIn("auto_merge", started[0]["params"])   # only the board poll sets it
+        finally:
+            httpd.shutdown(); t.join(timeout=5); httpd.server_close()
+            self.server._wf_start, self.server.TEMPORAL_OK = _orig_start, _orig_ok
+            self.server.tc.workflow_input = _orig_in
+
     def test_retry_keeps_a_triggers_quoted_post_out_of_the_connector_guard(self):
         # #223's follow-up: dropped on retry, the post read as the ask again and the run left local.
         engine.record_terminal("evt-s-x", "Investigate.", {"kind": "agent", "name": "demo-write"},
@@ -7728,6 +7767,45 @@ class WorkflowClaudeAuthWallTests(unittest.IsolatedAsyncioTestCase):
         terminal = [e for e in engine.iter_audit_entries() if e.get("outcome") == "needs_human"]
         self.assertEqual([e.get("reason") for e in terminal], [config.AUTH_STOP_REASON])
 
+    async def test_a_limit_hit_by_a_tier_call_is_the_wall_not_a_workflow_error(self):
+        # gh-issue-4: the review judge's tier call hit the session limit and raised, so the
+        # catch-all booked `workflow_error` — an Otto bug on the card, inviting a Retry that hit
+        # the same limit, and the factory never paused for it.
+        import uuid
+        from temporalio.client import WorkflowFailureError
+        from workflows import OttoWorkflow
+        from activities import (clarify_request, deliver_result, finalize_terminal, notify_human,
+                                record_attempt, record_skip, route_request, snapshot_settings,
+                                run_capability, resolve_pr_target,
+            check_grounding, verify_capability)
+        engine.run_attempt = lambda request, cap, *, attempt=1, wid=None, **k: {
+            "workflow": wid, "attempt": attempt, "cost": 0.0, "result": "done",
+            "session_id": None, "model": "m", "backend": "claude",
+            "tokens": {"input": 0, "output": 0}}
+
+        def limit(*a, **k):
+            raise RuntimeError("claude tier call failed: You've hit your session limit "
+                               "· resets 4pm (Pacific/Auckland)")
+        engine.verify = limit
+        async with await _time_skipping_env() as env:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                async with Worker(
+                    env.client, task_queue="limq", workflows=[OttoWorkflow],
+                    activities=[route_request, snapshot_settings, clarify_request, run_capability, resolve_pr_target, check_grounding,
+                                verify_capability, record_attempt, record_skip, deliver_result,
+                                finalize_terminal, notify_human],
+                    activity_executor=ex,
+                ):
+                    with self.assertRaises(WorkflowFailureError):
+                        await env.client.execute_workflow(
+                            OttoWorkflow.run,
+                            {"request": "post the daily summary", "unattended": True,
+                             "auto_approve": True,
+                             "cap": {"name": "daily-summary", "kind": "skill", "risk": "write"}},
+                            id="lim-" + uuid.uuid4().hex[:8], task_queue="limq")
+        terminal = [e for e in engine.iter_audit_entries() if e.get("outcome") == "needs_human"]
+        self.assertEqual([e.get("reason") for e in terminal], ["claude_usage_limit"])
+
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
 class WorkflowBudgetTests(unittest.IsolatedAsyncioTestCase):
@@ -7850,7 +7928,7 @@ class BoardPollPickupTests(unittest.TestCase):
                       ("load", "enabled", "project_meta", "item_list", "ready_stubs",
                        "issue_details", "issue_to_request", "start_run", "set_status",
                        "next_run_id")}
-        board.next_run_id = lambda n: f"gh-issue-{n}"     # never ask the live Temporal
+        board.next_run_id = lambda n, repo=None: f"gh-issue-{n}"     # never ask the live Temporal
         board.load = lambda: self._cfg
         board.enabled = lambda cfg=None: True
         board.project_meta = lambda cfg: self._meta
@@ -7943,7 +8021,7 @@ class ReaperSweepTests(unittest.TestCase):
                             ("load", "enabled", "project_meta", "list_in_column",
                              "set_status_raw", "add_label", "latest_run_id")}
         board.load = lambda: self._cfg
-        board.latest_run_id = lambda n: f"gh-issue-{n}"   # never ask the live Temporal
+        board.latest_run_id = lambda n, repo=None: f"gh-issue-{n}"   # never ask the live Temporal
         board.enabled = lambda cfg=None: True
         board.project_meta = lambda cfg: self._meta
         board.list_in_column = lambda cfg, key: [

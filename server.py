@@ -2246,6 +2246,20 @@ class Handler(BaseHTTPRequestHandler):
         if origin.get("external_text"):
             params["external_text"] = origin["external_text"]
         new_id = "web-" + uuid.uuid4().hex
+        if (reply_to or {}).get("kind") == "github_issue":
+            # A board card's retry is the card's NEXT GENERATION, not a side run: as a `web-*`
+            # run it raced the factory's own re-ready of the same card (zero-marketing#4: two
+            # runs, two duplicate PRs), and its PR never superseded the earlier one's.
+            n, slug = reply_to.get("number"), reply_to.get("repo")
+            new_id = board.next_run_id(n, slug)
+            if new_id is None:
+                self._send(409, json.dumps({
+                    "error": f"issue #{n} is already running again — wait for that run"})); return
+            for k in ("qa", "fresh_branch"):
+                if origin.get(k):
+                    params[k] = origin[k]
+            if factory._owned(wid, factory.load().get("wids") or []):
+                factory.claim(new_id)   # else it escapes the factory's budget and MCP allowlist
         # Record the retry into a Chat thread so its result lands in a conversation, not
         # just on the board: an interactive run records CLIENT-side, so retrying it from
         # the board previously left the result board-only. Three tiers, most precise

@@ -397,13 +397,19 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 out["result"] = contracts.lead_with(out["result"], prefix)
             return out
         except Exception as e:  # noqa: BLE001 - NOT bare: CancelledError (BaseException) still propagates
-            self._terminal = {"reason": "workflow_error"}
+            # A Claude wall can surface here rather than in the ladder — a tier call (the review
+            # judge) raising on a spent limit. Booked as `workflow_error` it read as an Otto bug
+            # and invited a Retry that hit the same limit, and the factory never paused for it.
+            detail = _failure_detail(e)
+            wall = error_classifier.claude_wall(detail)
+            reason = error_classifier.claude_wall_reason(wall) if wall else "workflow_error"
+            self._terminal = {"reason": reason}
             try:
                 await workflow.execute_activity(
                     finalize_terminal,
                     {"wid": workflow.info().workflow_id, "request": self._request,
-                     "cap": self._cap, "reason": "workflow_error",
-                     "detail": _failure_detail(e),
+                     "cap": self._cap, "reason": reason,
+                     "detail": detail,
                      "reply_to": params.get("reply_to"), "repo": self._repo,
                      "times": self._times},
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)

@@ -16,6 +16,7 @@ from temporalio import exceptions, workflow
 from wf_runtime import _HEARTBEAT, _RETRY
 
 with workflow.unsafe.imports_passed_through():
+    import error_classifier
     from activities import (check_grounding, cleanup_workspace, finalize_workspace,
                             provision_workspace, recover_pr_branch, resolve_pr_target)
 
@@ -165,7 +166,10 @@ class RepoFlowMixin:
              "concerns": self._plan_concerns, "asker_text": self._asker_text,
              # A board ticket's run IS its issue: close it structurally, never by parsing a
              # request that embeds the whole ticket body.
-             "issue": issue},
+             "issue": issue,
+             # Stopped by a Claude wall: the tree is whatever the attempt reached before the
+             # limit hit, so finalize pushes nothing rather than open a PR of half the work.
+             "walled": (self._needs_human or {}).get("reason") in error_classifier.CLAUDE_WALL_REASONS},
             start_to_close_timeout=timedelta(minutes=15), heartbeat_timeout=_HEARTBEAT,
             retry_policy=_RETRY)
         await workflow.execute_activity(

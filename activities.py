@@ -463,6 +463,12 @@ def finalize_workspace(payload: dict) -> dict:
     `plan` (the approved plan, when the run had one) is posted as a PR comment, never committed
     into the target repo — see workspace.post_plan."""
     import workspace
+    if payload.get("walled"):
+        # A Claude wall stopped the run mid-work: the tree is a partial attempt, and a PR of it
+        # (zero-marketing#12, red CI) is one more thing for a human to close. The next run —
+        # the factory's re-ready or a Retry — starts the ticket over.
+        return {"branch": None, "pushed": False, "committed": False, "pr_url": None,
+                "detail": "stopped at a Claude limit before finishing — nothing was pushed"}
     # An existing PR gets only the drafted TITLE, as its commit message — its body is left
     # alone. Without this a fix round or a resumed follow-up committed the raw request:
     # #200 carries three commits titled "Work on this ticket <url>". Drafted only when there is
@@ -475,17 +481,26 @@ def finalize_workspace(payload: dict) -> dict:
                               summary_is_error=bool(payload.get("summary_is_error")))
         title = copy["title"]
         body = None if existing else copy["body"]
-    return workspace.finalize(payload["run_id"], title=title,
-                              base_head=payload.get("head"),
-                              existing_pr=payload.get("existing_pr", False),
-                              branch=payload.get("branch"), body=body,
-                              # A swarm part is ONE of several PRs for the linked issue; merging
-                              # it must not close the issue while its siblings are still open.
-                              close_issue=not _SWARM_CHILD_RE.search(payload["run_id"]),
-                              asker_text=payload.get("asker_text"),
-                              issue=payload.get("issue"),
-                              plan=payload.get("plan"), request=payload.get("request"),
-                              cap=payload.get("cap"), concerns=payload.get("concerns"))
+    out = workspace.finalize(payload["run_id"], title=title,
+                             base_head=payload.get("head"),
+                             existing_pr=payload.get("existing_pr", False),
+                             branch=payload.get("branch"), body=body,
+                             # A swarm part is ONE of several PRs for the linked issue; merging
+                             # it must not close the issue while its siblings are still open.
+                             close_issue=not _SWARM_CHILD_RE.search(payload["run_id"]),
+                             asker_text=payload.get("asker_text"),
+                             issue=payload.get("issue"),
+                             plan=payload.get("plan"), request=payload.get("request"),
+                             cap=payload.get("cap"), concerns=payload.get("concerns"))
+    issue = payload.get("issue") or {}
+    if out.get("pr_url") and not existing and issue.get("kind") == "github_issue":
+        # A re-run of a board card branches off the default branch, not the earlier run's PR
+        # (resolve_pr_target's `fresh`), so the PR it opens makes that one a duplicate.
+        # Closed only once this one exists: a re-run that dies first leaves the old one standing.
+        import board
+        board.close_superseded(issue.get("repo"), issue.get("number"), out.get("branch"),
+                               out["pr_url"])
+    return out
 
 
 @activity.defn
@@ -1163,7 +1178,7 @@ def poll_board(payload: dict) -> dict:
         })
         # A card re-readied after its run closed gets the next generation (board.next_run_id);
         # None = a generation is still running, which is the old duplicate case.
-        wid = board.next_run_id(n)
+        wid = board.next_run_id(n, issue.get("repo"))
         if wid is None:
             skipped.append(n)
             continue
@@ -1728,7 +1743,7 @@ def reap_stuck(payload: dict) -> dict:
             n = stub.get("number")
             if n is None:
                 continue
-            wid = board.latest_run_id(n)
+            wid = board.latest_run_id(n, stub.get("repo"))
             state = _reap_state(wid)
             if state == "alive":
                 continue
