@@ -716,21 +716,23 @@ _AUDIT_TLS = (
 
 def _c_plan_preview_bounded_callers():
     repo = next((p for p in registry.projects() if p.rstrip("/").endswith("infra")), None)
-    if not repo:
-        raise RuntimeError("no registered repo ending in 'infra' — register one or skip this case")
+    if not repo or not os.path.exists(os.path.join(repo, "aws/audit/s3/module.tf")):
+        raise RuntimeError("no registered 'infra' repo with aws/audit/s3/module.tf — skip this case")
     return engine.plan_preview(_AUDIT_TLS, _cap(), cwd=repo)["plan"]
 
 
 def _k_plan_preview_bounded_callers(plan):
     if not plan:
         return False, "no plan came back (timeout or error — see the PLAN trace)"
-    low = plan.lower()
-    window = re.search(r"observ\w* (window|for|period)|window", low)
-    why = re.search(r"can'?t (list|read)|cannot (list|read)|(aren'?t|not) listed|unknowable|only reason"
-                    r"|not bounded|outside the (bucket )?policy", low)
-    if window and not why:
-        return False, f"{len(plan)} chars, a window with no stated reason"
-    return True, f"{len(plan)} chars, " + ("window justified" if window else "no window")
+    why = re.compile(r"can'?t (list|read)|cannot (list|read)|(aren'?t|not) listed|unknowable"
+                     r"|only reason|not bounded|outside the (bucket )?policy")
+    # The reason must sit in the same step as the window, not anywhere in the plan.
+    steps = [p for p in re.split(r"\n\s*\n|\n(?=\s*\d+\.\s)", plan.lower())
+             if re.search(r"observ\w* (window|for|period)|observation", p)]
+    unjustified = [p for p in steps if not why.search(p)]
+    if unjustified:
+        return False, f"{len(plan)} chars, a window with no stated reason: {unjustified[0].strip()[:120]}"
+    return True, f"{len(plan)} chars, " + ("window justified" if steps else "no window")
 
 
 # --- Router #1 -----------------------------------------------------------------------------
