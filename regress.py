@@ -29,6 +29,7 @@ import time
 import traceback
 
 import regress_cases
+import test_support
 
 
 def _run_one(case, repeats):
@@ -138,6 +139,7 @@ def main():
     ap.add_argument("--judge", default="",
                     help="with --stability: serve every judge tier sampled from this pool label")
     args = ap.parse_args()
+    test_support.redirect_records()
 
     if args.stability:
         fixtures = [f for f in regress_cases.STABILITY if f["id"].startswith(args.only)]

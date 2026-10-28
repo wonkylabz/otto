@@ -172,6 +172,22 @@ def redirect_live_state():
     return root
 
 
+# What a process RECORDS, as opposed to the config it reads. regress.py needs the real models,
+# repos and policy, so it redirects only these: its runs otherwise land in the live audit trail.
+_RECORD_STORES = ("otto.db", "transcripts", "logs", "gateway-stats.json", "local-sessions")
+
+
+def redirect_records():
+    """Re-point only the record sinks at a temp dir, leaving every config store live."""
+    home = tempfile.mkdtemp(prefix="otto-records-")
+    atexit.register(shutil.rmtree, home, ignore_errors=True)
+    for mod, attr, rel in _DATA_STORES:
+        if rel in _RECORD_STORES:
+            setattr(sys.modules[mod], attr, os.path.join(home, rel))
+    engine._DB = chats._DB = knowledge._DB = config.DB_PATH
+    return home
+
+
 def _authenticate_http_clients():
     """Every `/api/*` route needs the install's token (#217). The suite's ~30 HTTP tests drive
     the API as the operator, so the process-wide urllib opener carries the (temp) token for

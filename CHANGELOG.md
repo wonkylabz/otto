@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`regress.py` no longer writes into your audit trail.** Its plan-preview cases recorded rows
+  under the run id `preview`, which the scorecard and `insights.py` counted as real runs and
+  spend. Rows written before this fix stay, because the trail is immutable; filter out the
+  `preview` run id when you read it.
+
 ## [0.8.2] - 2026-10-29
 
 ### Changed
