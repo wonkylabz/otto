@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-28
+
 ### Changed
 
 - **Saving the Factory config no longer starts the factory.** A new factory is saved on hold;
@@ -409,7 +411,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/wonkylabz/otto/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/wonkylabz/otto/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/wonkylabz/otto/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/wonkylabz/otto/compare/v0.7.0...v0.7.1
