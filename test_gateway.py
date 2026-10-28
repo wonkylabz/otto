@@ -7853,6 +7853,36 @@ class LiveStoreIsolationTests(unittest.TestCase):
         self.assertEqual([], orphans, "test module with no hermetic setUpModule")
 
 
+class RegressRecordIsolationTests(unittest.TestCase):
+    """regress.py reads the live config but must record nothing in data/: its plan-preview cases
+    wrote `preview` rows into the live audit trail, counted as real spend by insights."""
+
+    def setUp(self):
+        import ui
+        self.ui = ui
+        self.saved = (config.DB_PATH, engine._DB, chats._DB, knowledge._DB,
+                      claude_cli.TRANSCRIPTS, ui.LOG_DIR, gateway._STATS_PATH,
+                      local_runtime.SESSIONS, gateway._PATH, registry.PROJECTS_FILE)
+
+    def tearDown(self):
+        (config.DB_PATH, engine._DB, chats._DB, knowledge._DB, claude_cli.TRANSCRIPTS,
+         self.ui.LOG_DIR, gateway._STATS_PATH, local_runtime.SESSIONS, gateway._PATH,
+         registry.PROJECTS_FILE) = self.saved
+
+    def test_records_move_and_config_stays(self):
+        home = test_support.redirect_records()
+        moved = (config.DB_PATH, engine._DB, chats._DB, knowledge._DB, claude_cli.TRANSCRIPTS,
+                 self.ui.LOG_DIR, gateway._STATS_PATH, local_runtime.SESSIONS)
+        self.assertEqual([], [p for p in moved if not p.startswith(home)])
+        self.assertEqual((gateway._PATH, registry.PROJECTS_FILE), self.saved[-2:])
+
+    def test_regress_redirects_before_any_case(self):
+        with open(os.path.join(LiveStoreIsolationTests.ROOT, "regress.py")) as fh:
+            src = fh.read()
+        self.assertIn("test_support.redirect_records()", src)
+        self.assertLess(src.index("redirect_records()"), src.index("_run_one(c,"))
+
+
 class ErrorClassifierTests(unittest.TestCase):
     """The taxonomy itself. The load-bearing property is not "these codes map to these names" —
     it is WHICH codes are walls, because a wall spends the ladder differently: it latches local
