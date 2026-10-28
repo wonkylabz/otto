@@ -9055,6 +9055,9 @@ class NeedsYouSuggestionTests(unittest.TestCase):
         ui = ui_src()
         self.assertIn("function needsSuggestion(it)", ui)
         self.assertIn('Suggested: <b>', ui)
+        # A sprint card has no Retry button, so its hint must not tell the reader to Retry.
+        self.assertEqual(ui.count("it.no_retry?SPRINT_HINT:NEEDS_HINT[it._needs]"), 2)
+        self.assertNotIn("Retry once", ui[ui.index("const SPRINT_HINT="):ui.index("function needsSuggestion")])
         for act in ("retry", "accept", "dismiss"):
             self.assertIn(f"sugCls('{act}')", ui)
         # Where only reading the PR can tell, nothing is pre-picked.

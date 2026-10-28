@@ -105,6 +105,9 @@ const NEEDS_ACT={"usage limit":"retry","Claude login expired":"retry","run faile
                  "harness kept dying":"retry","timed out":"retry","delivery failed":"retry","over budget":"retry",
                  "approval expired":"retry","QA failed":"retry","review findings":"retry",
                  "model failed, no fallback":"retry","posted, unverified":"accept","stopped by you":"dismiss"};
+// A factory sprint is never retried by hand (no Retry button), so the reason's own hint — which
+// says "Retry" for a usage limit — contradicted the card it sat on.
+const SPRINT_HINT="A factory sprint: the factory starts its next one by itself (after a usage limit, once it resets). Nothing to retry here.";
 function needsSuggestion(it){
   if(it.replaced_by) return {act:"dismiss", why:`a later run of this work (${it.replaced_by}) took over`};
   if(it.no_retry) return {act:"dismiss", why:"the factory runs its own next sprint"};
@@ -215,7 +218,7 @@ async function loadBoard(silent){
       DELIVER:"recording the run and delivering the result"};
     const stage=(it.status==="RUNNING"&&it.stage)
       ?`<span class="bchip stage s-${esc(it.stage.toLowerCase())}" title="${esc(STAGE_HELP[it.stage]||'current pipeline stage')}">${esc(it.stage.toLowerCase())}</span>`:'';
-    const hint=it._needs?NEEDS_HINT[it._needs]:null;
+    const hint=it._needs?(it.no_retry?SPRINT_HINT:NEEDS_HINT[it._needs]):null;
     const sug=it._needs?needsSuggestion(it):null;
     const sugCls=a=>sug&&sug.act===a?' suggested':'';
     const needs=it._needs?`<span class="bchip warn" title="${esc(hint||'this run needs a look')}">&#9888; ${esc(it._needs)}</span>`:'';
@@ -445,7 +448,7 @@ async function openCardModal(it,ui){
         body=document.getElementById("cardModalBody");
   const link=ui?`${ui}/namespaces/default/workflows/${encodeURIComponent(it.id)}/${encodeURIComponent(it.run_id)}/history`:null;
   title.innerHTML=`<b>${esc(it.cap||'—')}</b><br>${esc(it.id)}${it.repo?' · repo: '+esc(it.repo):''}${link?` · <a href="${link}" target="_blank" rel="noopener">Temporal ↗</a>`:''}`;
-  const hint=it._needs?NEEDS_HINT[it._needs]:null;
+  const hint=it._needs?(it.no_retry?SPRINT_HINT:NEEDS_HINT[it._needs]):null;
   body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')+`<p class="sub">Loading full result…</p>`;
   modal.hidden=false;
   let r;
