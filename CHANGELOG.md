@@ -22,7 +22,8 @@ changelog that restates it is a second copy of `git log`.
 
 - **QA can build and render test pages.** Every PR workspace now has a git-ignored
   `.otto-scratch/` folder, and the QA tester is told to use it (not `/tmp`) and to try a
-  headless browser before calling a layout claim unobservable. Its `/tmp` setups were refused
+  headless browser before calling a layout claim unobservable, and to rerun a check whose
+  output it lost rather than report it as done. Its `/tmp` setups were refused
   mid-run, which marked rendering checks inconclusive.
 - **Otto's runs no longer pick up your interactive permission mode.** Each run now passes an
   explicit permission mode, so a `"defaultMode": "auto"` in `~/.claude/settings.json` no longer

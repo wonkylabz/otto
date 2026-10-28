@@ -1140,6 +1140,8 @@ class WorkspaceTests(unittest.TestCase):
                                "capabilities", "bundled", "qa-tester.md")) as f:
             cap = f.read()
         self.assertIn(self.ws.SCRATCH_DIR, cap)
+        # gh-issue-117: a probe garbled by its own command was reported as "no usable result".
+        self.assertIn("A check whose output you lost is rerun, never reported.", cap)
 
     def test_a_needs_human_row_keeps_its_cause(self):
         # finalize_terminal was handed the reason only: a merge_failed row said nothing else.

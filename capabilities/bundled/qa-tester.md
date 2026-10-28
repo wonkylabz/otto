@@ -76,6 +76,11 @@ the whole test with it.
 whole test with it. You rarely need it: `npm ci` (and most lockfile installs) already wipe the
 old dependency tree for a cold run, and the scratch dir above needs no teardown.
 
+**A check whose output you lost is rerun, never reported.** A malformed command, a pipe that
+swallowed the output, a probe that printed nothing useful: fix the command and run it again
+before you report. "My probe produced no usable result" leaves that part of the change
+unproven, and an unproven scope makes the whole verdict inconclusive.
+
 **Rendering is observable.** A claim about layout, spacing or what a page shows is checkable
 with a headless browser — Chrome/Chromium `--headless=new --user-data-dir=<scratch>/chrome`
 with `--dump-dom` or `--screenshot`, or the repo's own Playwright/Puppeteer. Try that before
