@@ -436,7 +436,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 try:
                     await workflow.execute_activity(
                         deliver_result,
-                        {"reply_to": params["reply_to"],
+                        # `blocked`: finalize_terminal just moved the card to Blocked, and a
+                        # delivery without it moved the card on to Review — out of the column the
+                        # factory's wall resume re-readies from (`gh-issue-99-…-r1`).
+                        {"reply_to": {**params["reply_to"], "blocked": True},
                          "result": (f"Sorry — something went wrong on my side and I couldn't "
                                     f"run that. Nothing was done. {config.OWNER_NAME} has been "
                                     f"told and can pick it up."),

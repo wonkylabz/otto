@@ -29,6 +29,9 @@ changelog that restates it is a second copy of `git log`.
   puts an auto-mode check in front of every shell command an unattended run makes. Your own
   `permissions.deny` rules still apply, and the QA tester is told not to use `rm -rf`
   (`npm ci` already gives a clean install).
+- **A board run that fails outright now stays in Blocked.** Its "something went wrong" reply
+  moved the card on to the review column, so when the factory resumed after a usage limit it
+  found nothing to re-queue and a product manager retry was spent on it instead.
 - **A factory stop can no longer leak one more ticket.** A board poll running at the moment the
   factory stopped (at its budget, say) started the next Ready card as an ordinary board run,
   outside the budget and with every MCP server. The poll now re-checks both switches just before

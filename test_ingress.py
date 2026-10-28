@@ -9673,6 +9673,25 @@ class FactoryModeTests(unittest.TestCase):
             self.assertFalse(start.called, f"counts={counts}")
             self.assertFalse(details.called, f"counts={counts}")
 
+    def test_a_failed_run_leaves_its_card_in_blocked(self):
+        import board
+        # The failure path's delivery carried no `blocked`, so it moved the card finalize_terminal
+        # had just put in Blocked on to Review, and a wall resume re-readied nothing.
+        from test_support import workflow_src
+        src = workflow_src()
+        i = src.index("A Claude wall can surface here rather than in the ladder")
+        j = src.index("deliver_result,", i)
+        self.assertIn('{"reply_to": {**params["reply_to"], "blocked": True},', src[j:j + 400])
+        rt = {"repo": "me/game", "number": 3, "blocked": True, "review_col": "Review",
+              "blocked_col": "Blocked", "status_options": {"Blocked": "B", "Review": "R"}}
+        moved = []
+        with unittest.mock.patch.object(board, "has_comment_marker", return_value=False), \
+                unittest.mock.patch.object(board, "comment", return_value=True), \
+                unittest.mock.patch.object(board, "set_status_raw",
+                                           side_effect=lambda p, f, i, o: moved.append(o) or True):
+            delivery._github_issue(rt, "sorry", None, run_id="gh-issue-3")
+        self.assertNotIn("R", moved)
+
     def test_a_stop_during_a_board_poll_starts_nothing_more(self):
         # A budget stop restored the board config while a poll was mid-way: the poll still held
         # the old (enabled) config and started the next Ready card as a plain board run.
