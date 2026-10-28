@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-29
+
 ### Fixed
 
 - **`regress.py` no longer writes into your audit trail.** Its plan-preview cases recorded rows
@@ -439,7 +441,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/wonkylabz/otto/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/wonkylabz/otto/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/wonkylabz/otto/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/wonkylabz/otto/compare/v0.7.3...v0.8.0
