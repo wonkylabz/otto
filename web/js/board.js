@@ -71,7 +71,9 @@ const NEEDS_LABEL={verify_exhausted:"unverified",published_unverified:"posted, u
                    budget_exceeded:"over budget",workflow_error:"run failed",delivery_failed:"delivery failed",
                    workflow_dead:"worker died",stuck_timeout:"timed out",
                    local_fallback_disabled:"model failed, no fallback",
-                   claude_auth_expired:"Claude login expired"};
+                   claude_auth_expired:"Claude login expired",claude_usage_limit:"usage limit",
+                   terminated:"stopped by you",gate_timeout:"approval expired",
+                   merge_unreviewed:"unreviewed fix",harness_exhausted:"harness kept dying"};
 const NEEDS_HINT={verify_exhausted:"Didn't pass automated verification after all attempts — read the result, then Retry, or Accept it if the judge was wrong.",
                   published_unverified:"Failed verification AFTER it had already posted or filed something outside Otto, so it wasn't retried — a retry posts it again. Check what went out; Accept if it's fine.",
                   qa_fail:"Post-PR QA found real problems on the draft PR — review its findings, then Retry.",
@@ -87,8 +89,31 @@ const NEEDS_HINT={verify_exhausted:"Didn't pass automated verification after all
                   local_fallback_disabled:"The model's endpoint couldn't do the work and OTTO_LOCAL_FALLBACK=0 forbids Claude from covering for it — nothing ran. The result names the endpoint — fix it (or flip the flag), then Retry.",
                   claude_auth_expired:"Claude rejected our credentials, so nothing ran — the subscription session on the worker host expired. Run `claude /login` there (or fix ANTHROPIC_API_KEY), then Retry.",
                   stuck_timeout:"Ran past its time limit without finishing — Retry or investigate.",
+                  "usage limit":"Claude's usage limit was spent, so it stopped — nothing was wrong with the work. Retry once the limit has reset.",
+                  "stopped by you":"You terminated this run. Dismiss it, or Retry to run it again.",
+                  "approval expired":"Nobody approved it before the gate's deadline, so it was declined. Retry to ask again.",
+                  "unreviewed fix":"Factory mode: QA's fix commits didn't pass a fresh review, so it wasn't merged — read the PR, then merge it or Retry.",
+                  "harness kept dying":"The run kept crashing before any judge read it — not a verdict on the work. Retry.",
                   unverified:"Delivered but never passed verification — read the result, then Retry, or Accept it if the judge was wrong.",
                   "run failed":"The workflow ended in a failed/terminated state — check the audit log, then Retry."};
+/* The ONE button a card suggests, and why: Retry when the cause is gone or was never the work
+   (a limit, a crash, findings to fix); Accept only where reading the result is the whole job;
+   Dismiss when nothing is left to decide. No suggestion where only reading the PR can tell —
+   picking for the human there would make the highlight mean "click this" (user-reported: "it's
+   unclear when I should accept, dismiss or retry"). */
+const NEEDS_ACT={"usage limit":"retry","Claude login expired":"retry","run failed":"retry","worker died":"retry",
+                 "harness kept dying":"retry","timed out":"retry","delivery failed":"retry","over budget":"retry",
+                 "approval expired":"retry","QA failed":"retry","review findings":"retry",
+                 "model failed, no fallback":"retry","posted, unverified":"accept","stopped by you":"dismiss"};
+// A factory sprint is never retried by hand (no Retry button), so the reason's own hint — which
+// says "Retry" for a usage limit — contradicted the card it sat on.
+const SPRINT_HINT="A factory sprint: the factory starts its next one by itself (after a usage limit, once it resets). Nothing to retry here.";
+function needsSuggestion(it){
+  if(it.replaced_by) return {act:"dismiss", why:`a later run of this work (${it.replaced_by}) took over`};
+  if(it.no_retry) return {act:"dismiss", why:"the factory runs its own next sprint"};
+  const act=NEEDS_ACT[it._needs];
+  return act?{act, why:""}:null;
+}
 // Poll-flicker guard: the 3.5s board poll used to rebuild the whole board (and the health strip)
 // on every tick even when nothing had changed, visibly flashing every card. We now fingerprint
 // the render-affecting fields and skip the DOM rebuild when the signature is unchanged, so a
@@ -98,7 +123,7 @@ let _boardSig=null, _healthSig=null;
 const _boardSignature=d=>JSON.stringify({t:d.temporal,ui:d.ui,items:(d.items||[]).map(it=>[
   it.id,it.run_id,it.status,it.phase,it.stage,it.verified,it.needs_human,it.pr,it.outcome,it.model,
   it.fallback_from,it.fallback_reason,it.retried_to,it.question,it.risk,it.risk_reason,it.cap,
-  it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.kind,it.archived])});
+  it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.replaced_by,it.kind,it.archived])});
 let _boardPress=0;   // ms timestamp of a press held on the board; 0 = none
 document.addEventListener("pointerdown",e=>{ _boardPress=e.target.closest("#boardview")?Date.now():0; },true);
 document.addEventListener("pointerup",()=>{ _boardPress=0; },true);
@@ -193,7 +218,9 @@ async function loadBoard(silent){
       DELIVER:"recording the run and delivering the result"};
     const stage=(it.status==="RUNNING"&&it.stage)
       ?`<span class="bchip stage s-${esc(it.stage.toLowerCase())}" title="${esc(STAGE_HELP[it.stage]||'current pipeline stage')}">${esc(it.stage.toLowerCase())}</span>`:'';
-    const hint=it._needs?NEEDS_HINT[it._needs]:null;
+    const hint=it._needs?(it.no_retry?SPRINT_HINT:NEEDS_HINT[it._needs]):null;
+    const sug=it._needs?needsSuggestion(it):null;
+    const sugCls=a=>sug&&sug.act===a?' suggested':'';
     const needs=it._needs?`<span class="bchip warn" title="${esc(hint||'this run needs a look')}">&#9888; ${esc(it._needs)}</span>`:'';
     // A completed repo-mode run that opened a draft PR but didn't pass automated verify is DONE
     // (not held) — show a soft advisory so the human knows to review the PR extra carefully.
@@ -217,13 +244,14 @@ async function loadBoard(silent){
       <div class="btop"><span class="bcap">${esc(it.cap||'—')}</span>${risk}</div>
       <div class="bstatus${live?' live':''}"><span class="bdot ${statusCls}"></span>${esc(sub)}${live?'<span class="bell"><i>.</i><i>.</i><i>.</i></span>':''}</div>
       <div class="bchips">${chips}</div>
+      ${sug?`<div class="bhint">Suggested: <b>${esc(sug.act[0].toUpperCase()+sug.act.slice(1))}</b>${sug.why?` &mdash; ${esc(sug.why)}`:''}</div>`:''}
       ${hint?`<div class="bhint">${esc(hint)}</div>`:''}
       ${askApprove&&it.risk_reason?`<div class="bhint">why: ${esc(it.risk_reason)}</div>`:''}
       ${it.outcome?`${hint?'<div class="boutlabel">Result</div>':''}<div class="bout ${truncated?'clip':''}" data-expand="${esc(it.id)}" title="Click to read the full result">${renderMD(it.outcome)}</div>${truncated?`<div class="bmore" data-expand="${esc(it.id)}">Read full result →</div>`:''}`:''}
       ${retried}
       ${askClarify?`${it.question?`<div class="bquestion">&#10022; ${esc(it.question)}</div>`:''}<div class="bclarify"><input type="text" data-clarinput="${esc(it.id)}" placeholder="Type your answer to continue…" /><button class="btn approve sm" data-clarify="${esc(it.id)}">Send</button></div>`:''}
       ${askApprove?gateBlock(it):''}
-      ${it._needs?`<div class="bapprove">${it.no_retry?'':`<button class="btn approve sm" data-retry="${esc(it.id)}">${it.retried_to?'Retry again':'Retry'}</button>`}<button class="btn accept sm" data-accept="${esc(it.id)}" title="the work is fine \u2014 the judge was wrong. Records the override and files the approach in solutions.">Accept</button><button class="btn decline sm" data-dismiss="${esc(it.id)}">Dismiss</button></div>`:''}
+      ${it._needs?`<div class="bapprove">${it.no_retry?'':`<button class="btn approve sm${sugCls('retry')}" data-retry="${esc(it.id)}">${it.retried_to?'Retry again':'Retry'}</button>`}<button class="btn accept sm${sugCls('accept')}" data-accept="${esc(it.id)}" title="the work is fine \u2014 the judge was wrong. Records the override and files the approach in solutions.">Accept</button><button class="btn decline sm${sugCls('dismiss')}" data-dismiss="${esc(it.id)}">Dismiss</button></div>`:''}
       ${it.status==="RUNNING"&&!it._needs?`<div class="bapprove"><button class="btn danger sm" data-terminate="${esc(it.id)}" title="hard-stop this run now — no cleanup, the card disappears">Terminate</button></div>`:''}
       <div class="bfoot"><span class="bwhen" title="${esc(it.end?`finished ${it.end} \u00b7 started ${it.start||'?'}`:`started ${it.start||'?'}`)}">${esc(shortWhen(it.end||it.start))}</span><a href="#" class="bdebug" data-debug="${esc(it.id)}" title="attempts, verify critiques, transcript, failure reason">🔍 Debug</a>${it.chat_key?`<a href="#" data-openchat="${esc(it.chat_key)}" title="open this run's conversation">Chat</a>`:''}${link?`<a href="${link}" target="_blank" rel="noopener">Temporal ↗</a>`:''}</div>
     </div>`;
@@ -420,7 +448,7 @@ async function openCardModal(it,ui){
         body=document.getElementById("cardModalBody");
   const link=ui?`${ui}/namespaces/default/workflows/${encodeURIComponent(it.id)}/${encodeURIComponent(it.run_id)}/history`:null;
   title.innerHTML=`<b>${esc(it.cap||'—')}</b><br>${esc(it.id)}${it.repo?' · repo: '+esc(it.repo):''}${link?` · <a href="${link}" target="_blank" rel="noopener">Temporal ↗</a>`:''}`;
-  const hint=it._needs?NEEDS_HINT[it._needs]:null;
+  const hint=it._needs?(it.no_retry?SPRINT_HINT:NEEDS_HINT[it._needs]):null;
   body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')+`<p class="sub">Loading full result…</p>`;
   modal.hidden=false;
   let r;

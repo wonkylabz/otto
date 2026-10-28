@@ -1323,6 +1323,7 @@
   .bmore { font-size: 12px; color: var(--accent); cursor: pointer; margin-top: 4px; }
   .bmore:hover { text-decoration: underline; }
   .bhint { font-size: 12px; color: var(--warn); margin-top: 6px; line-height: 1.4; }
+  .btn.suggested { box-shadow: 0 0 0 2px var(--accent); }
   .bretried { font-size: 12px; color: var(--accent); margin-top: 6px; line-height: 1.4; }
   .bretried a { color: var(--accent); }
   .bfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; margin-top: 8px; font-size: 11px; color: var(--dim); }

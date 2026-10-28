@@ -8998,6 +8998,77 @@ class UpdaterTests(unittest.TestCase):
         self.assertNotIn("body[", src)
 
 
+class NeedsYouSuggestionTests(unittest.TestCase):
+    """A Needs-a-look card says which of Retry / Accept / Dismiss fits, and a card a later run
+    of the same work has already taken care of leaves the column by itself (user-reported: "it's
+    unclear when I should accept or dismiss or retry")."""
+
+    def _card(self, wid, **kw):
+        return {"id": wid, "status": "COMPLETED", "needs_human": None, "verified": True,
+                "pr": None, "retried_to": None, **kw}
+
+    def test_a_later_generation_replaces_the_card_and_hides_it_once_clean(self):
+        import server
+        old = self._card("gh-issue-99-me-game", needs_human="qa_inconclusive")
+        r1 = self._card("gh-issue-99-me-game-r1", status="FAILED", verified=None)
+        r2 = self._card("gh-issue-99-me-game-r2", pr="https://github.com/me/game/pull/3")
+        got = server._replaced_by([old, r1, r2])
+        self.assertEqual(got["gh-issue-99-me-game"], ("gh-issue-99-me-game-r2", True))
+        self.assertEqual(got["gh-issue-99-me-game-r1"], ("gh-issue-99-me-game-r2", True))
+        self.assertNotIn("gh-issue-99-me-game-r2", got)            # the newest speaks for itself
+        # A later run still going (or failed too) replaces it but leaves it visible.
+        got = server._replaced_by([old, self._card("gh-issue-99-me-game-r1", status="RUNNING")])
+        self.assertEqual(got["gh-issue-99-me-game"], ("gh-issue-99-me-game-r1", False))
+        # Another issue number, or another repo's same number, never replaces it.
+        self.assertEqual(server._replaced_by([old, self._card("gh-issue-9-me-game-r1"),
+                                              self._card("gh-issue-99-me-other-r1")]), {})
+        # A later run that never ran the work — declined, skipped, paused, unjudged — is no
+        # replacement anyone can stop worrying about (review round 1).
+        for not_done in ({"run_outcome": "declined", "verified": None},
+                         {"run_outcome": "gate_timeout", "verified": None},
+                         {"run_outcome": "skipped", "verified": None},
+                         {"paused": True, "verified": None}, {"verified": None}):
+            got = server._replaced_by([old, self._card("gh-issue-99-me-game-r1", **not_done)])
+            self.assertEqual(got["gh-issue-99-me-game"], ("gh-issue-99-me-game-r1", False),
+                             not_done)
+        # The board suggests Dismiss only while the later card carries the ticket (round 2).
+        self.assertTrue(server._carries(self._card("x", status="RUNNING")))
+        self.assertTrue(server._carries(self._card("x", needs_human="qa_fail")))
+        self.assertTrue(server._carries(self._card("x", status="FAILED", verified=None)))
+        self.assertFalse(server._carries(self._card("x", run_outcome="declined", verified=None)))
+        self.assertFalse(server._carries(self._card("x", paused=True, verified=None)))
+        # A run the operator stopped, and a card no longer on the board, carry nothing (round 3).
+        self.assertFalse(server._carries(self._card("x", status="TERMINATED", verified=None)))
+        self.assertFalse(server._carries(self._card("x", needs_human="terminated")))
+        src = inspect.getsource(server)
+        i = src.index("by_id = {e[\"id\"]: e for e in out if e[\"id\"] not in dismissed")
+        self.assertLess(i, src.index('e["replaced_by"] = nxt if nxt in by_id'))
+        self.assertIn('e["replaced_by"] = nxt if nxt in by_id and _carries(by_id[nxt]) else None',
+                      inspect.getsource(server))
+        # A Retry's run replaces the card it came from.
+        retried = self._card("web-1", verified=False, retried_to="web-2")
+        self.assertEqual(server._replaced_by([retried, self._card("web-2")])["web-1"],
+                         ("web-2", True))
+
+    def test_the_card_names_one_suggested_button(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn("function needsSuggestion(it)", ui)
+        self.assertIn('Suggested: <b>', ui)
+        # A sprint card has no Retry button, so its hint must not tell the reader to Retry.
+        self.assertEqual(ui.count("it.no_retry?SPRINT_HINT:NEEDS_HINT[it._needs]"), 2)
+        self.assertNotIn("Retry once", ui[ui.index("const SPRINT_HINT="):ui.index("function needsSuggestion")])
+        for act in ("retry", "accept", "dismiss"):
+            self.assertIn(f"sugCls('{act}')", ui)
+        # Where only reading the PR can tell, nothing is pre-picked.
+        acts = ui[ui.index("const NEEDS_ACT="):ui.index("function needsSuggestion")]
+        for reason in ("QA inconclusive", "review inconclusive", "unverified"):
+            self.assertNotIn(f'"{reason}":', acts)
+        import inspect
+        import server
+        self.assertIn('not (replaced.get(e["id"]) or (None, False))[1]', inspect.getsource(server))
+
+
 class FactoryModeTests(unittest.TestCase):
     """Factory mode (factory.py): one switch that points the board + one repo at a self-driving
     loop. What is guarded here is what makes leaving it unattended safe: the limits stop it, an
