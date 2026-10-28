@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Plans for a deny or restriction add an observation window only when they need one.** When
+  the repo already shows who can reach the thing (a bucket or IAM policy, an allowlist, a
+  NetworkPolicy), the plan checks those callers directly. A window is kept only for callers
+  the code cannot show, and the plan now says why it needs one. Restart the worker to pick it up.
+
 ## [0.8.0] - 2026-10-28
 
 ### Changed

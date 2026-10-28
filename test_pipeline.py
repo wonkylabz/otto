@@ -2155,6 +2155,13 @@ class PlanInstructionTests(unittest.TestCase):
         # The two constraints that used to crowd all of the above out.
         self.assertNotIn("at most ~8 steps", t)
 
+    def test_instruction_bounds_observation_to_what_code_cannot_show(self):
+        # A TLS deny on a bucket whose policy names its one caller got a 3-7 day window
+        # and a second PR, because "observe first" had no counterweight.
+        t = engine._PLAN_INSTRUCTION.lower()
+        self.assertIn("observe only what you cannot read", t)
+        self.assertIn("genuinely unknowable", t)
+
     def test_instruction_demands_the_plan_inline_in_the_reply(self):
         # The gate renders the reply verbatim and nothing else. A cap whose own prompt writes a
         # plan document (sre-minion) will otherwise return "the plan is written to <path>" plus a
