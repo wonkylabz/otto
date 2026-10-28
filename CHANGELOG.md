@@ -11,6 +11,16 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Each card in "Needs a look" says what to do next.** It leads with "Suggested: Retry",
+  "Accept" or "Dismiss" and highlights that button. It suggests Retry when the cause has passed
+  (a usage limit, a crash, review findings to fix), Dismiss when a later run already took over or
+  you stopped the run, and Accept only for a result that was posted but not verified. Where only
+  reading the PR can tell, it suggests nothing.
+- **A card a later run has already handled leaves "Needs a look" by itself.** Once the ticket's
+  next run, or a Retry, finishes cleanly, the old card is hidden.
+
 ## [0.8.1] - 2026-10-28
 
 ### Changed

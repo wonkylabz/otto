@@ -887,10 +887,47 @@ async def _board(limit=40):
         # into the archive — a chat can be reattached to a run long after the card stopped changing.
         if not e.get("chat_key"):
             e["chat_key"] = chats.find_by_run_origin(e["id"])
+    replaced = _replaced_by(out)
+    for e in out:
+        e["replaced_by"] = (replaced.get(e["id"]) or (None, False))[0]
     fac = factory.load()
     return [e for e in out if e["id"] not in dismissed
             and not factory.superseded(e["id"], fac)
-            and not factory.triaged(e["id"], e.get("needs_human"), fac)]
+            and not factory.triaged(e["id"], e.get("needs_human"), fac)
+            # A later run of the same work finished clean: nothing is left to decide here.
+            and not (replaced.get(e["id"]) or (None, False))[1]]
+
+
+_GENERATION_RE = re.compile(r"^(gh-issue-\d+(?:-.+?)?)(?:-r(\d+))?$")
+
+
+def _finished_clean(e):
+    return (e.get("status") == "COMPLETED" and not e.get("needs_human")
+            and (e.get("verified") is not False or bool(e.get("pr"))))
+
+
+def _replaced_by(out):
+    """{id: (later_id, clean)} for every card a LATER run of the same work stands in for: the
+    next generation of a board card (`-r1`, `-r2`…), or the run a Retry started. `clean` when that
+    later run finished without needing anyone — then the old card is noise and is hidden. Read
+    off the cards already on the board, never off GitHub: `_board` sits behind the panel's
+    spinner, and a `gh` call per card is the latency ui.md forbids there."""
+    by_id = {e["id"]: e for e in out}
+    gens = {}
+    for e in out:
+        m = _GENERATION_RE.match(e["id"])
+        if m:
+            gens.setdefault(m.group(1), []).append((int(m.group(2) or 0), e["id"]))
+    later = {}
+    for runs in gens.values():
+        runs.sort()
+        for i, (_n, wid) in enumerate(runs[:-1]):
+            later[wid] = runs[-1][1]        # the NEWEST generation is the one that speaks for it
+    for e in out:
+        if e.get("retried_to") and e["id"] not in later:
+            later[e["id"]] = e["retried_to"]
+    return {wid: (nxt, bool(by_id.get(nxt) and _finished_clean(by_id[nxt])))
+            for wid, nxt in later.items()}
 
 
 def _run_result(wid):
