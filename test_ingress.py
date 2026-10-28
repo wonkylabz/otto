@@ -4377,6 +4377,48 @@ class BoardTests(unittest.TestCase):
         finally:
             board._run = orig
 
+    def test_add_label_creates_a_label_the_repo_does_not_have_yet(self):
+        # Every repo starts without `needs-human`, so the stamp failed silently on each one.
+        import board
+        calls = []
+
+        def fake(argv, timeout=60):
+            calls.append(argv[:3])
+            if argv[:3] == ["gh", "issue", "edit"] and len(calls) == 1:
+                return 1, "", "failed to update: 'needs-human' not found"
+            return 0, "", ""
+        with unittest.mock.patch.object(board, "_run", side_effect=fake):
+            self.assertTrue(board.add_label("acme/widgets", 2, "needs-human"))
+        self.assertEqual(calls, [["gh", "issue", "edit"], ["gh", "label", "create"],
+                                 ["gh", "issue", "edit"]])
+        calls.clear()
+        with unittest.mock.patch.object(board, "_run", return_value=(1, "", "HTTP 502")) as r:
+            self.assertFalse(board.add_label("acme/widgets", 2, "needs-human"))
+            self.assertEqual(r.call_count, 1)        # only a missing label is created
+
+    def test_a_card_re_run_closes_its_earlier_generations_prs(self):
+        # zero-marketing#4 had three open PRs for one ticket. Every earlier generation's PR
+        # goes — legacy or repo-keyed — but never #41's, a web run's, or the new one.
+        import board
+        prs = [{"number": 12, "headRefName": "otto/gh-issue-4"},
+               {"number": 15, "headRefName": "otto/gh-issue-4-o-r-r1"},
+               {"number": 17, "headRefName": "otto/gh-issue-4-o-r-r2"},
+               {"number": 20, "headRefName": "otto/gh-issue-41"},
+               {"number": 21, "headRefName": "otto/web-abc"}]
+        calls = []
+
+        def fake(argv, timeout=60):
+            calls.append(argv)
+            if argv[:3] == ["gh", "pr", "list"]:
+                return 0, json.dumps(prs), ""
+            return 0, "", ""
+        with unittest.mock.patch.object(board, "_run", side_effect=fake):
+            closed = board.close_superseded("o/r", 4, "otto/gh-issue-4-o-r-r2", "https://x/17")
+        self.assertEqual(closed, [12, 15])
+        self.assertTrue(all("--delete-branch" not in c for c in calls))   # reopenable
+        with unittest.mock.patch.object(board, "_run", return_value=(1, "", "boom")):
+            self.assertEqual(board.close_superseded("o/r", 4, "b", "u"), [])
+
     def test_parse_items_filters_ready_issues_only(self):
         import board
         cfg = self._cfg()
@@ -4411,7 +4453,7 @@ class BoardTests(unittest.TestCase):
         # one is left untouched by the workflow (no needless clone).
         self.assertEqual(p["repo_hint"], "widgets")
         self.assertEqual(p["approval"], "auto")           # Ready == approved
-        self.assertEqual(p["chat_key"], "gh-issue-11")
+        self.assertEqual(p["chat_key"], "gh-issue-11-acme-widgets")
         self.assertEqual(p["reply_to"]["kind"], "github_issue")
         self.assertEqual(p["reply_to"]["number"], 11)
         self.assertFalse(p["reply_to"]["repo_edit"])
@@ -9124,6 +9166,159 @@ class FactoryModeTests(unittest.TestCase):
                           st["walls_seen_at"], st["merged_prs"], st["blind_ticks"]),
                          (-1, "", None, "", [], 0))
 
+    def _enable(self, **form):
+        import board
+        cols = {"ready": "Ready", "active": "In progress", "review": "In review", "done": "Done",
+                "blocked": "Blocked"}
+        meta = {"project_id": "P", "status_field_id": "F", "options": {c: c for c in cols.values()}}
+        with unittest.mock.patch.object(workspace, "resolve", return_value={"name": "game", "path": "/x"}), \
+                unittest.mock.patch.object(self.factory, "_repo_slug", return_value="me/game"), \
+                unittest.mock.patch.object(board, "load", return_value={"project": "me/7", "columns": cols}), \
+                unittest.mock.patch.object(board, "project_meta", return_value=meta), \
+                unittest.mock.patch.object(board, "save"), \
+                unittest.mock.patch.object(board, "reconcile_schedule", return_value="ok"), \
+                unittest.mock.patch.object(self.factory, "_seed_goals", return_value="kept"), \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                           return_value="created") as sched:
+            st = self.factory.enable({"repo": "game", "seed": "s", "budget_usd": 5, **form})
+        return st, sched
+
+    def test_saving_the_config_starts_nothing_until_start(self):
+        # A save fired the first sprint, before the operator had wired the GitHub events.
+        st, sched = self._enable()
+        self.assertTrue(st["enabled"] and st["held"])
+        self.assertNotIn(unittest.mock.call(trigger=True), sched.call_args_list)
+        self.assertEqual(self.factory.gate(), {"go": False, "why": "on hold"})
+        self.assertEqual(self.factory.pickup_room(self.factory.load(), {}, {}, {}),
+                         (0, "on hold"))
+        # An edit neither starts a held line nor holds a running one, and fires nothing.
+        self.factory._mutate(lambda s: s.update(held=None))
+        _st, sched = self._enable(budget_usd=9)
+        self.assertIsNone(self.factory.load()["held"])
+        self.assertNotIn(unittest.mock.call(trigger=True), sched.call_args_list)
+
+    def test_start_releases_the_hold_and_fires_a_sprint_and_pause_keeps_the_line(self):
+        import board
+        self._on(held={"since": "x"}, merged=2, sprint_n=4)
+        with unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                        return_value="updated, first sprint triggered") as sched:
+            st = self.factory.start()
+        sched.assert_called_once_with(trigger=True)
+        self.assertIsNone(st["held"])
+        self.assertNotIn("warning", st)
+        with unittest.mock.patch.object(board, "save") as save, \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule") as sched:
+            st = self.factory.hold()
+        # A pause is not Manual: the board, the schedule and the counters stay as they were.
+        save.assert_not_called()
+        sched.assert_not_called()
+        self.assertTrue(st["enabled"] and st["held"])
+        self.assertEqual((st["merged"], st["sprint_n"]), (2, 4))
+        # A start that could not fire says so instead of reading as started.
+        with unittest.mock.patch.object(self.factory, "reconcile_schedule",
+                                        return_value="skipped (timeout)"):
+            self.assertIn("next scheduled check", self.factory.start()["warning"])
+
+    def test_start_and_pause_refuse_a_factory_that_is_off_or_globally_paused(self):
+        import estop
+        with self.assertRaises(self.factory.Refused):
+            self.factory.start()
+        with self.assertRaises(self.factory.Refused):
+            self.factory.hold()
+        self._on(held={"since": "x"})
+        with unittest.mock.patch.object(estop, "engaged", return_value=True), \
+                unittest.mock.patch.object(self.factory, "reconcile_schedule") as sched:
+            with self.assertRaises(self.factory.Refused):
+                self.factory.start()
+        sched.assert_not_called()
+        self.assertTrue(self.factory.load()["held"])
+
+    def test_a_factory_sprint_card_is_never_retried_by_hand(self):
+        # A retried sprint #3 ran as a plain web run beside the factory's own sprint #5 and
+        # tried to close the PR the factory's re-run of the same ticket was building.
+        s = self.factory.is_sprint
+        self.assertTrue(s("factory-20261027120437-s3"))
+        self.assertTrue(s("factory-20261027120437-s15-play"))
+        for wid in ("gh-issue-78-msosas-zero-marketing", "web-bcb63055", "factory-sprint-run",
+                    "factory-x-s3-rev0", "", None):
+            self.assertFalse(s(wid), wid)
+        # ... nor waits for a human at all once a later sprint has run.
+        st = self._on(started_at="2026-10-27T12:04:37", sprint_n=5)
+        self.assertTrue(self.factory.superseded("factory-20261027120437-s3", st))
+        self.assertFalse(self.factory.superseded("factory-20261027120437-s5", st))
+        self.assertFalse(self.factory.superseded("factory-20261026130838-s3", st))  # another factory
+        self.assertFalse(self.factory.superseded("gh-issue-78", st))
+        import inspect
+        import server
+        self.assertIn('factory.triaged(e["id"], e.get("needs_human"), fac)',
+                      inspect.getsource(server))
+        src = inspect.getsource(server.Handler._post_needs_you_retry)
+        self.assertLess(src.index("factory.is_sprint(wid)"), src.index("_run_origin(wid)"))
+        self.assertIn('e["no_retry"] = factory.is_sprint(e["id"])', inspect.getsource(server))
+        from test_support import ui_src
+        self.assertIn("it.no_retry?''", ui_src())
+
+    def test_a_running_factory_answers_its_own_needs_you_cards(self):
+        # Factory mode is meant to need no human: the PM retries or closes every Blocked card.
+        t = self.factory.triaged
+        t78 = "gh-issue-78-msosas-zero-marketing"
+        st = self._on(wids=[t78, "gh-issue-9-x", "factory-20261010100000-s4"],
+                      human_wids=["gh-issue-9-x"])
+        self.assertTrue(t(t78, "qa_inconclusive", st))
+        self.assertTrue(t(t78 + "-qa0", "qa_fail", st))                   # its loops too
+        self.assertTrue(t(t78, "claude_usage_limit", st))                # the pause re-readies it
+        self.assertFalse(t(t78 + "-r1", "qa_fail", st))                  # unclaimed generation
+        self.assertFalse(t("web-abc", "qa_fail", st))                    # not the factory's
+        # A card the run could not move to Blocked, or a human was asked to approve, stays: the PM
+        # never sees the first and is told never to touch the second (review round 3).
+        self.assertFalse(t(t78, "delivery_failed", st))
+        self.assertFalse(t(t78, "gate_timeout", st))
+        self.assertFalse(t(t78, None, st))
+        self.assertFalse(t("gh-issue-9-x", "qa_fail", st))               # under the hold label
+        # Nobody triages a held or stopped line: its cards are a human's again.
+        self.assertFalse(t(t78, "qa_fail", {**st, "held": {"since": "x"}}))
+        self.assertFalse(t(t78, "qa_fail", {**st, "enabled": False}))
+        # A superseded sprint is hidden whatever state it ended in, needs_human set or not.
+        import inspect
+        import server
+        src = inspect.getsource(server)
+        self.assertIn('and not factory.superseded(e["id"], fac)\n', src)
+        self.assertIn('factory.claim(wid, human=params.get("approval") == "ask")',
+                      inspect.getsource(__import__("activities")))
+
+    def test_ownership_never_spans_a_repo_whose_name_extends_the_factorys(self):
+        own = self.factory._owned
+        self.assertFalse(own("gh-issue-4-acme-web-admin", ["gh-issue-4-acme-web"]))
+        self.assertFalse(own("gh-issue-4-acme-web-r2", ["gh-issue-4-acme-web"]))   # a generation
+        for loop in ("rev0", "revre1", "qa0", "qare0", "chkqa0", "chkrevre1", "revfix0", "fix1",
+                     "learn1", "play", "d1", "d1-rev0", "s2-qa0"):
+            self.assertTrue(own(f"gh-issue-4-acme-web-{loop}", ["gh-issue-4-acme-web"]), loop)
+        self.assertTrue(own("factory-1-s3-play", ["factory-1-s3"]))
+        import inspect
+        import server
+        src = inspect.getsource(server.Handler._post_needs_you_retry)
+        self.assertIn('factory.claim(new_id, human=factory._owned(wid, fac.get("human_wids") or [])',
+                      src)
+
+    def test_a_hold_ticket_is_claimed_as_a_humans(self):
+        self._on()
+        self.factory.claim("gh-issue-3-x", human=True)
+        self.factory.claim("gh-issue-4-x")
+        st = self.factory.load()
+        self.assertEqual((st["wids"], st["human_wids"]), (["gh-issue-3-x", "gh-issue-4-x"],
+                                                          ["gh-issue-3-x"]))
+
+    def test_the_mode_card_offers_start_or_pause_and_the_routes_exist(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn('id="mode-start"', ui)
+        self.assertIn('id="mode-hold"', ui)
+        self.assertIn('"/api/factory/start"', ui)
+        self.assertIn('"/api/factory/hold"', ui)
+        import server
+        self.assertIn("/api/factory/start", server._POST_ROUTES)
+        self.assertIn("/api/factory/hold", server._POST_ROUTES)
+
     def test_enable_without_a_sprint_schedule_is_refused_and_undone(self):
         import board
         import delivery
@@ -9468,10 +9663,10 @@ class FactoryModeTests(unittest.TestCase):
                 unittest.mock.patch.object(board, "start_run",
                                            side_effect=lambda wid, p: started.append((wid, p)) or True):
             out = activities.poll_board({})
-        self.assertEqual([w for w, _ in started], ["gh-issue-3"])
+        self.assertEqual([w for w, _ in started], ["gh-issue-3-me-game"])
         self.assertEqual(sorted(out["skipped"]), [5, 9])
         self.assertTrue(started[0][1]["auto_merge"])
-        self.assertIn("gh-issue-3", self.factory.load()["wids"])
+        self.assertIn("gh-issue-3-me-game", self.factory.load()["wids"])
 
     def test_board_poll_at_wip_or_unreadable_picks_no_factory_ticket(self):
         import activities
@@ -9491,6 +9686,60 @@ class FactoryModeTests(unittest.TestCase):
                 activities.poll_board({})
             self.assertFalse(start.called, f"counts={counts}")
             self.assertFalse(details.called, f"counts={counts}")
+
+    def test_a_failed_run_leaves_its_card_in_blocked(self):
+        import board
+        # The failure path's delivery carried no `blocked`, so it moved the card finalize_terminal
+        # had just put in Blocked on to Review, and a wall resume re-readied nothing.
+        from test_support import workflow_src
+        src = workflow_src()
+        i = src.index("A Claude wall can surface here rather than in the ladder")
+        j = src.index("deliver_result,", i)
+        self.assertIn('{"reply_to": {**params["reply_to"], "blocked": True},', src[j:j + 400])
+        rt = {"repo": "me/game", "number": 3, "blocked": True, "review_col": "Review",
+              "blocked_col": "Blocked", "status_options": {"Blocked": "B", "Review": "R"}}
+        moved = []
+        with unittest.mock.patch.object(board, "has_comment_marker", return_value=False), \
+                unittest.mock.patch.object(board, "comment", return_value=True), \
+                unittest.mock.patch.object(board, "set_status_raw",
+                                           side_effect=lambda p, f, i, o: moved.append(o) or True):
+            delivery._github_issue(rt, "sorry", None, run_id="gh-issue-3")
+        self.assertNotIn("R", moved)
+
+    def test_a_stop_during_a_board_poll_starts_nothing_more(self):
+        # A budget stop restored the board config while a poll was mid-way: the poll still held
+        # the old (enabled) config and started the next Ready card as a plain board run.
+        import activities
+        import board
+        cfg = {"enabled": True, "project": "me/7", "columns": {"ready": "Ready", "active": "In Progress"}}
+        ready = [{"number": 3, "repo": "me/game", "item_id": "i3", "title": "t", "body": "", "labels": []}]
+        for factory_on in (False, True):
+            self._on(enabled=factory_on)
+            reads = []
+
+            def load():
+                reads.append(1)
+                if len(reads) == 1:
+                    return cfg
+                if not factory_on:          # the board was switched off after the first read
+                    return {**cfg, "enabled": False}
+                self.factory._mutate(lambda s: s.update(enabled=False))   # the factory stopped
+                return cfg
+            with unittest.mock.patch.object(board, "load", side_effect=load), \
+                    unittest.mock.patch.object(board, "project_meta", return_value={}), \
+                    unittest.mock.patch.object(board, "item_list", return_value={"items": []}), \
+                    unittest.mock.patch.object(board, "_parse_items", return_value=ready), \
+                    unittest.mock.patch.object(board, "column_counts", return_value={}), \
+                    unittest.mock.patch.object(self.factory, "pickup_room", return_value=(1, "")), \
+                    unittest.mock.patch.object(board, "issue_details", return_value={"repo": "me/game"}), \
+                    unittest.mock.patch.object(board, "issue_to_request",
+                                               return_value={"request": "x", "reply_to": {}}), \
+                    unittest.mock.patch.object(self.factory, "apply"), \
+                    unittest.mock.patch.object(board, "next_run_id", return_value="gh-issue-3-me-game"), \
+                    unittest.mock.patch.object(board, "start_run") as start:
+                activities.poll_board({})
+            self.assertFalse(start.called, f"factory_on={factory_on}")
+            self.assertNotIn("gh-issue-3-me-game", self.factory.load()["wids"])
 
     def test_a_merged_ticket_moves_to_done_not_review(self):
         import board
@@ -9630,6 +9879,33 @@ class FactoryModeTests(unittest.TestCase):
         with g([("gh-issue-11", "closed"), ("gh-issue-11-r1", "running")]):
             self.assertIsNone(board.next_run_id(11))                    # in flight: never doubled
             self.assertEqual(board.latest_run_id(11), "gh-issue-11-r1")
+
+    def test_a_cards_run_id_carries_its_repo(self):
+        # Three repos' issue #2 shared `gh-issue-2`: one chat thread, merged audit rows, and a
+        # reaper judging one repo's card by another's run.
+        import board
+        g = lambda gens: unittest.mock.patch.object(board, "_generations", return_value=gens)
+        with g([]):
+            self.assertEqual(board.next_run_id(2, "msosas/zero-marketing"),
+                             "gh-issue-2-msosas-zero-marketing")
+            self.assertNotEqual(board.next_run_id(2, "msosas/truco"),
+                                board.next_run_id(2, "msosas/tarot"))
+        self.assertEqual(board.run_id(2, 1, "o/r"), "gh-issue-2-o-r-r1")
+        self.assertEqual(board.issue_to_request(
+            {"number": 2, "title": "t", "body": "", "repo": "o/r"}, {})["chat_key"],
+            "gh-issue-2-o-r")
+
+    def test_a_card_started_before_repo_ids_is_still_judged_by_its_own_run(self):
+        # An In-Progress card from before the id change has only legacy generations; judging it
+        # by a repo-keyed id that never ran would leave it stuck forever.
+        import board
+        legacy = [("gh-issue-4", "running")]
+        with unittest.mock.patch.object(board, "_generations",
+                                        side_effect=lambda n, repo=None: [] if repo else legacy):
+            self.assertEqual(board.latest_run_id(4, "o/r"), "gh-issue-4")
+        with unittest.mock.patch.object(board, "_generations",
+                                        side_effect=lambda n, repo=None: [("gh-issue-4-o-r", "closed")] if repo else legacy):
+            self.assertEqual(board.latest_run_id(4, "o/r"), "gh-issue-4-o-r")
 
     def test_board_poll_skips_a_card_whose_run_is_still_going(self):
         import activities

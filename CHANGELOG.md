@@ -11,6 +11,55 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Saving the Factory config no longer starts the factory.** A new factory is saved on hold;
+  press **Start** in Admin → Mode once the GitHub events are wired. **Pause** stops new sprints
+  and tickets but keeps the budget, counters and board settings, and runs already going finish.
+  A factory already running when you upgrade keeps running.
+
+### Fixed
+
+- **QA can build and render test pages.** Every PR workspace now has a git-ignored
+  `.otto-scratch/` folder, and the QA tester is told to use it (not `/tmp`) and to try a
+  headless browser before calling a layout claim unobservable, and to rerun a check whose
+  output it lost rather than report it as done. Its `/tmp` setups were refused
+  mid-run, which marked rendering checks inconclusive.
+- **Otto's runs no longer pick up your interactive permission mode.** Each run now passes an
+  explicit permission mode, so a `"defaultMode": "auto"` in `~/.claude/settings.json` no longer
+  puts an auto-mode check in front of every shell command an unattended run makes. Your own
+  `permissions.deny` rules still apply, and the QA tester is told not to use `rm -rf`
+  (`npm ci` already gives a clean install).
+- **A board run that fails outright now stays in Blocked.** Its "something went wrong" reply
+  moved the card on to the review column, so when the factory resumed after a usage limit it
+  found nothing to re-queue and a product manager retry was spent on it instead.
+- **A factory stop can no longer leak one more ticket.** A board poll running at the moment the
+  factory stopped (at its budget, say) started the next Ready card as an ordinary board run,
+  outside the budget and with every MCP server. The poll now re-checks both switches just before
+  it starts each run.
+- **A running factory no longer sends its failed runs to Needs-you.** Its sprints already retry
+  a Blocked ticket twice and then close it with a reason, so those cards only waited for someone
+  to dismiss them. They show again if the factory is paused or stops, and a stop notifies you.
+- **A factory sprint card in Needs-you has no Retry button.** A retried sprint ran as an
+  ordinary run beside the factory's own sprints, outside its budget and WIP cap, and worked the
+  same tickets. The card now clears itself once the factory's next sprint has run.
+- **A Needs-you entry now records why it stopped.** Failed merges and review or QA findings
+  now save their cause in the audit trail. Before, the trail showed only the reason code.
+- **Board runs for the same issue number in different repos no longer share a run.** A board
+  run's id and chat thread now include the issue's repo (`gh-issue-2-owner-repo`). Before this,
+  issue #2 in two repos shared one chat thread and one audit history, and one could wait for the
+  other to finish. Cards already In Progress keep their old id and the reaper still finds them.
+  Old chat threads stay where they are; a re-readied card starts a new thread.
+- **One ticket, one open PR.** A run stopped by Claude's usage limit no longer pushes its
+  half-finished work as a PR. When a board card runs again, its new PR closes the earlier run's
+  PR (the branch is kept, so you can reopen it). Retry on a board card now starts the card's next
+  run instead of a separate one, and refuses while the card is already running again.
+- **A usage limit hit while judging is reported as the usage limit.** It used to show as
+  `workflow_error`, which looked like an Otto bug and invited a Retry that hit the same limit.
+- **The `needs-human` label now lands on repos that didn't have it.** Otto creates the label
+  when it is missing. Before this, a stuck or failed ticket in such a repo got no label.
+  **Restart the worker after upgrading.**
+
 ## [0.7.3] - 2026-10-27
 
 ### Fixed

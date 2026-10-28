@@ -281,6 +281,36 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         self.assertEqual(drafted, [])
 
     @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_walled_run_pushes_nothing_and_opens_no_pr(self):
+        # zero-marketing#12: the usage limit stopped the attempt mid-work and finalize still
+        # opened a PR of the half-done tree, red CI and all.
+        with mock.patch.object(workspace, "finalize") as fin, \
+                mock.patch.object(engine, "pr_copy") as copy:
+            out = activities.finalize_workspace({"run_id": "gh-issue-4", "title": "t",
+                                                 "walled": True})
+        fin.assert_not_called()
+        copy.assert_not_called()
+        self.assertFalse(out["pushed"])
+        self.assertIsNone(out["pr_url"])
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+    def test_a_board_runs_fresh_pr_closes_the_cards_earlier_ones(self):
+        import board
+        issue = {"kind": "github_issue", "repo": "o/r", "number": 4}
+        opened = {"pr_url": "https://x/16", "branch": "otto/gh-issue-4-o-r-r1"}
+        with mock.patch.object(engine, "pr_copy", return_value={"title": "t", "body": "b"}), \
+                mock.patch.object(workspace, "finalize", return_value=opened), \
+                mock.patch.object(board, "close_superseded") as sup:
+            activities.finalize_workspace({"run_id": "gh-issue-4-o-r-r1", "issue": issue})
+            sup.assert_called_once_with("o/r", 4, "otto/gh-issue-4-o-r-r1", "https://x/16")
+            sup.reset_mock()
+            # A push to an EXISTING PR opens nothing, so it supersedes nothing.
+            with mock.patch.object(workspace, "_dirty", return_value=False):
+                activities.finalize_workspace({"run_id": "gh-issue-4-o-r-r1", "issue": issue,
+                                               "existing_pr": True, "branch": "b"})
+            sup.assert_not_called()
+
+    @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
     def test_a_swarm_part_never_closes_the_shared_issue(self):
         got, _ = self._finalize_activity({"run_id": "web-abc-s2", "title": "t"})
         self.assertFalse(got["close_issue"])
@@ -1084,6 +1114,46 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(info["path"], "base.txt")))
         # feature branch's work must be ABSENT — the clone starts from the default branch
         self.assertFalse(os.path.isfile(os.path.join(info["path"], "feature.txt")))
+
+    def test_every_clone_has_a_git_ignored_scratch_dir(self):
+        # QA built its test page under /tmp and the session refused the teardown, so a layout
+        # claim a headless browser could measure went INCONCLUSIVE (gh-issue-66, -68).
+        tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = self._git_repo(tmp)
+        self._register(tmp, repo)
+        orig_ws = self.ws.WORKSPACES
+        self.ws.WORKSPACES = os.path.join(tmp, "workspaces")
+        self.addCleanup(setattr, self.ws, "WORKSPACES", orig_ws)
+        info = self.ws.provision("src", "wf-test-scratch")
+        scratch = os.path.join(info["path"], self.ws.SCRATCH_DIR)
+        self.assertTrue(os.path.isdir(scratch))
+        with open(os.path.join(scratch, "page.html"), "w") as f:
+            f.write("<p>x</p>")
+        # Never shows as residue, never committed, no tracked file touched.
+        self.assertFalse(self.ws._dirty(info["path"]))
+        import subprocess
+        tracked = subprocess.run(["git", "-C", info["path"], "status", "--porcelain",
+                                  "--ignored=no"], capture_output=True, text=True).stdout
+        self.assertEqual(tracked, "")
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "capabilities", "bundled", "qa-tester.md")) as f:
+            cap = f.read()
+        self.assertIn(self.ws.SCRATCH_DIR, cap)
+        # gh-issue-117: a probe garbled by its own command was reported as "no usable result".
+        self.assertIn("A check whose output you lost is rerun, never reported.", cap)
+
+    def test_a_needs_human_row_keeps_its_cause(self):
+        # finalize_terminal was handed the reason only: a merge_failed row said nothing else.
+        from test_support import workflow_src
+        src = workflow_src()
+        i = src.index('"reason": self._needs_human["reason"],')
+        self.assertIn('"detail": self._needs_human.get("detail", "")', src[i:i + 300])
+        for loop in ("review", "qa"):
+            self.assertIn(f'self._needs_human = self._loop_blocked("{loop}", {loop})', src)
+        from wf_postpr import PostPrMixin
+        self.assertEqual(PostPrMixin._loop_blocked("qa", {"state": "inconclusive", "critique": "c"}),
+                         {"reason": "qa_inconclusive", "detail": "c"})
 
     # --- staleness: a registered checkout is only as current as the user's last pull ------------
     def _git_repo_with_remote(self, tmp):

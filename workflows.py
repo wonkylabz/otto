@@ -397,13 +397,19 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 out["result"] = contracts.lead_with(out["result"], prefix)
             return out
         except Exception as e:  # noqa: BLE001 - NOT bare: CancelledError (BaseException) still propagates
-            self._terminal = {"reason": "workflow_error"}
+            # A Claude wall can surface here rather than in the ladder — a tier call (the review
+            # judge) raising on a spent limit. Booked as `workflow_error` it read as an Otto bug
+            # and invited a Retry that hit the same limit, and the factory never paused for it.
+            detail = _failure_detail(e)
+            wall = error_classifier.claude_wall(detail)
+            reason = error_classifier.claude_wall_reason(wall) if wall else "workflow_error"
+            self._terminal = {"reason": reason}
             try:
                 await workflow.execute_activity(
                     finalize_terminal,
                     {"wid": workflow.info().workflow_id, "request": self._request,
-                     "cap": self._cap, "reason": "workflow_error",
-                     "detail": _failure_detail(e),
+                     "cap": self._cap, "reason": reason,
+                     "detail": detail,
                      "reply_to": params.get("reply_to"), "repo": self._repo,
                      "times": self._times},
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
@@ -430,7 +436,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 try:
                     await workflow.execute_activity(
                         deliver_result,
-                        {"reply_to": params["reply_to"],
+                        # `blocked`: finalize_terminal just moved the card to Blocked, and a
+                        # delivery without it moved the card on to Review — out of the column the
+                        # factory's wall resume re-readies from (`gh-issue-99-…-r1`).
+                        {"reply_to": {**params["reply_to"], "blocked": True},
                          "result": (f"Sorry — something went wrong on my side and I couldn't "
                                     f"run that. Nothing was done. {config.OWNER_NAME} has been "
                                     f"told and can pick it up."),
@@ -1352,7 +1361,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             self._leave("REVIEW")
             # A review that didn't come back clean needs a human (PR stays draft).
             if review.get("state") in ("fail", "inconclusive"):
-                self._needs_human = {"reason": f"review_{review['state']}"}
+                self._needs_human = self._loop_blocked("review", review)
 
         # Post-PR QA loop (opt-in): empirically validate the PR with the QA capability and, on a
         # FAIL, fold its findings into a fix on the SAME branch and re-QA — bounded rounds. The
@@ -1366,7 +1375,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             self._leave("QA")
             # QA that didn't cleanly pass needs a human (PR stays draft) — same Blocked routing.
             if qa.get("state") in ("fail", "inconclusive"):
-                self._needs_human = {"reason": f"qa_{qa['state']}"}
+                self._needs_human = self._loop_blocked("qa", qa)
 
         # Factory mode: a PR that passed review AND QA merges itself (wf_postpr._auto_merge).
         merged = await self._auto_merge(params, pr, review, qa, notes,
@@ -1430,7 +1439,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             await workflow.execute_activity(
                 finalize_terminal,
                 {"wid": wid, "request": request, "cap": cap,
-                 "reason": self._needs_human["reason"], "reply_to": reply_to, "repo": repo,
+                 "reason": self._needs_human["reason"], "detail": self._needs_human.get("detail", ""),
+                 "reply_to": reply_to, "repo": repo,
                  "unattended": unattended, "times": self._times},
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
 

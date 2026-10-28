@@ -11,10 +11,10 @@ Design notes:
   * **Moving a card to Ready IS the human approval.** Board-sourced runs default to
     `approval="auto"` so a write (incl. a repo-edit that opens a draft PR) actually executes; a
     `hold` label flips it back to `"ask"` (surfaces on Otto's Board tab for a second gate).
-  * **Idempotency** has two guards: the run's workflow id is deterministic (`gh-issue-<n>`, then
-    `-r1`, `-r2`… for a card re-readied after its run closed — `next_run_id`) so a duplicate start
-    is rejected by Temporal, and claiming (moving out of Ready) stops the next poll from
-    re-listing it. See `start_run` + the poll activity.
+  * **Idempotency** has two guards: the run's workflow id is deterministic
+    (`gh-issue-<n>-<owner>-<repo>`, then `-r1`, `-r2`… for a card re-readied after its run
+    closed — `next_run_id`) so a duplicate start is rejected by Temporal, and claiming (moving
+    out of Ready) stops the next poll from re-listing it. See `start_run` + the poll activity.
   * **`gh` is the transport** (same dependency as `workspace.py`'s draft-PR path). Every `gh`
     call goes through `_run` and never raises — a transient failure just retries next poll.
   * Config lives in `data/board.json` (hot-editable, like `event-rules.json`/`schedules.json`),
@@ -466,8 +466,8 @@ def issue_to_request(issue, cfg):
     # card stays In Progress and the run surfaces under "Waiting on you" on the Otto Board.
     return {"request": request, "cap": cap, "repo": repo, "repo_hint": repo_hint,
             "approval": approval, "qa": qa, "clarify": True, "reply_to": reply_to,
-            "chat_key": f"gh-issue-{n}", "chat_title": (title[:80] or f"Issue #{n}"),
-            "chat_labels": ["github-ticket"]}
+            "chat_key": run_id(n, 0, issue.get("repo")),
+            "chat_title": (title[:80] or f"Issue #{n}"), "chat_labels": ["github-ticket"]}
 
 
 # --- card moves + comments -------------------------------------------------
@@ -508,10 +508,53 @@ def add_label(repo, number, label):
     ok, number = _valid_target(repo, number)
     if not ok or not label:
         return False
-    rc, _out, err = _run(["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label])
+    argv = ["gh", "issue", "edit", str(number), "--repo", repo, "--add-label", label]
+    rc, _out, err = _run(argv)
+    if rc != 0 and "not found" in err:
+        # `gh` refuses a label the repo doesn't have yet, and every repo starts without
+        # `needs-human` — so the signal never landed anywhere until a human made it by hand.
+        crc, _o, cerr = _run(["gh", "label", "create", label, "--repo", repo, "--force"])
+        if crc == 0:
+            rc, _out, err = _run(argv)
+        else:
+            err = f"{err.strip()}; label create failed: {cerr}"
     if rc != 0:
         trace("BOARD", f"add-label {label} to {repo}#{number} failed: {err[:120]}")
     return rc == 0
+
+
+def close_superseded(repo, number, keep_branch, new_url):
+    """Close every OTHER open Otto PR for board card #number — earlier generations of the same
+    card (`otto/gh-issue-<n>…`), which a re-run's fresh PR replaces. Returns the closed PR
+    numbers. Never raises; the branches are kept, so a close is undone by reopening."""
+    ok, number = _valid_target(repo, number)
+    if not ok:
+        return []
+    rc, out, err = _run(["gh", "pr", "list", "--repo", repo, "--state", "open",
+                         "--json", "number,headRefName", "--limit", "200"])
+    if rc != 0:
+        trace("BOARD", f"superseded-PR lookup on {repo} failed: {err[:120]}")
+        return []
+    try:
+        prs = json.loads(out or "[]")
+    except ValueError:
+        return []
+    # `otto/<wid>` of any generation, legacy or repo-keyed; the `-` keeps #4 off #41's branch.
+    base = f"otto/{run_id(number)}"
+    closed = []
+    for pr in prs:
+        head = pr.get("headRefName") or ""
+        if head == keep_branch or not (head == base or head.startswith(base + "-")):
+            continue
+        rc, _o, err = _run(["gh", "pr", "close", str(pr.get("number")), "--repo", repo,
+                            "--comment", f"Superseded by {new_url} — a later run of #{number}."])
+        if rc == 0:
+            closed.append(pr.get("number"))
+        else:
+            trace("BOARD", f"closing superseded {repo}#{pr.get('number')} failed: {err[:120]}")
+    if closed:
+        trace("BOARD", f"#{number}: closed superseded PR(s) {closed} in favour of {new_url}")
+    return closed
 
 
 def has_comment_marker(repo, number, marker):
@@ -561,22 +604,28 @@ def start_run(wid, params):
 # rewriting it. Its first run already holds `gh-issue-<n>`, and REJECT_DUPLICATE refused every
 # re-run, so the card sat in Ready forever while every poll reported it skipped. So a card's run
 # is a GENERATION: the first free id in `gh-issue-<n>`, `-r1`, `-r2`, … A generation still running
-# is never doubled; a closed one makes room for the next. Also covers another repo's #n.
+# is never doubled; a closed one makes room for the next.
+#
+# The id carries the issue's REPO: a board spans repos, and a bare `gh-issue-<n>` gave three
+# repos' issue #2 one id — their audit rows merged, they shared one chat thread, a second Ready
+# #2 waited on the first, and the reaper judged one repo's card by another's run.
 MAX_GENERATIONS = 20
 
 
-def run_id(n, gen=0):
-    return f"gh-issue-{n}" if not gen else f"gh-issue-{n}-r{gen}"
+def run_id(n, gen=0, repo=None):
+    """`gh-issue-<n>-<owner>-<repo>[-r<gen>]`; no repo = the legacy `gh-issue-<n>` shape."""
+    base = f"gh-issue-{n}" + (("-" + re.sub(r"[^A-Za-z0-9_.-]+", "-", repo)) if repo else "")
+    return base if not gen else f"{base}-r{gen}"
 
 
-async def _run_states(n):
+async def _run_states(n, repo=None):
     """[(wid, 'running'|'closed')] for every generation that exists, oldest first."""
     import temporal_client as tc
     from temporalio.service import RPCError, RPCStatusCode
     c = await tc.client()
     out = []
     for gen in range(MAX_GENERATIONS):
-        wid = run_id(n, gen)
+        wid = run_id(n, gen, repo)
         try:
             desc = await c.get_workflow_handle(wid).describe()
         except RPCError as e:
@@ -588,34 +637,38 @@ async def _run_states(n):
     return out
 
 
-def _generations(n):
+def _generations(n, repo=None):
     """`_run_states`, or None when Temporal can't be asked (the caller falls back)."""
     import temporal_client as tc
     if not tc.OK:
         return None
     try:
-        return tc.run(_run_states(n))
+        return tc.run(_run_states(n, repo))
     except Exception as e:  # noqa: BLE001 - Temporal unreachable / transient
         trace("BOARD", f"run lookup for #{n} failed: {str(e)[:120]}")
         return None
 
 
-def next_run_id(n):
+def next_run_id(n, repo=None):
     """The id a Ready card #n should start under, or None when a generation is still RUNNING
     (it is in flight — never doubled). Unknown (Temporal unreachable) falls back to the first
     generation, whose REJECT_DUPLICATE keeps the old at-most-once behaviour."""
-    gens = _generations(n)
+    gens = _generations(n, repo)
     if gens is None:
-        return run_id(n)
+        return run_id(n, 0, repo)
     if any(state == "running" for _, state in gens):
         return None
-    return run_id(n, len(gens)) if len(gens) < MAX_GENERATIONS else None
+    return run_id(n, len(gens), repo) if len(gens) < MAX_GENERATIONS else None
 
 
-def latest_run_id(n):
-    """The newest generation's id — what the reaper must judge a stuck In-Progress card by."""
-    gens = _generations(n)
-    return gens[-1][0] if gens else run_id(n)
+def latest_run_id(n, repo=None):
+    """The newest generation's id — what the reaper must judge a stuck In-Progress card by. A
+    card with no repo-keyed run yet falls back to the legacy `gh-issue-<n>` generations: it was
+    started before ids carried the repo, and judging it by an id that never ran leaves it stuck."""
+    gens = _generations(n, repo)
+    if not gens and repo:
+        gens = _generations(n)
+    return gens[-1][0] if gens else run_id(n, 0, repo)
 
 
 # --- Temporal poll schedule ------------------------------------------------

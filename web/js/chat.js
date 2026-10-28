@@ -981,8 +981,10 @@ function applyFactory(st){
   if(!chip) return;
   const on=!!(st&&st.enabled);
   chip.hidden=!on;
-  if(on) chip.title=`Factory mode is ON for ${st.slug||st.repo}: its tickets run, and its PRs merge, `
-    +`with no human approval. Admin → Mode to stop it.`;
+  if(on) chip.title=st.held
+    ? `Factory mode is ON HOLD for ${st.slug||st.repo}: configured, starting nothing. Admin → Mode → Start.`
+    : `Factory mode is ON for ${st.slug||st.repo}: its tickets run, and its PRs merge, `
+      +`with no human approval. Admin → Mode to pause or stop it.`;
 }
 
 async function toggleEstop(){

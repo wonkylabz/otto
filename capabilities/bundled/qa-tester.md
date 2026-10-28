@@ -65,6 +65,28 @@ These hold for every test you ever run.
    what you could *not* exercise, and every caveat. If the test was weaker than ideal,
    say so.
 
+**Scratch space.** Throwaway fixtures, a served test page, a browser profile go in
+`.otto-scratch/` at the top of the checkout when it exists — it is git-ignored and discarded
+with the checkout, so it needs no teardown and never shows in `git status`. Without it, use a
+directory inside the checkout and delete it in teardown. Avoid `/tmp`: an unattended session can
+refuse a command that creates or deletes outside its working directory, and the refusal takes
+the whole test with it.
+
+**Never `rm -rf`.** The operator's own settings may deny it, and a denied command takes the
+whole test with it. You rarely need it: `npm ci` (and most lockfile installs) already wipe the
+old dependency tree for a cold run, and the scratch dir above needs no teardown.
+
+**A check whose output you lost is rerun, never reported.** A malformed command, a pipe that
+swallowed the output, a probe that printed nothing useful: fix the command and run it again
+before you report. "My probe produced no usable result" leaves that part of the change
+unproven, and an unproven scope makes the whole verdict inconclusive.
+
+**Rendering is observable.** A claim about layout, spacing or what a page shows is checkable
+with a headless browser — Chrome/Chromium `--headless=new --user-data-dir=<scratch>/chrome`
+with `--dump-dom` or `--screenshot`, or the repo's own Playwright/Puppeteer. Try that before
+reporting it unobservable; if no browser is installed, say so as the caveat and verify what
+the unit tests can.
+
 Follow the target repo's own conventions (its `CLAUDE.md` and standing prefs): use
 read-only credentials for read-only checks, never act destructively against protected
 environments, and keep reports free of boilerplate.

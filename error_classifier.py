@@ -473,6 +473,8 @@ _CLAUDE_WALL_REASON = {
     "usage_limit": "claude_usage_limit",
     "bad_model": "claude_model_unavailable",
 }
+# Every needs-human reason a Claude wall can end a run with.
+CLAUDE_WALL_REASONS = frozenset(_CLAUDE_WALL_REASON.values())
 
 
 def claude_wall_reason(reason):

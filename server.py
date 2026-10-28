@@ -877,6 +877,7 @@ async def _board(limit=40):
     retries = _retries()
     for e in out:
         e["retried_to"] = retries.get(e["id"])
+        e["no_retry"] = factory.is_sprint(e["id"])
         # A run with no chat_key of its own (an interactive web-* run — the browser owns the
         # conversation — or a workflow-opened chat whose terminal status fell outside the
         # COMPLETED/RUNNING branches above) can still be traced back to its chat via the sticky
@@ -886,7 +887,10 @@ async def _board(limit=40):
         # into the archive — a chat can be reattached to a run long after the card stopped changing.
         if not e.get("chat_key"):
             e["chat_key"] = chats.find_by_run_origin(e["id"])
-    return [e for e in out if e["id"] not in dismissed]
+    fac = factory.load()
+    return [e for e in out if e["id"] not in dismissed
+            and not factory.superseded(e["id"], fac)
+            and not factory.triaged(e["id"], e.get("needs_human"), fac)]
 
 
 def _run_result(wid):
@@ -1482,7 +1486,7 @@ class Handler(BaseHTTPRequestHandler):
                                         # Same reasoning: one small file read, and the header's
                                         # FACTORY chip must be visible from every tab.
                                         "factory": {k: v for k, v in factory.load().items()
-                                                    if k in ("enabled", "repo", "slug")},
+                                                    if k in ("enabled", "repo", "slug", "held")},
                                         "update": updater.summary(),
                                         "uptime_s": int(time.time() - _START_TIME)}))
         elif self.path == "/api/doctor":
@@ -2182,6 +2186,11 @@ class Handler(BaseHTTPRequestHandler):
         if not TEMPORAL_OK:
             self._send(503, json.dumps({"error": "Temporal not available"})); return
         wid = (body.get("id") or "").strip()
+        if factory.is_sprint(wid):
+            self._send(409, json.dumps({"error": "a factory sprint is never retried by hand — "
+                                                 "the factory runs its own next sprint; dismiss "
+                                                 "this card"}))
+            return
         request, capname, repo, reached_run = _run_origin(wid)
         if not request:
             self._send(404, json.dumps({"error": "no audit history found for that run"})); return
@@ -2237,6 +2246,25 @@ class Handler(BaseHTTPRequestHandler):
         if origin.get("external_text"):
             params["external_text"] = origin["external_text"]
         new_id = "web-" + uuid.uuid4().hex
+        if (reply_to or {}).get("kind") == "github_issue":
+            # A board card's retry is the card's NEXT GENERATION, not a side run: as a `web-*`
+            # run it raced the factory's own re-ready of the same card (zero-marketing#4: two
+            # runs, two duplicate PRs), and its PR never superseded the earlier one's.
+            n, slug = reply_to.get("number"), reply_to.get("repo")
+            new_id = board.next_run_id(n, slug)
+            if new_id is None:
+                self._send(409, json.dumps({
+                    "error": f"issue #{n} is already running again — wait for that run"})); return
+            for k in ("qa", "fresh_branch"):
+                if origin.get(k):
+                    params[k] = origin[k]
+            fac = factory.load()
+            if factory._owned(wid, fac.get("wids") or []):
+                # Else it escapes the factory's budget and MCP allowlist. A hold-label ticket stays
+                # a human's across the retry, or its next failure is hidden for a PM that never
+                # touches held cards.
+                factory.claim(new_id, human=factory._owned(wid, fac.get("human_wids") or [])
+                              or params.get("approval") == "ask")
         # Record the retry into a Chat thread so its result lands in a conversation, not
         # just on the board: an interactive run records CLIENT-side, so retrying it from
         # the board previously left the result board-only. Three tiers, most precise
@@ -2609,6 +2637,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             state = factory.enable(body)
+        except factory.Refused as e:
+            self._send(400, json.dumps({"error": str(e)}))
+            return
+        state.pop("prev_board", None)
+        self._send(200, json.dumps({"ok": True, "state": state}))
+
+    def _post_factory_start(self, body):
+        """POST /api/factory/start — release the hold and fire a sprint now."""
+        try:
+            state = factory.start()
+        except factory.Refused as e:
+            self._send(400, json.dumps({"error": str(e)}))
+            return
+        state.pop("prev_board", None)
+        self._send(200, json.dumps({"ok": True, "state": state}))
+
+    def _post_factory_hold(self, body):
+        """POST /api/factory/hold — stop starting work, keep the factory configured."""
+        try:
+            state = factory.hold()
         except factory.Refused as e:
             self._send(400, json.dumps({"error": str(e)}))
             return
@@ -3172,6 +3220,8 @@ _POST_ROUTES = {
     "/api/event-rules": Handler._post_event_rules,
     "/api/factory/disable": Handler._post_factory_disable,
     "/api/factory/enable": Handler._post_factory_enable,
+    "/api/factory/hold": Handler._post_factory_hold,
+    "/api/factory/start": Handler._post_factory_start,
     "/api/slack-triggers": Handler._post_slack_triggers,
     "/api/knowledge/add": Handler._post_knowledge_add,
     "/api/knowledge/clear": Handler._post_knowledge_clear,

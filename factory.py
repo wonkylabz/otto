@@ -60,10 +60,12 @@ _DEFAULTS = {
     "merged": 0,
     "merged_seen": 0,        # `merged` at the last sprint's end — the idle-sprint test
     "wids": [],              # every workflow this factory started (spend is summed over them)
+    "human_wids": [],        # the subset started under the board's `hold` label: a human's
     "status": "manual",
     "prev_board": None,
     "history": [],
     "paused": None,          # {reason, since, wids}: a Claude wall hit; sprints skip, not idle
+    "held": None,            # {since}: the OPERATOR's hold — configured, starting nothing
     "walls_seen_at": "",     # audit watermark: walls at or before this are already handled
     "blind_ticks": 0,        # consecutive ticks that could not read spend or the board
     "merged_prs": [],        # PR urls already counted in `merged` (a retried merge counts once)
@@ -330,11 +332,14 @@ def apply(params, state):
     return params
 
 
-def claim(wid):
-    """Record a workflow this factory started, so its spend counts against the budget."""
+def claim(wid, human=False):
+    """Record a workflow this factory started, so its spend counts against the budget. `human`:
+    it runs under the `hold` label, so its outcome is a person's to act on, never the PM's."""
     def _fn(s):
         if wid not in s["wids"]:
             s["wids"] = list(s["wids"]) + [wid]
+        if human and wid not in (s.get("human_wids") or []):
+            s["human_wids"] = list(s.get("human_wids") or []) + [wid]
     _mutate(_fn)
 
 
@@ -355,17 +360,22 @@ def note_merge(factory_tag, pr_url):
 
 # --- budget ------------------------------------------------------------------------------
 
-_GEN_RE = re.compile(r"^r\d+(?:-|$)")
+# The runs a claimed run spawns, as suffixes of its id: review/QA rounds and their checks
+# (`-rev0`, `-qare1`, `-chkqa0`), fix rounds (`-revfix0`, `-fix1`), learning (`-learn1`), the
+# playtest (`-play`), a frontman delegate (`-d1`) and swarm parts (`-s2`) — chained (`-d1-rev0`).
+_LOOP_RE = re.compile(r"^(?:(?:chk)?(?:rev|qa)(?:re)?\d+|revfix\d+|fix\d+|learn\d+|play|d\d+|s\d+)"
+                      r"(?:-(?:(?:chk)?(?:rev|qa)(?:re)?\d+|revfix\d+|fix\d+|learn\d+|play|d\d+|s\d+))*$")
 
 
 def _owned(wid, wids):
-    """`wid` is a claimed run or one of its loops (`-rev0`, `-qa1`, `-play`). Never a later
-    GENERATION (`-r1`) of a claimed card: the factory claims each generation itself, and on a
-    shared board `gh-issue-5-r1` may be another repo's issue #5."""
+    """`wid` is a claimed run or one of its loops (`_LOOP_RE`). Matched on the loop's SHAPE, never
+    on "anything but a generation": run ids carry the repo, so `gh-issue-4-acme-web` would own
+    `gh-issue-4-acme-web-admin`, another repo's card, hiding its failures and denying its MCP
+    servers. Never a later GENERATION (`-r1`) either: the factory claims each one itself."""
     for w in wids:
         if wid == w:
             return True
-        if wid.startswith(w + "-") and not _GEN_RE.match(wid[len(w) + 1:]):
+        if wid.startswith(w + "-") and _LOOP_RE.match(wid[len(w) + 1:]):
             return True
     return False
 
@@ -419,6 +429,49 @@ def mcp_allow_for(wid, state=None):
 # nothing and counted idle, so the factory stopped itself as "stalled" hours before the limit
 # reset, and the PM then rewrote the walled ticket as if it had failed, spending a retry on it.
 WALL_REASONS = ("claude_usage_limit", "claude_auth_expired")
+_SPRINT_WID_RE = re.compile(r"^factory-(\d+)-s(\d+)(?:-play)?$")
+
+
+def is_sprint(wid):
+    """A factory sprint (or its playtest) run id. Never retried by hand: the next scheduled
+    sprint re-reads the board as it is NOW, while a retry replays a stale brief as an ordinary
+    run — outside the factory's WIP cap and budget, and working the very tickets the line has
+    since re-readied (`web-bcb63055`, a retried sprint #3 closing PR #83 under #78's re-run)."""
+    return bool(_SPRINT_WID_RE.match(wid or ""))
+
+
+# Needs-human reasons whose ticket card the run itself moves to Blocked, where the PM sprint
+# reads it, retries it (`factory-retry-N`) or closes it. NOT `delivery_failed` (the move is what
+# failed: the card sits In Progress and the gate waits on it forever) nor `gate_timeout` (a human
+# was asked to approve, and the PM is told never to touch a held card).
+_PM_TRIAGES = frozenset({"verify_exhausted", "published_unverified", "qa_fail", "qa_inconclusive",
+                         "review_fail", "review_inconclusive", "merge_failed", "merge_unreviewed",
+                         "factory_no_pr", "workflow_error"}) | frozenset(WALL_REASONS)
+
+
+def triaged(wid, reason, state=None):
+    """A Needs-you card the FACTORY answers, not a human. While the line runs, the PM sprint
+    reads every Blocked card and retries or closes it, and a line that cannot recover stops
+    itself and notifies (`disable`) — at which point these cards show again. Never a card under
+    the `hold` label, a reason that leaves the card outside Blocked, or a held/stopped line."""
+    s = state if state is not None else load()
+    if reason not in _PM_TRIAGES or not enabled(s) or s.get("held"):
+        return False
+    wid = wid or ""
+    return _owned(wid, s.get("wids") or []) and not _owned(wid, s.get("human_wids") or [])
+
+
+def superseded(wid, state=None):
+    """A sprint card nobody needs to look at: a LATER sprint of the same factory has run, and
+    that sprint re-read the board. Factory mode is meant to run without a human, so a dead
+    sprint must not wait in Needs-you for one to dismiss it."""
+    m = _SPRINT_WID_RE.match(wid or "")
+    if not m:
+        return False
+    s = state if state is not None else load()
+    return m.group(1) == tag(s) and int(s.get("sprint_n") or 0) > int(m.group(2))
+
+
 _ISSUE_WID_RE = re.compile(r"^gh-issue-(\d+)(?:-r\d+)?(?:-|$)")
 
 
@@ -644,8 +697,10 @@ def validate(form):
 
 def enable(form):
     """Turn Factory mode on: check every precondition, seed GOALS.md, point the board at
-    auto-approval, create the sprint schedule and kick the first sprint. Idempotent — a second
-    call with the factory already on just updates the knobs. Raises Refused."""
+    auto-approval and create the sprint schedule — ON HOLD. Nothing runs until `start()`: the
+    operator configuring it may still have the GitHub events to wire on another tab, and a save
+    that started a sprint gave them no chance. Idempotent — a second call with the factory
+    already on just updates the knobs, and never starts or holds the line. Raises Refused."""
     import board
     import estop
     import workspace
@@ -693,15 +748,15 @@ def enable(form):
             # one's clean playtest (and declares DONE untested) or its pause (and re-readies the
             # new repo's cards whose numbers match the old walled tickets).
             s.update({"started_at": _now(), "sprint_n": 0, "idle_sprints": 0, "merged": 0,
-                      "merged_seen": 0, "wids": [], "prev_board": bcfg, "paused": None,
+                      "merged_seen": 0, "wids": [], "human_wids": [], "prev_board": bcfg, "paused": None,
                       "walls_seen_at": "", "playtest_merged": -1, "playtest_verdict": "",
-                      "blind_ticks": 0, "merged_prs": []})
+                      "blind_ticks": 0, "merged_prs": [], "held": {"since": _now()}})
         s["enabled"], s["status"] = True, "running"
         _event(s, "enabled", f"{slug}, budget ${cfg['budget_usd']}, wip {cfg['wip']}, "
                              f"{GOALS_FILE} {goals}")
     state = _mutate(_fn)
     board.save({**bcfg, "enabled": True, "approval_default": "auto"})
-    sched = {"board": board.reconcile_schedule(), "sprint": reconcile_schedule(trigger=True)}
+    sched = {"board": board.reconcile_schedule(), "sprint": reconcile_schedule()}
     trace("FACTORY", f"enabled on {slug}: {sched}")
     if not str(sched["sprint"]).startswith(("created", "updated")):
         if started and started[0]:
@@ -714,6 +769,43 @@ def enable(form):
         raise Refused(f"settings saved, but the sprint schedule could not be updated "
                       f"({sched['sprint']}) — the factory keeps running on its old cadence")
     return {**state, "schedules": sched}
+
+
+def start():
+    """Release the hold and fire a sprint now. Raises Refused when there is nothing to start."""
+    import estop
+    s = load()
+    if not enabled(s):
+        raise Refused("Factory mode is off — configure it first")
+    if estop.engaged():
+        raise Refused("the global pause is on — release it first")
+
+    def _fn(st):
+        st["held"] = None
+        _event(st, "started", "by the operator")
+    state = _mutate(_fn)
+    sched = reconcile_schedule(trigger=True)
+    trace("FACTORY", f"started on {s.get('slug')}: {sched}")
+    if "triggered" not in str(sched):
+        # Released anyway: the schedule's own next tick starts the sprint. Say so, not "started".
+        return {**state, "schedule": sched,
+                "warning": f"no sprint fired now ({sched}) — the next scheduled check starts one"}
+    return {**state, "schedule": sched}
+
+
+def hold():
+    """Stop starting work, keep everything configured. Runs in flight finish; their PRs still
+    merge. Unlike `disable`, the board stays on auto-approval and the schedule keeps ticking
+    (each tick skips), so `start()` resumes the same line, counters and budget intact."""
+    s = load()
+    if not enabled(s):
+        raise Refused("Factory mode is off")
+
+    def _fn(st):
+        if not st.get("held"):
+            st["held"] = {"since": _now()}
+            _event(st, "on_hold", "by the operator")
+    return _mutate(_fn)
 
 
 def disable(reason="manual", detail=""):
@@ -783,6 +875,8 @@ def pickup_room(state, counts, cfg, meta):
     metadata: the run would start, the card would stay in Ready, and WIP would read 0 forever),
     and past or unable to measure the budget (the sprint gate checks it only once per tick)."""
     cols = cfg.get("columns") or {}
+    if state.get("held"):
+        return 0, "on hold"
     if state.get("paused") or line_stopped(counts, cfg):
         return 0, "line stopped"
     meta = meta or {}
@@ -821,6 +915,9 @@ def gate():
         return {"go": False, "why": "factory off"}
     if estop.blocked("factory"):
         return {"go": False, "why": "paused"}
+    # Ahead of the wall gate: on hold, nothing should be probed, counted or re-readied.
+    if s.get("held"):
+        return {"go": False, "why": "on hold"}
     # Before the stall and budget limits: a wall's skipped sprints must not count against them.
     held = _wall_gate(s)
     if held:
