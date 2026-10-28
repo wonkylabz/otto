@@ -2258,8 +2258,13 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("qa", "fresh_branch"):
                 if origin.get(k):
                     params[k] = origin[k]
-            if factory._owned(wid, factory.load().get("wids") or []):
-                factory.claim(new_id)   # else it escapes the factory's budget and MCP allowlist
+            fac = factory.load()
+            if factory._owned(wid, fac.get("wids") or []):
+                # Else it escapes the factory's budget and MCP allowlist. A hold-label ticket stays
+                # a human's across the retry, or its next failure is hidden for a PM that never
+                # touches held cards.
+                factory.claim(new_id, human=factory._owned(wid, fac.get("human_wids") or [])
+                              or params.get("approval") == "ask")
         # Record the retry into a Chat thread so its result lands in a conversation, not
         # just on the board: an interactive run records CLIENT-side, so retrying it from
         # the board previously left the result board-only. Three tiers, most precise

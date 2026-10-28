@@ -9286,6 +9286,20 @@ class FactoryModeTests(unittest.TestCase):
         self.assertIn('factory.claim(wid, human=params.get("approval") == "ask")',
                       inspect.getsource(__import__("activities")))
 
+    def test_ownership_never_spans_a_repo_whose_name_extends_the_factorys(self):
+        own = self.factory._owned
+        self.assertFalse(own("gh-issue-4-acme-web-admin", ["gh-issue-4-acme-web"]))
+        self.assertFalse(own("gh-issue-4-acme-web-r2", ["gh-issue-4-acme-web"]))   # a generation
+        for loop in ("rev0", "revre1", "qa0", "qare0", "chkqa0", "chkrevre1", "revfix0", "fix1",
+                     "learn1", "play", "d1", "d1-rev0", "s2-qa0"):
+            self.assertTrue(own(f"gh-issue-4-acme-web-{loop}", ["gh-issue-4-acme-web"]), loop)
+        self.assertTrue(own("factory-1-s3-play", ["factory-1-s3"]))
+        import inspect
+        import server
+        src = inspect.getsource(server.Handler._post_needs_you_retry)
+        self.assertIn('factory.claim(new_id, human=factory._owned(wid, fac.get("human_wids") or [])',
+                      src)
+
     def test_a_hold_ticket_is_claimed_as_a_humans(self):
         self._on()
         self.factory.claim("gh-issue-3-x", human=True)

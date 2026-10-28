@@ -360,17 +360,22 @@ def note_merge(factory_tag, pr_url):
 
 # --- budget ------------------------------------------------------------------------------
 
-_GEN_RE = re.compile(r"^r\d+(?:-|$)")
+# The runs a claimed run spawns, as suffixes of its id: review/QA rounds and their checks
+# (`-rev0`, `-qare1`, `-chkqa0`), fix rounds (`-revfix0`, `-fix1`), learning (`-learn1`), the
+# playtest (`-play`), a frontman delegate (`-d1`) and swarm parts (`-s2`) — chained (`-d1-rev0`).
+_LOOP_RE = re.compile(r"^(?:(?:chk)?(?:rev|qa)(?:re)?\d+|revfix\d+|fix\d+|learn\d+|play|d\d+|s\d+)"
+                      r"(?:-(?:(?:chk)?(?:rev|qa)(?:re)?\d+|revfix\d+|fix\d+|learn\d+|play|d\d+|s\d+))*$")
 
 
 def _owned(wid, wids):
-    """`wid` is a claimed run or one of its loops (`-rev0`, `-qa1`, `-play`). Never a later
-    GENERATION (`-r1`) of a claimed card: the factory claims each generation itself, and on a
-    shared board `gh-issue-5-r1` may be another repo's issue #5."""
+    """`wid` is a claimed run or one of its loops (`_LOOP_RE`). Matched on the loop's SHAPE, never
+    on "anything but a generation": run ids carry the repo, so `gh-issue-4-acme-web` would own
+    `gh-issue-4-acme-web-admin`, another repo's card, hiding its failures and denying its MCP
+    servers. Never a later GENERATION (`-r1`) either: the factory claims each one itself."""
     for w in wids:
         if wid == w:
             return True
-        if wid.startswith(w + "-") and not _GEN_RE.match(wid[len(w) + 1:]):
+        if wid.startswith(w + "-") and _LOOP_RE.match(wid[len(w) + 1:]):
             return True
     return False
 
