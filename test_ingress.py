@@ -9022,6 +9022,15 @@ class NeedsYouSuggestionTests(unittest.TestCase):
         # Another issue number, or another repo's same number, never replaces it.
         self.assertEqual(server._replaced_by([old, self._card("gh-issue-9-me-game-r1"),
                                               self._card("gh-issue-99-me-other-r1")]), {})
+        # A later run that never ran the work — declined, skipped, paused, unjudged — is no
+        # replacement anyone can stop worrying about (review round 1).
+        for not_done in ({"run_outcome": "declined", "verified": None},
+                         {"run_outcome": "gate_timeout", "verified": None},
+                         {"run_outcome": "skipped", "verified": None},
+                         {"paused": True, "verified": None}, {"verified": None}):
+            got = server._replaced_by([old, self._card("gh-issue-99-me-game-r1", **not_done)])
+            self.assertEqual(got["gh-issue-99-me-game"], ("gh-issue-99-me-game-r1", False),
+                             not_done)
         # A Retry's run replaces the card it came from.
         retried = self._card("web-1", verified=False, retried_to="web-2")
         self.assertEqual(server._replaced_by([retried, self._card("web-2")])["web-1"],

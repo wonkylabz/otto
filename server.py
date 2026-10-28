@@ -804,6 +804,10 @@ async def _board(limit=40):
                     e["needs_human"] = (nh or {}).get("reason") if nh else None
                     e["qa"] = (res.get("qa") or {}).get("state")
                     e["review"] = (res.get("review") or {}).get("state")
+                    # A gate decline/skip and an estop pause COMPLETE with no verdict and no
+                    # needs_human: kept so `_finished_clean` never reads them as done work.
+                    e["run_outcome"] = res.get("outcome")
+                    e["paused"] = bool(res.get("paused"))
             elif status == "RUNNING":
                 q = await h.query(OttoWorkflow.status)
                 cap = (q or {}).get("cap") or {}
@@ -902,8 +906,14 @@ _GENERATION_RE = re.compile(r"^(gh-issue-\d+(?:-.+?)?)(?:-r(\d+))?$")
 
 
 def _finished_clean(e):
-    return (e.get("status") == "COMPLETED" and not e.get("needs_human")
-            and (e.get("verified") is not False or bool(e.get("pr"))))
+    """The later run DID the work: a judged pass or an opened PR. Never a run that completed
+    without running — declined or expired at the gate, skipped, paused by the global stop —
+    whose earlier card would otherwise vanish with the ticket unfinished."""
+    if e.get("status") != "COMPLETED" or e.get("needs_human") or e.get("paused"):
+        return False
+    if e.get("run_outcome") in ("declined", "gate_timeout", "skipped"):
+        return False
+    return e.get("verified") is True or bool(e.get("pr"))
 
 
 def _replaced_by(out):
