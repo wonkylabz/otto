@@ -892,8 +892,13 @@ async def _board(limit=40):
         if not e.get("chat_key"):
             e["chat_key"] = chats.find_by_run_origin(e["id"])
     replaced = _replaced_by(out)
+    by_id = {e["id"]: e for e in out}
     for e in out:
-        e["replaced_by"] = (replaced.get(e["id"]) or (None, False))[0]
+        nxt = (replaced.get(e["id"]) or (None, False))[0]
+        # Named only while the later card CARRIES the ticket — running, or itself needing a look —
+        # since the board suggests Dismiss off it. A later run that was declined or paused sits in
+        # Finished, and dismissing this card then hides the only sign the ticket is unfinished.
+        e["replaced_by"] = nxt if nxt in by_id and _carries(by_id[nxt]) else None
     fac = factory.load()
     return [e for e in out if e["id"] not in dismissed
             and not factory.superseded(e["id"], fac)
@@ -903,6 +908,15 @@ async def _board(limit=40):
 
 
 _GENERATION_RE = re.compile(r"^(gh-issue-\d+(?:-.+?)?)(?:-r(\d+))?$")
+
+
+def _carries(e):
+    """The card is on the board still owning its ticket's outcome: running, or in Needs a look."""
+    if e.get("status") == "RUNNING" or e.get("needs_human"):
+        return True
+    if e.get("status") != "COMPLETED":
+        return True                                     # failed / terminated: Needs a look
+    return e.get("verified") is False and not e.get("pr")
 
 
 def _finished_clean(e):

@@ -9031,6 +9031,15 @@ class NeedsYouSuggestionTests(unittest.TestCase):
             got = server._replaced_by([old, self._card("gh-issue-99-me-game-r1", **not_done)])
             self.assertEqual(got["gh-issue-99-me-game"], ("gh-issue-99-me-game-r1", False),
                              not_done)
+        # The board suggests Dismiss only while the later card carries the ticket (round 2).
+        self.assertTrue(server._carries(self._card("x", status="RUNNING")))
+        self.assertTrue(server._carries(self._card("x", needs_human="qa_fail")))
+        self.assertTrue(server._carries(self._card("x", status="FAILED", verified=None)))
+        self.assertFalse(server._carries(self._card("x", run_outcome="declined", verified=None)))
+        self.assertFalse(server._carries(self._card("x", paused=True, verified=None)))
+        import inspect
+        self.assertIn('e["replaced_by"] = nxt if nxt in by_id and _carries(by_id[nxt]) else None',
+                      inspect.getsource(server))
         # A Retry's run replaces the card it came from.
         retried = self._card("web-1", verified=False, retried_to="web-2")
         self.assertEqual(server._replaced_by([retried, self._card("web-2")])["web-1"],
