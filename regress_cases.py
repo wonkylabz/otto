@@ -706,6 +706,33 @@ def _k_plan_preview_phases_and_inlines(plan):
                          else f"{len(plan)} chars, missing: {', '.join(missing)}")
 
 
+_AUDIT_TLS = (
+    "Enable object-level read auditing (CloudTrail S3 data events) on the two audit log buckets "
+    "defined in aws/audit/main.tf, and add a Deny for aws:SecureTransport = false to their bucket "
+    "policy in aws/audit/s3/module.tf. Acceptance criteria: a GetObject is recorded and "
+    "attributable to a principal; plain-HTTP requests to both buckets are denied; fluent-bit "
+    "writes from every env still succeed; code reviewed and merged.")
+
+
+def _c_plan_preview_bounded_callers():
+    repo = next((p for p in registry.projects() if p.rstrip("/").endswith("infra")), None)
+    if not repo:
+        raise RuntimeError("no registered repo ending in 'infra' — register one or skip this case")
+    return engine.plan_preview(_AUDIT_TLS, _cap(), cwd=repo)["plan"]
+
+
+def _k_plan_preview_bounded_callers(plan):
+    if not plan:
+        return False, "no plan came back (timeout or error — see the PLAN trace)"
+    low = plan.lower()
+    window = re.search(r"observ\w* (window|for|period)|window", low)
+    why = re.search(r"can'?t (list|read)|cannot (list|read)|(aren'?t|not) listed|unknowable|only reason"
+                    r"|not bounded|outside the (bucket )?policy", low)
+    if window and not why:
+        return False, f"{len(plan)} chars, a window with no stated reason"
+    return True, f"{len(plan)} chars, " + ("window justified" if window else "no window")
+
+
 # --- Router #1 -----------------------------------------------------------------------------
 # Routing had NO corpus coverage, which is why its accretion of prompt exceptions was never
 # measurable. These run against the REAL catalogue: a routing regression is usually a retrieval
@@ -1374,6 +1401,9 @@ CASES = [
     {"id": "plan-preview-phases-and-inlines", "tier": "slow", "incident": "web-5f9319cd, 2026-08-03",
      "what": "a real preview returns the plan INLINE, phases enforcement, and owns its assumptions",
      "run": _c_plan_preview_phases_and_inlines, "check": _k_plan_preview_phases_and_inlines},
+    {"id": "plan-preview-bounded-callers", "tier": "slow", "incident": "audit-bucket TLS preview, 2026-10-28",
+     "what": "a TLS-deny plan observes only callers code cannot list, and says why",
+     "run": _c_plan_preview_bounded_callers, "check": _k_plan_preview_bounded_callers},
     {"id": "memory-declines-a-trivial-run", "tier": "cheap", "incident": "2026-07-30 live store",
      "what": "a routine run teaches nothing durable and is extracted as NONE, not padded",
      "run": _c_extract_declines_a_trivial_run, "check": _k_extract_declines_a_trivial_run},
