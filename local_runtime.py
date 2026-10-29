@@ -1300,6 +1300,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     nudged = False                 # one shot at converting a reasoning-only turn into an answer
     started, wrap_msg = time.time(), None   # one budget wrap-up per run (config.WRAP_UP_MESSAGE)
     wrap_turn = None                         # the turn it was sent on — the grace counts from here
+    forced_refusals = 0                      # tool calls refused on a no-tools turn
     tools_unsupported = False      # server rejects the tools param → engine re-dispatches to Claude
     # The endpoint could not be reached at all after the backoffs. Distinct from the model
     # answering badly: retrying it on the same server fails identically, so the engine latches
@@ -1452,6 +1453,19 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                                         f"answer — finish_reason: {reason}; if 'length', "
                                         f"raise OTTO_LOCAL_EXEC_MAX_TOKENS)"), True
                 break
+            if last:
+                # Offered no tools and called one anyway. Text beside the call IS its report;
+                # with none, one refusal, then stop — refusing every turn to the turn cap loses
+                # the report exactly as the deadline did.
+                text = str(msg.get("content") or "").strip()
+                if text and not gateway.looks_like_thinking(text):
+                    result = text
+                    break
+                forced_refusals += 1
+                if forced_refusals > 1:
+                    result, is_error = ("(local model kept calling tools after its run budget "
+                                        "was spent, and wrote no report)"), True
+                    break
             for tc in calls:
                 fn = tc.get("function") or {}
                 if fn.get("name") and not last:      # a refused call never RETURNED

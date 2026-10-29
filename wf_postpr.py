@@ -23,6 +23,7 @@ from wf_runtime import (_EXEC_CEILING, _FIX_NO_LADDER, _HEARTBEAT, _JUDGE_CEILIN
                         _RETRY_EXEC, _failure_detail)
 
 with workflow.unsafe.imports_passed_through():
+    import config
     import ladder
     import repo_checks
     from activities import (cleanup_workspace, finalize_workspace, judge_qa, judge_review,
@@ -44,8 +45,9 @@ _FIX_ORDER = ("committing the fix to the current branch (do NOT open a new PR). 
 
 # Told to a fix round re-run on Claude after the first attempt died: the clone is NOT clean.
 _BACKSTOP_NOTE = ("\nAn earlier attempt at this round died before it finished and may have left "
-                  "uncommitted or partial edits in this tree. Check `git status`/`git diff` "
-                  "first: keep what is right, fix or revert what is not. It ended with: ")
+                  "uncommitted or partial edits, or commits, in this tree. Check `git status`, `git diff` "
+                  "and `git log` first: keep what is right, fix or revert what is not. It ended "
+                  "with: ")
 
 # Everything the two loops do NOT share. `cap_field` is BOTH the key the capability activity
 # returns its resolved cap name under and the key this loop returns it under, so the two summary
@@ -167,7 +169,7 @@ class PostPrMixin:
         except exceptions.ActivityError as e:
             if isinstance(e.cause, exceptions.CancelledError):
                 raise                   # the RUN is being cancelled: stop, never finalize a push
-            return {"workflow": payload["wid"], "is_error": True, "cost": 0,
+            return {"workflow": payload["wid"], "is_error": True, "cost": 0, "harness": True,
                     "result": f"(the fix round died before it finished: {_failure_detail(e)})"}
 
     async def _run_fix_loop(self, kind, request, cap, repo, pr_url, rounds=None, tag=""):
@@ -274,7 +276,10 @@ class PostPrMixin:
             # one — the same round on Claude, in the same clone, told what the dead run left.
             # The dead attempt keeps its own audit row. Patched: a history recorded before it
             # replays without these commands.
+            # Never past the hard budget: the main ladder stops before launching another attempt.
             if (ladder.fix_backstop(fix, self._setting("local_fallback"))
+                    and not config.budget_exceeded(self._spent["output"], self._spent["cost"],
+                                                   hard=True, snapshot=self._settings)
                     and workflow.patched("local-fix-backstop")):
                 await workflow.execute_activity(
                     record_attempt,
@@ -282,11 +287,12 @@ class PostPrMixin:
                                                         f"{fix.get('backend')}] {request}",
                      "name": cap["name"], "result": fix["result"], "cost": fix.get("cost", 0),
                      "attempt": rnd + 1, "tokens": fix.get("tokens"), "model": fix.get("model"),
-                     "duration_s": fix.get("duration_s"),
+                     "duration_s": fix.get("duration_s"), "backend": fix.get("backend"),
                      "verdict": None, "remember": False, "repo": repo},
                     start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+                # The last rung: a supervisor kill here discards the only try left.
                 fix = await self._fix_attempt(dict(
-                    fix_payload, attempt=2, local_disabled=True,
+                    fix_payload, attempt=2, local_disabled=True, supervise_enforce=False,
                     local_disabled_reason=_FIX_NO_LADDER,
                     critique=fix_payload["critique"] + _BACKSTOP_NOTE + self._fix_error(fix)))
                 self._account(fix)
@@ -308,7 +314,9 @@ class PostPrMixin:
                 {"wid": fix["workflow"], "request": f"[{spec['fix_label']} r{rnd + 1}] {request}",
                  "name": cap["name"], "result": fix["result"], "cost": fix.get("cost", 0),
                  "attempt": rnd + 1, "tokens": fix.get("tokens"), "model": fix.get("model"),
-                 "duration_s": fix.get("duration_s"),
+                 "duration_s": fix.get("duration_s"), "backend": fix.get("backend"),
+                 "fallback_from": fix.get("fallback_from"),
+                 "fallback_reason": fix.get("fallback_reason"),
                  "verdict": None, "remember": False, "repo": repo},
                 start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
             if fix.get("is_error"):

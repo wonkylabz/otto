@@ -153,9 +153,10 @@ def fix_backstop(fix, local_fallback):
     """Does a dead post-PR fix round get its one Claude re-run? Both loops are one-shot, so this
     is the only rung above them: only for an errored round on a non-Claude backend (the engine's
     `local_disabled` moves local AND Codex), only with fallback on, and never once it PUBLISHED
-    — a re-run posts it again, the same reason `PUBLISHED_UNVERIFIED` stops the main ladder."""
-    return bool(local_fallback and fix.get("is_error")
-                and fix.get("backend") in ("local", "codex") and not fix.get("published"))
+    — a re-run posts it again, the same reason `PUBLISHED_UNVERIFIED` stops the main ladder.
+    A dead ACTIVITY (`harness`, no backend known) qualifies too: the worker died, not the model."""
+    return bool(local_fallback and fix.get("is_error") and not fix.get("published")
+                and (fix.get("harness") or fix.get("backend") in ("local", "codex")))
 
 
 def error_verdict(result):

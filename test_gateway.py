@@ -1631,7 +1631,8 @@ class LocalRuntimeTests(unittest.TestCase):
         out = local_runtime.run_json("loop forever", allowed_tools=config.READ_TOOLS,
                                      model_entry=self.MODEL, cwd=self.tmp)
         self.assertTrue(out["is_error"])
-        self.assertIn("turn budget", out["result"])
+        # Past the grace it loses its tools; still calling them is the error, never a hang.
+        self.assertIn("budget", out["result"])
 
     def test_a_run_near_its_turn_budget_is_told_to_report_and_its_last_turn_has_no_tools(self):
         """evt-s-3b2da11165b3: a local run swept past its cap's own timebox toward the turn cap,
@@ -1674,6 +1675,21 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
         self.assertNotIn("Bash", out.get("tools_used") or [], "a refused call never returned")
         self.assertIn("budget is spent", str(self.requests[-1]["messages"][-1].get("content")))
+
+    def test_a_forced_report_turn_that_keeps_calling_tools_stops_or_delivers_its_text(self):
+        model = dict(self.MODEL, max_turns=20)
+        call = self._tool_call("Glob", {"pattern": "*"})
+        self._script([call] * 20)
+        out = local_runtime.run_json("x", allowed_tools=config.READ_TOOLS, model_entry=model,
+                                     cwd=self.tmp)
+        self.assertTrue(out["is_error"])
+        self.assertIn("wrote no report", out["result"])
+        self.requests.clear()
+        self._script([call] * 18 + [dict(call, content="**TLDR** — done; Y open")])
+        out = local_runtime.run_json("x", allowed_tools=config.READ_TOOLS, model_entry=model,
+                                     cwd=self.tmp)
+        self.assertFalse(out["is_error"], out["result"])
+        self.assertIn("done; Y open", out["result"])
 
     def test_the_wall_clock_near_the_deadline_withdraws_the_tools(self):
         t0 = 1000.0

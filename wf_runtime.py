@@ -75,7 +75,7 @@ _PLAN_CEILING = timedelta(minutes=35)
 # on run web-2bd1a194: a local fix round burned 944s and 1.68M input tokens before dying at the
 # output-token wall with zero commits. Routing every round to Claude up front (the old rule) made
 # a local-only install impossible; strict mode (fallback off) keeps the round local, uncovered.
-_FIX_NO_LADDER = ("the local fix round failed, and post-PR fix rounds are one-shot, with no "
+_FIX_NO_LADDER = ("the fix round failed off Claude, and post-PR fix rounds are one-shot, with no "
                   "ladder rung above them — so Claude covers it")
 
 # Banners prepended to a delivered result when the run ended needing a human, keyed by reason.
