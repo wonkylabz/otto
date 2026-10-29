@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Local models run on macOS.** A local execution model used to stop every run with "no
+  working `bwrap`", since `bwrap` is Linux-only. On a Mac the run's shell is now sandboxed by
+  macOS's own `sandbox-exec`: it still cannot read Otto's keys, `.env` or other credential
+  stores, nor the Keychain where Claude's login lives. `gh` keeps working, and `ps`/`top` do not
+  (use `pgrep`). Codex still needs `bwrap`. Restart the worker to pick it up.
+
 ## [0.8.3] - 2026-10-29
 
 ### Fixed
