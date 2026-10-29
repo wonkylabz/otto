@@ -566,7 +566,11 @@ def seatbelt_profile(cwd=None, scratch=None):
     and `/dev` (the plan pass's read-only root; `scratch` stands in for bwrap's /tmp tmpfs).
     The deny-set goes LAST so no allow above can re-open it."""
     rules = ["(version 1)", "(allow default)",
-             "(deny mach-lookup " + " ".join(f"(global-name {_sbpl(n)})" for n in _KEYCHAIN) + ")"]
+             "(deny mach-lookup " + " ".join(f"(global-name {_sbpl(n)})" for n in _KEYCHAIN) + ")",
+             # `open X.app` has launchd spawn the app OUTSIDE this profile — a bundle written to
+             # the scratch dir then read and wrote anything. Denying launchservicesd's mach
+             # name does not stop it; only the operation does.
+             "(deny lsopen)"]
     if scratch:
         # `cfprefsd` writes a plist on the caller's behalf, so `defaults write` passed the file
         # deny; preferences are a write door of their own.

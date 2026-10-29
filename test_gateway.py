@@ -9347,6 +9347,12 @@ class SeatbeltConfinementTests(unittest.TestCase):
         self.assertIn("(deny user-preference-write)",
                       file_safety.seatbelt_profile(self.tmp, scratch=self.tmp))
 
+    def test_open_cannot_launch_a_process_outside_the_profile(self):
+        """launchd spawns what `open` asks for unconfined, so a bundle the run wrote itself read
+        every denied file. Asserted on the profile: the live proof launches an app."""
+        for scratch in (None, self.tmp):
+            self.assertIn("(deny lsopen)", file_safety.seatbelt_profile(self.tmp, scratch))
+
     def test_the_keychain_is_closed(self):
         """Claude's OAuth login lives in the macOS Keychain, not in the masked credentials file."""
         out = local_runtime._t_bash(
