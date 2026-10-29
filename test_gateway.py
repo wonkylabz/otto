@@ -9130,6 +9130,7 @@ class LocalExecShellConfinementTests(unittest.TestCase):
 
     def _run(self, tools, sandbox, hatch=False):
         with mock.patch.object(local_runtime, "sandbox_available", lambda: sandbox), \
+                mock.patch.object(local_runtime, "seatbelt_available", lambda: sandbox), \
                 mock.patch.object(local_runtime, "ALLOW_UNGUARDED", hatch):
             return local_runtime.run_json("hi", allowed_tools=tools, model_entry=self.MODEL,
                                           cwd=self.tmp)
@@ -9237,6 +9238,97 @@ class LocalExecShellConfinementTests(unittest.TestCase):
         self.assertNotIn("sk-canary-208", out)
         with open(os.path.join(self.tmp, "made.txt")) as f:
             self.assertEqual(f.read().strip(), "hi", "the execution shell lost its writes")
+
+
+@unittest.skipUnless(file_safety.seatbelt_available(), "no usable sandbox-exec here")
+class SeatbeltConfinementTests(unittest.TestCase):
+    """`bwrap` is Linux-only, so on macOS the local backend walled every run. Seatbelt confines
+    the same two shells from the same deny-set — measured here against canaries, never read off
+    the profile text, because a rule that parses and matches nothing looks identical to one
+    that works."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="otto-seatbelt-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        p = mock.patch.object(local_runtime, "sandbox_available", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _canary(self, name="canary-sb.json"):
+        secret = os.path.join(config.DATA_DIR, name)
+        self.assertTrue(file_safety.is_read_denied(secret, allow_cwd=self.tmp))
+        with open(secret, "w") as f:
+            f.write('{"k": "sk-canary-sb"}')
+        self.addCleanup(lambda: os.path.exists(secret) and os.unlink(secret))
+        return secret
+
+    def test_an_execution_shell_runs_instead_of_walling(self):
+        self.assertTrue(local_runtime._sandboxed())
+
+    def test_the_read_deny_set_is_refused_through_any_reader_and_writes_still_land(self):
+        secret = self._canary()
+        cmd = f"cat {secret}; python3 -c \"print(open('{secret}').read())\"; echo hi > made.txt"
+        self.assertIn("sk-canary-sb", local_runtime._t_bash({"command": cmd}, self.tmp),
+                      "the control no longer reads it — this test measures nothing")
+        out = local_runtime._t_bash({"command": cmd}, self.tmp, mode="confined")
+        self.assertNotIn("sk-canary-sb", out)
+        with open(os.path.join(self.tmp, "made.txt")) as f:
+            self.assertEqual(f.read().strip(), "hi", "the execution shell lost its writes")
+
+    def test_a_store_created_after_the_profile_is_still_covered(self):
+        """A regex, not an expansion: a mount needs the file on disk, a rule does not."""
+        secret = os.path.join(config.DATA_DIR, "canary-sb-late.json")
+        self.addCleanup(lambda: os.path.exists(secret) and os.unlink(secret))
+        argv = file_safety.seatbelt_argv(f"cat {secret}", cwd=self.tmp)
+        with open(secret, "w") as f:
+            f.write("sk-canary-sb-late")
+        r = subprocess.run(argv, capture_output=True, text=True, cwd=self.tmp)
+        self.assertNotIn("sk-canary-sb-late", r.stdout)
+
+    def test_a_glob_does_not_reach_into_a_subdirectory(self):
+        """`data/*.json` is one level; `data/workspaces/**` holds every repo-mode clone."""
+        ws = os.path.join(config.DATA_DIR, "workspaces", "sb-clone")
+        os.makedirs(ws, exist_ok=True)
+        self.addCleanup(shutil.rmtree, ws, True)
+        with open(os.path.join(ws, "pkg.json"), "w") as f:
+            f.write("visible")
+        out = local_runtime._t_bash({"command": "cat pkg.json"}, ws, mode="confined")
+        self.assertIn("visible", out)
+
+    def test_the_keychain_is_closed(self):
+        """Claude's OAuth login lives in the macOS Keychain, not in the masked credentials file."""
+        out = local_runtime._t_bash(
+            {"command": "security list-keychains >/dev/null 2>&1; "
+                        "security find-generic-password -s 'Claude Code-credentials' "
+                        ">/dev/null 2>&1; echo rc=$?"}, self.tmp, mode="confined")
+        self.assertNotIn("rc=0", out)
+
+    def test_the_plan_pass_refuses_writes_and_keeps_a_whole_shell_with_scratch(self):
+        with open(os.path.join(self.tmp, "f.txt"), "w") as f:
+            f.write("hello")
+        out = local_runtime._t_bash(
+            {"command": 'cat f.txt; echo $((1+1)) > "$TMPDIR/s"; cat "$TMPDIR/s" | wc -l; '
+                        "touch breach"}, self.tmp, mode="sandbox")
+        self.assertIn("hello", out)
+        self.assertIn("1", out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "breach")))
+
+    def test_the_plan_scratch_does_not_outlive_its_call(self):
+        out = local_runtime._t_bash({"command": 'echo "$TMPDIR"'}, self.tmp, mode="sandbox")
+        self.assertFalse(os.path.exists(out.strip()))
+
+    def test_the_shell_is_told_ps_cannot_run(self):
+        """Seatbelt refuses every setuid exec, and `ps` is setuid on macOS — a model left to
+        discover it mid-task spends a turn on `Operation not permitted`."""
+        bash = next(t for t in local_runtime._offered_tools(config.READ_TOOLS,
+                                                            bash_mode="confined")
+                    if t["function"]["name"] == "Bash")
+        self.assertIn("pgrep", bash["function"]["description"])
+
+    def test_the_probe_must_see_BOTH_refusals(self):
+        src = inspect.getsource(file_safety.seatbelt_available)
+        self.assertIn('"canary" not in', src)
+        self.assertIn("not os.path.exists(probe)", src)
 
 
 class LocalPlanModeTests(unittest.TestCase):
@@ -9529,7 +9621,7 @@ class LocalPlanModeTests(unittest.TestCase):
         pass: the two produce very different plans, and a preview that came back thin is
         otherwise indistinguishable from a weak model."""
         src = open("local_runtime.py").read()
-        self.assertIn('bash_mode = "sandbox" if sandbox_available() else "allowlist"', src)
+        self.assertIn('bash_mode = "sandbox" if _sandboxed() else "allowlist"', src)
         self.assertIn('"bash_mode": bash_mode', src)
         self.assertIn("bash_mode=bash_mode, bash_rules=bash_rules", src)
 

@@ -35,7 +35,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -185,6 +187,13 @@ def _abspath(p, cwd):
 # every existing caller and every test that patches them keeps working.
 _read_deny_mounts = file_safety.read_deny_mounts
 sandbox_available = file_safety.sandbox_available
+seatbelt_available = file_safety.seatbelt_available
+
+
+def _sandboxed():
+    """Either kernel sandbox: `bwrap` where it works, else macOS Seatbelt (`file_safety`'s
+    section on it). Same deny-set, same two modes — only the instrument differs."""
+    return sandbox_available() or seatbelt_available()
 
 
 def _bwrap_argv(command, cwd=None):
@@ -310,7 +319,15 @@ def _t_bash(args, cwd, mode=None):
     "allowlist" for the argv-only fallback (already vetted by `bash_refusal`, so it execs the
     tokens directly — no shell to compose onto)."""
     cmd = args["command"]
-    if mode == "sandbox":
+    env, scratch = mcp_client.shell_env(), None
+    if mode in ("sandbox", "confined") and not sandbox_available():
+        # Seatbelt has no tmpfs: the read-only pass gets a throwaway scratch dir as its /tmp.
+        if mode == "sandbox":
+            scratch = tempfile.mkdtemp(prefix="otto-plan-")
+            env["TMPDIR"] = scratch
+        argv, use_shell_cwd = file_safety.seatbelt_argv(cmd, cwd, scratch), True
+        env = file_safety.seatbelt_env(env)
+    elif mode == "sandbox":
         argv, use_shell_cwd = _bwrap_argv(cmd, cwd), False
     elif mode == "confined":
         argv, use_shell_cwd = _confined_argv(cmd, cwd), True
@@ -318,29 +335,33 @@ def _t_bash(args, cwd, mode=None):
         argv, use_shell_cwd = shlex.split(cmd), True
     else:
         argv, use_shell_cwd = ["bash", "-lc", cmd], True
-    # `subprocess.run(timeout=)` kills only the process it started, so a timed-out
-    # `bash -lc "terraform apply & ..."` left its children running while the tool result already
-    # said it had timed out. Own process group + `kill_tree`, same as the `claude -p` watchdog.
-    proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            start_new_session=True, env=mcp_client.shell_env())
     try:
-        stdout, stderr = proc.communicate(timeout=config.LOCAL_TOOL_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        claude_cli.kill_tree(proc)
-        # Reap, and drain the pipes the kill just orphaned. Bounded: a grandchild that put
-        # itself in its OWN group survives the group kill and would otherwise hold the pipe
-        # open forever, hanging the tool call instead of returning its timeout.
+        # `subprocess.run(timeout=)` kills only the process it started, so a timed-out
+        # `bash -lc "terraform apply & ..."` left its children running while the tool result already
+        # said it had timed out. Own process group + `kill_tree`, same as the `claude -p` watchdog.
+        proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                start_new_session=True, env=env)
         try:
-            proc.communicate(timeout=5)
+            stdout, stderr = proc.communicate(timeout=config.LOCAL_TOOL_TIMEOUT_S)
         except subprocess.TimeoutExpired:
-            pass
-        raise                       # the caller turns this into the tool's error text
-    out = (stdout or "") + (("\n" + stderr) if stderr else "")
-    out = out.strip() or "(no output)"
-    if proc.returncode != 0:
-        out += f"\n(exit code {proc.returncode})"
-    return out
+            claude_cli.kill_tree(proc)
+            # Reap, and drain the pipes the kill just orphaned. Bounded: a grandchild that put
+            # itself in its OWN group survives the group kill and would otherwise hold the pipe
+            # open forever, hanging the tool call instead of returning its timeout.
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            raise                       # the caller turns this into the tool's error text
+        out = (stdout or "") + (("\n" + stderr) if stderr else "")
+        out = out.strip() or "(no output)"
+        if proc.returncode != 0:
+            out += f"\n(exit code {proc.returncode})"
+        return out
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 def _t_read(args, cwd):
@@ -480,11 +501,14 @@ def _offered_tools(allowed_tools, mcp_specs=(), bash_mode=None):
             schema = dict(schema, description=(
                 schema["description"] + " READ-ONLY PASS: the full shell is available (pipes, "
                 "redirection, chaining) and the network is up, but the filesystem is mounted "
-                "read-only — every write fails, /tmp is a scratch tmpfs. Read whatever you need."))
+                "read-only — every write fails except scratch files under ${TMPDIR:-/tmp}. Read "
+                "whatever you need."))
         elif n == "Bash" and bash_mode == "confined":
             schema = dict(schema, description=(
                 schema["description"] + " Sandboxed: Otto's own state and credential stores "
-                "are masked."))
+                "are masked." + ("" if sandbox_available() else
+                                 " setuid programs cannot run here (`ps`, `top`): use "
+                                 "`pgrep`/`lsof` to inspect processes.")))
         elif n == "Bash" and bash_mode == "allowlist":
             schema = dict(schema, description=(
                 schema["description"] + " READ-ONLY PASS: only these commands are permitted — "
@@ -1149,7 +1173,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                 "total_cost_usd": 0}
     # A WALL, not a failure — it fails identically every attempt, so the ladder re-dispatches.
     if (config.scoped_bash_rules(allowed_tools)[0] and not ALLOW_UNGUARDED
-            and not sandbox_available()):
+            and not _sandboxed()):
         return {"result": UNGUARDED_MESSAGE, "is_error": True, "total_cost_usd": 0,
                 "usage": {}, "session_id": None, "runtime": "local",
                 "wall_reason": "read_guard_unavailable", "wall_detail": UNGUARDED_MESSAGE,
@@ -1214,10 +1238,10 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     # widen this into a per-caller grant before adding one, rather than after.
     _bare_bash, _scoped = config.scoped_bash_rules(allowed_tools)
     bash_mode, bash_rules = None, None
-    if _bare_bash and sandbox_available():
+    if _bare_bash and _sandboxed():
         bash_mode = "confined"
     elif _scoped and not _bare_bash:
-        bash_mode = "sandbox" if sandbox_available() else "allowlist"
+        bash_mode = "sandbox" if _sandboxed() else "allowlist"
         bash_rules = config.plan_bash_rules(_scoped)
     tools = _offered_tools(allowed_tools, mcp.specs if mcp else (), bash_mode=bash_mode)
     offered_names = {t["function"]["name"] for t in tools}
@@ -1245,6 +1269,8 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         # model was labelled "local ·" for as long as that was the only field.
         "kind": gateway.model_kind(m),
         "tools": sorted(offered_names), "bash_mode": bash_mode,
+        "sandbox": (None if bash_mode in (None, "allowlist")
+                    else "bwrap" if sandbox_available() else "seatbelt"),
         "effort": effort_level, "effort_sent": effort_sent,
         "images": [label for _, label in images],
         "mcp": sorted(mcp_servers or []) if mcp else [],

@@ -496,6 +496,120 @@ def sandbox_available():
     return _SANDBOX
 
 
+# --- macOS: Seatbelt (`sandbox-exec`) ------------------------------------------
+# `bwrap` is Linux-only, so on macOS the local backend walled every run. Seatbelt is the macOS
+# kernel's own sandbox, and it reaches the same two properties from the other direction:
+# instead of MOUNTING a mask over a path, the profile DENIES the path. Measured on macOS 27:
+#
+# * a `file-read*` deny holds against `cat` AND `python3 open()`, and through a symlink — the
+#   kernel matches the RESOLVED path, so a rule must name the realpath (a `/tmp/...` spelling
+#   of a `/private/tmp/...` file matched nothing).
+# * the LAST matching rule wins, so a deny on `data/` with `data/workspaces` allowed back
+#   behaves like `_data_allowlist`.
+# * another process's environment is already out of reach: macOS returns argv only from
+#   KERN_PROCARGS2 for any process but your own, so there is no `/proc/<pid>/environ` to close.
+# * the Keychain is a door `bwrap` never had to close: Claude's OAuth login lives there, not in
+#   `~/.claude/.credentials.json`. Denying `securityd`'s mach services shuts it, and with it
+#   `gh`'s own token — which `seatbelt_env` hands back as `GH_TOKEN`, the same exposure a
+#   readable `~/.config/gh/hosts.yml` is under bwrap.
+# * profiles do not NEST (`sandbox_apply: Operation not permitted`), which is why this serves
+#   the local runtime only: Codex and Claude Code both apply Seatbelt themselves.
+_SEATBELT = None
+_KEYCHAIN = ("com.apple.SecurityServer", "com.apple.securityd.xpc", "com.apple.security.agent")
+
+
+def _sbpl(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _sbpl_filter(pattern):
+    """One deny-set glob as a Seatbelt path filter, on its RESOLVED spelling. A regex, not an
+    expansion: unlike a mount, a rule needs nothing on disk, so a file created mid-run (or an
+    atomic replace) is covered too."""
+    if pattern.endswith("/**") and not any(c in pattern[:-3] for c in _GLOB_CHARS):
+        return f"(subpath {_sbpl(os.path.realpath(pattern[:-3]))})"
+    pattern = _both_spellings(pattern)[-1]
+    if not any(c in pattern for c in _GLOB_CHARS):
+        return f"(literal {_sbpl(os.path.realpath(pattern))})"
+    rx, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            rx, i = rx + ".*", i + 2
+        elif pattern[i] == "*":
+            rx, i = rx + "[^/]*", i + 1
+        elif pattern[i] == "?":
+            rx, i = rx + "[^/]", i + 1
+        else:
+            rx, i = rx + ("\\" + pattern[i] if pattern[i] in ".^$|()[]{}+\\" else pattern[i]), i + 1
+    return f"(regex {_sbpl('^' + rx + '$')})"
+
+
+def seatbelt_profile(cwd=None, scratch=None):
+    """The SBPL profile confining one local shell: the READ deny-set denied outright, the
+    Keychain closed, and — when `scratch` is given — every write refused except into `scratch`
+    and `/dev` (the plan pass's read-only root; `scratch` stands in for bwrap's /tmp tmpfs).
+    The deny-set goes LAST so no allow above can re-open it."""
+    rules = ["(version 1)", "(allow default)",
+             "(deny mach-lookup " + " ".join(f"(global-name {_sbpl(n)})" for n in _KEYCHAIN) + ")"]
+    if scratch:
+        rules += ["(deny file-write*)",
+                  f"(allow file-write* (subpath {_sbpl(os.path.realpath(scratch))}) "
+                  "(subpath \"/dev\"))"]
+    denied = [*dict.fromkeys(_sbpl_filter(g) for g in read_denied_globs(allow_cwd=cwd))]
+    if denied:
+        rules.append("(deny file-read* file-write* " + " ".join(denied) + ")")
+    return "\n".join(rules)
+
+
+def seatbelt_argv(command, cwd=None, scratch=None):
+    return ["sandbox-exec", "-p", seatbelt_profile(cwd, scratch), "bash", "-lc", command]
+
+
+def seatbelt_env(env):
+    """`env` for a Seatbelt shell: `gh` keeps working with the Keychain closed. Only an EXISTING
+    login is resolved — never a prompt, never a failure: no token means `gh` says so itself."""
+    env = dict(env)
+    if not env.get("GH_TOKEN") and shutil.which("gh"):
+        try:
+            r = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True,
+                               timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                env["GH_TOKEN"] = r.stdout.strip()
+        except Exception:  # noqa: BLE001 - a missing gh login costs gh, not the run
+            pass
+    return env
+
+
+def seatbelt_available():
+    """True when `sandbox-exec` actually confines here — PROBED, like `sandbox_available`, and
+    on BOTH halves: a write must be refused AND a denied file must be unreadable, since the
+    read deny-set is the whole reason the local backend wants a sandbox at all."""
+    global _SEATBELT
+    if _SEATBELT is None:
+        _SEATBELT = False
+        if shutil.which("sandbox-exec"):
+            import tempfile
+            d = tempfile.mkdtemp(prefix="otto-seatbelt-probe-")
+            secret, probe = os.path.join(d, "secret"), os.path.join(d, "probe")
+            try:
+                with open(secret, "w") as f:
+                    f.write("canary")
+                profile = "\n".join([
+                    "(version 1)", "(allow default)", "(deny file-write*)",
+                    f"(deny file-read* (literal {_sbpl(os.path.realpath(secret))}))"])
+                r = subprocess.run(
+                    ["sandbox-exec", "-p", profile, "bash", "-c",
+                     f"echo ok; cat {secret!r}; touch {probe!r}"],
+                    capture_output=True, text=True, timeout=30)
+                _SEATBELT = ("ok" in (r.stdout or "") and "canary" not in (r.stdout or "")
+                             and not os.path.exists(probe))
+            except Exception:  # noqa: BLE001 - an unusable sandbox is a fallback, not a crash
+                _SEATBELT = False
+            finally:
+                shutil.rmtree(d, ignore_errors=True)
+    return _SEATBELT
+
+
 def _rule(glob_path, tool="Edit"):
     """One `permissions.deny` entry. The leading extra slash is load-bearing — see the module
     docstring. Kept as the single place that knows the spelling.
