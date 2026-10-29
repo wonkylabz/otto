@@ -19,6 +19,15 @@ changelog that restates it is a second copy of `git log`.
   stores, nor the Keychain where Claude's login lives. `gh` keeps working, and `ps`/`top` do not
   (use `pgrep`). Codex still needs `bwrap`. Restart the worker to pick it up.
 
+## [0.8.3] - 2026-10-29
+
+### Fixed
+
+- **`regress.py` no longer writes into your audit trail.** Its plan-preview cases recorded rows
+  under the run id `preview`, which the scorecard and `insights.py` counted as real runs and
+  spend. Rows written before this fix stay, because the trail is immutable; filter out the
+  `preview` run id when you read it.
+
 ## [0.8.2] - 2026-10-29
 
 ### Changed
@@ -440,7 +449,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/wonkylabz/otto/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/wonkylabz/otto/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/wonkylabz/otto/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/wonkylabz/otto/compare/v0.7.3...v0.8.0
