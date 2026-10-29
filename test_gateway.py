@@ -1631,7 +1631,8 @@ class LocalRuntimeTests(unittest.TestCase):
         out = local_runtime.run_json("loop forever", allowed_tools=config.READ_TOOLS,
                                      model_entry=self.MODEL, cwd=self.tmp)
         self.assertTrue(out["is_error"])
-        self.assertIn("turn budget", out["result"])
+        # Past the grace it loses its tools; still calling them is the error, never a hang.
+        self.assertIn("budget", out["result"])
 
     def test_a_run_near_its_turn_budget_is_told_to_report_and_its_last_turn_has_no_tools(self):
         """evt-s-3b2da11165b3: a local run swept past its cap's own timebox toward the turn cap,
@@ -1652,6 +1653,51 @@ class LocalRuntimeTests(unittest.TestCase):
         saved = local_runtime._load_session(out["session_id"])
         self.assertFalse([mm for mm in saved if "[Otto run budget]" in str(mm.get("content"))],
                          "a resumed conversation would start under this run's stale budget")
+
+    def test_a_run_that_ignores_the_wrap_up_loses_its_tools_and_still_reports(self):
+        """gh-issue-133 revfix0: a local fix round kept calling tools for 16 turns after the
+        wrap-up, until the deadline threw its whole result away as "(timed out)"."""
+        n, grace = 40, config.LOCAL_WRAP_UP_GRACE_TURNS
+        model = dict(self.MODEL, max_turns=n)
+        wrap = int(n * config.LOCAL_WRAP_UP_AT)
+        marker = os.path.join(self.tmp, "ran")
+        # It goes on calling tools past the grace, then answers once it has no choice.
+        self._script([self._tool_call("Glob", {"pattern": "*"}, cid=f"c{i}") for i in range(wrap + grace)]
+                     + [self._tool_call("Bash", {"command": f"touch {marker}"}, cid="late"),
+                        {"role": "assistant", "content": "**TLDR** — fixed X; Y unchecked"}])
+        out = local_runtime.run_json("fix it", allowed_tools=config.WRITE_TOOLS,
+                                     model_entry=model, cwd=self.tmp)
+        self.assertFalse(out["is_error"], out["result"])
+        self.assertIn("fixed X", out["result"])
+        self.assertIn("tools", self.requests[wrap + grace - 1])
+        self.assertNotIn("tools", self.requests[wrap + grace])
+        # The tool it called on a no-tools turn was refused, never run.
+        self.assertFalse(os.path.exists(marker))
+        self.assertNotIn("Bash", out.get("tools_used") or [], "a refused call never returned")
+        self.assertIn("budget is spent", str(self.requests[-1]["messages"][-1].get("content")))
+
+    def test_a_forced_report_turn_that_keeps_calling_tools_is_refused_once_then_stops(self):
+        model = dict(self.MODEL, max_turns=20)
+        call = self._tool_call("Glob", {"pattern": "*"})
+        self._script([call] * 20)
+        out = local_runtime.run_json("x", allowed_tools=config.READ_TOOLS, model_entry=model,
+                                     cwd=self.tmp)
+        self.assertTrue(out["is_error"])
+        self.assertIn("wrote no report", out["result"])
+        self.requests.clear()
+        self._script([call] * 18 + [{"role": "assistant", "content": "**TLDR** — done; Y open"}])
+        out = local_runtime.run_json("x", allowed_tools=config.READ_TOOLS, model_entry=model,
+                                     cwd=self.tmp)
+        self.assertFalse(out["is_error"], out["result"])
+        self.assertIn("done; Y open", out["result"])
+
+    def test_the_wall_clock_near_the_deadline_withdraws_the_tools(self):
+        t0 = 1000.0
+        with mock.patch.object(local_runtime.time, "time", return_value=t0 + 95):
+            self.assertTrue(local_runtime._must_report(1, 60, None, t0, t0 + 100))
+        with mock.patch.object(local_runtime.time, "time", return_value=t0 + 80):
+            self.assertFalse(local_runtime._must_report(1, 60, None, t0, t0 + 100))
+            self.assertTrue(local_runtime._must_report(59, 60, None, t0, t0 + 100))
 
     def test_the_wall_clock_also_triggers_the_wrap_up(self):
         t0 = 1000.0

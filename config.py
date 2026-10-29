@@ -1060,6 +1060,12 @@ LOCAL_RUNTIME_MAX_TURNS = int(os.environ.get("OTTO_LOCAL_RUNTIME_MAX_TURNS", "60
 # Share of the turn budget (or of the wall clock) after which a local run is told to stop and
 # report. Hitting the cap returns an error and nothing found, so a run near it must deliver.
 LOCAL_WRAP_UP_AT = float(os.environ.get("OTTO_LOCAL_WRAP_UP_AT", "0.75"))
+# The wrap-up is a REQUEST, and a local model ignores it: four fix rounds kept calling tools for
+# 10-16 turns after it (one `sleep 115` at a time) until the wall clock threw the work away as
+# "(timed out)". So it is ENFORCED: this many turns after the wrap-up, or once the clock
+# passes LOCAL_FORCE_REPORT_AT, every later turn is offered no tools and must answer.
+LOCAL_WRAP_UP_GRACE_TURNS = int(os.environ.get("OTTO_LOCAL_WRAP_UP_GRACE_TURNS", "3"))
+LOCAL_FORCE_REPORT_AT = float(os.environ.get("OTTO_LOCAL_FORCE_REPORT_AT", "0.9"))
 WRAP_UP_MESSAGE = (
     "[Otto run budget] You have used {used} of this run's budget. Stop gathering now and "
     "write your final report from what you already have. Name anything you did not get to "

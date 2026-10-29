@@ -4489,6 +4489,18 @@ class LadderStateMachineTests(unittest.TestCase):
 
     LIMITS = ladder.Limits.of(3, 2, 1, True, "escalated")
 
+    def test_a_dead_fix_round_gets_its_claude_rerun_only_when_safe(self):
+        dead = {"is_error": True, "backend": "local"}
+        self.assertTrue(ladder.fix_backstop(dead, True))
+        self.assertTrue(ladder.fix_backstop(dict(dead, backend="codex"), True))
+        self.assertFalse(ladder.fix_backstop(dead, False), "strict mode stays local")
+        self.assertFalse(ladder.fix_backstop(dict(dead, backend="claude"), True))
+        self.assertFalse(ladder.fix_backstop(dict(dead, is_error=False), True))
+        self.assertFalse(ladder.fix_backstop(dict(dead, published=["gh pr comment"]), True),
+                         "a re-run posts it twice")
+        self.assertFalse(ladder.fix_backstop({"is_error": True}, True),
+                         "a dead activity: what it published is unknown")
+
     @staticmethod
     def _v(passed=False, source="judge", critique="c"):
         return {"passed": passed, "source": source, "critique": critique}

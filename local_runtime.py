@@ -565,6 +565,18 @@ def _budget_used(turn, max_turns, started, deadline):
     return ""
 
 
+def _must_report(turn, max_turns, wrap_turn, started, deadline):
+    """Is this turn offered NO tools, so the model has to answer? The last turn by count; the
+    `LOCAL_WRAP_UP_GRACE_TURNS`-th turn after the wrap-up; or past `LOCAL_FORCE_REPORT_AT` of the
+    clock — a model that ignores the wrap-up otherwise works on until the deadline discards it."""
+    if max_turns > 1 and turn == max_turns - 1:
+        return True
+    if wrap_turn is not None and turn >= wrap_turn + config.LOCAL_WRAP_UP_GRACE_TURNS:
+        return True
+    span = deadline - started
+    return span > 0 and time.time() - started >= span * config.LOCAL_FORCE_REPORT_AT
+
+
 def _clip(out):
     """Bound one tool result. Applies to MCP results too — a `pods_list` or an NRQL dump is
     exactly the kind of payload that would otherwise eat a small local context window."""
@@ -1287,6 +1299,8 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     parts, continuations = [], 0   # stitched final answer across max_tokens cutoffs
     nudged = False                 # one shot at converting a reasoning-only turn into an answer
     started, wrap_msg = time.time(), None   # one budget wrap-up per run (config.WRAP_UP_MESSAGE)
+    wrap_turn = None                         # the turn it was sent on — the grace counts from here
+    forced_refusals = 0                      # tool calls refused on a no-tools turn
     tools_unsupported = False      # server rejects the tools param → engine re-dispatches to Claude
     # The endpoint could not be reached at all after the backoffs. Distinct from the model
     # answering badly: retrying it on the same server fails identically, so the engine latches
@@ -1325,8 +1339,9 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
             if wrap_msg is None and used:
                 wrap_msg = {"role": "user", "content": config.WRAP_UP_MESSAGE.format(used=used)}
                 messages.append(wrap_msg)
+                wrap_turn = _turn
                 _emit(sink, on_event, {"type": "otto-wrap-up", "used": used})
-            last = max_turns > 1 and _turn == max_turns - 1   # no tools on the last turn: it must answer
+            last = _must_report(_turn, max_turns, wrap_turn, started, deadline)   # no tools: answer
             # gateway.chat_body, never a literal dict: the parameter NAMES are per-endpoint
             # (issue #10 — OpenAI's newer models reject `max_tokens` and a non-default
             # `temperature`), and a body built here would speak a dialect the other three
@@ -1438,9 +1453,17 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                                         f"answer — finish_reason: {reason}; if 'length', "
                                         f"raise OTTO_LOCAL_EXEC_MAX_TOKENS)"), True
                 break
+            if last:
+                # Offered no tools and called one anyway: one refusal, then stop — refusing every
+                # turn to the turn cap loses the report exactly as the deadline did.
+                forced_refusals += 1
+                if forced_refusals > 1:
+                    result, is_error = ("(local model kept calling tools after its run budget "
+                                        "was spent, and wrote no report)"), True
+                    break
             for tc in calls:
                 fn = tc.get("function") or {}
-                if fn.get("name"):
+                if fn.get("name") and not last:      # a refused call never RETURNED
                     tools_used.add(str(fn["name"]))   # ground truth for the judge's tool grant
                 try:
                     args = json.loads(fn.get("arguments") or "{}")
@@ -1448,6 +1471,11 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                     args = {}
                 if abort is not None and abort.is_set():
                     out = "Error: attempt aborted by the supervisor before this tool call"
+                elif last:
+                    # Offered no tools and called one anyway (structured, or recovered from its
+                    # text): refused, never run, or the enforced report is a request again.
+                    out = ("Error: this run's budget is spent — no more tool calls. Reply now "
+                           "with your final report from what you already have.")
                 elif time.time() > deadline:
                     out = "Error: run timed out before this tool call"
                 else:

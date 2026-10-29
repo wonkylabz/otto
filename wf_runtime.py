@@ -68,15 +68,15 @@ _JUDGE_CEILING = timedelta(minutes=15)
 # that. 17 minutes covered one pass only (issue #34).
 _PLAN_CEILING = timedelta(minutes=35)
 
-# Why a post-PR fix round never runs on the LOCAL backend. Everywhere else a failing local model
+# Why a failed LOCAL post-PR fix round is re-run on Claude. Everywhere else a failing local model
 # is covered by a Claude rung (config.LOCAL_FALLBACK): the verify ladder retries and escalates,
 # so a local death costs a rung, not the run. Both post-PR fix loops are one-shot — a single
-# `run_capability` with no retry and no escalation above it — so that promise is unmet here and a
-# local failure is simply the end of the round. Measured on run web-2bd1a194: a fix round on a
-# 22k-line settings.kts burned 944s and 1.68M input tokens before dying at the local model's
-# output-token wall with zero commits, and nothing existed to cover for it.
-_FIX_NO_LADDER = ("post-PR fix rounds run on Claude: they are one-shot, with no ladder rung "
-                  "left to cover a local-model failure")
+# `run_capability` with no ladder above it — so `wf_postpr` adds that one rung itself. Measured
+# on run web-2bd1a194: a local fix round burned 944s and 1.68M input tokens before dying at the
+# output-token wall with zero commits. Routing every round to Claude up front (the old rule) made
+# a local-only install impossible; strict mode (fallback off) keeps the round local, uncovered.
+_FIX_NO_LADDER = ("the fix round failed off Claude, and post-PR fix rounds are one-shot, with no "
+                  "ladder rung above them — so Claude covers it")
 
 # Banners prepended to a delivered result when the run ended needing a human, keyed by reason.
 _NEEDS_HUMAN_BANNER = {

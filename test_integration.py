@@ -6721,6 +6721,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         self.runs = []
 
         self.fix_errors = False           # make the post-review fix round die like a real one
+        self.fix_local_dies = False       # ... or die on the LOCAL backend only (Claude succeeds)
 
         def fake_run_attempt(request, cap, *, attempt=1, critique=None, escalate=False,
                              extra_tools=None, mcp_config_path=None, resume_session=None,
@@ -6729,6 +6730,11 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                               "local_disabled": kwargs.get("local_disabled"), "request": request})
             res = "review transcript" if cap.name == config.REVIEW_CAP else "edited the code"
             # A fix round is a worker run carrying the reviewer's critique.
+            if (self.fix_local_dies and cap.name == config.WORKER_CAP and critique
+                    and not kwargs.get("local_disabled")):
+                return {"workflow": wid or "w", "result": "(timed out)", "cost": 0.0,
+                        "is_error": True, "session_id": "local-s", "model": "flash",
+                        "backend": "local", "attempt": attempt}
             if self.fix_errors and cap.name == config.WORKER_CAP and critique:
                 return {"workflow": wid or "w", "result": "(local model produced reasoning but "
                         "no final answer — finish_reason: length)", "cost": 0.0, "is_error": True,
@@ -7011,11 +7017,8 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         # ...and the clone it provisioned is still torn down.
         self.assertTrue(self.cleaned)
 
-    async def test_a_fix_round_never_runs_on_the_local_backend(self):
-        """Both post-PR fix loops are one-shot — no retry, no escalation — so `LOCAL_FALLBACK`'s
-        promise that a failing local model is covered by Claude has no rung to keep it here.
-        The fix round must therefore be dispatched with local_disabled (run web-2bd1a194: 944s
-        and 1.68M input tokens against a 22k-line file before the local output wall)."""
+    async def _run_reviewed(self, queue):
+        """Drive one repo-mode run through the gate and the review loop; returns its result."""
         import asyncio
         import uuid
         from workflows import OttoWorkflow
@@ -7024,23 +7027,24 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                                 plan_swarm, pr_head_branch, provision_workspace, resolve_pr_target,
             check_grounding, record_attempt,
                                 record_skip, review_capability, route_request, snapshot_settings,
-                                run_capability, verify_capability)
-        import config
+                                run_capability, verify_capability, finalize_terminal,
+                                notify_human, deliver_result)
         async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=8) as ex:
                 async with Worker(
-                    env.client, task_queue="revq4", workflows=[OttoWorkflow],
+                    env.client, task_queue=queue, workflows=[OttoWorkflow],
                     activities=[run_repo_checks, route_request, snapshot_settings, plan_swarm, merge_results,
                                 clarify_request, classify_request, plan_capability,
                                 provision_workspace, resolve_pr_target, check_grounding, finalize_workspace, cleanup_workspace,
                                 run_capability, verify_capability, review_capability,
-                                judge_review, record_attempt, record_skip, pr_head_branch],
+                                judge_review, record_attempt, record_skip, pr_head_branch,
+                                finalize_terminal, notify_human, deliver_result],
                     activity_executor=ex,
                 ):
                     h = await env.client.start_workflow(
                         OttoWorkflow.run,
                         {"request": "add a lifecycle block", "repo": "myrepo"},
-                        id="rev4-" + uuid.uuid4().hex[:8], task_queue="revq4")
+                        id=queue + "-" + uuid.uuid4().hex[:8], task_queue=queue)
                     for _ in range(100):
                         st = await h.query(OttoWorkflow.status)
                         if st["awaiting_approval"]:
@@ -7049,14 +7053,55 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                     else:
                         self.fail("never reached the write-approval gate")
                     await h.signal(OttoWorkflow.approve, True)
-                    await h.result()
-        fix_runs = [r for r in self.runs if r["cap"] == config.WORKER_CAP and r["critique"]]
-        self.assertTrue(fix_runs, self.runs)
-        self.assertTrue(all(r["local_disabled"] for r in fix_runs), fix_runs)
-        # The ORIGINAL execution is untouched — this is a fix-round rule, not a global opt-out
-        # of the local backend the operator chose.
-        first = [r for r in self.runs if r["cap"] == config.WORKER_CAP and not r["critique"]][0]
-        self.assertFalse(first["local_disabled"])
+                    return await h.result()
+
+    def _fix_runs(self):
+        import config
+        return [r for r in self.runs if r["cap"] == config.WORKER_CAP and r["critique"]]
+
+    async def test_a_fix_round_runs_on_the_operators_backend(self):
+        """A local-only install must be able to run its fix rounds locally: routing every round
+        to Claude up front made that impossible (gh-issue-128..133 ran strict, so locally)."""
+        await self._run_reviewed("revq4")
+        fix_runs = self._fix_runs()
+        self.assertEqual(len(fix_runs), 1, self.runs)
+        self.assertFalse(fix_runs[0]["local_disabled"])
+
+    async def test_a_dead_local_fix_round_is_covered_by_claude_once(self):
+        """One-shot loop, no ladder above it: with fallback on, a LOCAL death gets exactly one
+        Claude re-run of the same round (web-2bd1a194's 944s local death otherwise ends it)."""
+        self.fix_local_dies = True
+        out = await self._run_reviewed("revq5")
+        fix_runs = self._fix_runs()
+        self.assertEqual([bool(r["local_disabled"]) for r in fix_runs], [False, True], self.runs)
+        self.assertEqual(out["review"]["state"], "pass")
+        # The re-run is told the clone holds what the dead attempt left behind.
+        self.assertIn("may have left uncommitted or partial edits", fix_runs[1]["critique"])
+        self.assertIn("(timed out)", fix_runs[1]["critique"])
+
+    async def test_strict_mode_keeps_a_dead_local_fix_round_local(self):
+        self.fix_local_dies = True
+        with mock.patch.dict(os.environ, {"OTTO_LOCAL_FALLBACK": "0"}):
+            out = await self._run_reviewed("revq6")
+        self.assertEqual([bool(r["local_disabled"]) for r in self._fix_runs()], [False], self.runs)
+        self.assertEqual(out["review"]["state"], "inconclusive")
+        self.assertIn("(timed out)", out["review"]["critique"])
+
+    async def test_a_dead_review_activity_is_inconclusive_not_a_failed_run(self):
+        """gh-issue-47: a worker restart mid-QA failed the activity (heartbeat timeout), and the
+        loop let it raise — a run with its PR open was booked `workflow_error`."""
+        import config
+
+        def dying(request, cap, **k):
+            if cap.name == config.REVIEW_CAP:
+                raise RuntimeError("worker went away")
+            return {"workflow": k.get("wid") or "w", "result": "edited the code", "cost": 0.0,
+                    "session_id": "s", "model": "m", "attempt": 1}
+        engine.run_attempt = dying
+        out = await self._run_reviewed("revq7")
+        self.assertEqual(out["review"]["state"], "inconclusive")
+        self.assertIn("died before it finished", out["review"]["critique"])
+        self.assertEqual(out["needs_human"]["reason"], "review_inconclusive")
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")

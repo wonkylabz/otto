@@ -43,7 +43,7 @@
 - **Claude fallback is a flag** (`config.LOCAL_FALLBACK`, default on) — a failing local model is covered by Claude; `=0` (strict) makes that illegal, stops the run, delivers `config.strict_stop_message`. Strict-stop is terminal in every ladder.
 - `verify` is exempt from strict mode: the judge must catch a bad local execution, not go down with it.
 - **A DETERMINISTIC local wall latches the ladder off local** — tool-calls-rejected and unreachable (`tools_unsupported`/`unavailable` → `local_wall` → `local_incapable`) fail the same every attempt, so the run re-dispatches (`…redispatches_instead_of_burning_the_ladder`).
-- **A local run near its turn/time cap must REPORT; its last turn has no tools** (`_budget_used`) — the cap returns an error (`LocalRuntimeTests`).
+- **A local run near its turn/time cap loses its tools, so it must REPORT** (`LocalRuntimeTests`) — a wrap-up alone is ignored until the deadline discards the work.
 - **A turn-budget death does NOT latch** — it is the model *working and not finishing*, so a retry with the critique can do better and it stays local (`…does_NOT_latch_the_ladder`).
 - **Three `claude -p` failures are WALLS, not harness deaths** (`error_classifier.claude_wall` -> `auth_stop` + a reason): dead login, spent usage limit, unservable model. Each names its own remedy — "re-authenticate" is wrong for a limit resetting in hours (`ClaudeAuthWall`).
 - **Which failures are walls is `error_classifier.classify`, not an if-chain at the call site** — 401/403/402 and a 429/500 that outlives its backoff are deterministic, so they latch and re-dispatch instead of burning two more attempts on the same endpoint.
