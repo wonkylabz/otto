@@ -9325,6 +9325,28 @@ class SeatbeltConfinementTests(unittest.TestCase):
         out = local_runtime._t_bash({"command": "cat pkg.json"}, ws, mode="confined")
         self.assertIn("visible", out)
 
+    def test_renaming_a_parent_does_not_carry_a_secret_out_of_reach(self):
+        """A Seatbelt rule names a PATH, checked at access, so `mv data d2 && cat d2/x.json`
+        read straight through it. bwrap's mountpoints refuse that rename; here every parent is."""
+        secrets = os.path.join(self.tmp, "vault", "inner")
+        os.makedirs(secrets)
+        with open(os.path.join(secrets, "k.json"), "w") as f:
+            f.write("sk-canary-sb-mv")
+        with mock.patch.object(file_safety, "read_denied_globs",
+                               lambda allow_cwd=None: [os.path.join(secrets, "*.json")]):
+            out = local_runtime._t_bash(
+                {"command": "mv vault v2 && cat v2/inner/k.json; mv v2 vault; "
+                            "mv vault/inner vault/i2 && cat vault/i2/k.json; mv vault/i2 vault/inner; "
+                            "echo ok > vault/inner/made.txt"}, self.tmp, mode="confined")
+        self.assertNotIn("sk-canary-sb-mv", out)
+        with open(os.path.join(secrets, "made.txt")) as f:
+            self.assertEqual(f.read().strip(), "ok", "a write INSIDE a guarded parent was refused")
+
+    def test_the_plan_pass_closes_preference_writes(self):
+        """`defaults write` goes through `cfprefsd`, past every file rule."""
+        self.assertIn("(deny user-preference-write)",
+                      file_safety.seatbelt_profile(self.tmp, scratch=self.tmp))
+
     def test_the_keychain_is_closed(self):
         """Claude's OAuth login lives in the macOS Keychain, not in the masked credentials file."""
         out = local_runtime._t_bash(
