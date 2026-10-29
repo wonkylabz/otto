@@ -1676,7 +1676,7 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertNotIn("Bash", out.get("tools_used") or [], "a refused call never returned")
         self.assertIn("budget is spent", str(self.requests[-1]["messages"][-1].get("content")))
 
-    def test_a_forced_report_turn_that_keeps_calling_tools_stops_or_delivers_its_text(self):
+    def test_a_forced_report_turn_that_keeps_calling_tools_is_refused_once_then_stops(self):
         model = dict(self.MODEL, max_turns=20)
         call = self._tool_call("Glob", {"pattern": "*"})
         self._script([call] * 20)
@@ -1685,7 +1685,7 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertTrue(out["is_error"])
         self.assertIn("wrote no report", out["result"])
         self.requests.clear()
-        self._script([call] * 18 + [dict(call, content="**TLDR** — done; Y open")])
+        self._script([call] * 18 + [{"role": "assistant", "content": "**TLDR** — done; Y open"}])
         out = local_runtime.run_json("x", allowed_tools=config.READ_TOOLS, model_entry=model,
                                      cwd=self.tmp)
         self.assertFalse(out["is_error"], out["result"])

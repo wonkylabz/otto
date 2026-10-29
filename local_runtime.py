@@ -1454,13 +1454,8 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                                         f"raise OTTO_LOCAL_EXEC_MAX_TOKENS)"), True
                 break
             if last:
-                # Offered no tools and called one anyway. Text beside the call IS its report;
-                # with none, one refusal, then stop — refusing every turn to the turn cap loses
-                # the report exactly as the deadline did.
-                text = str(msg.get("content") or "").strip()
-                if text and not gateway.looks_like_thinking(text):
-                    result = text
-                    break
+                # Offered no tools and called one anyway: one refusal, then stop — refusing every
+                # turn to the turn cap loses the report exactly as the deadline did.
                 forced_refusals += 1
                 if forced_refusals > 1:
                     result, is_error = ("(local model kept calling tools after its run budget "

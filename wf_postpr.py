@@ -160,7 +160,9 @@ class PostPrMixin:
     async def _fix_attempt(self, payload):
         """Run one fix round. A dead ACTIVITY (a worker restart mid-round) comes back as an
         errored round rather than raising: the PR is open and the clone may hold commits, so it
-        must still be finalized and end the loop inconclusive, never fail the workflow."""
+        must still be finalized and end the loop inconclusive, never fail the workflow. It
+        carries no `backend`, so it never earns the Claude re-run: nothing says what it already
+        published, and a ceiling timeout or a repeatable crash would only die again."""
         try:
             return await workflow.execute_activity(
                 run_capability, {**payload, "effort": self._effort},
@@ -169,7 +171,7 @@ class PostPrMixin:
         except exceptions.ActivityError as e:
             if isinstance(e.cause, exceptions.CancelledError):
                 raise                   # the RUN is being cancelled: stop, never finalize a push
-            return {"workflow": payload["wid"], "is_error": True, "cost": 0, "harness": True,
+            return {"workflow": payload["wid"], "is_error": True, "cost": 0,
                     "result": f"(the fix round died before it finished: {_failure_detail(e)})"}
 
     async def _run_fix_loop(self, kind, request, cap, repo, pr_url, rounds=None, tag=""):

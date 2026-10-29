@@ -4498,6 +4498,8 @@ class LadderStateMachineTests(unittest.TestCase):
         self.assertFalse(ladder.fix_backstop(dict(dead, is_error=False), True))
         self.assertFalse(ladder.fix_backstop(dict(dead, published=["gh pr comment"]), True),
                          "a re-run posts it twice")
+        self.assertFalse(ladder.fix_backstop({"is_error": True}, True),
+                         "a dead activity: what it published is unknown")
 
     @staticmethod
     def _v(passed=False, source="judge", critique="c"):
