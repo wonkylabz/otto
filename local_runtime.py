@@ -1454,7 +1454,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                 break
             for tc in calls:
                 fn = tc.get("function") or {}
-                if fn.get("name"):
+                if fn.get("name") and not last:      # a refused call never RETURNED
                     tools_used.add(str(fn["name"]))   # ground truth for the judge's tool grant
                 try:
                     args = json.loads(fn.get("arguments") or "{}")

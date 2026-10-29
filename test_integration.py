@@ -7075,6 +7075,9 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         fix_runs = self._fix_runs()
         self.assertEqual([bool(r["local_disabled"]) for r in fix_runs], [False, True], self.runs)
         self.assertEqual(out["review"]["state"], "pass")
+        # The re-run is told the clone holds what the dead attempt left behind.
+        self.assertIn("may have left uncommitted or partial edits", fix_runs[1]["critique"])
+        self.assertIn("(timed out)", fix_runs[1]["critique"])
 
     async def test_strict_mode_keeps_a_dead_local_fix_round_local(self):
         self.fix_local_dies = True

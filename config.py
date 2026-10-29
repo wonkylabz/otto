@@ -1062,7 +1062,7 @@ LOCAL_RUNTIME_MAX_TURNS = int(os.environ.get("OTTO_LOCAL_RUNTIME_MAX_TURNS", "60
 LOCAL_WRAP_UP_AT = float(os.environ.get("OTTO_LOCAL_WRAP_UP_AT", "0.75"))
 # The wrap-up is a REQUEST, and a local model ignores it: four fix rounds kept calling tools for
 # 10-16 turns after it (one `sleep 115` at a time) until the wall clock threw the work away as
-# "(timed out)". So it is ENFORCED: this many tool turns after the wrap-up, or once the clock
+# "(timed out)". So it is ENFORCED: this many turns after the wrap-up, or once the clock
 # passes LOCAL_FORCE_REPORT_AT, every later turn is offered no tools and must answer.
 LOCAL_WRAP_UP_GRACE_TURNS = int(os.environ.get("OTTO_LOCAL_WRAP_UP_GRACE_TURNS", "3"))
 LOCAL_FORCE_REPORT_AT = float(os.environ.get("OTTO_LOCAL_FORCE_REPORT_AT", "0.9"))

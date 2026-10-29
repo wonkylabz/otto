@@ -23,6 +23,7 @@ from wf_runtime import (_EXEC_CEILING, _FIX_NO_LADDER, _HEARTBEAT, _JUDGE_CEILIN
                         _RETRY_EXEC, _failure_detail)
 
 with workflow.unsafe.imports_passed_through():
+    import ladder
     import repo_checks
     from activities import (cleanup_workspace, finalize_workspace, judge_qa, judge_review,
                             merge_pr, pr_head_branch, provision_workspace, qa_capability,
@@ -40,6 +41,11 @@ _FIX_ORDER = ("committing the fix to the current branch (do NOT open a new PR). 
               "a section to the PR description recording this round — edit "
               "the description in place only if what the PR does has "
               "actually changed.\n")
+
+# Told to a fix round re-run on Claude after the first attempt died: the clone is NOT clean.
+_BACKSTOP_NOTE = ("\nAn earlier attempt at this round died before it finished and may have left "
+                  "uncommitted or partial edits in this tree. Check `git status`/`git diff` "
+                  "first: keep what is right, fix or revert what is not. It ended with: ")
 
 # Everything the two loops do NOT share. `cap_field` is BOTH the key the capability activity
 # returns its resolved cap name under and the key this loop returns it under, so the two summary
@@ -159,6 +165,8 @@ class PostPrMixin:
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
         except exceptions.ActivityError as e:
+            if isinstance(e.cause, exceptions.CancelledError):
+                raise                   # the RUN is being cancelled: stop, never finalize a push
             return {"workflow": payload["wid"], "is_error": True, "cost": 0,
                     "result": f"(the fix round died before it finished: {_failure_detail(e)})"}
 
@@ -203,6 +211,8 @@ class PostPrMixin:
                         start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                         retry_policy=_RETRY_EXEC)
                 except exceptions.ActivityError as e:
+                    if isinstance(e.cause, exceptions.CancelledError):
+                        raise
                     # A worker restart mid-round (heartbeat timeout) is a harness death, not a
                     # verdict — and the PR is already open, so failing the WORKFLOW reported a
                     # finished run as `workflow_error` (gh-issue-47). Stop for a human instead.
@@ -259,15 +269,26 @@ class PostPrMixin:
                            "model_override": self._model_override}
             fix = await self._fix_attempt(fix_payload)
             self._account(fix)
-            # The round runs on the operator's backend, local included. One-shot, so a LOCAL
-            # death has no ladder rung above it: with Claude fallback on, it gets exactly one —
-            # the same round on Claude, in the same clone, over whatever the local run committed.
-            # Strict mode (fallback off) keeps the local result and dead-ends below. Patched: a
-            # history recorded before it replays without the second dispatch.
-            if (fix.get("is_error") and fix.get("backend") == "local"
-                    and self._setting("local_fallback") and workflow.patched("local-fix-backstop")):
-                fix = await self._fix_attempt(dict(fix_payload, attempt=2, local_disabled=True,
-                                                   local_disabled_reason=_FIX_NO_LADDER))
+            # The round runs on the operator's backend, local included. One-shot, so a local
+            # death has no ladder rung above it: `ladder.fix_backstop` decides whether it gets
+            # one — the same round on Claude, in the same clone, told what the dead run left.
+            # The dead attempt keeps its own audit row. Patched: a history recorded before it
+            # replays without these commands.
+            if (ladder.fix_backstop(fix, self._setting("local_fallback"))
+                    and workflow.patched("local-fix-backstop")):
+                await workflow.execute_activity(
+                    record_attempt,
+                    {"wid": fix["workflow"], "request": f"[{spec['fix_label']} r{rnd + 1}, "
+                                                        f"{fix.get('backend')}] {request}",
+                     "name": cap["name"], "result": fix["result"], "cost": fix.get("cost", 0),
+                     "attempt": rnd + 1, "tokens": fix.get("tokens"), "model": fix.get("model"),
+                     "duration_s": fix.get("duration_s"),
+                     "verdict": None, "remember": False, "repo": repo},
+                    start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+                fix = await self._fix_attempt(dict(
+                    fix_payload, attempt=2, local_disabled=True,
+                    local_disabled_reason=_FIX_NO_LADDER,
+                    critique=fix_payload["critique"] + _BACKSTOP_NOTE + self._fix_error(fix)))
                 self._account(fix)
             await workflow.execute_activity(
                 finalize_workspace,

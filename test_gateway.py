@@ -1672,6 +1672,7 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertNotIn("tools", self.requests[wrap + grace])
         # The tool it called on a no-tools turn was refused, never run.
         self.assertFalse(os.path.exists(marker))
+        self.assertNotIn("Bash", out.get("tools_used") or [], "a refused call never returned")
         self.assertIn("budget is spent", str(self.requests[-1]["messages"][-1].get("content")))
 
     def test_the_wall_clock_near_the_deadline_withdraws_the_tools(self):

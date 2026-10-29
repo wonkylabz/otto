@@ -149,6 +149,15 @@ def next_step(state, limits, verdict, *, write_local=False, published=()):
     return Step(False, None, state)
 
 
+def fix_backstop(fix, local_fallback):
+    """Does a dead post-PR fix round get its one Claude re-run? Both loops are one-shot, so this
+    is the only rung above them: only for an errored round on a non-Claude backend (the engine's
+    `local_disabled` moves local AND Codex), only with fallback on, and never once it PUBLISHED
+    — a re-run posts it again, the same reason `PUBLISHED_UNVERIFIED` stops the main ladder."""
+    return bool(local_fallback and fix.get("is_error")
+                and fix.get("backend") in ("local", "codex") and not fix.get("published"))
+
+
 def error_verdict(result):
     """A synthetic FAILED verdict for an attempt that errored, timed out or was killed.
 

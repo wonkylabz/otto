@@ -21,7 +21,7 @@ changelog that restates it is a second copy of `git log`.
 ### Fixed
 
 - **Local runs deliver their report instead of timing out.** A local model told to wrap up
-  kept calling tools until the deadline, and the run returned only "(timed out)". Three tool
+  kept calling tools until the deadline, and the run returned only "(timed out)". Three
   turns after that notice, or once 90% of the run's time is used, it is offered no tools and
   must answer. Tune with `OTTO_LOCAL_WRAP_UP_GRACE_TURNS` and `OTTO_LOCAL_FORCE_REPORT_AT`.
 - **A worker restart during review or QA no longer fails the run.** A run whose PR was already
