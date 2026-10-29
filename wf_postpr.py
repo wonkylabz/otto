@@ -20,7 +20,7 @@ from datetime import timedelta
 from temporalio import exceptions, workflow
 
 from wf_runtime import (_EXEC_CEILING, _FIX_NO_LADDER, _HEARTBEAT, _JUDGE_CEILING, _RETRY,
-                        _RETRY_EXEC)
+                        _RETRY_EXEC, _failure_detail)
 
 with workflow.unsafe.imports_passed_through():
     import repo_checks
@@ -149,6 +149,19 @@ class PostPrMixin:
         res = str(fix.get("result") or "").strip() or "(no output)"
         return res[:300] + " […clipped]" if len(res) > 300 else res
 
+    async def _fix_attempt(self, payload):
+        """Run one fix round. A dead ACTIVITY (a worker restart mid-round) comes back as an
+        errored round rather than raising: the PR is open and the clone may hold commits, so it
+        must still be finalized and end the loop inconclusive, never fail the workflow."""
+        try:
+            return await workflow.execute_activity(
+                run_capability, {**payload, "effort": self._effort},
+                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+                retry_policy=_RETRY_EXEC)
+        except exceptions.ActivityError as e:
+            return {"workflow": payload["wid"], "is_error": True, "cost": 0,
+                    "result": f"(the fix round died before it finished: {_failure_detail(e)})"}
+
     async def _run_fix_loop(self, kind, request, cap, repo, pr_url, rounds=None, tag=""):
         """Judge the opened PR with `kind`'s capability; on an adverse verdict, fold its findings
         into a fix on the SAME branch and re-judge. Returns {state, rounds, <cap_field>,
@@ -182,12 +195,21 @@ class PostPrMixin:
                 # The finding is already known and specific: no reviewer round to rediscover it.
                 verdict = {"verdict": "fail", "critique": repo_checks.critique(checks)}
             else:
-                out = await workflow.execute_activity(
-                    spec["capability"],
-                    {"pr_url": pr_url, "repo": repo, "request": request,
-                     "wid": f"{run_id}-{spec['wid']}{tag}{rnd}", "prior": list(prior)},
-                    start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
-                    retry_policy=_RETRY_EXEC)
+                try:
+                    out = await workflow.execute_activity(
+                        spec["capability"],
+                        {"pr_url": pr_url, "repo": repo, "request": request,
+                         "wid": f"{run_id}-{spec['wid']}{tag}{rnd}", "prior": list(prior)},
+                        start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+                        retry_policy=_RETRY_EXEC)
+                except exceptions.ActivityError as e:
+                    # A worker restart mid-round (heartbeat timeout) is a harness death, not a
+                    # verdict — and the PR is already open, so failing the WORKFLOW reported a
+                    # finished run as `workflow_error` (gh-issue-47). Stop for a human instead.
+                    setattr(self, spec["attr"], {"state": "inconclusive", "round": rnd})
+                    return {"state": "inconclusive", "rounds": rnd, cap_field: cap_name,
+                            "critique": f"The {spec['label']} run died before it finished "
+                                        f"({_failure_detail(e)}) — nothing was judged."}
                 if out.get("missing"):
                     setattr(self, spec["attr"], {"state": "unavailable", "round": rnd})
                     return {"state": "unavailable", "rounds": rnd, cap_field: out.get(cap_field)}
@@ -230,17 +252,23 @@ class PostPrMixin:
                         "critique": f"{spec['blocked_lead']} the fix round could not run — the "
                                     "branch carrying this PR's work could not be checked out.\n"
                                     + critique}
-            fix = await workflow.execute_activity(
-                run_capability,
-                {"request": request, "name": cap["name"], "attempt": 1,
-                 "critique": spec["fix_lead"] + _FIX_ORDER + critique,
-                 "cwd": ws["path"], "wid": f"{run_id}-{spec['fix_wid']}{rnd}", "repo": repo,
-                 "local_disabled": True, "local_disabled_reason": _FIX_NO_LADDER,
-                 "approved_plan": self._plan, "model_override": self._model_override,
-                 "effort": self._effort},
-                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
-                retry_policy=_RETRY_EXEC)
+            fix_payload = {"request": request, "name": cap["name"], "attempt": 1,
+                           "critique": spec["fix_lead"] + _FIX_ORDER + critique,
+                           "cwd": ws["path"], "wid": f"{run_id}-{spec['fix_wid']}{rnd}",
+                           "repo": repo, "approved_plan": self._plan,
+                           "model_override": self._model_override}
+            fix = await self._fix_attempt(fix_payload)
             self._account(fix)
+            # The round runs on the operator's backend, local included. One-shot, so a LOCAL
+            # death has no ladder rung above it: with Claude fallback on, it gets exactly one —
+            # the same round on Claude, in the same clone, over whatever the local run committed.
+            # Strict mode (fallback off) keeps the local result and dead-ends below. Patched: a
+            # history recorded before it replays without the second dispatch.
+            if (fix.get("is_error") and fix.get("backend") == "local"
+                    and self._setting("local_fallback") and workflow.patched("local-fix-backstop")):
+                fix = await self._fix_attempt(dict(fix_payload, attempt=2, local_disabled=True,
+                                                   local_disabled_reason=_FIX_NO_LADDER))
+                self._account(fix)
             await workflow.execute_activity(
                 finalize_workspace,
                 {"run_id": run_id, "title": request[:120], "head": ws["head"],

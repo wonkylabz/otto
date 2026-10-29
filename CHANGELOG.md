@@ -11,6 +11,24 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Post-PR fix rounds run on your local model.** They used to go to Claude whatever you
+  assigned, so a local-only install could not fix its own review or QA findings. They now run
+  on the execution model you picked. If a local round fails and Claude fallback is on, that one
+  round is re-run on Claude; with fallback off (`OTTO_LOCAL_FALLBACK=0`) it stays local.
+
+### Fixed
+
+- **Local runs deliver their report instead of timing out.** A local model told to wrap up
+  kept calling tools until the deadline, and the run returned only "(timed out)". Three tool
+  turns after that notice, or once 90% of the run's time is used, it is offered no tools and
+  must answer. Tune with `OTTO_LOCAL_WRAP_UP_GRACE_TURNS` and `OTTO_LOCAL_FORCE_REPORT_AT`.
+- **A worker restart during review or QA no longer fails the run.** A run whose PR was already
+  open showed up as `workflow_error`; it now stops as review/QA inconclusive and says why.
+
+Restart the worker to pick these up.
+
 ## [0.8.4] - 2026-10-29
 
 ### Fixed
