@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-10-30
+
 ### Changed
 
 - **The web UI works on a phone.** Below 680px wide:
@@ -486,7 +488,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.6...HEAD
+[0.8.6]: https://github.com/wonkylabz/otto/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/wonkylabz/otto/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/wonkylabz/otto/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/wonkylabz/otto/compare/v0.8.2...v0.8.3
