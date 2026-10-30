@@ -13,7 +13,7 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
-- **A local-model Bash call that starts a background process (`cmd &`) returns at once** instead of blocking until the tool timeout, which then killed that process — a server started in one call is now still running in the next. Output it writes afterwards is read and dropped, so it can't fill memory or crash the process, and output that isn't valid text no longer crashes the call.
+- **A local-model Bash call that starts a background process (`cmd &`) returns at once** instead of blocking until the tool timeout, which then killed that process — a server started in one call is now still running in the next. Background jobs live for the rest of that run and are stopped when it ends. Output they write afterwards is read and dropped, so it can't fill memory or crash the process. A long result keeps its first and last lines, so a command's own final line isn't lost behind a server's startup logs. Output that isn't valid text no longer crashes the call.
 
 ## [0.8.6] - 2026-10-30
 
