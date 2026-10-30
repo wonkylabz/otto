@@ -11285,11 +11285,12 @@ class FastLaneGrantTests(unittest.TestCase):
                 mock.patch.object(local_runtime, "resume_entry", lambda sid: {
                     "name": "codex", "provider": "codex", "model": "gpt-5-codex"}), \
                 mock.patch.object(codex_cli, "run_json", lambda *a, **k: ran.append(k) or {}):
-            engine.run_attempt("yes, go ahead", self.cap, wid="w-cx", resume_session="cx-1",
-                               fast_lane=[])
+            out = engine.run_attempt("yes, go ahead", self.cap, wid="w-cx",
+                                     resume_session="cx-1", fast_lane=[])
         self.assertEqual(ran, [], "the empty grant reached a backend with a shell")
-        self.assertEqual(self.calls[0]["allowed_tools"], [])
-        self.assertIn("Bash", self.calls[0]["disallowed_tools"])
+        self.assertEqual(self.calls, [], "claude -p cannot resume a Codex session either")
+        self.assertTrue(out["is_error"])
+        self.assertEqual(out["result"], engine.CODEX_SESSION_TOOLLESS)
 
     def test_a_normal_run_is_unchanged(self):
         self._claude_backend()
