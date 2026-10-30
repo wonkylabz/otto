@@ -409,7 +409,8 @@ def _group_alive(pgid):
 def _reap(pgids):
     """Kill what this run's Bash calls left running. POSIX never reuses a group's id while the
     group lives, and its leader (the shell) was already waited on — so a live PROCESS holding
-    the number means the group ended and the number was reused: never ours to kill."""
+    the number means the group ended and the number was reused: never ours to kill. Accepted:
+    a reused number whose new leader already EXITED looks like ours (needs a pid wrap mid-run)."""
     for pgid in pgids or ():
         try:
             os.getsid(pgid)
