@@ -2166,7 +2166,10 @@ class Handler(BaseHTTPRequestHandler):
         # conversation is the latency the mode exists to avoid, and its replies offer
         # directions, which is exactly what reads as "delegate this" to the classifier.
         # A fronted chat never hands off either: the frontman delegates by declaring it.
-        fronted = _web_fronted(cap.name) and bool((body.get("cap") or {}).get("fronted"))
+        # Keyed on the SESSION alone: its system prompt carries the DELEGATE rule either way, so
+        # switching the setting off mid-chat would leave a hand-off line shown verbatim.
+        fronted = (cap.name == config.WEB_FRONTMAN_CAP
+                   and bool((body.get("cap") or {}).get("fronted")))
         if (prev and not body.get("no_handoff") and cap.name != config.BRAINSTORM_CAP
                 and not fronted):
             task = engine.followup_handoff(body["message"], prev, cap)

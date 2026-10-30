@@ -11713,7 +11713,7 @@ class WebChatFrontmanTests(unittest.TestCase):
     def test_an_untrusted_submit_carries_no_asker_text(self):
         self.assertNotIn("asker_text", self._front({"request": "q", "trusted_asker": False}))
 
-    def _continue(self, cap_body):
+    def _continue(self, cap_body, on=True):
         asked, started = [], []
 
         async def _noop():
@@ -11722,7 +11722,7 @@ class WebChatFrontmanTests(unittest.TestCase):
         h._send = lambda code, body: None
         h.headers = {"Origin": "http://localhost"}
         with mock.patch.object(server, "CAPS", [self.cap]), \
-                mock.patch.object(config, "setting", lambda n, *a: n == "web_frontman"), \
+                mock.patch.object(config, "setting", lambda n, *a: on and n == "web_frontman"), \
                 mock.patch.object(server.engine, "followup_handoff",
                                   lambda *a: asked.append(1) or "do X"), \
                 mock.patch.object(server, "_wf_start",
@@ -11738,6 +11738,11 @@ class WebChatFrontmanTests(unittest.TestCase):
         self.assertTrue(started[0]["frontman"])
         self.assertTrue(started[0]["cap"]["fronted"], "turn 3 must still know it is fronted")
         self.assertEqual(started[0]["asker_text"], "and Y?")
+
+    def test_a_fronted_chat_stays_fronted_after_the_setting_is_switched_off(self):
+        """Its system prompt still carries the DELEGATE rule; unfronted, the line shows verbatim."""
+        asked, started = self._continue({"name": self.cap.name, "fronted": True}, on=False)
+        self.assertTrue(started[0]["frontman"])
 
     def test_a_pinned_assistant_chat_is_never_fronted_on_its_follow_ups(self):
         asked, started = self._continue({"name": self.cap.name})

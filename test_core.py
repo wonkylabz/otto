@@ -4329,7 +4329,7 @@ class EffortPlumbingTests(unittest.TestCase):
         # 4 run_capability callsites: the fresh ladder, the ONE parameterised post-PR fix round
         # (issue #58 — it serves both the review and QA loops), the resumed turn and the unjudged
         # brainstorm turn. Effort is per-TURN, so every one carries it.
-        for activity, expected in (("run_capability", 5), ("plan_capability", 1)):
+        for activity, expected in (("run_capability", 6), ("plan_capability", 1)):
             payloads = self._payload_keys(tree, activity)
             self.assertEqual(len(payloads), expected,
                              f"{activity} callsite count changed — this test is stale")

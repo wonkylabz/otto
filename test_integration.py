@@ -8965,10 +8965,15 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.calls = []
 
         self.errors_left, self.local_off, self.err_backend = 0, [], "local"
+        self.toolless, self.handoff_says = [], "DELEGATE: " + self.TASK
 
         def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
             self.calls.append((cap.name, frontman, request[:40]))
             self.local_off.append(k.get("local_disabled", False))
+            if k.get("fast_lane") == []:
+                self.toolless.append(request)
+                return {"workflow": wid or "wf-fm", "result": self.handoff_says, "cost": 0.0,
+                        "session_id": "sess-front", "model": "m", "attempt": 1}
             if self.errors_left:
                 self.errors_left -= 1
                 return {"workflow": wid or "wf-fm", "result": "(timed out)", "is_error": True,
@@ -9131,12 +9136,21 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("demo-write", names)
         self.assertEqual(out["result"], self.relay_says)
 
-    async def test_a_write_shaped_web_follow_up_is_handed_off_too(self):
+    async def test_a_write_shaped_web_follow_up_hands_off_the_sessions_task_not_the_message(self):
+        """"yes, go ahead" is no task: the session, on a turn with NO tools, writes the real one."""
         self.write_intent = True
         wid, out = await self._drive("unused", approve=True, resume="sess-front", web=True)
         self.assertEqual(len(self.classified), 1, "a fronted web follow-up keeps its guard")
-        self.assertIn("demo-write", [c[0] for c in self.calls])
-        self.assertNotIn(("assistant", True), [c[:2] for c in self.calls])
+        self.assertEqual(len(self.toolless), 1)
+        child = [c for c in self.calls if c[0] == "demo-write"]
+        self.assertTrue(child and child[0][2] == self.TASK[:40], child)
+        self.assertEqual(out["result"], self.relay_says)
+
+    async def test_an_unresolvable_web_follow_up_asks_instead_of_delegating(self):
+        self.write_intent, self.handoff_says = True, "Sure thing!"
+        wid, out = await self._drive("unused", resume="sess-front", web=True)
+        self.assertNotIn("demo-write", [c[0] for c in self.calls])
+        self.assertEqual(out["result"], __import__("contracts").HANDOFF_UNRESOLVED)
 
     async def test_a_web_chat_delegation_still_routes_gates_and_judges_its_child(self):
         wid, out = await self._drive("On it.\nDELEGATE: " + self.TASK, approve=True, web=True)

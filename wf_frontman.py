@@ -58,7 +58,8 @@ class FrontmanMixin:
             res = await workflow.execute_child_workflow(
                 type(self).run,
                 # Framing AFTER the task, so routing still ranks the task's own words.
-                {"request": task + contracts.DELEGATED_FRAMING, "unattended": True,
+                {"request": task + (contracts.DELEGATED_FRAMING if params.get("reply_to")
+                                    else contracts.DELEGATED_FRAMING_WEB), "unattended": True,
                  "delegated": True,
                  # A web parent's reader is watching the chat: no "Otto finished" push on top.
                  "quiet_done": not params.get("reply_to"),

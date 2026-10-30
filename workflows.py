@@ -1519,7 +1519,19 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
     async def _resume_attempt(self, request, cap, resume, ws, repo):
         """The resumed turn's one attempt, or the hand-off its write-intent guard decided."""
         if self._front_handoff:
-            return {**_handoff_out(workflow.info().workflow_id, request), "session_id": resume}
+            # The raw follow-up ("yes, go ahead") is no task; the session knows what it means.
+            # `fast_lane: []` is a grant of NO tools, so this turn cannot act on it either.
+            out = await workflow.execute_activity(
+                run_capability,
+                {"request": request + contracts.HANDOFF_ASK, "name": cap["name"],
+                 "resume": resume, "wid": workflow.info().workflow_id,
+                 "audience": self._audience, "risk": "read", "effort": self._effort,
+                 "fast_lane": [], "frontman": self._frontman, "approved_plan": self._plan},
+                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+                retry_policy=_RETRY_EXEC)
+            if not contracts.parse_delegation(out.get("result"))[1]:
+                out = {**out, "result": contracts.HANDOFF_UNRESOLVED}
+            return out
         return await workflow.execute_activity(
             run_capability, {"request": request, "name": cap["name"], "resume": resume,
                              "wid": workflow.info().workflow_id,
