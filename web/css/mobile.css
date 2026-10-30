@@ -1,0 +1,191 @@
+/* Phone width. Loaded after app.css, so these win; desktop never matches. */
+.tabmore { display: none; }
+@media (max-width: 680px) {
+  :root { --navh: calc(58px + env(safe-area-inset-bottom)); }
+  /* dvh: 100vh sits under a mobile browser's URL bar, hiding the composer */
+  body { height: 100dvh; }
+  main { padding-bottom: var(--navh); }
+
+  header { gap: 10px; padding: calc(8px + env(safe-area-inset-top)) 14px 8px; }
+  #ob-start { display: none; }
+  /* Version under the wordmark; font-size 0 drops the tagline text around it */
+  .wordmark > span { display: block; font-size: 0; line-height: 1; }
+  .wordmark span.ver { display: inline; font-size: 11px; color: var(--dim); }
+  .status .estop { min-height: 44px; }
+  .hint { display: none; }
+
+  /* Bottom tab bar: four primary views + More (the skill's limit is 5) */
+  .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 150; margin: 0; gap: 0;
+    overflow: visible; background: var(--surface); border-top: 1px solid var(--line);
+    padding: 4px 6px env(safe-area-inset-bottom); }
+  .tab, .tabmore { position: relative; flex: 1 1 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 3px; min-height: 52px; padding: 4px 2px; font-family: var(--sans);
+    font-size: 11px; font-weight: 500; color: var(--dim); background: transparent; border: none;
+    border-radius: var(--r-md); cursor: pointer; }
+  .tab::before, .tabmore::before { content: ""; width: 22px; height: 22px; background: currentColor;
+    -webkit-mask: var(--ico) center / contain no-repeat; mask: var(--ico) center / contain no-repeat; }
+  .tab.active, .tab.active:hover { color: var(--accent); background: transparent; border: none; }
+  .tab[data-view=chat] { order: 1; } .tab[data-view=board] { order: 2; }
+  .tab[data-view=schedules] { order: 3; } .tab[data-view=audit] { order: 4; } .tabmore { order: 5; }
+  .tabbadge { position: absolute; top: 2px; left: calc(50% + 7px); margin: 0; }
+
+  /* More: the other four views as a menu above the bar */
+  .tab:is([data-view=events],[data-view=memory],[data-view=knowledge],[data-view=admin]) { display: none; }
+  .tabs.moreopen .tab:is([data-view=events],[data-view=memory],[data-view=knowledge],[data-view=admin]) {
+    display: flex; position: fixed; right: 10px; width: 210px; height: 50px; min-height: 0;
+    flex-direction: row; justify-content: flex-start; gap: 12px; padding: 0 16px; font-size: 15px;
+    color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 0; }
+  .tabs.moreopen .tab.active { color: var(--accent); }
+  .tabs.moreopen .tab[data-view=admin]     { bottom: calc(var(--navh) + 10px); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+  .tabs.moreopen .tab[data-view=knowledge] { bottom: calc(var(--navh) + 59px); border-bottom: none; }
+  .tabs.moreopen .tab[data-view=memory]    { bottom: calc(var(--navh) + 108px); border-bottom: none; }
+  .tabs.moreopen .tab[data-view=events]    { bottom: calc(var(--navh) + 157px); border-bottom: none;
+    border-radius: var(--r-lg) var(--r-lg) 0 0; }
+  .tabs.moreopen .tab .tabbadge { position: static; margin-left: auto; }
+  .tabs.moreopen::after { content: ""; position: fixed; inset: 0 0 var(--navh) 0; background: var(--scrim); z-index: -1; }
+  .tabs:has(.tab.active:is([data-view=events],[data-view=memory],[data-view=knowledge],[data-view=admin])) .tabmore,
+  .tabs.moreopen .tabmore { color: var(--accent); }
+  .tabs:not(.moreopen):has(#tabbadge-admin:not([hidden])) .tabmore::after { content: ""; position: absolute;
+    top: 6px; left: calc(50% + 9px); width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+
+  .toasts { left: 12px; right: 12px; bottom: calc(var(--navh) + 10px); z-index: 160; }
+
+  /* Chat list: a collapsible strip above the conversation instead of a hidden sidebar */
+  .chatview, .chatview.histcollapsed { grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(0,1fr); }
+  .history { display: flex; max-height: 45dvh; border-right: none; border-bottom: 1px solid var(--line); }
+  .histhead, .histcollapsed .histhead { padding: 6px 14px; justify-content: space-between; }
+  .histcollapsed .histhead > span:not(.hacts), .histcollapsed .histhead #new-chat { display: inline-flex; }
+  .histhead button { min-height: 36px; padding: 6px 12px; }
+  .histtoggle svg { transform: rotate(90deg); }
+  .histcollapsed .histtoggle svg { transform: rotate(-90deg); }
+
+  /* Conversation: full-width bubbles; run options read top-down and never swallow the chat */
+  .stream .avatar { display: none; }
+  .msg { margin-bottom: 14px; }
+  #sessionbar { display: block; position: relative; padding-right: 96px; line-height: 1.5; }
+  #sessionbar .sdot { display: inline-block; margin-right: 6px; vertical-align: middle; }
+  #sessionbar .nt { position: absolute; right: 0; top: 50%; transform: translateY(-50%); padding: 7px 12px; }
+  .optpanel:not(.collapsed) { max-height: 50dvh; overflow-y: auto; }
+  .optrow { gap: 6px 14px; }
+  .optlabel { width: 100%; }
+  .optlabel.inline { width: auto; }
+  #repopick, #modelpick { flex: 1 1 100%; }
+  .optpanel .repohint { display: none; }
+  .optpanel select { padding: 8px 10px; }
+  .optpanel .opt { min-height: 32px; }
+
+  /* The composer's hint wraps and clips at this width; the send button says enough */
+  .field textarea::placeholder { color: transparent; }
+  .tab:focus:not(:focus-visible), .tabmore:focus:not(:focus-visible) { outline: none; }
+
+  /* iOS zooms into any field under 16px on focus */
+  input:not([type=checkbox]):not([type=radio]), select, textarea, .field textarea { font-size: 16px; }
+
+  /* Config tabs: tighter rhythm, full-width rows that are easy to hit */
+  .adminview { padding: 18px 16px 28px; }
+  .asection { margin-bottom: 2px; }
+  .asection h3 { flex-wrap: wrap; row-gap: 8px; min-height: 48px; margin-bottom: 4px; }
+  .secttoggle { min-width: fit-content; }
+  .h3btns { flex-wrap: wrap; }
+  .h3btns button, .addbtn { min-height: 36px; }
+
+  /* Nested sections keep their indent rule but spend less width on it; header buttons slimmer */
+  :root { --indent-sub: 12px; }
+  /* Section header actions: only on an OPEN section, and compact */
+  .asection.coll.collapsed > h3 > :not(.secttoggle, .sectcount) { display: none; }
+  .asection h3 .addbtn, .asection h3 .h3btns button, .asection h3 > button { min-height: 32px; padding: 4px 10px; font-size: 12.5px; }
+  .sharegrid { grid-template-columns: 1fr 1fr; }
+  .sharegrid .sharelbl, .sharegrid .bundlemsg { grid-column: 1 / -1; }
+  .kprev { align-items: stretch; }
+
+  /* Filter rows and settings stack instead of running off the right edge */
+  .captools { flex-wrap: wrap; }
+  .captools .capsearch { flex: 1 1 100%; }
+  .ksettings label { flex-wrap: wrap; }
+  .ksettings select { width: 100%; }
+  /* Job cards: no left rail; name + switch, schedule, details, then actions along the bottom */
+  #schedulesview .job, #schedulesview .job.jsw { display: block; position: relative; padding: 12px 14px; margin-bottom: 8px; }
+  #schedulesview .job:hover { background: transparent; border-color: var(--line); }
+  .job > .jgrip { display: none; }
+  .job.jsw > .switch { position: absolute; top: 12px; right: 14px; margin: 0; }
+  #schedulesview .job .jbody { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+  #schedulesview .job .jtop { display: contents; }
+  #schedulesview .job .jname { flex: 1 1 100%; font-size: 15px; }
+  #schedulesview .job.jsw .jname { padding-right: 52px; }
+  #schedulesview .job .jasks { flex: 1 1 100%; white-space: normal; }
+  #schedulesview .job .jstatus { order: 3; flex: 1 1 100%; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+  .job .jmeta { white-space: normal; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+  #schedulesview .job .jreq { flex: 1 1 100%; white-space: normal; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-width: 0; overflow-wrap: anywhere; }
+  #schedulesview .job .jreq::before { content: none; }
+  #schedulesview .job .jactions { order: 4; flex: 1 1 100%; margin: 8px 0 0; padding-top: 8px;
+    border-top: 1px solid var(--line); gap: 8px; }
+  #schedulesview .job .jactions .addbtn { min-height: 36px; padding: 0 14px; }
+  #schedulesview .job .jactions .remove { margin-left: auto; min-width: 36px; min-height: 36px; font-size: 20px; }
+
+  /* Wide Admin tables: each row becomes a card; the header row's labels move onto the cells */
+  :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) { display: block; width: 100%; table-layout: auto; }
+  :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) :is(colgroup, thead) { display: none; }
+  .captable.caphead { display: none; }
+  :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) tbody { display: block; }
+  :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) tr { display: flex; flex-wrap: wrap; align-items: center;
+    gap: 8px 12px; padding: 12px 2px; border-bottom: 1px solid var(--line); }
+  :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) td { display: block; width: auto; max-width: 100%;
+    padding: 0; border: none; white-space: normal; overflow-wrap: anywhere; }
+  :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) td:first-child { flex: 1 1 100%; min-width: 0; }
+  :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) td:is(.c-act, .c-rm) { margin-left: auto; }
+  :is(.mcptable td.c-note, .projtable td.c-instr) { flex: 1 1 100%; }
+  :is(.mcptable td.c-note, .projtable td.c-instr, .projtable td.c-conv)::before { display: block; margin-bottom: 4px;
+    font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+  .mcptable td.c-note::before { content: "Usage notes"; }
+  .projtable td.c-instr::before { content: "Standing instructions"; }
+  .projtable td.c-conv::before { content: "Conventions"; }
+  .captable .nm { white-space: normal; overflow-wrap: anywhere; }
+  .captable .nm small { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .settable td.c-val { flex: 1 1 auto; margin-left: auto; text-align: right; }
+  .settable .setctl small { white-space: nowrap; }
+  .settable .setgroup td { flex: 1 1 100%; padding: 10px 0 0; }
+  .mpool td.c-ord { display: none; }
+  .mpool td.c-phases { flex: 1 1 100%; padding: 0; }
+  .mpool td.c-phases .mradios { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); width: 100%; }
+  .mpool td.c-phases .rc { width: auto; flex-direction: column; align-items: center; gap: 4px; min-height: 44px; justify-content: center; }
+  .mpool td.c-phases .rc::before { font-size: 10px; letter-spacing: .02em; text-transform: uppercase; color: var(--dim); }
+  .mpool td.c-phases input { width: 20px; height: 20px; }
+  .mpool td.c-phases .rc:nth-child(1)::before { content: "Route"; }
+  .mpool td.c-phases .rc:nth-child(2)::before { content: "Split"; }
+  .mpool td.c-phases .rc:nth-child(3)::before { content: "Plan"; }
+  .mpool td.c-phases .rc:nth-child(4)::before { content: "Clar"; }
+  .mpool td.c-phases .rc:nth-child(5)::before { content: "Mem"; }
+  .mpool td.c-phases .rc:nth-child(6)::before { content: "Ver"; }
+  .mpool td.c-phases .rc:nth-child(7)::before { content: "Sup"; }
+  .mpool td.c-phases .rc:nth-child(8)::before { content: "GC"; }
+  .mpool td.c-phases .rc:nth-child(9)::before { content: "Exec"; }
+
+  /* Board: empty columns shrink to a row of count tiles above the ones with cards */
+  #boardview .phead .sub { display: none; }
+  #boardview .phead .pside { margin-left: 0; flex: 1 1 100%; }
+  .board { gap: 8px; }
+  .bcol.empty { order: -1; flex: 1 1 0; min-width: 0; padding: 8px 10px 10px; }
+  .bcol.empty .bcolhead { flex-direction: column; align-items: flex-start; gap: 4px; padding: 0;
+    font-size: 10.5px; letter-spacing: .04em; line-height: 1.25; }
+  .bcol.empty .bcolhead .bcount { font-size: 20px; font-weight: 600; padding: 0; min-width: 0; color: var(--text-2); }
+  .bcol.empty .bempty { display: none; }
+  .bcol:not(.empty) { padding: 8px 6px; }
+  .bfoot { gap: 0 2px; font-size: 12px; }
+  .bfoot a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 8px; }
+
+  /* Modals become bottom sheets */
+  .modalOverlay { padding: 0; align-items: flex-end; z-index: 300; }
+  .modalBox { max-height: 92dvh; border-radius: var(--r-lg) var(--r-lg) 0 0; padding-bottom: env(safe-area-inset-bottom); }
+
+  .tab[data-view=chat] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3C/svg%3E"); }
+  .tab[data-view=board] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='7' height='18' rx='1.5'/%3E%3Crect x='14' y='3' width='7' height='11' rx='1.5'/%3E%3C/svg%3E"); }
+  .tab[data-view=schedules] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E"); }
+  .tab[data-view=audit] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-4l-3 8L9 4l-3 8H2'/%3E%3C/svg%3E"); }
+  .tab[data-view=events] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2 4 14h8l-1 8 9-12h-8z'/%3E%3C/svg%3E"); }
+  .tab[data-view=memory] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z'/%3E%3C/svg%3E"); }
+  .tab[data-view=knowledge] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z'/%3E%3C/svg%3E"); }
+  .tab[data-view=admin] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6'/%3E%3C/svg%3E"); }
+  .tabmore { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='5' cy='12' r='1.6'/%3E%3Ccircle cx='12' cy='12' r='1.6'/%3E%3Ccircle cx='19' cy='12' r='1.6'/%3E%3C/svg%3E"); }
+}
+@media (max-width: 440px) { .atable .c-out { display: none; } }
