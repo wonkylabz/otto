@@ -8935,9 +8935,13 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "run_attempt", "verify", "record_attempt",
                        "record_skip", "plan_preview", "critique_plan", "summarize_plan",
-                       "candidate_repo", "followup_write_intent", "distil_memory")}
+                       "candidate_repo", "followup_write_intent", "distil_memory",
+                       "clarify", "request_write_intent")}
         self._orig_caps = activities._caps
         activities._caps = [front, writer]
+        self.pre_run = []
+        engine.clarify = lambda *a, **k: self.pre_run.append("clarify") or None
+        engine.request_write_intent = lambda *a, **k: self.pre_run.append("intent") or False
         # Memory distillation is a real model call — 5-22s against the live endpoint, racing the
         # ~10s wall-clock gate poll below, so the suite went red on the endpoint's latency.
         engine.distil_memory = lambda *a, **k: None
@@ -8947,8 +8951,9 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         engine.critique_plan = lambda *a, **k: {"concerns": []}
         engine.summarize_plan = lambda plan, *a, **k: plan
         engine.candidate_repo = lambda request, names: None
-        engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {
-            "passed": True, "critique": ""}
+        self.judged = []
+        engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: (
+            self.judged.append(c.name) or {"passed": True, "critique": ""})
         self.audited = []
         engine.record_attempt = lambda *a, **k: self.audited.append((a[5], a[3]))
         engine.record_skip = lambda *a, **k: None
@@ -8987,11 +8992,11 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
 
     relay_says = "Bumped it — the PR is up."
 
-    async def _drive(self, frontman_says, approve=None, resume=None):
+    async def _drive(self, frontman_says, approve=None, resume=None, web=False):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (classify_followup, classify_request, deliver_result,
+        from activities import (classify_followup, classify_request, clarify_request, deliver_result,
                                 detect_repo_changes, finalize_terminal, interim_notice,
                                 notify_human, plan_capability, plan_swarm, record_attempt,
                                 record_skip, route_request, run_capability, snapshot_repos,
@@ -9003,13 +9008,17 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         params = {"request": "can you bump the widget?", "unattended": True, "approval": "ask",
                   "cap": {"name": "assistant", "kind": "custom", "risk": "read"},
                   "reply_to": reply_to, "frontman": True}
+        if web:
+            # The web chat (server._front_web_chat): a person reading live, no reply_to.
+            wid = "web-" + uuid.uuid4().hex[:8]
+            params = {"request": params["request"], "cap": params["cap"], "frontman": True}
         if resume:
             params["resume"] = resume
         async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="fmq", workflows=[OttoWorkflow],
-                    activities=[classify_followup, classify_request, deliver_result,
+                    activities=[classify_followup, classify_request, clarify_request, deliver_result,
                                 detect_repo_changes, finalize_terminal, interim_notice,
                                 notify_human, plan_capability, plan_swarm, record_attempt,
                                 record_skip, route_request, run_capability, snapshot_repos,
@@ -9074,6 +9083,22 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         rows = dict(r for r in self.audited if r[1] != "child report: bumped, PR https://example.test/pr/1")
         self.assertTrue(rows[1].startswith("DELEGATE:"), "attempt 1 must record the hand-off itself")
         self.assertEqual(rows[2], self.relay_says, "the relay is its own attempt")
+
+    async def test_a_web_chat_turn_answers_in_one_unjudged_attempt(self):
+        """The fast chat: no clarify, no write-intent call, no judge — the person is reading."""
+        wid, out = await self._drive("It's the events URL.", web=True)
+        self.assertEqual(out["result"], "It's the events URL.")
+        self.assertEqual(self.pre_run, [])
+        self.assertEqual(self.judged, [])
+        self.assertIsNone(out.get("verified"))
+        self.assertEqual([c[:2] for c in self.calls], [("assistant", True)])
+
+    async def test_a_web_chat_delegation_still_routes_gates_and_judges_its_child(self):
+        wid, out = await self._drive("On it.\nDELEGATE: " + self.TASK, approve=True, web=True)
+        self.assertEqual(out["result"], self.relay_says)
+        self.assertIn("demo-write", [c[0] for c in self.calls])
+        self.assertEqual(self.judged, ["demo-write"], "only the child is judged")
+        self.assertEqual(self.delivered, [], "a web chat has no reply_to to post to")
 
     def test_a_paused_child_is_never_relayed_as_done(self):
         from wf_frontman import _outcome

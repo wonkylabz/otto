@@ -86,7 +86,7 @@ def _repo_of(params):
     return None if _is_brainstorm(params.get("cap")) else params.get("repo")
 
 
-def _may_plan_steps(authored, plan_mode, repo, subtask, cap, fast_lane=None):
+def _may_plan_steps(authored, plan_mode, repo, subtask, cap, fast_lane=None, fronted=False):
     """May this run ask the planner to decompose the request into atomic steps?
 
     A runbook brings its OWN graph (`authored`) so it never re-plans; repo-mode and swarm
@@ -104,7 +104,7 @@ def _may_plan_steps(authored, plan_mode, repo, subtask, cap, fast_lane=None):
 
     PURE — safe on the replayed workflow path (the caller reads the setting from its snapshot)."""
     return (not authored and plan_mode != "off" and not repo and not subtask
-            and not _is_brainstorm(cap) and fast_lane is None)
+            and not _is_brainstorm(cap) and fast_lane is None and not fronted)
 
 
 def _verified_of(verdict):
@@ -166,6 +166,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._verified = None      # last verify verdict (None until first attempt judged)
         self._swarm = False        # True once this run fans out into a parallel sub-task swarm
         self._frontman = False     # a Slack frontman turn (wf_frontman): may delegate
+        self._fronted = False      # an INTERACTIVE frontman turn (web chat): one unjudged attempt
         self._children = []        # [{id, cap, request, risk}] of the swarm's child workflows
         self._repo = None          # repo this run targets in an isolated workspace (issue #57/#59)
         self._git_run_id = None    # ORIGINAL run whose workspace path/branch a resume re-provisions
@@ -787,6 +788,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # ABOVE the resume/fresh split: inline, the resume path left it unbound and simply
         # never read it (it returns first), but this method's return tuple always reads it.
         subtask = params.get("subtask", False)
+        # A person is reading this turn live and can push back in one line, as in brainstorm;
+        # delegated work still takes the full routed, gated, judged path in its child.
+        self._fronted = bool(params.get("frontman")) and not unattended
         if resume:
             # Continuation — skip routing/clarification, reuse the bound capability + session.
             cap = params["cap"]
@@ -912,9 +916,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # reading (contracts._THINKING_PARTNER_FORMAT: "ending on a question is a complete
             # answer"). A separate clarify call ahead of it is a second LLM round-trip that
             # blocks the very first turn on a modal prompt — the opposite of what the mode is for.
+            # A fronted turn asks in-band too, and its writes leave only through a DELEGATE child,
+            # which runs both guards itself.
             classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))
-                            and not _is_brainstorm(cap))
-            clarify_due = (not subtask and not _is_brainstorm(cap)
+                            and not _is_brainstorm(cap) and not self._fronted)
+            clarify_due = (not subtask and not _is_brainstorm(cap) and not self._fronted
                            and (not unattended or params.get("clarify")))
             # The write-intent guard reads only the request, so it runs WHILE clarify does; a
             # clarification changes the request, and then it is asked again.
@@ -1305,7 +1311,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # regardless of plan_mode/repo, because those gate whether Otto should *invent* a plan,
         # which has no bearing on whether it should run one a human already wrote.
         plan_list, authored = authored_steps, bool(authored_steps)
-        if _may_plan_steps(authored, self._setting("plan_mode"), repo, subtask, cap, self._fast_lane):
+        if _may_plan_steps(authored, self._setting("plan_mode"), repo, subtask, cap, self._fast_lane,
+                           self._fronted):
             sres = await workflow.execute_activity(
                 plan_task_steps,
                 {"request": request, "name": cap["name"], "requested": params.get("plan_mode", False),
@@ -1543,7 +1550,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                  "memory_enabled": self._memory_enabled,
                  "model_override": self._model_override, "effort": self._effort,
                  "attachments": self._attachments,
-                 "supervise_enforce": False},
+                 "supervise_enforce": False, "frontman": self._frontman},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
         except exceptions.ActivityError:
@@ -1632,7 +1639,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         Brainstorm short-circuits here rather than at the call site: this method IS the "run the
         task, come back with (out, verdict, attempt, wid)" seam, and `_run_impl` is deterministic
         replay code held to a branch ratchet that a fourth dispatch arm would break."""
-        if _is_brainstorm(cap):
+        if _is_brainstorm(cap) or self._fronted:
             # ONE attempt, no judge. The ladder scores an attempt against the request's implied
             # acceptance criteria — a brainstorm has none, and the two verdicts it would invent
             # are both wrong here: a reply that ends on a question trips the unattended dead-end

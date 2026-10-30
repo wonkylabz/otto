@@ -4144,17 +4144,18 @@ class RunModeFlagTests(unittest.TestCase):
         self.assertNotIn('"unattended": unattended', spawn)
         self.assertNotIn('params.get("unattended")', spawn)
 
-    def test_the_plan_step_exclusions_stay_six(self):
-        """`_may_plan_steps` ANDs six mode flags, and the brainstorm one was added only after
-        plan-mode silently replaced the whole brainstorm turn. Adding a seventh mode without a
-        matching exclusion is how that repeats. The sixth is the fast lane (issue #193)."""
+    def test_the_plan_step_exclusions_stay_seven(self):
+        """`_may_plan_steps` ANDs seven mode flags, and the brainstorm one was added only after
+        plan-mode silently replaced the whole brainstorm turn. Adding an eighth mode without a
+        matching exclusion is how that repeats. The sixth is the fast lane (issue #193), the
+        seventh the fronted web chat."""
         import workflows
         self.assertEqual(
             list(inspect.signature(workflows._may_plan_steps).parameters),
-            ["authored", "plan_mode", "repo", "subtask", "cap", "fast_lane"])
+            ["authored", "plan_mode", "repo", "subtask", "cap", "fast_lane", "fronted"])
         for kwargs in ({"authored": True}, {"plan_mode": "off"}, {"repo": "r"},
                        {"subtask": True}, {"cap": {"name": "brainstorm", "kind": "skill"}},
-                       {"fast_lane": ["mcp__ha__HassTurnOn"]}):
+                       {"fast_lane": ["mcp__ha__HassTurnOn"]}, {"fronted": True}):
             base = {"authored": False, "plan_mode": "on", "repo": None, "subtask": False,
                     "cap": {"name": "worker", "kind": "skill"}}
             base.update(kwargs)
@@ -4913,10 +4914,10 @@ class BrainstormModeTests(unittest.TestCase):
         `intent["redirect"]` is skipped for a PINNED cap, so a write-shaped musing would fall
         through to the risk bump and park the conversation behind an approval card."""
         src = workflow_src()
-        self.assertIn('clarify_due = (not subtask and not _is_brainstorm(cap)\n'
+        self.assertIn('clarify_due = (not subtask and not _is_brainstorm(cap) and not self._fronted\n'
                       '                           and (not unattended or params.get("clarify")))', src)
         self.assertIn('classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))\n'
-                      '                            and not _is_brainstorm(cap))', src)
+                      '                            and not _is_brainstorm(cap) and not self._fronted)', src)
 
     def test_a_follow_up_never_re_classifies_out_of_the_mode(self):
         """A bound session has no redirect available, so an up-classify on turn 4 ("so we'd just

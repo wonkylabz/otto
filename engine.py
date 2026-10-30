@@ -401,7 +401,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             # contract forbids. See contracts._resume_contract.
             _resume_contract(audience),
             _output_contract(audience) if audience else None,
-            contracts._FRONTMAN_DELEGATE if frontman else None,
+            contracts.frontman_note(audience) if frontman else None,
             # A resumed turn re-uses the session's ORIGINAL system prompt, so the worker
             # contract's wrong-branch clause is not in scope for this message. When the restored
             # tree contradicts the follow-up, this note is the only thing carrying that
@@ -440,7 +440,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         if not (repo and cwd):
             workspace.refresh_repos()
         sysctx = "\n\n".join(
-            filter(None, [_output_contract(audience), contracts._FRONTMAN_DELEGATE if frontman else None,
+            filter(None, [_output_contract(audience), contracts.frontman_note(audience) if frontman else None,
                           _approved_plan_note(approved_plan),
                           _grounding_note(grounding),
                           # "A human approved this" is false on the fast lane, and invites the

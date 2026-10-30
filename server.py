@@ -186,6 +186,26 @@ async def _wf_state(wid):
             "times": st.get("times") or {}, "attempt": st.get("attempt")}
 
 
+def _web_fronted(cap_name):
+    """Is a web chat on this cap fronted (`web_frontman`)? Read per request: a runtime knob."""
+    return bool(config.setting("web_frontman")) and cap_name == config.WEB_FRONTMAN_CAP
+
+
+def _front_web_chat(params):
+    """Hand an UNPINNED plain web submit to the frontman. A pin, a repo or plan mode asked for
+    the full pipeline by name, so those keep it."""
+    if (params.get("cap") or params.get("repo") or params.get("plan_mode")
+            or not _web_fronted(config.WEB_FRONTMAN_CAP)):
+        return
+    cap = next((c for c in CAPS if c.name == config.WEB_FRONTMAN_CAP), None)
+    if cap is None:
+        return
+    params["cap"], params["frontman"] = cap.ref(), True
+    # The fast lane is judged on the asker's OWN words, never on the frontman's task text.
+    if params.get("trusted_asker"):
+        params["asker_text"] = params["request"]
+
+
 def _gate_state(st):
     """`OttoWorkflow.status` at a gate, in the shape the chat's gate card reads."""
     # NOTE: this is a WHITELIST, not a passthrough — a field added to OttoWorkflow.status is
@@ -2120,6 +2140,7 @@ class Handler(BaseHTTPRequestHandler):
         # follow-up — the workflow ignores it under repo-mode).
         if body.get("plan_mode"):
             params["plan_mode"] = True
+        _front_web_chat(params)
         wid = "web-" + uuid.uuid4().hex
         tc.run(_wf_start(wid, params))
         self._send(200, json.dumps({"id": wid}))
@@ -2141,7 +2162,10 @@ class Handler(BaseHTTPRequestHandler):
         # Brainstorm never hands off: a blocking classifier call ahead of every turn of a
         # conversation is the latency the mode exists to avoid, and its replies offer
         # directions, which is exactly what reads as "delegate this" to the classifier.
-        if prev and not body.get("no_handoff") and cap.name != config.BRAINSTORM_CAP:
+        # A fronted chat never hands off either: the frontman delegates by declaring it.
+        fronted = _web_fronted(cap.name)
+        if (prev and not body.get("no_handoff") and cap.name != config.BRAINSTORM_CAP
+                and not fronted):
             task = engine.followup_handoff(body["message"], prev, cap)
             if task:
                 self._send(200, json.dumps({"handoff": {"request": task}}))
@@ -2149,6 +2173,10 @@ class Handler(BaseHTTPRequestHandler):
         trusted_cap = cap.ref()
         params = {"request": body["message"], "resume": body["session_id"],
                   "cap": trusted_cap}
+        if fronted:
+            params["frontman"] = True
+            if self.headers.get("Origin"):
+                params["trusted_asker"], params["asker_text"] = True, body["message"]
         # Same composer toggle as /api/submit: a follow-up can be re-classified from
         # read to write (classify_followup) and hit the gate, so pre-authorization has
         # to travel with the follow-up too or the toggle reads as broken on turn 2.

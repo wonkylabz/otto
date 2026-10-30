@@ -11676,6 +11676,67 @@ class StreamingDraftTests(unittest.TestCase):
 
 
 
+class WebChatFrontmanTests(unittest.TestCase):
+    """`web_frontman`: an unpinned web chat is fronted by the assistant, which answers in one turn
+    and DELEGATES work; anything that named the full pipeline keeps it."""
+
+    def setUp(self):
+        self.cap = registry.Capability("custom", config.WEB_FRONTMAN_CAP, "answers")
+        self.cap.risk = "read"
+
+    def _front(self, params, on=True):
+        with mock.patch.object(server, "CAPS", [self.cap]), \
+                mock.patch.object(config, "setting", lambda n, *a: on if n == "web_frontman" else None):
+            server._front_web_chat(params)
+        return params
+
+    def test_an_unpinned_submit_is_fronted_with_the_askers_own_words(self):
+        p = self._front({"request": "why is X slow?", "trusted_asker": True})
+        self.assertTrue(p["frontman"])
+        self.assertEqual(p["cap"]["name"], config.WEB_FRONTMAN_CAP)
+        self.assertEqual(p["asker_text"], "why is X slow?")
+
+    def test_off_a_pin_a_repo_or_plan_mode_keep_the_full_pipeline(self):
+        for params, on in (({"request": "q"}, False),
+                           ({"request": "q", "cap": {"name": "worker"}}, True),
+                           ({"request": "q", "repo": "otto"}, True),
+                           ({"request": "q", "plan_mode": True}, True)):
+            self.assertNotIn("frontman", self._front(dict(params), on), params)
+
+    def test_an_untrusted_submit_carries_no_asker_text(self):
+        self.assertNotIn("asker_text", self._front({"request": "q", "trusted_asker": False}))
+
+    def test_a_fronted_follow_up_skips_the_handoff_and_stays_fronted(self):
+        asked, started = [], []
+
+        async def _noop():
+            return None
+        h = object.__new__(server.Handler)
+        h._send = lambda code, body: None
+        h.headers = {"Origin": "http://localhost"}
+        with mock.patch.object(server, "CAPS", [self.cap]), \
+                mock.patch.object(config, "setting", lambda n, *a: n == "web_frontman"), \
+                mock.patch.object(server.engine, "followup_handoff",
+                                  lambda *a: asked.append(1) or "do X"), \
+                mock.patch.object(server, "_wf_start",
+                                  lambda wid, p: started.append(p) or _noop()), \
+                mock.patch.object(server.tc, "run", lambda c: c.close()):
+            h._post_continue({"cap": {"name": self.cap.name}, "message": "and Y?",
+                              "prev": "X is slow because", "session_id": "s1"})
+        self.assertEqual(asked, [])
+        self.assertTrue(started[0]["frontman"])
+        self.assertEqual(started[0]["asker_text"], "and Y?")
+
+    def test_the_web_hand_off_rule_never_offers_slack_silence(self):
+        import contracts
+        self.assertIs(contracts.frontman_note(contracts.CONVERSATION_AUDIENCE),
+                      contracts._FRONTMAN_DELEGATE)
+        web = contracts.frontman_note(None)
+        self.assertIn(contracts.DELEGATE_PREFIX, web)
+        self.assertNotIn("Slack", web)
+        self.assertNotIn("say nothing", web)
+
+
 class BrainstormHandoffSkipTests(unittest.TestCase):
     def test_brainstorm_follow_up_skips_the_handoff_classifier(self):
         """The handoff is a blocking LLM call ahead of every follow-up; brainstorm never pays it."""

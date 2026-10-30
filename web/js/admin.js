@@ -154,6 +154,7 @@ const SETTING_HELP={
   cap_local_latch_ttl_s:["Local-model latch — expiry (seconds)","How long the latch holds before that capability gets one probationary run on the model again."],
   effort:["Effort level","How hard the model thinks before answering. Applies to execution attempts and the approval-gate plan preview — not to the cheap judge/routing calls, where there are ~10 per run and a text verdict gains nothing. Higher reasons longer and costs more; default lets each backend decide. A chat can override it in the composer. Advisory on local models: an endpoint that doesn't implement reasoning effort accepts the value and ignores it."],
   thinking_display:["Thinking in transcripts","Asks the Claude CLI for thinking summaries on execution attempts and the plan preview, so the run debug drawer can show the model's reasoning (behind its \"show thinking\" toggle). Off sends nothing and the drawer says thinking isn't exposed. Uses a hidden CLI flag, so turn this off if a Claude Code release rejects it."],
+  web_frontman:["Fast chat","Web chat answers straight away, like Claude Code: the assistant replies in one turn, with no routing, clarify, plan preview or judge. Work that needs a change is handed off to a normal routed run, which still shows its plan and waits for your approval. A pinned /capability, a repo pick or plan mode takes the full path as before."],
   knowledge_inject_chars:["Knowledge per run — chars","A matching doc that fits goes in whole, else its matching passages."],
   attachment_max_mb:["Attachment max MB","Largest file a chat accepts."],
   attachment_max_count:["Attachments per message","Files per chat message."],
@@ -163,7 +164,7 @@ const SETTING_HELP={
    for the one knob you came for. Any key not named here still renders, under "Other" — a
    hardcoded list must never be able to silently drop a setting the server grew. */
 const SETTING_GROUPS=[
-  ["Routing",              ["route_confirmations"]],
+  ["Routing",              ["web_frontman","route_confirmations"]],
   ["Execution & fallback", ["effort","thinking_display","local_fallback","plan_mode","max_attempts","max_harness_retries","attachment_max_mb","attachment_max_count"]],
   ["Approval gate",        ["gate_timeout_h","max_plan_revisions","plan_comment"]],
   ["Swarm board",          ["board_retention_h"]],

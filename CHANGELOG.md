@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Fast chat** (Admin → Runtime settings → Routing, off by default). Web chat replies straight
+  away, like Claude Code: the assistant answers in one turn, with no routing, clarify, plan preview
+  or judge. Work that needs a change is handed off to a normal routed run, which still shows its
+  plan and waits for your approval. A pinned `/capability`, a repo pick or plan mode takes the full
+  path as before.
+
 ### Fixed
 
 - **A local-model Bash call that starts a background process (`cmd &`) returns at once** instead of blocking until the tool timeout, which then killed that process — a server started in one call is now still running in the next. Background jobs live for the rest of that run and are stopped when it ends. Output they write afterwards is read and dropped, so it can't fill memory or crash the process. A long result keeps its first and last lines, so a command's own final line isn't lost behind a server's startup logs. Output that isn't valid text no longer crashes the call.
