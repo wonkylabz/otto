@@ -11,6 +11,12 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fast chat asks what you mean again.** An ambiguous message ("what is this alert?") gets the
+  question box, as it does with Fast chat off, instead of a slow tool search that ends in "I can't
+  tell". The question is checked at the same time as the existing write check, so it adds no wait.
+
 ## [0.8.7] - 2026-10-30
 
 ### Added
