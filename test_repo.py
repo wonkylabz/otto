@@ -2501,6 +2501,15 @@ class WorkstreamTests(unittest.TestCase):
         chats.delete("c")
         self.assertEqual(workstreams.list_all(), [])
 
+    def test_a_busy_ingress_cannot_evict_another_origins_workstream_history(self):
+        with mock.patch.object(chats, "MAX_WORKSTREAM_CHATS", 2):
+            chats.append_run("a", f"do {self.ISSUE}", "ok")
+            chats.append_run("b", f"redo {self.ISSUE}", "ok")
+            for i in range(5):
+                chats.append_run(f"s{i}", f"{self.ISSUE} again?", "ok", labels=["slack"])
+            self.assertIsNotNone(chats.get("a"), "a Slack flood evicted a person's workstream chat")
+            self.assertIsNone(chats.get("s0"), "the ingress's own workstream pool is unbounded")
+
 
 class AuditRedactionTests(unittest.TestCase):
     """#6: the trail is immutable, so every value is `privacy.redact`ed as it is written —

@@ -40,9 +40,10 @@ def _pool(labels, title, workstream=None):
     """None for a person's chat, else the key of the ingress pool it is trimmed in. A filed chat
     is trimmed with its workstream's peers: an ingress pool would evict the history a workstream
     exists to keep, and a person's pool would lose a slot to every run it groups."""
-    if workstream:
-        return ("workstream", "")
     ingress = [x for x in (labels or []) if x not in HUMAN_LABELS]
+    if workstream:
+        # Per ORIGIN: a shared pool let one busy ingress evict every other workstream's history.
+        return ("workstream", ingress[0] if ingress else "")
     if not ingress:
         return None
     return (ingress[0], title if ingress[0] in _PER_TITLE else "")
@@ -276,11 +277,12 @@ def _trim_chats(conn):
     within the unpinned group it is allowed to touch. Ingress threads (`_pool`) are
     capped in pools of their own, so they never evict a person's conversations or each other."""
     kept, stale = {}, []
-    caps = {None: MAX_CHATS, ("workstream", ""): MAX_WORKSTREAM_CHATS}
     for r in conn.execute("SELECT id, title, labels, workstream_id FROM chats WHERE pinned = 0 "
                           "ORDER BY updated DESC, seq DESC"):
         pool = _pool(_decode(r["labels"]), r["title"], r["workstream_id"])
-        if kept.get(pool, 0) < caps.get(pool, MAX_RUN_CHATS):
+        cap = (MAX_CHATS if pool is None else
+               MAX_WORKSTREAM_CHATS if pool[0] == "workstream" else MAX_RUN_CHATS)
+        if kept.get(pool, 0) < cap:
             kept[pool] = kept.get(pool, 0) + 1
         else:
             stale.append(r["id"])
