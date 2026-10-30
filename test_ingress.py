@@ -7592,6 +7592,73 @@ class RenderMdListTests(unittest.TestCase):
         self.assertIn('`<ol start="${+m[1]}">`', src)
 
 
+class MobileLayoutTests(unittest.TestCase):
+    """The phone layout is one stylesheet behind one breakpoint, plus a little JS that has to
+    agree with it. Each guard below is a regression that would ship silently: desktop restyled
+    by a stray rule, a More button that navigates to Chat, a phone overwriting desktop's
+    stored preferences."""
+
+    WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+
+    def _read(self, *parts):
+        with open(os.path.join(self.WEB, *parts), encoding="utf-8") as f:
+            return f.read()
+
+    def _top_level(self, css):
+        """(prelude, body) for each top-level statement, comments stripped."""
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        out, depth, start = [], 0, 0
+        for i, ch in enumerate(css):
+            if ch == "{":
+                if depth == 0:
+                    head = css[start:i].strip()
+                    body_start = i + 1
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    out.append((head, css[body_start:i]))
+                    start = i + 1
+        return out
+
+    def test_phone_rules_stay_inside_the_breakpoint(self):
+        """Outside the media query the only rule allowed is hiding the phone-only More button."""
+        stray = [h for h, body in self._top_level(self._read("css", "mobile.css"))
+                 if not h.startswith("@media (max-width:")
+                 and not (h == ".tabmore" and body.strip() == "display: none;")]
+        self.assertEqual([], stray, "mobile.css restyles desktop outside its breakpoint")
+
+    def test_js_breakpoint_matches_the_stylesheet(self):
+        css = self._read("css", "mobile.css")
+        js = self._read("js", "chat.js")
+        m = re.search(r"isNarrow=\(\)=>window\.matchMedia\(\"\(max-width: (\d+)px\)\"\)", js)
+        self.assertIsNotNone(m, "chat.js has no isNarrow() breakpoint")
+        self.assertIn(f"@media (max-width: {m.group(1)}px)", css,
+                      "isNarrow() and mobile.css disagree on what a phone is")
+
+    def test_more_button_is_not_a_tab(self):
+        """tabs.js binds every `.tab` to activateTab(dataset.view); More has no view, so as a
+        `.tab` it would fall back to Chat on every tap."""
+        html = self._read("index.html")
+        m = re.search(r'<button class="([^"]*)" id="tab-more"', html)
+        self.assertIsNotNone(m, "no More button in the tab bar")
+        self.assertNotIn("tab", m.group(1).split())
+        self.assertIn('document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",'
+                      '()=>activateTab(t.dataset.view)));', self._read("js", "tabs.js"))
+
+    def test_phone_toggles_never_persist(self):
+        """The chat list and run options are forced collapsed on a phone; storing that would
+        collapse them on the desktop sharing the browser profile."""
+        js = self._read("js", "chat.js")
+        for fn in ("applyHistCollapsed", "applyOptCollapsed"):
+            calls = re.findall(fn + r"\((.*)\);", js)
+            self.assertTrue(calls, f"no {fn} calls found")
+            for args in calls:
+                persist = args.rsplit(",", 1)[1].strip() if "," in args else "true (default)"
+                self.assertTrue(persist == "false" or "!isNarrow()" in persist,
+                                f"{fn}({args}) can persist a phone-forced state")
+
+
 class UiAssetLayoutTests(unittest.TestCase):
     """The UI was ONE 558 KB / 8,197-line file: ~139k tokens to read, i.e. most of a context
     window spent before any edit, growing ~4 KB/day. It is now `web/index.html` (a tag list)

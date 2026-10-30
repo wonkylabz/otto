@@ -90,9 +90,9 @@
   .h3btns button, .addbtn { min-height: 36px; }
 
   /* Nested sections keep their indent rule but spend less width on it; header buttons slimmer */
-  :root { --indent-sub: 10px; }
+  :root { --indent-sub: 12px; }
   /* Section header actions: only on an OPEN section, and compact */
-  .asection.coll.collapsed > h3 > :not(.secttoggle) { display: none; }
+  .asection.coll.collapsed > h3 > :not(.secttoggle, .sectcount) { display: none; }
   .asection h3 .addbtn, .asection h3 .h3btns button, .asection h3 > button { min-height: 32px; padding: 4px 10px; font-size: 12.5px; }
   .sharegrid { grid-template-columns: 1fr 1fr; }
   .sharegrid .sharelbl, .sharegrid .bundlemsg { grid-column: 1 / -1; }

@@ -25,6 +25,7 @@ const tabsNav=document.querySelector(".tabs"), moreBtn=document.getElementById("
 function setMore(on){ tabsNav.classList.toggle("moreopen",on); moreBtn.setAttribute("aria-expanded",on?"true":"false"); }
 moreBtn.addEventListener("click",()=>setMore(!tabsNav.classList.contains("moreopen")));
 tabsNav.addEventListener("click",e=>{ if(e.target===tabsNav || e.target.closest(".tab")) setMore(false); });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape" && tabsNav.classList.contains("moreopen")) setMore(false); });
 
 /* ---- deep link (#run=<wid>) ----
    Where a push notification's tap lands (delivery.notify sets click=<url>#run=<wid>). Without
