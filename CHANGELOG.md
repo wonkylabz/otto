@@ -11,6 +11,12 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **A run no longer waits on `git fetch`.** Runs that aren't working in a repo used to fetch every
+  registered repo before answering, which cost the first run in each 15-minute window ~13s. The
+  fetch now runs in the background, so a reply may read refs up to one window older.
+
 ## [0.8.7] - 2026-10-30
 
 ### Added

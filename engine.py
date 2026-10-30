@@ -438,14 +438,14 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         # _SINGLE_TURN_CONTRACT — `_REPORT_FORMAT`, or `_DIRECT_REPLY_FORMAT` when the result is
         # posted verbatim to a person (audience="slack").
         #
-        # Refresh the registered checkouts' remote refs FIRST, so `_repo_source_note`'s instruction
-        # to trust `origin/HEAD` over the working tree is actually pointing at current data — in a
+        # Refresh the registered checkouts' remote refs, so `_repo_source_note`'s instruction
+        # to trust `origin/HEAD` over the working tree is pointing at near-current data — in a
         # stale clone `origin/HEAD` lies just as confidently as the tree does. Only where that note
         # applies (a run that will CHOOSE a repo to read; repo-mode is already pinned to a
-        # provisioned clone), and skipped once the window says the refs are fresh, so the common
-        # case costs nothing. Never fatal — see `workspace.refresh_repos`.
+        # provisioned clone), and skipped once the window says the refs are fresh. In the
+        # BACKGROUND: the answer never waits on it, so the refs it reads may be one window older.
         if not (repo and cwd):
-            workspace.refresh_repos()
+            workspace.refresh_repos_async()
         sysctx = "\n\n".join(
             filter(None, [_output_contract(audience), contracts.frontman_note(audience) if frontman else None,
                           _approved_plan_note(approved_plan),

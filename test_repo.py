@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 import api_auth
@@ -1219,6 +1220,31 @@ class WorkspaceTests(unittest.TestCase):
         open(os.path.join(checkout, ".git", "FETCH_HEAD"), "a").close()   # fetched just now
         self.assertEqual(self.ws.refresh_repos(), [])
         self.assertEqual(self.ws.refresh_repos(max_age_s=0), [])          # 0 disables entirely
+
+    def test_the_run_path_refresh_never_waits_and_never_doubles(self):
+        """A fetch of every registered repo cost a run 13s before its answer (web-0d69adf3).
+        A caller that NEEDS current refs (the in-place-edit baseline) still waits for it."""
+        started, release = threading.Event(), threading.Event()
+
+        def slow(window):
+            started.set()
+            release.wait(10)
+            return ["src"]
+        with mock.patch.object(self.ws, "_refresh_locked", side_effect=slow) as body:
+            t0 = time.monotonic()
+            t = self.ws.refresh_repos_async()
+            self.assertLess(time.monotonic() - t0, 0.5, "the caller waited on the fetch")
+            self.assertTrue(started.wait(5))
+            self.assertIsNone(self.ws.refresh_repos_async(), "a second fetch started alongside")
+            waiter = threading.Thread(target=self.ws.refresh_repos)
+            waiter.start()
+            waiter.join(0.3)
+            self.assertTrue(waiter.is_alive(), "a synchronous caller raced the running fetch")
+            release.set()
+            t.join(5)
+            waiter.join(5)
+            self.assertFalse(waiter.is_alive())
+            self.assertEqual(body.call_count, 2)
 
     def test_refresh_repos_is_never_fatal(self):
         """Offline / auth-prompting / black-holed remote must degrade to the old staleness, not

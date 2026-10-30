@@ -11292,6 +11292,17 @@ class FastLaneGrantTests(unittest.TestCase):
         self.assertTrue(out["is_error"])
         self.assertEqual(out["result"], engine.CODEX_SESSION_TOOLLESS)
 
+    def test_a_run_never_waits_on_the_repo_refresh(self):
+        """web-0d69adf3 paid a 13s fetch of every registered repo before its answer."""
+        self._claude_backend()
+        release = threading.Event()
+        workspace.refresh_repos = lambda *a, **k: release.wait(10)
+        self.addCleanup(release.set)
+        t0 = time.monotonic()
+        engine.run_attempt("what is this alert?", self.cap, wid="w-rr")
+        self.assertLess(time.monotonic() - t0, 2, "the answer waited on a git fetch")
+        self.assertEqual(len(self.calls), 1)
+
     def test_a_normal_run_is_unchanged(self):
         self._claude_backend()
         engine.run_attempt("do the thing", self.cap, wid="w-n")

@@ -10,11 +10,13 @@ repo is cloned from its LOCAL path (fast, offline), but its `origin` is repointe
 path's real `origin` remote so the push + PR land on the actual host (e.g. GitHub). Each run
 gets its own workspace keyed on the workflow id, so concurrent swarm sub-tasks never collide.
 """
+import contextvars
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 
 import config
@@ -153,10 +155,32 @@ def refresh_repos(max_age_s=None):
     strictly better than failing a run over a fetch. Bounded by `FETCH_TIMEOUT_S` per repo so a
     black-holed remote can't stall the ladder.
 
-    Returns the names actually refreshed (for tracing/tests)."""
+    Returns the names actually refreshed (for tracing/tests). Single-flight: a caller that needs
+    the refs current (the in-place-edit baseline) waits for a fetch already running, then finds
+    them fresh."""
     window = REPO_FETCH_AGE_S if max_age_s is None else max_age_s
     if window <= 0:
         return []
+    with _REFRESH_LOCK:
+        return _refresh_locked(window)
+
+
+def refresh_repos_async():
+    """`refresh_repos` on a daemon thread, never waited on: a run's ANSWER must not pay a fetch
+    of every registered repo (13s, web-0d69adf3). The refs it reads may be one window older;
+    the next run sees them fresh. Returns the thread, or None when one is already running."""
+    if _REFRESH_LOCK.locked():
+        return None
+    t = threading.Thread(target=contextvars.copy_context().run, args=(refresh_repos,),
+                         daemon=True, name="otto-repo-refresh")
+    t.start()
+    return t
+
+
+_REFRESH_LOCK = threading.Lock()
+
+
+def _refresh_locked(window):
     done = []
     for r in git_repos():
         age = _last_fetch_age_s(r["path"])
