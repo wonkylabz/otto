@@ -7686,7 +7686,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # its own ratchet with no seam left, so new rules arrive as new files, tagged here.
     # -> 14_797 for mobile.css (phone-width rules, a new file for the same reason), the
     # bottom bar's More button and `viewport-fit=cover` for the safe-area insets.
-    INDEX_MAX = 14_797
+    # -> 14_840 for workstreams.js: the board's workstream chip, filter and timeline live in
+    # their own script rather than growing board.js.
+    INDEX_MAX = 14_840
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:

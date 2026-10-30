@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Workstreams.** Chats that link the same GitHub issue/PR or Jira ticket are grouped
+  automatically, and any chat can be filed by hand from its Swarm card (**+ Workstream**). A card's
+  workstream chip filters the board to it; **Timeline** shows every chat in it, oldest first,
+  including runs the board has stopped showing. Nothing to configure; existing chats join as they
+  are next written.
+
 ### Fixed
 
 - **Fast chat asks what you mean again.** An ambiguous message ("what is this alert?") gets the

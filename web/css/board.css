@@ -48,3 +48,14 @@
   .bcard, .bcard.fresh, .bcard.t-wait.fresh { animation: none; transition: none; }
   .bcard:hover { transform: none; }
 }
+
+/* Workstreams: the board's filter bar and the timeline modal (workstreams.js). */
+.bchip.ws{color:var(--accent);text-decoration:none;cursor:pointer;max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wsbar{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:6px 10px;border:1px solid var(--line);border-radius:8px}
+.wsbar span{flex:1}
+.hlabel.hws{max-width:10em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wsrefs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}
+.wslist{list-style:none;margin:0;padding:0;border-left:2px solid var(--line)}
+.wsitem{padding:8px 0 12px 14px}
+.wshead{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.wsprs,.wsacts{display:flex;gap:12px;margin-top:4px;font-size:12.5px}
