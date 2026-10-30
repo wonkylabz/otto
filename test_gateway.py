@@ -1002,6 +1002,16 @@ class LocalRuntimeTests(unittest.TestCase):
             os.kill(n, signal.SIGKILL)
             self.fail("the run ended and left its background job running")
 
+    def test_reaping_never_kills_a_group_whose_number_was_reused(self):
+        """A recorded group that ended frees its number; a newcomer leading a group under it
+        is alive as a PROCESS, which ours (the waited-on shell) never is."""
+        other = subprocess.Popen(["sleep", "600"], start_new_session=True)
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        local_runtime._reap([other.pid])
+        with self.assertRaises(subprocess.TimeoutExpired, msg="the reap killed a group it never started"):
+            other.wait(timeout=0.5)
+
     def test_tool_loop_executes_and_feeds_back(self):
         with open(os.path.join(self.tmp, "notes.txt"), "w") as f:
             f.write("hello local\n")

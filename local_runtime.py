@@ -398,9 +398,26 @@ def _drained(sink):
     return out.decode(errors="replace")
 
 
+def _group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def _reap(pgids):
-    """Kill what this run's Bash calls left running. Their own session each, so nothing else."""
+    """Kill what this run's Bash calls left running. POSIX never reuses a group's id while the
+    group lives, and its leader (the shell) was already waited on — so a live PROCESS holding
+    the number means the group ended and the number was reused: never ours to kill."""
     for pgid in pgids or ():
+        try:
+            os.getsid(pgid)
+            continue
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            continue
         try:
             os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
@@ -436,8 +453,6 @@ def _t_bash(args, cwd, mode=None):
         proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True, env=env)
-        if _JOBS.get() is not None:
-            _JOBS.get().append(proc.pid)        # start_new_session: its pid IS its pgid
         sinks = [_drain(proc.stdout), _drain(proc.stderr)]
         try:
             proc.wait(timeout=config.LOCAL_TOOL_TIMEOUT_S)
@@ -445,6 +460,8 @@ def _t_bash(args, cwd, mode=None):
             claude_cli.kill_tree(proc)
             proc.wait()
             raise                       # the caller turns this into the tool's error text
+        if _JOBS.get() is not None and _group_alive(proc.pid):
+            _JOBS.get().append(proc.pid)        # start_new_session: its pid IS its pgid
         stdout, stderr = (_drained(s) for s in sinks)
         out = (stdout or "") + (("\n" + stderr) if stderr else "")
         out = out.strip() or "(no output)"
