@@ -20,6 +20,11 @@ changelog that restates it is a second copy of `git log`.
   path as before. A message that asks for a change skips the quick answer and goes straight to the
   approval path, and a quick answer that dies on a local model is retried once on Claude.
 
+### Security
+
+- A resumed Codex session can no longer run a turn meant to have no tools with Codex's shell. The
+  "never on Codex" check for that kind of turn now runs after a resume picks its backend.
+
 ### Fixed
 
 - **A local-model Bash call that starts a background process (`cmd &`) returns at once** instead of blocking until the tool timeout, which then killed that process — a server started in one call is now still running in the next. Background jobs live for the rest of that run and are stopped when it ends. Output they write afterwards is read and dropped, so it can't fill memory or crash the process. A long result keeps its first and last lines, so a command's own final line isn't lost behind a server's startup logs. Output that isn't valid text no longer crashes the call.

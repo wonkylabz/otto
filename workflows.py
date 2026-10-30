@@ -1520,7 +1520,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         """The resumed turn's one attempt, or the hand-off its write-intent guard decided."""
         if self._front_handoff:
             # The raw follow-up ("yes, go ahead") is no task; the session knows what it means.
-            # `fast_lane: []` is a grant of NO tools, so this turn cannot act on it either.
+            # `fast_lane: []` is a grant of NO tools (engine keeps such a turn off Codex's shell).
             out = await workflow.execute_activity(
                 run_capability,
                 {"request": request + contracts.HANDOFF_ASK, "name": cap["name"],
@@ -1529,9 +1529,13 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                  "fast_lane": [], "frontman": self._frontman, "approved_plan": self._plan},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
-            if not contracts.parse_delegation(out.get("result"))[1]:
+            # An errored turn keeps its error: "please restate" would hide a wall the person
+            # would only hit again.
+            if not out.get("is_error") and not contracts.parse_delegation(out.get("result"))[1]:
                 out = {**out, "result": contracts.HANDOFF_UNRESOLVED}
-            return out
+            # The fast lane is judged on the asker's words, and "yes, go ahead" says nothing
+            # about the task this turn wrote: that child is always gated.
+            return {**out, "force_gate": True}
         return await workflow.execute_activity(
             run_capability, {"request": request, "name": cap["name"], "resume": resume,
                              "wid": workflow.info().workflow_id,

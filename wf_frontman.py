@@ -66,7 +66,7 @@ class FrontmanMixin:
                  # The fast lane follows the ASKER, decided by the Slack ingress (issue #193), and is
                  # judged on the asker's OWN words: this task text is the model's, written after
                  # reading whatever it read, so an injected DELEGATE never picks its own lane.
-                 "trusted_asker": bool(params.get("trusted_asker")),
+                 "trusted_asker": bool(params.get("trusted_asker")) and not out.get("force_gate"),
                  "asker_text": params.get("asker_text"),
                  "approval": params.get("approval", "ask"),
                  # The gate notice is the ONE thing the child posts: it arms the conversation so

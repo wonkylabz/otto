@@ -297,17 +297,6 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         trace("RUN", f"{wid} {cap.name} {why} — running on Claude")
     else:
         fb_forced = None
-    # A FAST-LANE run never goes to Codex: its guard there is a sandbox with a whole shell in it,
-    # and it grants no MCP — so the one grant this run has would be the one thing it lacked. The
-    # workflow refuses the lane for a codex pick up front; this is the backstop.
-    if fast_lane is not None and use_codex:
-        why = "a fast-lane run is granted MCP tools only, and the codex backend has a shell and no MCP"
-        if not config.setting("local_fallback"):
-            return _strict_stop_attempt(
-                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why), time.monotonic())
-        use_codex = False
-        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
-        trace("RUN", f"{wid} {why} — running on Claude")
     # THIS CAPABILITY HAS ALREADY PROVED IT CANNOT DO THE WORK ON THIS MODEL. Within one run the
     # ladder self-corrects (issue #172 re-dispatches the rest of it to Claude), but nothing
     # remembered that across runs, so every new run re-litigated the same doomed first attempt:
@@ -363,6 +352,19 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         # errored → a needless needs-human). A WORKING-but-weak local model never trips this and
         # still runs the whole ladder locally (the cost opt-out is preserved).
         use_local = use_codex = False
+
+    # A FAST-LANE run never goes to Codex: its guard there is a sandbox with a whole shell in it,
+    # and it grants no MCP — so the one grant this run has would be the one thing it lacked. The
+    # workflow refuses the lane for a codex pick up front; this is the backstop. Checked AFTER a
+    # resume picks its session's backend, or a resumed Codex session got its whole shell back.
+    if fast_lane is not None and use_codex:
+        why = "a fast-lane run is granted MCP tools only, and the codex backend has a shell and no MCP"
+        if not config.setting("local_fallback"):
+            return _strict_stop_attempt(
+                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why), time.monotonic())
+        use_codex = False
+        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
+        trace("RUN", f"{wid} {why} — running on Claude")
 
     # EVERY local->Claude switch above has to move the MODEL with the backend, not just the
     # dispatch. A per-chat override outranks escalation/downshift/cap_exec below — and unlike

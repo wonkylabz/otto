@@ -11275,6 +11275,22 @@ class FastLaneGrantTests(unittest.TestCase):
             self.assertIn(t, kw["disallowed_tools"], t)
         self.assertNotIn("ToolSearch", kw["disallowed_tools"], "deferred MCP schemas load through it")
 
+    def test_a_resumed_codex_session_never_runs_under_a_fast_lane_grant(self):
+        """The resume picks the SESSION's backend after the grant's Codex backstop ran, so an
+        empty grant (a fast-chat hand-off turn) handed a Codex session its whole shell back."""
+        import codex_cli
+        self._claude_backend()
+        ran = []
+        with mock.patch.object(local_runtime, "session_backend", lambda sid: "codex"), \
+                mock.patch.object(local_runtime, "resume_entry", lambda sid: {
+                    "name": "codex", "provider": "codex", "model": "gpt-5-codex"}), \
+                mock.patch.object(codex_cli, "run_json", lambda *a, **k: ran.append(k) or {}):
+            engine.run_attempt("yes, go ahead", self.cap, wid="w-cx", resume_session="cx-1",
+                               fast_lane=[])
+        self.assertEqual(ran, [], "the empty grant reached a backend with a shell")
+        self.assertEqual(self.calls[0]["allowed_tools"], [])
+        self.assertIn("Bash", self.calls[0]["disallowed_tools"])
+
     def test_a_normal_run_is_unchanged(self):
         self._claude_backend()
         engine.run_attempt("do the thing", self.cap, wid="w-n")
