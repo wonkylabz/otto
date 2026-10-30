@@ -8898,6 +8898,25 @@ class WorkflowReplayCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             hist = WorkflowHistory.from_json("replay-fixture", json.load(fh))
         await Replayer(workflows=[OttoWorkflow]).replay_workflow(hist)
 
+    async def test_a_fast_chat_turn_from_before_its_clarify_step_still_replays(self):
+        """Fast chat shipped without clarify; a turn in flight when it came back must not hit a
+        `clarify_request` its history never scheduled (`patched("fronted-clarify")`)."""
+        import json
+        from temporalio.client import WorkflowHistory
+        from temporalio.worker import Replayer
+        from workflows import OttoWorkflow
+        path = os.path.join(os.path.dirname(self.FIXTURE), "history-fast-chat-pre-clarify.json")
+        with open(path, encoding="utf-8") as fh:
+            events = json.load(fh)
+        order = [e["activityTaskScheduledEventAttributes"]["activityType"]["name"]
+                 for e in events["events"]
+                 if e["eventType"] == "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED"]
+        self.assertIn("run_capability", order)
+        self.assertNotIn("clarify_request", order, "not a pre-clarify fast-chat history")
+        # The recorded id: child ids (`<wid>-learn1`) are derived from it.
+        await Replayer(workflows=[OttoWorkflow]).replay_workflow(
+            WorkflowHistory.from_json("web-66b5d68a", events))
+
     def test_the_fixture_still_covers_the_loops_it_was_recorded_for(self):
         """A fixture that lost the post-PR half would replay green while proving nothing about
         the code this test exists to protect."""
@@ -9138,6 +9157,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
                                      answer="the disk one on staging")
         asked = [c for c in self.calls if c[:2] == ("assistant", True)]
         self.assertEqual(len(asked), 1)
+        self.assertEqual(sorted(self.pre_run), ["clarify", "intent", "intent"],
+                         "the write check must re-run on the clarified request")
         self.assertIn("(clarification)", self.frontman_requests[0])
 
     async def test_an_errored_web_chat_turn_gets_one_retry_off_local(self):
