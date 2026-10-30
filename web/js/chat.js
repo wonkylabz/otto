@@ -543,7 +543,7 @@ async function loadChatList(){
     if(e.target.closest("[data-delchat]")||e.target.closest("[data-pinchat]")||e.target.closest("[data-wstl]")||e.target.closest(".wssug")) return; openChat(d.dataset.chat);
   }));
   wireSuggestions(el, loadChatList);
-  el.querySelectorAll("[data-wstl]").forEach(x=>x.addEventListener("click",e=>{ e.stopPropagation(); openWorkstream(x.dataset.wstl, false); }));
+  el.querySelectorAll("[data-wstl]").forEach(x=>x.addEventListener("click",e=>{ e.stopPropagation(); openWorkstream(x.dataset.wstl); }));
   el.querySelectorAll("[data-pinchat]").forEach(b=>b.addEventListener("click",async e=>{
     e.stopPropagation();
     await postOr("/api/chats/pin",{id:b.dataset.pinchat, pinned:b.dataset.pinned!=="1"},"pinning that chat");
