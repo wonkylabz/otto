@@ -1244,7 +1244,10 @@ class WorkspaceTests(unittest.TestCase):
             t.join(5)
             waiter.join(5)
             self.assertFalse(waiter.is_alive())
-            self.assertEqual(body.call_count, 2)
+            self.assertEqual(body.call_count, 1,
+                             "the waiter re-ran the pass it waited for (a dead remote, twice)")
+            self.ws.refresh_repos()
+            self.assertEqual(body.call_count, 2, "a later caller must still get its own pass")
 
     def test_refresh_repos_is_never_fatal(self):
         """Offline / auth-prompting / black-holed remote must degrade to the old staleness, not

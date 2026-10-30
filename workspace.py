@@ -156,13 +156,19 @@ def refresh_repos(max_age_s=None):
     black-holed remote can't stall the ladder.
 
     Returns the names actually refreshed (for tracing/tests). Single-flight: a caller that needs
-    the refs current (the in-place-edit baseline) waits for a fetch already running, then finds
-    them fresh."""
+    the refs current (the in-place-edit baseline) waits for a pass already running and takes ITS
+    result — a failed fetch leaves no FETCH_HEAD, so re-running it would pay a dead remote twice."""
     window = REPO_FETCH_AGE_S if max_age_s is None else max_age_s
     if window <= 0:
         return []
+    seen = _REFRESH_GEN[0]
     with _REFRESH_LOCK:
-        return _refresh_locked(window)
+        if _REFRESH_GEN[0] != seen:
+            return []
+        try:
+            return _refresh_locked(window)
+        finally:
+            _REFRESH_GEN[0] += 1
 
 
 def refresh_repos_async():
@@ -178,6 +184,7 @@ def refresh_repos_async():
 
 
 _REFRESH_LOCK = threading.Lock()
+_REFRESH_GEN = [0]      # passes completed; bumped under the lock
 
 
 def _refresh_locked(window):
