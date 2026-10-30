@@ -9307,6 +9307,25 @@ class LocalExecShellConfinementTests(unittest.TestCase):
         self.assertEqual(out, "up")
         os.kill(n, 0)
 
+    def test_a_background_job_never_blocks_the_call_or_dies_writing_after_it(self):
+        """No sandbox needed (so CI runs it): the pipe-hold is the shell's, not bwrap's. A job
+        still writing after the call returned must neither get SIGPIPE nor be read by the call."""
+        pid = os.path.join(self.tmp, "bg2.pid")
+        cmd = (f"(sleep 1; for i in $(seq 200000); do echo chatter; done; sleep 600) & "
+               f"echo $! > {pid}; printf '\\xff ok'")
+        with mock.patch.object(config, "LOCAL_TOOL_TIMEOUT_S", 20):
+            t0 = time.monotonic()
+            out = local_runtime._t_bash({"command": cmd}, self.tmp, mode=None)
+            took = time.monotonic() - t0
+        with open(pid) as f:
+            n = int(f.read())
+        pgid = os.getpgid(n)                     # the shell's session, not the subshell's pid
+        self.addCleanup(lambda: os.killpg(pgid, signal.SIGKILL))
+        self.assertLess(took, 5, "the call waited on its background child")
+        self.assertEqual(out, "\ufffd ok", "undecodable bytes are replaced, never raised")
+        time.sleep(3)
+        os.kill(n, 0)   # survived ~1.2MB of writes after the call returned: no SIGPIPE
+
     @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
     def test_the_read_deny_set_is_masked_and_writes_still_land(self):
         secret = os.path.join(config.DATA_DIR, "canary-208.json")

@@ -38,6 +38,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -313,6 +314,36 @@ def _rule_text(rules):
     return ", ".join(" ".join(p) for p, _ in rules) or "(nothing)"
 
 
+_DRAIN_KEEP = _TOOL_OUT_CHARS * 4        # bytes: `_clip` keeps this many CHARS, utf-8 is <= 4
+_DRAIN_SETTLE_S, _DRAIN_SETTLE_MAX_S = 0.2, 2.0
+
+
+def _drain(stream):
+    """Read `stream` to EOF on a daemon thread, keeping the first `_DRAIN_KEEP` bytes."""
+    sink = {"buf": bytearray(), "cut": False, "thread": None}
+
+    def run():
+        with stream:
+            for chunk in iter(lambda: stream.read1(65536), b""):
+                room = _DRAIN_KEEP - len(sink["buf"])
+                sink["buf"] += chunk[:max(room, 0)]
+                sink["cut"] = sink["cut"] or len(chunk) > room
+    sink["thread"] = threading.Thread(target=run, daemon=True)
+    sink["thread"].start()
+    return sink
+
+
+def _drained(sink):
+    """What the shell wrote: EOF normally, else whatever settled once a background job kept the
+    pipe open (its later output is read and dropped)."""
+    deadline, seen = time.monotonic() + _DRAIN_SETTLE_MAX_S, -1
+    while sink["thread"].is_alive() and seen != len(sink["buf"]) and time.monotonic() < deadline:
+        seen = len(sink["buf"])
+        sink["thread"].join(_DRAIN_SETTLE_S)
+    text = bytes(sink["buf"]).decode(errors="replace")
+    return text + ("\n… (output truncated)" if sink["cut"] else "")
+
+
 def _t_bash(args, cwd, mode=None):
     """`mode` is "confined" for the execution shell, None only under `OTTO_LOCAL_ALLOW_UNGUARDED`,
     "sandbox" for a bwrap read-only one,
@@ -336,23 +367,20 @@ def _t_bash(args, cwd, mode=None):
     else:
         argv, use_shell_cwd = ["bash", "-lc", cmd], True
     try:
-        # Output goes to FILES and the call waits on the shell, not on EOF: a `cmd &` inherits a
-        # pipe and holds it open, so the call blocked until the timeout's group kill took it down.
-        # `subprocess.run(timeout=)` kills only its own process, hence own group + `kill_tree`.
-        with tempfile.TemporaryFile("w+", errors="replace") as fo, \
-                tempfile.TemporaryFile("w+", errors="replace") as fe:
-            proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
-                                    stdout=fo, stderr=fe,
-                                    start_new_session=True, env=env)
-            try:
-                proc.wait(timeout=config.LOCAL_TOOL_TIMEOUT_S)
-            except subprocess.TimeoutExpired:
-                claude_cli.kill_tree(proc)
-                proc.wait()
-                raise                   # the caller turns this into the tool's error text
-            fo.seek(0)
-            fe.seek(0)
-            stdout, stderr = fo.read(), fe.read()
+        # The call waits on the SHELL, never on EOF: a `cmd &` inherits the pipes and holds them
+        # open. A thread per pipe keeps draining after the call returns, so that job never blocks
+        # it, never dies of SIGPIPE, and never fills a file nobody reads; only the head is kept.
+        proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True, env=env)
+        sinks = [_drain(proc.stdout), _drain(proc.stderr)]
+        try:
+            proc.wait(timeout=config.LOCAL_TOOL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            claude_cli.kill_tree(proc)
+            proc.wait()
+            raise                       # the caller turns this into the tool's error text
+        stdout, stderr = (_drained(s) for s in sinks)
         out = (stdout or "") + (("\n" + stderr) if stderr else "")
         out = out.strip() or "(no output)"
         if proc.returncode != 0:
