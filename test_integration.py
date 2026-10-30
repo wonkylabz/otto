@@ -8941,7 +8941,9 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         activities._caps = [front, writer]
         self.pre_run = []
         engine.clarify = lambda *a, **k: self.pre_run.append("clarify") or None
-        engine.request_write_intent = lambda *a, **k: self.pre_run.append("intent") or False
+        self.write_intent = False
+        engine.request_write_intent = lambda *a, **k: (self.pre_run.append("intent")
+                                                       or self.write_intent)
         # Memory distillation is a real model call — 5-22s against the live endpoint, racing the
         # ~10s wall-clock gate poll below, so the suite went red on the endpoint's latency.
         engine.distil_memory = lambda *a, **k: None
@@ -8958,10 +8960,11 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         engine.record_attempt = lambda *a, **k: self.audited.append((a[5], a[3]))
         engine.record_skip = lambda *a, **k: None
         self.classified = []
-        engine.followup_write_intent = lambda *a, **k: self.classified.append(a) or False
+        engine.followup_write_intent = lambda *a, **k: (self.classified.append(a)
+                                                        or self.write_intent)
         self.calls = []
 
-        self.errors_left, self.local_off = 0, []
+        self.errors_left, self.local_off, self.err_backend = 0, [], "local"
 
         def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
             self.calls.append((cap.name, frontman, request[:40]))
@@ -8969,7 +8972,7 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
             if self.errors_left:
                 self.errors_left -= 1
                 return {"workflow": wid or "wf-fm", "result": "(timed out)", "is_error": True,
-                        "cost": 0.0, "model": "m", "attempt": 1}
+                        "cost": 0.0, "model": "m", "attempt": 1, "backend": self.err_backend}
             if "You handed this off" in request:
                 text = self.relay_says
             elif frontman:
@@ -9018,7 +9021,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         if web:
             # The web chat (server._front_web_chat): a person reading live, no reply_to.
             wid = "web-" + uuid.uuid4().hex[:8]
-            params = {"request": params["request"], "cap": params["cap"], "frontman": True}
+            params = {"request": params["request"], "frontman": True,
+                      "cap": {**params["cap"], "fronted": True}}
         if resume:
             params["resume"] = resume
         async with await _time_skipping_env() as env:
@@ -9092,16 +9096,17 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[2], self.relay_says, "the relay is its own attempt")
 
     async def test_a_web_chat_turn_answers_in_one_unjudged_attempt(self):
-        """The fast chat: no clarify, no write-intent call, no judge — the person is reading."""
+        """The fast chat: no clarify and no judge — the person is reading. The write-intent guard
+        stays: the assistant still holds Bash and inherited connectors."""
         wid, out = await self._drive("It's the events URL.", web=True)
         self.assertEqual(out["result"], "It's the events URL.")
-        self.assertEqual(self.pre_run, [])
+        self.assertEqual(self.pre_run, ["intent"])
         self.assertEqual(self.judged, [])
         self.assertIsNone(out.get("verified"))
         self.assertEqual([c[:2] for c in self.calls], [("assistant", True)])
 
     async def test_an_errored_web_chat_turn_gets_one_retry_off_local(self):
-        """The ladder's backstop for a turn that never answered, kept without the judge."""
+        """`ladder.fix_backstop`: a dead local attempt re-runs once on Claude, bounded."""
         self.errors_left = 1
         wid, out = await self._drive("It's the events URL.", web=True)
         self.assertEqual(out["result"], "It's the events URL.")
@@ -9110,6 +9115,28 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.calls, self.local_off = [], []
         wid, out = await self._drive("unused", web=True)
         self.assertEqual(len(self.calls), 2, "bounded at one retry")
+
+    async def test_a_dead_claude_web_chat_turn_is_not_re_run(self):
+        """Claude re-running Claude doubles a slow turn's wait for the same outcome."""
+        self.errors_left, self.err_backend = 1, "claude"
+        await self._drive("unused", web=True)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_a_write_shaped_web_turn_is_handed_off_without_running_the_frontman(self):
+        """The write-intent guard's WRITE never lets the frontman (Bash + connectors) act on it."""
+        self.write_intent = True
+        wid, out = await self._drive("unused", approve=True, web=True)
+        names = [c[0] for c in self.calls]
+        self.assertNotIn(("assistant", True), [c[:2] for c in self.calls])
+        self.assertIn("demo-write", names)
+        self.assertEqual(out["result"], self.relay_says)
+
+    async def test_a_write_shaped_web_follow_up_is_handed_off_too(self):
+        self.write_intent = True
+        wid, out = await self._drive("unused", approve=True, resume="sess-front", web=True)
+        self.assertEqual(len(self.classified), 1, "a fronted web follow-up keeps its guard")
+        self.assertIn("demo-write", [c[0] for c in self.calls])
+        self.assertNotIn(("assistant", True), [c[:2] for c in self.calls])
 
     async def test_a_web_chat_delegation_still_routes_gates_and_judges_its_child(self):
         wid, out = await self._drive("On it.\nDELEGATE: " + self.TASK, approve=True, web=True)

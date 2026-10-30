@@ -11684,16 +11684,17 @@ class WebChatFrontmanTests(unittest.TestCase):
         self.cap = registry.Capability("custom", config.WEB_FRONTMAN_CAP, "answers")
         self.cap.risk = "read"
 
-    def _front(self, params, on=True):
+    def _front(self, params, on=True, resubmit=False):
         with mock.patch.object(server, "CAPS", [self.cap]), \
                 mock.patch.object(config, "setting", lambda n, *a: on if n == "web_frontman" else None):
-            server._front_web_chat(params)
+            server._front_web_chat(params, resubmit)
         return params
 
     def test_an_unpinned_submit_is_fronted_with_the_askers_own_words(self):
         p = self._front({"request": "why is X slow?", "trusted_asker": True})
         self.assertTrue(p["frontman"])
         self.assertEqual(p["cap"]["name"], config.WEB_FRONTMAN_CAP)
+        self.assertTrue(p["cap"]["fronted"], "fronted rides on the session's cap")
         self.assertEqual(p["asker_text"], "why is X slow?")
 
     def test_off_a_pin_a_repo_or_plan_mode_keep_the_full_pipeline(self):
@@ -11703,10 +11704,16 @@ class WebChatFrontmanTests(unittest.TestCase):
                            ({"request": "q", "plan_mode": True}, True)):
             self.assertNotIn("frontman", self._front(dict(params), on), params)
 
+    def test_a_fronted_chats_rebind_resubmit_stays_fronted(self):
+        p = self._front({"request": "q", "cap": self.cap.ref()}, resubmit=True)
+        self.assertTrue(p["frontman"])
+        other = {"request": "q", "cap": {"name": "worker"}}
+        self.assertNotIn("frontman", self._front(other, resubmit=True))
+
     def test_an_untrusted_submit_carries_no_asker_text(self):
         self.assertNotIn("asker_text", self._front({"request": "q", "trusted_asker": False}))
 
-    def test_a_fronted_follow_up_skips_the_handoff_and_stays_fronted(self):
+    def _continue(self, cap_body):
         asked, started = [], []
 
         async def _noop():
@@ -11721,11 +11728,20 @@ class WebChatFrontmanTests(unittest.TestCase):
                 mock.patch.object(server, "_wf_start",
                                   lambda wid, p: started.append(p) or _noop()), \
                 mock.patch.object(server.tc, "run", lambda c: c.close()):
-            h._post_continue({"cap": {"name": self.cap.name}, "message": "and Y?",
+            h._post_continue({"cap": cap_body, "message": "and Y?",
                               "prev": "X is slow because", "session_id": "s1"})
+        return asked, started
+
+    def test_a_fronted_follow_up_skips_the_handoff_and_stays_fronted(self):
+        asked, started = self._continue({"name": self.cap.name, "fronted": True})
         self.assertEqual(asked, [])
         self.assertTrue(started[0]["frontman"])
+        self.assertTrue(started[0]["cap"]["fronted"], "turn 3 must still know it is fronted")
         self.assertEqual(started[0]["asker_text"], "and Y?")
+
+    def test_a_pinned_assistant_chat_is_never_fronted_on_its_follow_ups(self):
+        asked, started = self._continue({"name": self.cap.name})
+        self.assertEqual(asked, [1], "a deliberate /assistant chat keeps the handoff classifier")
 
     def test_the_web_hand_off_rule_never_offers_slack_silence(self):
         import contracts

@@ -1106,7 +1106,7 @@ async function continueTemporal(text, atts){
     showThinking(content,"Switching to "+out.rebind.model+"…");
     currentSession=null; updateSessionBar();   // NOT suppressCarry — the carry is the whole point
     let rid;
-    try { rid=(await api("/api/submit",{request:task+carryContextForSubmit(true), cap: sess.cap.name,
+    try { rid=(await api("/api/submit",{request:task+carryContextForSubmit(true), cap: sess.cap.name, frontman: sess.cap.fronted||undefined,
                                         repo: selectedRepo()||undefined, qa: selectedQA()||undefined,
                                         memory_enabled: selectedMemory(),
                                         auto_approve: selectedAutoApprove()||undefined,

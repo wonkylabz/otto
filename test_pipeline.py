@@ -4919,7 +4919,7 @@ class BrainstormModeTests(unittest.TestCase):
         self.assertIn('clarify_due = (not subtask and not _is_brainstorm(cap) and not self._fronted\n'
                       '                           and (not unattended or params.get("clarify")))', src)
         self.assertIn('classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))\n'
-                      '                            and not _is_brainstorm(cap) and not self._fronted)', src)
+                      '                            and not _is_brainstorm(cap))', src)
 
     def test_a_follow_up_never_re_classifies_out_of_the_mode(self):
         """A bound session has no redirect available, so an up-classify on turn 4 ("so we'd just

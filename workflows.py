@@ -113,6 +113,12 @@ def _verified_of(verdict):
     return verdict["passed"] if verdict else None
 
 
+def _handoff_out(wid, request):
+    """The fronted turn its write-intent guard handed off: `wf_frontman` delegates `handoff`."""
+    return {"workflow": wid, "result": "", "handoff": request, "session_id": None, "cost": 0,
+            "tokens": None, "model": None, "attempt": 1}
+
+
 def _abandon(handle):
     """Drop an overlapped activity's result. Never `cancel()`: a cancel racing the activity's
     own completion fails the workflow activation (ACTIVITY_UNKNOWN) and wedges the run. Its
@@ -167,6 +173,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._swarm = False        # True once this run fans out into a parallel sub-task swarm
         self._frontman = False     # a Slack frontman turn (wf_frontman): may delegate
         self._fronted = False      # an INTERACTIVE frontman turn (web chat): one unjudged attempt
+        self._front_handoff = False  # its write-intent guard said WRITE: delegate, never run it
         self._children = []        # [{id, cap, request, risk}] of the swarm's child workflows
         self._repo = None          # repo this run targets in an isolated workspace (issue #57/#59)
         self._git_run_id = None    # ORIGINAL run whose workspace path/branch a resume re-provisions
@@ -827,7 +834,8 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # ("so we'd just delete the QA loop then?") would bump the session to write and park
             # the conversation behind an approval card for work nobody asked to start. Asking for
             # the work itself is a NEW request in a normal chat, not a follow-up in this one.
-            frontman = bool(params.get("frontman")
+            # A FRONTED web turn keeps the guard: a person is present, and WRITE hands it off.
+            frontman = bool(params.get("frontman") and not self._fronted
                             and workflow.patched("frontman-no-followup-classify"))
             if (not _is_brainstorm(cap) and not frontman
                     and (cap["risk"] == "read" or downgradeable)):
@@ -835,7 +843,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                     classify_followup,
                     {"message": request, "name": cap["name"], "repo": repo},
                     start_to_close_timeout=timedelta(seconds=60), retry_policy=_RETRY)
-                if emergent.get("write") and cap["risk"] == "read":
+                if emergent.get("write") and self._fronted:
+                    self._front_handoff = True
+                elif emergent.get("write") and cap["risk"] == "read":
                     cap = {**cap, "risk": "write"}
                     self._cap = cap
                     self._risk_reason = (f"this follow-up asks for a write action, so the "
@@ -916,10 +926,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # reading (contracts._THINKING_PARTNER_FORMAT: "ending on a question is a complete
             # answer"). A separate clarify call ahead of it is a second LLM round-trip that
             # blocks the very first turn on a modal prompt — the opposite of what the mode is for.
-            # A fronted turn asks in-band too, and its writes leave only through a DELEGATE child,
-            # which runs both guards itself.
+            # A fronted turn asks in-band too; its write-intent guard still runs, and hands off.
             classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))
-                            and not _is_brainstorm(cap) and not self._fronted)
+                            and not _is_brainstorm(cap))
             clarify_due = (not subtask and not _is_brainstorm(cap) and not self._fronted
                            and (not unattended or params.get("clarify")))
             # The write-intent guard reads only the request, so it runs WHILE clarify does; a
@@ -973,7 +982,10 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                               # 180s like route_request: an assistant redirect adds a router call
                               # to the write-intent one (a timeout is not replayed — no patch needed).
                               start_to_close_timeout=timedelta(seconds=180), retry_policy=_RETRY))
-                if intent.get("write"):
+                if intent.get("write") and self._fronted:
+                    # Never run the frontman on it: the routed, gated child gets the request.
+                    self._front_handoff = True
+                elif intent.get("write"):
                     if intent.get("redirect") and not pinned:
                         # The general assistant only ANSWERS (its prompt forbids acting), so a
                         # risk bump alone would gate a run that then refuses the task — swap in
@@ -1173,32 +1185,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # "(no output)", and (session_id then empty) wedge the chat into repeating the same
             # doomed attempt on every future message.
             ws = resume_ws
-            out = await workflow.execute_activity(
-                run_capability, {"request": request, "name": cap["name"], "resume": resume,
-                                 "wid": workflow.info().workflow_id,
-                                 "cwd": ws["path"] if ws else None, "repo": repo,
-                                 "audience": self._audience, "approved_plan": self._plan,
-                                 # Where the restored tree still contradicts this follow-up
-                                 # (_resume_workspace's repair tier could not fix it). A resume
-                                 # sends the raw message, so the session's history holds the
-                                 # ORIGINAL system prompt — the worker contract's "if the code
-                                 # isn't here, say so and stop" clause is not in scope for this
-                                 # turn, and this note is what carries that instruction in-band.
-                                 "grounding": self._grounding,
-                                 # This TURN's risk, which is not always the registry's: a
-                                 # discussion follow-up in a write-bound session runs read-only
-                                 # (see the classify block above). The activity re-resolves the
-                                 # cap by name, so without this the downgrade would skip the gate
-                                 # and still hand out Edit/Write — the one combination that must
-                                 # never happen.
-                                 # Effort rides a resume too: it is a per-TURN flag, not a
-                                 # session binding the way the model is.
-                                 "risk": cap["risk"], "effort": self._effort,
-                                 "attachments": self._attachments,
-                                 "prior_attachments": self._prior_attachments,
-                                 "frontman": self._frontman},
-                start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
-                retry_policy=_RETRY_EXEC)
+            out = await self._resume_attempt(request, cap, resume, ws, repo)
             result = out["result"]
             if ws:
                 pr = await workflow.execute_activity(
@@ -1489,7 +1476,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # Opt-in clean-finish push (OTTO_NTFY_ON_COMPLETE; the activity drops it when off), and
         # UNATTENDED ONLY — see run-pipeline.md. Needs-human runs already pushed above; swarm
         # children stay quiet (one ping per task, not per sub-task).
-        if not self._needs_human and not subtask and unattended:
+        if not self._needs_human and not subtask and unattended and not params.get("quiet_done"):
             await self._notify(f"Otto finished: {cap['name']}",
                                cap=cap, repo=repo, reply_to=reply_to, unattended=unattended,
                                note=(f"PR: {pr['pr_url']}" if pr and pr.get("pr_url") else None),
@@ -1529,6 +1516,37 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         self._spent["output"] += (out.get("tokens") or {}).get("output", 0) or 0
         self._spent["cost"] += out.get("cost", 0) or 0
 
+    async def _resume_attempt(self, request, cap, resume, ws, repo):
+        """The resumed turn's one attempt, or the hand-off its write-intent guard decided."""
+        if self._front_handoff:
+            return {**_handoff_out(workflow.info().workflow_id, request), "session_id": resume}
+        return await workflow.execute_activity(
+            run_capability, {"request": request, "name": cap["name"], "resume": resume,
+                             "wid": workflow.info().workflow_id,
+                             "cwd": ws["path"] if ws else None, "repo": repo,
+                             "audience": self._audience, "approved_plan": self._plan,
+                             # Where the restored tree still contradicts this follow-up
+                             # (_resume_workspace's repair tier could not fix it). A resume
+                             # sends the raw message, so the session's history holds the
+                             # ORIGINAL system prompt — the worker contract's "if the code
+                             # isn't here, say so and stop" clause is not in scope for this
+                             # turn, and this note is what carries that instruction in-band.
+                             "grounding": self._grounding,
+                             # This TURN's risk, which is not always the registry's: a
+                             # discussion follow-up in a write-bound session runs read-only
+                             # (see the classify block above). The activity re-resolves the
+                             # cap by name, so without this the downgrade would skip the gate
+                             # and still hand out Edit/Write — the one combination that must
+                             # never happen.
+                             # Effort rides a resume too: it is a per-TURN flag, not a
+                             # session binding the way the model is.
+                             "risk": cap["risk"], "effort": self._effort,
+                             "attachments": self._attachments,
+                             "prior_attachments": self._prior_attachments,
+                             "frontman": self._frontman},
+            start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY_EXEC)
+
     async def _brainstorm_turn(self, request, cap, cwd, repo):
         """ONE unjudged attempt, for the brainstorm mode. The sibling of `_verify_ladder` with the
         ladder removed — same activity, same budget accounting, same audit row; no judge, no
@@ -1538,11 +1556,14 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         rung remains for its critique to steer, and here there is none — a kill would discard the
         only attempt and leave the user's message unanswered."""
         wid, attempt = workflow.info().workflow_id, 1
+        if self._front_handoff:
+            return _handoff_out(wid, request), attempt
         while True:
             out = await self._unjudged_attempt(request, cap, cwd, repo, wid, attempt)
-            # A fronted turn replaced the ladder, so it keeps the ladder's backstop for a turn that
-            # never answered: ONE more try, off local when fallback allows (a wall repeats).
-            if not (self._fronted and out.get("is_error") and attempt == 1):
+            # A fronted turn replaced the ladder, so it keeps the one-rung backstop the post-PR
+            # loops use: a dead local/Codex attempt re-runs once on Claude, never one that published.
+            if not (self._fronted and attempt == 1
+                    and ladder.fix_backstop(out, self._setting("local_fallback"))):
                 return out, attempt
             attempt += 1
 
@@ -1560,7 +1581,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                  "memory_enabled": self._memory_enabled,
                  "model_override": self._model_override, "effort": self._effort,
                  "attachments": self._attachments,
-                 "local_disabled": attempt > 1 and bool(self._setting("local_fallback")),
+                 "local_disabled": attempt > 1,
                  "supervise_enforce": False, "frontman": self._frontman},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)

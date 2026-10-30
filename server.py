@@ -191,16 +191,19 @@ def _web_fronted(cap_name):
     return bool(config.setting("web_frontman")) and cap_name == config.WEB_FRONTMAN_CAP
 
 
-def _front_web_chat(params):
+def _front_web_chat(params, resubmit=False):
     """Hand an UNPINNED plain web submit to the frontman. A pin, a repo or plan mode asked for
-    the full pipeline by name, so those keep it."""
-    if (params.get("cap") or params.get("repo") or params.get("plan_mode")
-            or not _web_fronted(config.WEB_FRONTMAN_CAP)):
+    the full pipeline by name, so those keep it — except a fronted chat's own re-submit (a model
+    rebind), which pins the frontman. "Fronted" rides on the session's cap ref (`fronted`), so a
+    deliberate `/assistant` chat is never fronted on its follow-ups."""
+    pin = (params.get("cap") or {}).get("name")
+    if ((pin and not (resubmit and pin == config.WEB_FRONTMAN_CAP)) or params.get("repo")
+            or params.get("plan_mode") or not _web_fronted(config.WEB_FRONTMAN_CAP)):
         return
     cap = next((c for c in CAPS if c.name == config.WEB_FRONTMAN_CAP), None)
     if cap is None:
         return
-    params["cap"], params["frontman"] = cap.ref(), True
+    params["cap"], params["frontman"] = {**cap.ref(), "fronted": True}, True
     # The fast lane is judged on the asker's OWN words, never on the frontman's task text.
     if params.get("trusted_asker"):
         params["asker_text"] = params["request"]
@@ -2140,7 +2143,7 @@ class Handler(BaseHTTPRequestHandler):
         # follow-up — the workflow ignores it under repo-mode).
         if body.get("plan_mode"):
             params["plan_mode"] = True
-        _front_web_chat(params)
+        _front_web_chat(params, resubmit=bool(body.get("frontman")))
         wid = "web-" + uuid.uuid4().hex
         tc.run(_wf_start(wid, params))
         self._send(200, json.dumps({"id": wid}))
@@ -2163,7 +2166,7 @@ class Handler(BaseHTTPRequestHandler):
         # conversation is the latency the mode exists to avoid, and its replies offer
         # directions, which is exactly what reads as "delegate this" to the classifier.
         # A fronted chat never hands off either: the frontman delegates by declaring it.
-        fronted = _web_fronted(cap.name)
+        fronted = _web_fronted(cap.name) and bool((body.get("cap") or {}).get("fronted"))
         if (prev and not body.get("no_handoff") and cap.name != config.BRAINSTORM_CAP
                 and not fronted):
             task = engine.followup_handoff(body["message"], prev, cap)
@@ -2173,10 +2176,6 @@ class Handler(BaseHTTPRequestHandler):
         trusted_cap = cap.ref()
         params = {"request": body["message"], "resume": body["session_id"],
                   "cap": trusted_cap}
-        if fronted:
-            params["frontman"] = True
-            if self.headers.get("Origin"):
-                params["trusted_asker"], params["asker_text"] = True, body["message"]
         # Same composer toggle as /api/submit: a follow-up can be re-classified from
         # read to write (classify_followup) and hit the gate, so pre-authorization has
         # to travel with the follow-up too or the toggle reads as broken on turn 2.
@@ -2210,6 +2209,10 @@ class Handler(BaseHTTPRequestHandler):
             params["effort"] = effort
         elif (body.get("effort") or "").strip().lower() not in ("", "default"):
             self._send(400, json.dumps({"error": f"unknown effort '{body.get('effort')}'"})); return
+        if fronted:
+            params["frontman"], params["cap"] = True, {**trusted_cap, "fronted": True}
+            if self.headers.get("Origin"):
+                params["trusted_asker"], params["asker_text"] = True, body["message"]
         atts, err = self._attachments_param(body)
         if err:
             self._send(400, json.dumps({"error": err})); return

@@ -44,6 +44,8 @@ class FrontmanMixin:
         if not params.get("frontman"):
             return out
         reply, task = contracts.parse_delegation(out.get("result"))
+        # A fronted web turn whose write-intent guard said WRITE never ran: the request IS the task.
+        task = out.get("handoff") or task
         if not task or not workflow.patched("frontman-delegate"):
             return out
         wid = workflow.info().workflow_id
@@ -58,6 +60,8 @@ class FrontmanMixin:
                 # Framing AFTER the task, so routing still ranks the task's own words.
                 {"request": task + contracts.DELEGATED_FRAMING, "unattended": True,
                  "delegated": True,
+                 # A web parent's reader is watching the chat: no "Otto finished" push on top.
+                 "quiet_done": not params.get("reply_to"),
                  # The fast lane follows the ASKER, decided by the Slack ingress (issue #193), and is
                  # judged on the asker's OWN words: this task text is the model's, written after
                  # reading whatever it read, so an injected DELEGATE never picks its own lane.
