@@ -10,8 +10,8 @@ after `board_retention_h`, and a workstream outlives that. NULL = eligible for a
 the user took the chat out (never re-attached automatically), anything else = a workstream id.
 
 Auto-attach keys on REFS — canonical ids of the issue/PR/ticket URLs a chat names
-(`o/r#12`, `jira:ABC-12`). A user message contributes every ref it links; an Otto reply only
-the PRs it links (it opened them), since a reply citing related work is not that work. A bare
+(`o/r#12`, `jira:ABC-12`): every ref the OPENING request links, and only the PRs an Otto reply
+links (it opened them), since neither a reply citing related work nor a side question is that work. A bare
 `#12` is a mention, never a ref — the same reading `workspace.closing_line` gives it.
 """
 import datetime
@@ -50,10 +50,15 @@ def refs_of(text, *, prs_only=False):
 
 
 def chat_refs(conn, cid):
-    refs = set()
-    for r in conn.execute("SELECT role, text FROM messages WHERE chat_id = ? AND text LIKE '%http%'",
-                          (cid,)):
-        refs |= refs_of(r["text"], prs_only=r["role"] != "user")
+    """A chat's SUBJECT: what its opening request links, plus the PRs Otto linked. A later user
+    message is not the subject — a side question about another issue in a filed chat merged that
+    issue into the workstream, and every later chat about it was filed there too."""
+    first = conn.execute("SELECT text FROM messages WHERE chat_id = ? AND role = 'user' "
+                         "ORDER BY seq LIMIT 1", (cid,)).fetchone()
+    refs = refs_of(first["text"]) if first else set()
+    for r in conn.execute("SELECT text FROM messages WHERE chat_id = ? AND role = 'otto' "
+                          "AND text LIKE '%/pull/%'", (cid,)):
+        refs |= refs_of(r["text"], prs_only=True)
     return refs
 
 

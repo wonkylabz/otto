@@ -31,6 +31,7 @@
 `workstreams.py` — chats about one ticket/PR, grouped by shared issue/PR/Jira URL refs. Display-only: nothing that runs reads it.
 
 - **`chats._upsert_row` is INSERT OR REPLACE, so a column missing from its `record` is WIPED** — `workstream_id`/`refs` ride through it untouched, or every browser save un-files the chat (`WorkstreamTests`).
+- **A chat's refs are its SUBJECT: the opening request + PRs Otto linked** (`chat_refs`) — a side question's link, merged in, filed every later chat about it under the wrong topic (`WorkstreamTests`).
 - **A detached chat stores `''`, never NULL** — NULL is auto-eligible, so its own refs regroup it on the next write (`WorkstreamTests`).
 
 ## Post-PR loops

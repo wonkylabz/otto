@@ -2439,6 +2439,15 @@ class WorkstreamTests(unittest.TestCase):
         chats.append_run("d", "what is https://github.com/acme/api/issues/99 about?", "...")
         self.assertIsNone(self._ws("d"))
 
+    def test_a_side_question_in_a_filed_chat_does_not_widen_its_workstream(self):
+        # A link pasted mid-conversation is not the chat's subject: merged into the workstream's
+        # refs, every later chat about that issue was silently filed under the wrong topic.
+        chats.append_run("a", "is bedrock cheaper?", "ok")
+        workstreams.assign("a", title="Bedrock implementation")
+        chats.append_run("a", "unrelated: status of https://github.com/acme/infra/issues/1 ?", "ok")
+        chats.append_run("b", "triage https://github.com/acme/infra/issues/1", "ok")
+        self.assertIsNone(self._ws("b"))
+
     def test_a_bare_hash_number_is_a_mention_not_a_ref(self):
         chats.append_run("a", "like the one in #12", "ok")
         chats.append_run("b", "same as #12", "ok")

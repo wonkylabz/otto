@@ -4,7 +4,7 @@
    retention window. The board shows a chip per card and filters to one workstream; the timeline
    opens in the shared form modal. BOARD_WS (the board's filter) and BOARD_MODE (which of the
    page's two views is up) live outside the render, so a poll repaint keeps both. */
-let BOARD_WS=null, BOARD_MODE="board", _wsViewSig=null;
+let BOARD_WS=null, BOARD_WS_TITLE="", BOARD_MODE="board", _wsViewSig=null;
 
 /* The page's title IS its view switch: two titles in one heading style, the inactive one dimmed. */
 function boardHead(sub){
@@ -40,7 +40,7 @@ function wireSuggestions(root, reload){
 function wsFilterBar(items){
   if(!BOARD_WS) return "";
   const hit=items.find(it=>it.workstream&&it.workstream.id===BOARD_WS);
-  const title=hit?hit.workstream.title:"this workstream";
+  const title=hit?hit.workstream.title:(BOARD_WS_TITLE||"this workstream");
   return `<div class="wsbar"><span>Workstream: <b>${esc(title)}</b></span>
     <button class="addbtn" data-wstimeline="${esc(BOARD_WS)}" title="every chat in it, oldest first — including runs the board no longer shows">Timeline</button>
     <button class="addbtn" data-wsclear="1" title="show every run again">Clear</button></div>`;
@@ -49,7 +49,7 @@ function wsFilterBar(items){
 function wireWorkstreams(root, reload){
   wireSuggestions(root, reload);
   root.querySelectorAll("[data-wsfilter]").forEach(a=>a.addEventListener("click",e=>{
-    e.preventDefault(); e.stopPropagation(); BOARD_WS=a.dataset.wsfilter; reload();
+    e.preventDefault(); e.stopPropagation(); BOARD_WS=a.dataset.wsfilter; BOARD_WS_TITLE=a.textContent.replace(/^\u2630\s*/,""); reload();
   }));
   root.querySelectorAll("[data-wsclear]").forEach(b=>b.addEventListener("click",()=>{ BOARD_WS=null; reload(); }));
   root.querySelectorAll("[data-wstimeline]").forEach(b=>b.addEventListener("click",()=>openWorkstream(b.dataset.wstimeline)));
@@ -114,7 +114,7 @@ async function openWorkstream(id){
     <ol class="wslist">${(ws.items||[]).map(row).join("")}</ol>
     <div class="factions"><button class="btn approve" id="ws-board" title="filter the Swarm board to this workstream's runs">Show on board</button><button class="btn decline" id="ws-rename">Rename</button><button class="btn danger" id="ws-ungroup" title="the chats are kept — only the grouping goes">Ungroup</button></div></div>`;
   body.querySelector("#ws-board").addEventListener("click",()=>{
-    BOARD_WS=id; BOARD_MODE="board"; closeFormModal(); activateTab("board"); loadBoard();
+    BOARD_WS=id; BOARD_WS_TITLE=ws.title; BOARD_MODE="board"; closeFormModal(); activateTab("board"); loadBoard();
   });
   body.querySelectorAll("[data-wsopen]").forEach(a=>a.addEventListener("click",e=>{
     e.preventDefault(); closeFormModal(); openChat(a.dataset.wsopen);
