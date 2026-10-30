@@ -8935,9 +8935,15 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self._orig = {n: getattr(engine, n) for n in
                       ("plan", "decompose", "run_attempt", "verify", "record_attempt",
                        "record_skip", "plan_preview", "critique_plan", "summarize_plan",
-                       "candidate_repo", "followup_write_intent", "distil_memory")}
+                       "candidate_repo", "followup_write_intent", "distil_memory",
+                       "clarify", "request_write_intent")}
         self._orig_caps = activities._caps
         activities._caps = [front, writer]
+        self.pre_run = []
+        engine.clarify = lambda *a, **k: self.pre_run.append("clarify") or None
+        self.write_intent = False
+        engine.request_write_intent = lambda *a, **k: (self.pre_run.append("intent")
+                                                       or self.write_intent)
         # Memory distillation is a real model call — 5-22s against the live endpoint, racing the
         # ~10s wall-clock gate poll below, so the suite went red on the endpoint's latency.
         engine.distil_memory = lambda *a, **k: None
@@ -8947,17 +8953,32 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         engine.critique_plan = lambda *a, **k: {"concerns": []}
         engine.summarize_plan = lambda plan, *a, **k: plan
         engine.candidate_repo = lambda request, names: None
-        engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: {
-            "passed": True, "critique": ""}
+        self.judged = []
+        engine.verify = lambda req, c, result, project=None, local=False, unattended=False, **k: (
+            self.judged.append(c.name) or {"passed": True, "critique": ""})
         self.audited = []
         engine.record_attempt = lambda *a, **k: self.audited.append((a[5], a[3]))
         engine.record_skip = lambda *a, **k: None
         self.classified = []
-        engine.followup_write_intent = lambda *a, **k: self.classified.append(a) or False
+        engine.followup_write_intent = lambda *a, **k: (self.classified.append(a)
+                                                        or self.write_intent)
         self.calls = []
+
+        self.errors_left, self.local_off, self.err_backend = 0, [], "local"
+        self.toolless, self.handoff_says = [], "DELEGATE: " + self.TASK
 
         def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
             self.calls.append((cap.name, frontman, request[:40]))
+            self.local_off.append(k.get("local_disabled", False))
+            if k.get("fast_lane") == []:
+                self.toolless.append(request)
+                return {"workflow": wid or "wf-fm", "result": self.handoff_says, "cost": 0.0,
+                        "session_id": "sess-front", "model": "m", "attempt": 1,
+                        "is_error": self.handoff_says.startswith("(")}
+            if self.errors_left:
+                self.errors_left -= 1
+                return {"workflow": wid or "wf-fm", "result": "(timed out)", "is_error": True,
+                        "cost": 0.0, "model": "m", "attempt": 1, "backend": self.err_backend}
             if "You handed this off" in request:
                 text = self.relay_says
             elif frontman:
@@ -8987,34 +9008,43 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
 
     relay_says = "Bumped it — the PR is up."
 
-    async def _drive(self, frontman_says, approve=None, resume=None):
+    async def _drive(self, frontman_says, approve=None, resume=None, web=False, trusted=False):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
-        from activities import (classify_followup, classify_request, deliver_result,
+        from activities import (classify_followup, classify_request, clarify_request, deliver_result,
                                 detect_repo_changes, finalize_terminal, interim_notice,
                                 notify_human, plan_capability, plan_swarm, record_attempt,
                                 record_skip, route_request, run_capability, snapshot_repos,
                                 snapshot_settings, suggest_repo, verify_capability,
-                                resolve_pr_target, check_grounding, estop_check, distil_memory)
+                                resolve_pr_target, check_grounding, estop_check, distil_memory,
+                                classify_fast_lane)
         self.frontman_says = frontman_says
         wid = "slack-D1-" + uuid.uuid4().hex[:8]
         reply_to = {"kind": "slack_thread", "channel": "D1", "thread_ts": None}
         params = {"request": "can you bump the widget?", "unattended": True, "approval": "ask",
                   "cap": {"name": "assistant", "kind": "custom", "risk": "read"},
                   "reply_to": reply_to, "frontman": True}
+        if web:
+            # The web chat (server._front_web_chat): a person reading live, no reply_to.
+            wid = "web-" + uuid.uuid4().hex[:8]
+            params = {"request": params["request"], "frontman": True,
+                      "cap": {**params["cap"], "fronted": True}}
+            if trusted:
+                params.update(trusted_asker=True, asker_text="yes, go ahead")
         if resume:
             params["resume"] = resume
         async with await _time_skipping_env() as env:
             with ThreadPoolExecutor(max_workers=6) as ex:
                 async with Worker(
                     env.client, task_queue="fmq", workflows=[OttoWorkflow],
-                    activities=[classify_followup, classify_request, deliver_result,
+                    activities=[classify_followup, classify_request, clarify_request, deliver_result,
                                 detect_repo_changes, finalize_terminal, interim_notice,
                                 notify_human, plan_capability, plan_swarm, record_attempt,
                                 record_skip, route_request, run_capability, snapshot_repos,
                                 snapshot_settings, suggest_repo, verify_capability,
-                                resolve_pr_target, check_grounding, estop_check, distil_memory],
+                                resolve_pr_target, check_grounding, estop_check, distil_memory,
+                                classify_fast_lane],
                     activity_executor=ex,
                 ):
                     h = await env.client.start_workflow(OttoWorkflow.run, params, id=wid,
@@ -9074,6 +9104,87 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         rows = dict(r for r in self.audited if r[1] != "child report: bumped, PR https://example.test/pr/1")
         self.assertTrue(rows[1].startswith("DELEGATE:"), "attempt 1 must record the hand-off itself")
         self.assertEqual(rows[2], self.relay_says, "the relay is its own attempt")
+
+    async def test_a_web_chat_turn_answers_in_one_unjudged_attempt(self):
+        """The fast chat: no clarify and no judge — the person is reading. The write-intent guard
+        stays: the assistant still holds Bash and inherited connectors."""
+        wid, out = await self._drive("It's the events URL.", web=True)
+        self.assertEqual(out["result"], "It's the events URL.")
+        self.assertEqual(self.pre_run, ["intent"])
+        self.assertEqual(self.judged, [])
+        self.assertIsNone(out.get("verified"))
+        self.assertEqual([c[:2] for c in self.calls], [("assistant", True)])
+
+    async def test_an_errored_web_chat_turn_gets_one_retry_off_local(self):
+        """`ladder.fix_backstop`: a dead local attempt re-runs once on Claude, bounded."""
+        self.errors_left = 1
+        wid, out = await self._drive("It's the events URL.", web=True)
+        self.assertEqual(out["result"], "It's the events URL.")
+        self.assertEqual(self.local_off, [False, True])
+        self.errors_left = 5
+        self.calls, self.local_off = [], []
+        wid, out = await self._drive("unused", web=True)
+        self.assertEqual(len(self.calls), 2, "bounded at one retry")
+
+    async def test_a_dead_claude_web_chat_turn_is_not_re_run(self):
+        """Claude re-running Claude doubles a slow turn's wait for the same outcome."""
+        self.errors_left, self.err_backend = 1, "claude"
+        await self._drive("unused", web=True)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_a_write_shaped_web_turn_is_handed_off_without_running_the_frontman(self):
+        """The write-intent guard's WRITE never lets the frontman (Bash + connectors) act on it."""
+        self.write_intent = True
+        wid, out = await self._drive("unused", approve=True, web=True)
+        names = [c[0] for c in self.calls]
+        self.assertNotIn(("assistant", True), [c[:2] for c in self.calls])
+        self.assertIn("demo-write", names)
+        self.assertEqual(out["result"], self.relay_says)
+
+    async def test_a_write_shaped_web_follow_up_hands_off_the_sessions_task_not_the_message(self):
+        """"yes, go ahead" is no task: the session, on a turn with NO tools, writes the real one."""
+        self.write_intent = True
+        wid, out = await self._drive("unused", approve=True, resume="sess-front", web=True)
+        self.assertEqual(len(self.classified), 1, "a fronted web follow-up keeps its guard")
+        self.assertEqual(len(self.toolless), 1)
+        child = [c for c in self.calls if c[0] == "demo-write"]
+        self.assertTrue(child and child[0][2] == self.TASK[:40], child)
+        self.assertEqual(out["result"], self.relay_says)
+
+    async def test_a_resolved_hand_off_never_takes_the_fast_lane(self):
+        """The lane is judged on the asker's words; "yes, go ahead" says nothing about the task
+        the tool-free turn wrote, so that child is always gated."""
+        import intents
+        worker = registry.Capability("builtin", config.WORKER_CAP, "does tasks")
+        worker.risk = "write"
+        self.activities._caps = [self.activities._caps[0], worker]
+        engine.plan = lambda request, caps, project_root=None: worker
+        asked = []
+        self.write_intent = True
+        with mock.patch.object(policy, "safe_tools", lambda *a: ["mcp__ha__HassTurnOn"]), \
+                mock.patch.object(intents, "fast_lane_intent", lambda *a: asked.append(a) or True):
+            await self._drive("unused", approve=True, resume="sess-front", web=True, trusted=True)
+        self.assertEqual(asked, [])
+        self.assertIn(config.WORKER_CAP, [c[0] for c in self.calls], "the child still ran, gated")
+
+    async def test_an_errored_hand_off_turn_keeps_its_error(self):
+        """A usage-limit wall read as "please restate" would be hit again on every restatement."""
+        self.write_intent, self.handoff_says = True, "(usage limit reached)"
+        wid, out = await self._drive("unused", resume="sess-front", web=True)
+        self.assertEqual(out["result"], "(usage limit reached)")
+
+    async def test_an_unresolvable_web_follow_up_asks_instead_of_delegating(self):
+        self.write_intent, self.handoff_says = True, "Sure thing!"
+        wid, out = await self._drive("unused", resume="sess-front", web=True)
+        self.assertNotIn("demo-write", [c[0] for c in self.calls])
+        self.assertEqual(out["result"], __import__("contracts").HANDOFF_UNRESOLVED)
+
+    async def test_a_web_chat_delegation_still_routes_gates_and_judges_its_child(self):
+        wid, out = await self._drive("On it.\nDELEGATE: " + self.TASK, approve=True, web=True)
+        self.assertEqual(out["result"], self.relay_says)
+        self.assertIn("demo-write", [c[0] for c in self.calls])
+        self.assertEqual(self.judged, ["demo-write"], "only the child is judged")
+        self.assertEqual(self.delivered, [], "a web chat has no reply_to to post to")
 
     def test_a_paused_child_is_never_relayed_as_done(self):
         from wf_frontman import _outcome

@@ -215,6 +215,9 @@ EFFORT = os.environ.get("OTTO_EFFORT", "default").strip().lower() or "default"
 # (measured 2.1.285; the `showThinkingSummaries` setting still left it empty). The flag is
 # hidden, so `off` is the escape hatch if a CLI release drops it (#164).
 THINKING_DISPLAY = os.environ.get("OTTO_THINKING_DISPLAY", "summarized").strip().lower() or "summarized"
+# Web chat fronted by the assistant (wf_frontman), one unjudged turn: only a DELEGATE pays for
+# routing, the plan preview and the gate.
+WEB_FRONTMAN = os.environ.get("OTTO_WEB_FRONTMAN", "0").strip().lower() not in ("0", "false", "no", "off")
 
 
 def effort_level(value):
@@ -442,6 +445,7 @@ DOER_CAP = "doer"
 # WORKER_CAP: workflow code must recognize the mode — to pick its output contract and to skip the
 # verify ladder — and workflows.py cannot import registry (filesystem I/O on a replayed path).
 BRAINSTORM_CAP = "brainstorm"
+WEB_FRONTMAN_CAP = "assistant"     # who fronts the web chat under `web_frontman`
 
 # --- Plan-then-execute mode (local-executor decomposition) ---------------------------------
 # A strong model (Claude) decomposes a big task into an ordered list of ATOMIC steps a weak
@@ -600,6 +604,7 @@ _SETTING_SPECS = {
     "cap_local_latch_ttl_s": ("OTTO_CAP_LOCAL_LATCH_TTL_S", "float", "CAP_LOCAL_LATCH_TTL_S"),
     "effort":             ("OTTO_EFFORT", "choice:default,low,medium,high,xhigh,max", "EFFORT"),
     "thinking_display":   ("OTTO_THINKING_DISPLAY", "choice:summarized,off", "THINKING_DISPLAY"),
+    "web_frontman":       ("OTTO_WEB_FRONTMAN", "bool", "WEB_FRONTMAN"),
     "conventions_digest_chars": ("OTTO_CONVENTIONS_DIGEST_CHARS", "int",
                                  "CONVENTIONS_DIGEST_CHARS"),
     "knowledge_inject_chars": ("OTTO_KNOWLEDGE_INJECT_CHARS", "int", "KNOWLEDGE_INJECT_CHARS"),

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import time
+import types
 import uuid
 
 import attachments as attachments_mod
@@ -297,17 +298,6 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         trace("RUN", f"{wid} {cap.name} {why} — running on Claude")
     else:
         fb_forced = None
-    # A FAST-LANE run never goes to Codex: its guard there is a sandbox with a whole shell in it,
-    # and it grants no MCP — so the one grant this run has would be the one thing it lacked. The
-    # workflow refuses the lane for a codex pick up front; this is the backstop.
-    if fast_lane is not None and use_codex:
-        why = "a fast-lane run is granted MCP tools only, and the codex backend has a shell and no MCP"
-        if not config.setting("local_fallback"):
-            return _strict_stop_attempt(
-                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why), time.monotonic())
-        use_codex = False
-        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
-        trace("RUN", f"{wid} {why} — running on Claude")
     # THIS CAPABILITY HAS ALREADY PROVED IT CANNOT DO THE WORK ON THIS MODEL. Within one run the
     # ladder self-corrects (issue #172 re-dispatches the rest of it to Claude), but nothing
     # remembered that across runs, so every new run re-litigated the same doomed first attempt:
@@ -364,6 +354,23 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         # still runs the whole ladder locally (the cost opt-out is preserved).
         use_local = use_codex = False
 
+    # A FAST-LANE run never goes to Codex: its guard there is a sandbox with a whole shell in it,
+    # and it grants no MCP — so the one grant this run has would be the one thing it lacked. The
+    # workflow refuses the lane for a codex pick up front; this is the backstop. Checked AFTER a
+    # resume picks its session's backend, or a resumed Codex session got its whole shell back.
+    if fast_lane is not None and use_codex:
+        why = "a fast-lane run is granted MCP tools only, and the codex backend has a shell and no MCP"
+        if resume_session:
+            # Claude cannot resume a Codex session, so there is nothing to fall back TO.
+            return _refused_attempt(wid, attempt, exec_entry, CODEX_SESSION_TOOLLESS,
+                                    time.monotonic())
+        if not config.setting("local_fallback"):
+            return _strict_stop_attempt(
+                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why), time.monotonic())
+        use_codex = False
+        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
+        trace("RUN", f"{wid} {why} — running on Claude")
+
     # EVERY local->Claude switch above has to move the MODEL with the backend, not just the
     # dispatch. A per-chat override outranks escalation/downshift/cap_exec below — and unlike
     # them it is a raw pool entry with no Claude guarantee — so left standing it hands a LOCAL
@@ -401,7 +408,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
             # contract forbids. See contracts._resume_contract.
             _resume_contract(audience),
             _output_contract(audience) if audience else None,
-            contracts._FRONTMAN_DELEGATE if frontman else None,
+            contracts.frontman_note(audience) if frontman else None,
             # A resumed turn re-uses the session's ORIGINAL system prompt, so the worker
             # contract's wrong-branch clause is not in scope for this message. When the restored
             # tree contradicts the follow-up, this note is the only thing carrying that
@@ -440,7 +447,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         if not (repo and cwd):
             workspace.refresh_repos()
         sysctx = "\n\n".join(
-            filter(None, [_output_contract(audience), contracts._FRONTMAN_DELEGATE if frontman else None,
+            filter(None, [_output_contract(audience), contracts.frontman_note(audience) if frontman else None,
                           _approved_plan_note(approved_plan),
                           _grounding_note(grounding),
                           # "A human approved this" is false on the fast lane, and invites the
@@ -782,7 +789,19 @@ def _published(transcript_path, cwd, posts=False):
         paths, repo_mode=repo_mode)
 
 
-def _strict_stop_attempt(wid, attempt, exc, started):
+CODEX_SESSION_TOOLLESS = ("This conversation runs on Codex, so I can't hand that off from inside "
+                          "it. Start a new chat and say in full what you'd like done.")
+
+
+def _refused_attempt(wid, attempt, entry, message, started):
+    """One errored attempt that never ran: a STOP for every ladder, with `message` delivered."""
+    trace("RUN", f"{wid} attempt {attempt} refused — {message}")
+    return {**_strict_stop_attempt(wid, attempt, types.SimpleNamespace(
+        message=message, model=(entry or {}).get("model")), started, quiet=True),
+        "backend": gateway.backend_of(entry) if entry else None}
+
+
+def _strict_stop_attempt(wid, attempt, exc, started, quiet=False):
     """One attempt result for a strict-mode stop (OTTO_LOCAL_FALLBACK=0): the local backend
     couldn't run and Claude is not allowed to cover for it.
 
@@ -791,7 +810,8 @@ def _strict_stop_attempt(wid, attempt, exc, started):
     endpoint is down and the whole point of the flag is that the failure surfaces instead of being
     worked around. The loud body travels as the result so it lands in the delivered text, the
     audit trail, and the board card unchanged."""
-    trace("STRICT", f"{wid} attempt {attempt} stopped — {exc}")
+    if not quiet:
+        trace("STRICT", f"{wid} attempt {attempt} stopped — {exc}")
     return {"workflow": wid, "result": exc.message, "cost": 0,
             "tokens": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
             "session_id": None, "model": exc.model, "attempt": attempt, "is_error": True,

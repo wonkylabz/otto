@@ -11275,6 +11275,23 @@ class FastLaneGrantTests(unittest.TestCase):
             self.assertIn(t, kw["disallowed_tools"], t)
         self.assertNotIn("ToolSearch", kw["disallowed_tools"], "deferred MCP schemas load through it")
 
+    def test_a_resumed_codex_session_never_runs_under_a_fast_lane_grant(self):
+        """The resume picks the SESSION's backend after the grant's Codex backstop ran, so an
+        empty grant (a fast-chat hand-off turn) handed a Codex session its whole shell back."""
+        import codex_cli
+        self._claude_backend()
+        ran = []
+        with mock.patch.object(local_runtime, "session_backend", lambda sid: "codex"), \
+                mock.patch.object(local_runtime, "resume_entry", lambda sid: {
+                    "name": "codex", "provider": "codex", "model": "gpt-5-codex"}), \
+                mock.patch.object(codex_cli, "run_json", lambda *a, **k: ran.append(k) or {}):
+            out = engine.run_attempt("yes, go ahead", self.cap, wid="w-cx",
+                                     resume_session="cx-1", fast_lane=[])
+        self.assertEqual(ran, [], "the empty grant reached a backend with a shell")
+        self.assertEqual(self.calls, [], "claude -p cannot resume a Codex session either")
+        self.assertTrue(out["is_error"])
+        self.assertEqual(out["result"], engine.CODEX_SESSION_TOOLLESS)
+
     def test_a_normal_run_is_unchanged(self):
         self._claude_backend()
         engine.run_attempt("do the thing", self.cap, wid="w-n")
@@ -11674,6 +11691,88 @@ class StreamingDraftTests(unittest.TestCase):
             os.utime(os.path.join(self.tmp, "web-x-a1.jsonl"), (0, 0))
             self.assertIsNone(server._run_progress("web-x")["partial"])
 
+
+
+class WebChatFrontmanTests(unittest.TestCase):
+    """`web_frontman`: an unpinned web chat is fronted by the assistant, which answers in one turn
+    and DELEGATES work; anything that named the full pipeline keeps it."""
+
+    def setUp(self):
+        self.cap = registry.Capability("custom", config.WEB_FRONTMAN_CAP, "answers")
+        self.cap.risk = "read"
+
+    def _front(self, params, on=True, resubmit=False):
+        with mock.patch.object(server, "CAPS", [self.cap]), \
+                mock.patch.object(config, "setting", lambda n, *a: on if n == "web_frontman" else None):
+            server._front_web_chat(params, resubmit)
+        return params
+
+    def test_an_unpinned_submit_is_fronted_with_the_askers_own_words(self):
+        p = self._front({"request": "why is X slow?", "trusted_asker": True})
+        self.assertTrue(p["frontman"])
+        self.assertEqual(p["cap"]["name"], config.WEB_FRONTMAN_CAP)
+        self.assertTrue(p["cap"]["fronted"], "fronted rides on the session's cap")
+        self.assertEqual(p["asker_text"], "why is X slow?")
+
+    def test_off_a_pin_a_repo_or_plan_mode_keep_the_full_pipeline(self):
+        for params, on in (({"request": "q"}, False),
+                           ({"request": "q", "cap": {"name": "worker"}}, True),
+                           ({"request": "q", "repo": "otto"}, True),
+                           ({"request": "q", "plan_mode": True}, True)):
+            self.assertNotIn("frontman", self._front(dict(params), on), params)
+
+    def test_a_fronted_chats_rebind_resubmit_stays_fronted(self):
+        p = self._front({"request": "q", "cap": self.cap.ref()}, resubmit=True)
+        self.assertTrue(p["frontman"])
+        other = {"request": "q", "cap": {"name": "worker"}}
+        self.assertNotIn("frontman", self._front(other, resubmit=True))
+
+    def test_an_untrusted_submit_carries_no_asker_text(self):
+        self.assertNotIn("asker_text", self._front({"request": "q", "trusted_asker": False}))
+
+    def _continue(self, cap_body, on=True):
+        asked, started = [], []
+
+        async def _noop():
+            return None
+        h = object.__new__(server.Handler)
+        h._send = lambda code, body: None
+        h.headers = {"Origin": "http://localhost"}
+        with mock.patch.object(server, "CAPS", [self.cap]), \
+                mock.patch.object(config, "setting", lambda n, *a: on and n == "web_frontman"), \
+                mock.patch.object(server.engine, "followup_handoff",
+                                  lambda *a: asked.append(1) or "do X"), \
+                mock.patch.object(server, "_wf_start",
+                                  lambda wid, p: started.append(p) or _noop()), \
+                mock.patch.object(server.tc, "run", lambda c: c.close()):
+            h._post_continue({"cap": cap_body, "message": "and Y?",
+                              "prev": "X is slow because", "session_id": "s1"})
+        return asked, started
+
+    def test_a_fronted_follow_up_skips_the_handoff_and_stays_fronted(self):
+        asked, started = self._continue({"name": self.cap.name, "fronted": True})
+        self.assertEqual(asked, [])
+        self.assertTrue(started[0]["frontman"])
+        self.assertTrue(started[0]["cap"]["fronted"], "turn 3 must still know it is fronted")
+        self.assertEqual(started[0]["asker_text"], "and Y?")
+
+    def test_a_fronted_chat_stays_fronted_after_the_setting_is_switched_off(self):
+        """Its system prompt still carries the DELEGATE rule; unfronted, the line shows verbatim."""
+        asked, started = self._continue({"name": self.cap.name, "fronted": True}, on=False)
+        self.assertTrue(started[0]["frontman"])
+
+    def test_a_pinned_assistant_chat_is_never_fronted_on_its_follow_ups(self):
+        asked, started = self._continue({"name": self.cap.name})
+        self.assertEqual(asked, [1], "a deliberate /assistant chat keeps the handoff classifier")
+
+    def test_the_web_hand_off_rule_never_offers_slack_silence(self):
+        import contracts
+        self.assertIs(contracts.frontman_note(contracts.CONVERSATION_AUDIENCE),
+                      contracts._FRONTMAN_DELEGATE)
+        web = contracts.frontman_note(None)
+        self.assertIn(contracts.DELEGATE_PREFIX, web)
+        self.assertNotIn("Slack", web)
+        self.assertNotIn("say nothing", web)
 
 
 class BrainstormHandoffSkipTests(unittest.TestCase):
