@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-31
+
 ### Added
 
 - **Workstreams.** Group every chat about one ticket or PR. Chats that link the same GitHub
@@ -519,7 +521,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.7...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/wonkylabz/otto/compare/v0.8.7...v0.9.0
 [0.8.7]: https://github.com/wonkylabz/otto/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/wonkylabz/otto/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/wonkylabz/otto/compare/v0.8.4...v0.8.5
