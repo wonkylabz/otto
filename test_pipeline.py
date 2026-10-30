@@ -4871,7 +4871,9 @@ class BrainstormModeTests(unittest.TestCase):
                     if isinstance(n, ast.Call)
                     and getattr(n.func, "attr", None) == "execute_activity"
                     and n.args and isinstance(n.args[0], ast.Name)}
-        turn = _method("_brainstorm_turn")
+        # The turn runs each attempt through one helper (a fronted turn's retry), so follow it.
+        turn = ast.Module(body=[_method("_brainstorm_turn"), _method("_unjudged_attempt")],
+                          type_ignores=[])
         called = _activities(turn)
         # The audit write and the memory distillation it triggers live behind one helper (they
         # were a single activity until a stalled memory call started duplicating audit rows), so

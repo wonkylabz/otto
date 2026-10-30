@@ -8961,8 +8961,15 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         engine.followup_write_intent = lambda *a, **k: self.classified.append(a) or False
         self.calls = []
 
+        self.errors_left, self.local_off = 0, []
+
         def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
             self.calls.append((cap.name, frontman, request[:40]))
+            self.local_off.append(k.get("local_disabled", False))
+            if self.errors_left:
+                self.errors_left -= 1
+                return {"workflow": wid or "wf-fm", "result": "(timed out)", "is_error": True,
+                        "cost": 0.0, "model": "m", "attempt": 1}
             if "You handed this off" in request:
                 text = self.relay_says
             elif frontman:
@@ -9092,6 +9099,17 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.judged, [])
         self.assertIsNone(out.get("verified"))
         self.assertEqual([c[:2] for c in self.calls], [("assistant", True)])
+
+    async def test_an_errored_web_chat_turn_gets_one_retry_off_local(self):
+        """The ladder's backstop for a turn that never answered, kept without the judge."""
+        self.errors_left = 1
+        wid, out = await self._drive("It's the events URL.", web=True)
+        self.assertEqual(out["result"], "It's the events URL.")
+        self.assertEqual(self.local_off, [False, True])
+        self.errors_left = 5
+        self.calls, self.local_off = [], []
+        wid, out = await self._drive("unused", web=True)
+        self.assertEqual(len(self.calls), 2, "bounded at one retry")
 
     async def test_a_web_chat_delegation_still_routes_gates_and_judges_its_child(self):
         wid, out = await self._drive("On it.\nDELEGATE: " + self.TASK, approve=True, web=True)

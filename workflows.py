@@ -1538,6 +1538,16 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         rung remains for its critique to steer, and here there is none — a kill would discard the
         only attempt and leave the user's message unanswered."""
         wid, attempt = workflow.info().workflow_id, 1
+        while True:
+            out = await self._unjudged_attempt(request, cap, cwd, repo, wid, attempt)
+            # A fronted turn replaced the ladder, so it keeps the ladder's backstop for a turn that
+            # never answered: ONE more try, off local when fallback allows (a wall repeats).
+            if not (self._fronted and out.get("is_error") and attempt == 1):
+                return out, attempt
+            attempt += 1
+
+    async def _unjudged_attempt(self, request, cap, cwd, repo, wid, attempt):
+        """One `_brainstorm_turn` attempt: run, account, audit. A retry runs off local."""
         self._attempt = attempt
         try:
             out = await workflow.execute_activity(
@@ -1550,6 +1560,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                  "memory_enabled": self._memory_enabled,
                  "model_override": self._model_override, "effort": self._effort,
                  "attachments": self._attachments,
+                 "local_disabled": attempt > 1 and bool(self._setting("local_fallback")),
                  "supervise_enforce": False, "frontman": self._frontman},
                 start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
                 retry_policy=_RETRY_EXEC)
@@ -1557,19 +1568,18 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             out = {"workflow": wid, "attempt": attempt, "is_error": True,
                    "result": "(execution activity failed — worker died or attempt timed out)",
                    "cost": 0, "tokens": None, "model": None}
-        wid = out["workflow"]
         self._account(out)
         self._verified = None
         # `remember=True`: a brainstorm is where decisions get made, which is exactly what
         # engine._is_durable_fact is biased to keep. Nothing else records this turn — there is
         # no judged attempt row behind it.
         await self._audit_attempt(
-            {"wid": wid, "request": request, "name": cap["name"], "result": out["result"],
-             "cost": out.get("cost", 0), "attempt": attempt, "tokens": out.get("tokens"),
-             "model": out.get("model"), "verdict": None,
+            {"wid": out["workflow"], "request": request, "name": cap["name"],
+             "result": out["result"], "cost": out.get("cost", 0), "attempt": attempt,
+             "tokens": out.get("tokens"), "model": out.get("model"), "verdict": None,
              "duration_s": out.get("duration_s"), "backend": out.get("backend"),
              "repo": repo}, learn=True)
-        return out, attempt
+        return out
 
     async def _execute_plan_run(self, request, cap, plan_list, authored, repo, wid):
         """Run a dependency-ordered PLAN (plan-then-execute, or a runbook's authored graph) in
