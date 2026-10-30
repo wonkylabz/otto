@@ -9291,14 +9291,21 @@ class LocalExecShellConfinementTests(unittest.TestCase):
     @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
     def test_a_background_process_outlives_its_call(self):
         """A PID namespace killed every `cmd &` when the call returned, so a run starting a
-        server in one Bash call found nothing listening in the next."""
+        server in one Bash call found nothing listening in the next. The call must also RETURN:
+        a `cmd &` holding the output pipe blocked it until the timeout's group kill took it down
+        (and a 30s sleep that merely outlived the call raced its own reaping)."""
         pid = os.path.join(self.tmp, "bg.pid")
-        local_runtime._t_bash({"command": f"sleep 30 & echo $! > {pid}"}, self.tmp,
-                              mode="confined")
+        with mock.patch.object(config, "LOCAL_TOOL_TIMEOUT_S", 20):
+            t0 = time.monotonic()
+            out = local_runtime._t_bash({"command": f"sleep 600 & echo $! > {pid}; echo up"},
+                                        self.tmp, mode="confined")
+            took = time.monotonic() - t0
         with open(pid) as f:
             n = int(f.read())
+        self.addCleanup(lambda: os.kill(n, signal.SIGKILL))
+        self.assertLess(took, 15, "the call waited on its background child")
+        self.assertEqual(out, "up")
         os.kill(n, 0)
-        os.kill(n, signal.SIGKILL)
 
     @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
     def test_the_read_deny_set_is_masked_and_writes_still_land(self):

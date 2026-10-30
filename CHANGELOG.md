@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A local-model Bash call that starts a background process (`cmd &`) returns at once** instead of blocking until the tool timeout, which then killed that process — a server started in one call is now still running in the next.
+
 ## [0.8.6] - 2026-10-30
 
 ### Changed

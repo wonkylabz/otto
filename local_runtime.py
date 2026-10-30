@@ -336,24 +336,23 @@ def _t_bash(args, cwd, mode=None):
     else:
         argv, use_shell_cwd = ["bash", "-lc", cmd], True
     try:
-        # `subprocess.run(timeout=)` kills only the process it started, so a timed-out
-        # `bash -lc "terraform apply & ..."` left its children running while the tool result already
-        # said it had timed out. Own process group + `kill_tree`, same as the `claude -p` watchdog.
-        proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                start_new_session=True, env=env)
-        try:
-            stdout, stderr = proc.communicate(timeout=config.LOCAL_TOOL_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
-            claude_cli.kill_tree(proc)
-            # Reap, and drain the pipes the kill just orphaned. Bounded: a grandchild that put
-            # itself in its OWN group survives the group kill and would otherwise hold the pipe
-            # open forever, hanging the tool call instead of returning its timeout.
+        # Output goes to FILES and the call waits on the shell, not on EOF: a `cmd &` inherits a
+        # pipe and holds it open, so the call blocked until the timeout's group kill took it down.
+        # `subprocess.run(timeout=)` kills only its own process, hence own group + `kill_tree`.
+        with tempfile.TemporaryFile("w+", errors="replace") as fo, \
+                tempfile.TemporaryFile("w+", errors="replace") as fe:
+            proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
+                                    stdout=fo, stderr=fe,
+                                    start_new_session=True, env=env)
             try:
-                proc.communicate(timeout=5)
+                proc.wait(timeout=config.LOCAL_TOOL_TIMEOUT_S)
             except subprocess.TimeoutExpired:
-                pass
-            raise                       # the caller turns this into the tool's error text
+                claude_cli.kill_tree(proc)
+                proc.wait()
+                raise                   # the caller turns this into the tool's error text
+            fo.seek(0)
+            fe.seek(0)
+            stdout, stderr = fo.read(), fe.read()
         out = (stdout or "") + (("\n" + stderr) if stderr else "")
         out = out.strip() or "(no output)"
         if proc.returncode != 0:
