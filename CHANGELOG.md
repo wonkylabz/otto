@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-10-30
+
 ### Added
 
 - **Fast chat** (Admin → Runtime settings → Routing, off by default). Web chat replies straight
@@ -502,7 +504,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.6...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.8.7...HEAD
+[0.8.7]: https://github.com/wonkylabz/otto/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/wonkylabz/otto/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/wonkylabz/otto/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/wonkylabz/otto/compare/v0.8.3...v0.8.4
