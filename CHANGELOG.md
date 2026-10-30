@@ -11,6 +11,21 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **The web UI works on a phone.** Below 680px wide:
+  - The tabs become a bottom bar: Chat, Board, Jobs, Audit, and More for the rest.
+  - The chat list becomes a collapsible strip above the conversation. It used to be hidden
+    with no way to reach it.
+  - Run options start collapsed and close when you send.
+  - Admin's wide tables become cards, and a section's buttons show only once it is open.
+  - Empty board columns shrink to a row of count tiles.
+  - Forms and the plan approval open as bottom sheets.
+
+  Nothing changes on a desktop. To reach Otto from a phone, follow the README's "From your
+  phone" section: put Otto behind a private tunnel such as `tailscale serve`, add that URL to
+  `OTTO_ALLOWED_ORIGINS` and `OTTO_CLICK_URL`, and restart.
+
 ## [0.8.5] - 2026-10-30
 
 ### Changed

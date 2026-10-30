@@ -123,6 +123,29 @@ Temporal is required — `server.py` refuses to start without it (the old non-du
   - **Admin** — capabilities, backends and per-phase models, MCP servers, project repos,
     runtime settings, memory GC.
 
+### From your phone
+
+The web UI works on a phone: below 680px wide the tabs become a bottom bar (Chat, Board,
+Jobs, Audit, and **More** for the rest), and plan approvals open as a bottom sheet. Otto
+only listens on `127.0.0.1`, so reach it through a private tunnel. With
+[Tailscale](https://tailscale.com):
+
+1. On the Otto machine: `sudo tailscale serve --bg <port>` (`8765` by default). On first
+   use it prints a link to enable Serve (and HTTPS) on your tailnet — open it, then re-run.
+2. Add the URL it prints to `.env`, then restart Otto. Without it every button in the UI
+   is refused as a cross-site request:
+
+   ```bash
+   OTTO_ALLOWED_ORIGINS=https://<machine>.<tailnet>.ts.net
+   OTTO_CLICK_URL=https://<machine>.<tailnet>.ts.net   # push notifications open here too
+   ```
+
+3. On the phone: install Tailscale, sign in to the same tailnet, open that URL, and paste
+   `data/.api/token` into the login screen.
+
+The tunnel stays private to your tailnet. Keep the Otto machine from sleeping while you're
+away — runs stop with it.
+
 ### Gotchas
 
 - **Pin a capability on any runbook or schedule that is one deliverable.** With nothing

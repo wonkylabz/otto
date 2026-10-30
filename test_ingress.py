@@ -7617,7 +7617,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # the header row); onboarding.css styles it on its own.
     # -> 14_652 for three stylesheet tags: board.css, insights.css, motion.css. app.css is at
     # its own ratchet with no seam left, so new rules arrive as new files, tagged here.
-    INDEX_MAX = 14_652
+    # -> 14_797 for mobile.css (phone-width rules, a new file for the same reason), the
+    # bottom bar's More button and `viewport-fit=cover` for the safe-area insets.
+    INDEX_MAX = 14_797
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:

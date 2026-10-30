@@ -485,17 +485,19 @@ let histShown=HIST_PAGE;
 /* Collapsed/expanded state of the chat list is per-browser, so it survives a reload but is
    never a server setting. Same idiom as the theme pick and the Events/Memory sections. */
 const HIST_COLLAPSED_KEY="ottoHistCollapsed";
-function applyHistCollapsed(on){
+const isNarrow=()=>window.matchMedia("(max-width: 680px)").matches;
+function applyHistCollapsed(on, persist=true){
   const view=document.getElementById("chatview"), btn=document.getElementById("hist-toggle");
   if(view) view.classList.toggle("histcollapsed", !!on);
   if(btn){ btn.setAttribute("aria-expanded", on?"false":"true");
            btn.title = on ? "Show the chat list" : "Collapse the chat list"; }
-  try { localStorage.setItem(HIST_COLLAPSED_KEY, on?"1":"0"); } catch(e){}
+  if(persist) try { localStorage.setItem(HIST_COLLAPSED_KEY, on?"1":"0"); } catch(e){}
 }
 document.getElementById("hist-toggle").addEventListener("click",()=>{
-  applyHistCollapsed(!document.getElementById("chatview").classList.contains("histcollapsed"));
+  applyHistCollapsed(!document.getElementById("chatview").classList.contains("histcollapsed"), !isNarrow());
 });
-try { applyHistCollapsed(localStorage.getItem(HIST_COLLAPSED_KEY)==="1"); } catch(e){}
+// A phone stacks the list above the chat, so it starts closed there whatever desktop chose.
+try { applyHistCollapsed(isNarrow() || localStorage.getItem(HIST_COLLAPSED_KEY)==="1", !isNarrow()); } catch(e){}
 
 async function loadChatList(){
   const el=document.getElementById("histlist"); if(!el) return;
@@ -561,6 +563,7 @@ function snapPipe(){ if(activeChat && !activeChat.run_id) pipeSnaps.set(activeCh
 async function openChat(id){
   let chat; try { chat=await (await fetch("/api/chats/get?id="+encodeURIComponent(id))).json(); } catch(e){ return; }
   if(!chat||!chat.id) return;
+  if(isNarrow()) applyHistCollapsed(true, false);
   stopWatch();                              // park any watcher on the chat we're leaving (its run continues server-side)
   snapPipe();                               // keep the outgoing chat's finished pipeline for its return
   busy=false; syncSendBtn();
@@ -586,6 +589,7 @@ async function openChat(id){
   if(activeChat.run_id) await reattachRun();   // a turn is still in flight — resume its live view
 }
 function newChat(){
+  if(isNarrow()) applyHistCollapsed(true, false);
   stopWatch();                              // leaving the current chat parks its watcher (run continues server-side)
   snapPipe();
   busy=false; syncSendBtn();
@@ -1039,6 +1043,7 @@ async function refreshHealth(){
 
 let dispatching=false;   // guards the async gap between Enter and busy=true (the health check)
 async function submit(text){
+  if(isNarrow()) applyOptCollapsed(true, false);   // on a phone the open panel hides the reply
   // "/remember-rule <correction>" → propose a behaviour rule for confirmation (issue #68),
   // never routed as a normal request.
   if(/^\s*\/remember-rule\b/i.test(text||"")){
@@ -1681,10 +1686,10 @@ function applyOptCollapsed(on, persist=true){
   if(persist) try { localStorage.setItem(OPT_COLLAPSED_KEY, on?"1":"0"); } catch(e){}
 }
 document.getElementById("opt-toggle").addEventListener("click",()=>{
-  applyOptCollapsed(!document.getElementById("optpanel").classList.contains("collapsed"));
+  applyOptCollapsed(!document.getElementById("optpanel").classList.contains("collapsed"), !isNarrow());
 });
 // No stored choice yet: a short screen starts collapsed, or the options crowd out the chat.
-try { const v=localStorage.getItem(OPT_COLLAPSED_KEY); applyOptCollapsed(v===null ? window.innerHeight<820 : v==="1", v!==null); } catch(e){}
+try { const v=localStorage.getItem(OPT_COLLAPSED_KEY); applyOptCollapsed(isNarrow() || (v===null ? window.innerHeight<820 : v==="1"), v!==null && !isNarrow()); } catch(e){}
 
 document.addEventListener("change",e=>{ if(!e.target) return;
   if(e.target.closest("#optpanel")) syncOptSummary();

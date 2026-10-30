@@ -20,6 +20,11 @@ function activateTab(v){
   if(v==="events") loadEvents();
 }
 document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>activateTab(t.dataset.view)));
+// Phone-only "More" menu: the bottom bar holds four views, the rest open above it.
+const tabsNav=document.querySelector(".tabs"), moreBtn=document.getElementById("tab-more");
+function setMore(on){ tabsNav.classList.toggle("moreopen",on); moreBtn.setAttribute("aria-expanded",on?"true":"false"); }
+moreBtn.addEventListener("click",()=>setMore(!tabsNav.classList.contains("moreopen")));
+tabsNav.addEventListener("click",e=>{ if(e.target===tabsNav || e.target.closest(".tab")) setMore(false); });
 
 /* ---- deep link (#run=<wid>) ----
    Where a push notification's tap lands (delivery.notify sets click=<url>#run=<wid>). Without
