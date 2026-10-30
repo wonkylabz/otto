@@ -62,6 +62,7 @@ import storage
 import supervisor
 import updater
 import workspace
+import workstreams
 
 # Temporal is REQUIRED to serve (main() refuses to start without it — issue #278). The import
 # stays soft only so the stdlib test run can import this module; TEMPORAL_OK gates the few
@@ -914,6 +915,12 @@ async def _board(limit=40):
         # into the archive — a chat can be reattached to a run long after the card stopped changing.
         if not e.get("chat_key"):
             e["chat_key"] = chats.find_by_run_origin(e["id"])
+    # Resolved per pass like chat_key: a chat is filed (or moved) long after its card froze.
+    filed = workstreams.by_chat()
+    hints = workstreams.suggest([e.get("chat_key") for e in out if e.get("chat_key") not in filed])
+    for e in out:
+        e["workstream"] = filed.get(e.get("chat_key"))
+        e["ws_suggest"] = hints.get(e.get("chat_key"))
     replaced = _replaced_by(out)
     fac = factory.load()
     # Only a card still ON the board can carry the ticket: one the operator dismissed, or the
@@ -1881,7 +1888,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"repos": [
                 {"name": r["name"], "origin": r["origin"]} for r in workspace.git_repos()]}))
         elif self.path == "/api/chats":
-            self._send(200, json.dumps({"chats": chats.list_summaries()}))
+            rows = chats.list_summaries()
+            hints = workstreams.suggest([c["id"] for c in rows if not c["workstream"]])
+            for c in rows:
+                c["ws_suggest"] = hints.get(c["id"])
+            self._send(200, json.dumps({"chats": rows}))
+        elif self.path == "/api/workstreams":
+            self._send(200, json.dumps({"workstreams": workstreams.list_all()}))
+        elif self.path.startswith("/api/workstreams/get"):
+            wsid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+            ws = workstreams.get(wsid)
+            self._send(200 if ws else 404, json.dumps(ws or {"error": "no such workstream"}))
         elif self.path.startswith("/api/chats/get"):
             cid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             self._send(200, json.dumps(chats.get(cid) or {}))
@@ -2844,6 +2861,26 @@ class Handler(BaseHTTPRequestHandler):
         chats.delete(cid)
         self._send(200, json.dumps({"ok": True}))
 
+    def _post_workstreams_assign(self, body):
+        """POST /api/workstreams/assign — {chat_id, workstream_id | title | neither (take out)}"""
+        got = workstreams.assign(body.get("chat_id"), body.get("workstream_id") or None,
+                                 (body.get("title") or "").strip() or None)
+        if got is None:
+            self._send(404, json.dumps({"error": "no such chat or workstream"}))
+            return
+        self._send(200, json.dumps({"workstream_id": got or None}))
+
+    def _post_workstreams_rename(self, body):
+        """POST /api/workstreams/rename"""
+        if not workstreams.rename(body.get("id"), body.get("title")):
+            self._send(400, json.dumps({"error": "a title is required, for a workstream that exists"}))
+            return
+        self._send(200, json.dumps({"ok": True}))
+
+    def _post_workstreams_delete(self, body):
+        """POST /api/workstreams/delete — ungroups; the chats are kept."""
+        self._send(200, json.dumps({"ok": workstreams.delete(body.get("id"))}))
+
     def _post_bundle_import(self, body):
         """POST /api/bundle/import"""
         try:
@@ -3380,6 +3417,9 @@ _POST_ROUTES = {
     "/api/submit": Handler._post_submit,
     "/api/wf/signal": Handler._post_wf_signal,
     "/api/wf/terminate": Handler._post_wf_terminate,
+    "/api/workstreams/assign": Handler._post_workstreams_assign,
+    "/api/workstreams/delete": Handler._post_workstreams_delete,
+    "/api/workstreams/rename": Handler._post_workstreams_rename,
 }
 
 _POST_PREFIXES = [

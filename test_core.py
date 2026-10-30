@@ -4564,7 +4564,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 94885 -> 95628: chat-flow — learning off the reply path, overlapped pre-run calls, live draft.
     # 95628 -> 95879: the judge reads what an attempt published, not only its report.
     # 95879 -> 96130: an approved plan engages repo-mode the request didn't.
-    MAX_RULES_BYTES = 96130   # fetched tier — bounded, but looser; it is not always loaded
+    # 96130 -> 96627: workstreams — the two ways a chat silently falls out of one.
+    # 96627 -> 96830: a workstream chat's refs are its subject, not every link it ever saw.
+    MAX_RULES_BYTES = 96830   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

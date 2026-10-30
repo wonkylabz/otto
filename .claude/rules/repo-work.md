@@ -26,6 +26,14 @@
 - **Repo-mode's PR base needs the same refresh** — `workspace.provision` clones `--depth 1` from the local path, so the base is the *local* default-branch ref, often badly behind. `_refresh_base` hard-resets onto the real remote default first (skipped for `from_branch=True`).
 - **Tests must never touch live state** — both `setUpModule`s call `redirect_live_state()`: ONE temp dir stands in for `data/`, `_DATA_STORES` re-derives every store. A hand-kept list leaked twice (`LiveStoreIsolationTests`).
 
+## Workstreams
+
+`workstreams.py` — chats about one ticket/PR, grouped by shared issue/PR/Jira URL refs. Display-only: nothing that runs reads it.
+
+- **`chats._upsert_row` is INSERT OR REPLACE, so a column missing from its `record` is WIPED** — `workstream_id`/`refs` ride through it untouched, or every browser save un-files the chat (`WorkstreamTests`).
+- **A chat's refs are its SUBJECT: the opening request + PRs Otto linked** (`chat_refs`) — a side question's link, merged in, filed every later chat about it under the wrong topic (`WorkstreamTests`).
+- **A detached chat stores `''`, never NULL** — NULL is auto-eligible, so its own refs regroup it on the next write (`WorkstreamTests`).
+
 ## Post-PR loops
 
 **Code review** — **default-on for every repo-mode PR** (`params.get("review", True)`): a PR is a PR whoever wrote it. Runs *before* QA; a fail skips QA. Bounded `MAX_REVIEW_ROUNDS=3`. Cap `code-reviewer` (`OTTO_REVIEW_CAP`).

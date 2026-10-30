@@ -33,6 +33,7 @@ import runbooks
 import scheduler
 import test_support
 import workspace
+import workstreams
 
 try:                                       # the Temporal layer — absent under a bare python3
     import activities   # noqa: F401 - the import IS the probe; deleting it strands _HAS_TEMPORAL True
@@ -2397,6 +2398,166 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertTrue(shared["pinned"])
         self.assertTrue(shared["title"].startswith("touched by"))
         self.assertEqual(sum(c["id"] == "shared" for c in chats.list_summaries()), 1)
+
+
+class WorkstreamTests(unittest.TestCase):
+    """Workstreams group every chat about one ticket/PR (workstreams.py). Display-only, so what
+    these pin is the grouping itself: who joins, who must NOT, and that it survives the writers."""
+
+    ISSUE = "https://github.com/acme/api/issues/12"
+    PR = "https://github.com/acme/api/pull/40"
+
+    def setUp(self):
+        self._orig = chats._DB
+        self._tmp = tempfile.mkdtemp(prefix="otto-ws-")
+        chats._DB = os.path.join(self._tmp, "otto.db")
+
+    def tearDown(self):
+        chats._DB = self._orig
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _ws(self, cid):
+        return (chats.get(cid) or {}).get("workstream_id")
+
+    def test_two_chats_naming_one_ticket_are_grouped_under_the_oldest_title(self):
+        chats.append_run("a", f"work on {self.ISSUE}", "done", title="Fix the retry bug")
+        self.assertIsNone(self._ws("a"), "one chat alone is not a workstream")
+        chats.append_run("b", f"follow up on {self.ISSUE}", "ok", title="follow-up")
+        self.assertIsNotNone(self._ws("a"))
+        self.assertEqual(self._ws("a"), self._ws("b"))
+        ws = workstreams.get(self._ws("a"))
+        self.assertEqual(ws["title"], "Fix the retry bug")
+        self.assertEqual([i["id"] for i in ws["items"]], ["a", "b"], "timeline is oldest first")
+
+    def test_the_pr_otto_opened_links_a_later_chat_but_a_cited_issue_does_not(self):
+        chats.append_run("a", f"work on {self.ISSUE}", f"opened {self.PR}")
+        chats.append_run("b", f"review {self.PR}", "LGTM")
+        self.assertIsNotNone(self._ws("b"))
+        self.assertEqual(self._ws("a"), self._ws("b"))
+        # A reply that merely CITES another issue is not that work.
+        chats.append_run("c", "summarise the week", "see https://github.com/acme/api/issues/99")
+        chats.append_run("d", "what is https://github.com/acme/api/issues/99 about?", "...")
+        self.assertIsNone(self._ws("d"))
+
+    def test_a_side_question_in_a_filed_chat_does_not_widen_its_workstream(self):
+        # A link pasted mid-conversation is not the chat's subject: merged into the workstream's
+        # refs, every later chat about that issue was silently filed under the wrong topic.
+        chats.append_run("a", "is bedrock cheaper?", "ok")
+        workstreams.assign("a", title="Bedrock implementation")
+        chats.append_run("a", "unrelated: status of https://github.com/acme/infra/issues/1 ?", "ok")
+        chats.append_run("b", "triage https://github.com/acme/infra/issues/1", "ok")
+        self.assertIsNone(self._ws("b"))
+
+    def test_a_bare_hash_number_is_a_mention_not_a_ref(self):
+        chats.append_run("a", "like the one in #12", "ok")
+        chats.append_run("b", "same as #12", "ok")
+        self.assertIsNone(self._ws("a"))
+        self.assertEqual(workstreams.refs_of("fix #12"), set())
+
+    def test_a_browser_save_does_not_wipe_membership(self):
+        # _upsert_row is INSERT OR REPLACE: a column missing from its record is reset to NULL.
+        chats.append_run("a", f"do {self.ISSUE}", "ok")
+        chats.append_run("b", f"redo {self.ISSUE}", "ok")
+        wsid = self._ws("a")
+        chats.save({"id": "a", "title": "renamed", "messages": [{"role": "user", "text": "hi"}]})
+        self.assertEqual(self._ws("a"), wsid)
+        chats.set_pinned("a", True)
+        self.assertEqual(self._ws("a"), wsid)
+
+    def test_taking_a_chat_out_sticks(self):
+        chats.append_run("a", f"do {self.ISSUE}", "ok")
+        chats.append_run("b", f"redo {self.ISSUE}", "ok")
+        self.assertEqual(workstreams.assign("b"), "")
+        chats.append_run("b", f"again {self.ISSUE}", "ok")
+        self.assertIsNone(self._ws("b"), "a detached chat was regrouped by its own refs")
+
+    def test_ungrouping_keeps_the_chats_and_does_not_regroup_them(self):
+        chats.append_run("a", f"do {self.ISSUE}", "ok")
+        chats.append_run("b", f"redo {self.ISSUE}", "ok")
+        self.assertTrue(workstreams.delete(self._ws("a")))
+        chats.append_run("a", f"more {self.ISSUE}", "ok")
+        self.assertIsNotNone(chats.get("a"))
+        self.assertIsNone(self._ws("a"))
+        self.assertEqual(workstreams.list_all(), [])
+
+    def test_a_chat_matching_two_workstreams_is_left_for_a_human(self):
+        other = "https://github.com/acme/api/issues/13"
+        chats.append_run("a", f"do {self.ISSUE}", "ok")
+        chats.append_run("b", f"redo {self.ISSUE}", "ok")
+        chats.append_run("c", f"do {other}", "ok")
+        chats.append_run("d", f"redo {other}", "ok")
+        chats.append_run("e", f"compare {self.ISSUE} and {other}", "ok")
+        self.assertIsNone(self._ws("e"))
+
+    def test_manual_assign_creates_and_moves(self):
+        chats.append_run("a", "untracked work", "ok")
+        wsid = workstreams.assign("a", title="Q4 cleanup")
+        self.assertTrue(wsid.startswith("ws-"))
+        self.assertEqual(workstreams.list_all()[0]["title"], "Q4 cleanup")
+        self.assertIsNone(workstreams.assign("a", "ws-nope"), "unknown workstream accepted")
+        self.assertIsNone(workstreams.assign("ghost", wsid), "unknown chat accepted")
+
+    def test_filed_chats_have_their_own_trim_pool_and_empty_workstreams_go(self):
+        with mock.patch.object(chats, "MAX_CHATS", 2), mock.patch.object(chats, "MAX_WORKSTREAM_CHATS", 2):
+            chats.append_run("a", f"do {self.ISSUE}", "ok")
+            chats.append_run("b", f"redo {self.ISSUE}", "ok")
+            for i in range(4):
+                chats.save({"id": f"p{i}", "title": "mine", "messages": [{"role": "user", "text": "x"}]})
+            self.assertIsNotNone(chats.get("a"), "a person's chats evicted a workstream's")
+            chats.append_run("c", f"third {self.ISSUE}", "ok")
+            self.assertIsNone(chats.get("a"), "the workstream pool is unbounded")
+        chats.delete("b")
+        chats.delete("c")
+        self.assertEqual(workstreams.list_all(), [])
+
+    def _corpus(self):
+        # Rarity is measured against every chat, so pad with unrelated ones.
+        for i in range(30):
+            chats.append_run(f"pad{i}", f"rotate the logs on host{i} please", "ok", title=f"logs {i}")
+
+    def test_a_chat_sharing_a_rare_word_with_the_name_is_suggested(self):
+        self._corpus()
+        chats.append_run("a", "is bedrock cheaper for serving the gemma models?", "ok")
+        wsid = workstreams.assign("a", title="Bedrock implementation")
+        chats.append_run("b", "Is Bedrock capable of serving qwen?", "ok")
+        self.assertEqual(workstreams.suggest(["b"]), {"b": {"id": wsid, "title": "Bedrock implementation"}})
+        self.assertIsNone(self._ws("b"), "a suggestion must never file the chat by itself")
+
+    def test_a_side_mention_in_a_member_chat_suggests_nothing(self):
+        # Live: every vLLM alert was suggested into "Bedrock implementation" through a filed
+        # chat's "gemma" — a word from the chat, not from the operator's name for the topic.
+        self._corpus()
+        chats.append_run("a", "is bedrock cheaper for serving the gemma models?", "ok")
+        workstreams.assign("a", title="Bedrock implementation")
+        chats.append_run("alert", "Critical: gemma pod restarting", "ok", labels=["event"])
+        self.assertEqual(workstreams.suggest(["alert"]), {})
+
+    def test_a_common_word_a_detached_chat_and_a_tie_suggest_nothing(self):
+        self._corpus()
+        chats.append_run("a", "rotate the logs", "ok")
+        workstreams.assign("a", title="Logs rotation")
+        chats.append_run("b", "the logs are huge", "ok")
+        self.assertEqual(workstreams.suggest(["b"]), {}, "a word in every chat suggested")
+        chats.append_run("c", "bedrock pricing", "ok")
+        workstreams.assign("c", title="Bedrock")
+        chats.append_run("d", "bedrock limits", "ok")
+        workstreams.assign("d")
+        self.assertEqual(workstreams.suggest(["d"]), {}, "a chat taken out was suggested back")
+        chats.append_run("e", "kafka lag", "ok")
+        workstreams.assign("e", title="Kafka")
+        chats.append_run("g", "redis eviction", "ok")
+        workstreams.assign("g", title="Redis")
+        chats.append_run("f", "redis and kafka", "ok")      # each word in exactly two chats
+        self.assertEqual(workstreams.suggest(["f"]), {}, "a tie picked one")
+
+    def test_a_busy_ingress_cannot_evict_another_origins_workstream_history(self):
+        with mock.patch.object(chats, "MAX_WORKSTREAM_CHATS", 2):
+            chats.append_run("a", f"do {self.ISSUE}", "ok")
+            chats.append_run("b", f"redo {self.ISSUE}", "ok")
+            for i in range(5):
+                chats.append_run(f"s{i}", f"{self.ISSUE} again?", "ok", labels=["slack"])
+            self.assertIsNotNone(chats.get("a"), "a Slack flood evicted a person's workstream chat")
+            self.assertIsNone(chats.get("s0"), "the ingress's own workstream pool is unbounded")
 
 
 class AuditRedactionTests(unittest.TestCase):

@@ -1004,6 +1004,41 @@ class HttpApiTests(unittest.TestCase):
             (chats_mod._DB, self.server._DISMISSED_PATH, self.server._wf_terminate,
              self.server.tc.run, self.server.TEMPORAL_OK) = saved
 
+    def test_workstream_routes_group_rename_and_ungroup_over_http(self):
+        """The whole round trip the board drives: two chats naming one issue group by
+        themselves, the list and timeline serve them, and rename/move/ungroup land."""
+        import chats as chats_mod
+        tmp = tempfile.mkdtemp(prefix="otto-ws-http-")
+        saved = chats_mod._DB
+        chats_mod._DB = os.path.join(tmp, "otto.db")
+        url = "https://github.com/acme/api/issues/7"
+        try:
+            for cid in ("w1", "w2"):
+                _post(self.base, "/api/chats/save", {"id": cid, "title": cid, "messages": [
+                    {"role": "user", "text": f"work on {url}"}]})
+            st, body = _get(self.base, "/api/workstreams")
+            self.assertEqual(st, 200)
+            [ws] = body["workstreams"]
+            self.assertEqual((ws["chats"], ws["refs"]), (2, ["acme/api#7"]))
+            st, tl = _get(self.base, "/api/workstreams/get?id=" + ws["id"])
+            self.assertEqual([i["id"] for i in tl["items"]], ["w1", "w2"])
+            self.assertEqual(_get(self.base, "/api/workstreams/get?id=nope")[0], 404)
+            self.assertEqual(_post(self.base, "/api/workstreams/rename",
+                                   {"id": ws["id"], "title": "Issue 7"})[0], 200)
+            self.assertEqual(_post(self.base, "/api/workstreams/rename",
+                                   {"id": ws["id"], "title": " "})[0], 400)
+            self.assertEqual(_post(self.base, "/api/workstreams/assign",
+                                   {"chat_id": "ghost", "workstream_id": ws["id"]})[0], 404)
+            st, got = _post(self.base, "/api/workstreams/assign", {"chat_id": "w2"})
+            self.assertEqual((st, got["workstream_id"]), (200, None))
+            [summ] = [c for c in _get(self.base, "/api/chats")[1]["chats"] if c["id"] == "w1"]
+            self.assertEqual(summ["workstream"]["title"], "Issue 7")
+            _post(self.base, "/api/workstreams/delete", {"id": ws["id"]})
+            self.assertEqual(_get(self.base, "/api/workstreams")[1]["workstreams"], [])
+        finally:
+            chats_mod._DB = saved
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_a_failure_never_ships_under_http_200(self):
         """Two routes answered `{"error": …}` with status 200. `fetch` resolves on a 200, and
         every client loader goes straight to `.json()` then `d.items or []`, so the failure

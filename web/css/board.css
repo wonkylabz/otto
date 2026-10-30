@@ -48,3 +48,37 @@
   .bcard, .bcard.fresh, .bcard.t-wait.fresh { animation: none; transition: none; }
   .bcard:hover { transform: none; }
 }
+
+/* Workstreams (workstreams.js). The chip wears the theme's ACCENT, filled and bold: accent text
+   alone was easy to miss beside the model chip. */
+.bchip.ws{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-line);font-weight:600;text-decoration:none;cursor:pointer;max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wsbar{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:6px 10px;border:1px solid var(--line);border-radius:8px}
+.wsbar span{flex:1}
+.hlabel.hws{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-line);max-width:72%;flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wsrefs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}
+.wslist{list-style:none;margin:0;padding:0;border-left:2px solid var(--line)}
+.wsitem{padding:8px 0 12px 14px}
+.wshead{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.wsprs,.wsacts{display:flex;gap:12px;margin-top:4px;font-size:12.5px}
+.wspick{max-height:220px;overflow-y:auto}
+.wspick .moderow{padding:4px 0}
+.wspick .wsname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wspick .wsn{font-size:12px;color:var(--dim)}
+.wstl a{color:var(--accent)}
+.wsrows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.wsrow{padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer}
+.wsrow:hover,.wsrow:focus{border-color:var(--accent);outline:none}
+.wsmeta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px;font-size:12.5px;color:var(--dim)}
+.hlabel.hws{cursor:pointer}
+.bchip.wssug{border-style:dashed;border-color:var(--accent-line);display:inline-flex;gap:6px;max-width:18em}
+.bchip.wssug a{color:var(--accent);font-weight:600;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.histitem .bchip.wssug{font-size:11px;padding:0 6px;flex:0 0 auto;max-width:72%}
+/* The board page's title is its view switch. Same heading type, so they must read as TABS, not one
+   title: a divider between them and an accent underline under the active view. */
+.viewswitch{display:flex;align-items:baseline}
+.viewswitch button{font:inherit;color:var(--dim);background:none;border:0;padding:0 0 4px;cursor:pointer;
+  border-bottom:3px solid transparent;opacity:.75}
+.viewswitch button + button{margin-left:16px;position:relative}
+.viewswitch button + button::before{content:"";position:absolute;left:-9px;top:18%;height:64%;border-left:1px solid var(--line-strong)}
+.viewswitch button:hover{opacity:1;border-bottom-color:var(--line-strong)}
+.viewswitch button.on{color:var(--text);opacity:1;border-bottom-color:var(--accent);cursor:default}

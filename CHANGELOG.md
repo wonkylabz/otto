@@ -11,6 +11,15 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Workstreams.** Group every chat about one ticket or PR. Chats that link the same GitHub
+  issue/PR or Jira ticket group by themselves; a chat sharing a rare word with a workstream's name
+  gets a one-click "Name?" suggestion; anything else is filed from its Swarm card
+  (**+ Workstream**). Swarm board's title now switches to a **Workstreams** view listing them all,
+  each opening a timeline of its chats, including runs the board no longer shows. A card's
+  workstream chip filters the board to it. Existing chats join as they are next written.
+
 ### Fixed
 
 - **Fast chat asks what you mean again.** An ambiguous message ("what is this alert?") gets the

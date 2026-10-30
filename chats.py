@@ -21,6 +21,7 @@ import json
 import attachments
 import config
 import storage
+import workstreams
 
 _DB = config.DB_PATH
 MAX_CHATS = 100        # keep the most-recent N UNPINNED chats; older ones are dropped
@@ -35,12 +36,18 @@ HUMAN_LABELS = {"retry"}
 _PER_TITLE = {"scheduled-job", "runbook"}
 
 
-def _pool(labels, title):
-    """None for a person's chat, else the key of the ingress pool it is trimmed in."""
+def _pool(labels, title, workstream=None):
+    """None for a person's chat, else the key of the ingress pool it is trimmed in. A filed chat
+    is trimmed with its workstream's peers: an ingress pool would evict the history a workstream
+    exists to keep, and a person's pool would lose a slot to every run it groups."""
     ingress = [x for x in (labels or []) if x not in HUMAN_LABELS]
+    if workstream:
+        # Per ORIGIN: a shared pool let one busy ingress evict every other workstream's history.
+        return ("workstream", ingress[0] if ingress else "")
     if not ingress:
         return None
     return (ingress[0], title if ingress[0] in _PER_TITLE else "")
+MAX_WORKSTREAM_CHATS = 300
 MAX_MESSAGES = 400     # per-chat safety cap
 
 
@@ -66,7 +73,10 @@ def _schema(conn):
     # COLUMN. Via storage.ensure_columns: the hand-rolled PRAGMA-then-ALTER raced, because
     # server.py and worker.py both connect at startup and both could see the column missing —
     # the loser then raised `duplicate column name` on an otherwise healthy install (issue #57).
-    storage.ensure_columns(conn, "chats", {"origin_run_id": "TEXT"})
+    storage.ensure_columns(conn, "chats", {"origin_run_id": "TEXT", "workstream_id": "TEXT",
+                                           "refs": "TEXT"})
+    conn.execute("""CREATE TABLE IF NOT EXISTS workstreams (
+        id TEXT PRIMARY KEY, title TEXT, refs TEXT, created TEXT, updated TEXT)""")
     # The sidebar's sort key, and the trim's "which are the oldest" question.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chats_order ON chats(pinned, updated, seq)")
     conn.execute("""CREATE TABLE IF NOT EXISTS messages (
@@ -136,6 +146,7 @@ def _chat(row, messages):
         "labels": _decode(row["labels"]),
         "pinned": bool(row["pinned"]),
         "stats": _decode(row["stats"]),
+        "workstream_id": row["workstream_id"] or None,
         "messages": messages,
         "created": row["created"],
         "updated": row["updated"],
@@ -148,8 +159,9 @@ def list_summaries():
     with _conn() as conn:
         rows = conn.execute("""
             SELECT c.id, c.title, c.updated, c.cap, c.labels, c.run_id, c.pinned,
-                   (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS n
-            FROM chats c
+                   (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS n,
+                   w.title AS ws_title, w.id AS ws_id
+            FROM chats c LEFT JOIN workstreams w ON w.id = c.workstream_id
             -- Pinned chats float to the top; within each group, newest first (`seq` breaks the
             -- tie when two saves land in the same second).
             ORDER BY c.pinned DESC, c.updated DESC, c.seq DESC
@@ -157,7 +169,8 @@ def list_summaries():
     return [{"id": r["id"], "title": r["title"] or "", "updated": r["updated"],
              "messages": r["n"], "cap": (_decode(r["cap"]) or {}).get("name"),
              "labels": _decode(r["labels"]) or [], "run_id": r["run_id"],
-             "pinned": bool(r["pinned"])}
+             "pinned": bool(r["pinned"]),
+             "workstream": {"id": r["ws_id"], "title": r["ws_title"]} if r["ws_id"] else None}
             for r in rows]
 
 
@@ -218,6 +231,10 @@ def _upsert_row(conn, cid, chat, *, keep_title=False, keep=()):
         else (prior["stats"] if prior else None),
         "cap": json.dumps(chat["cap"]) if chat.get("cap") is not None
         else ((prior["cap"] if prior else None) if "cap" in keep else None),
+        # INSERT OR REPLACE rewrites the whole row, so a column left out of `record` is WIPED:
+        # both are owned by workstreams.attach/assign, never by a chat writer.
+        "workstream_id": prior["workstream_id"] if prior else None,
+        "refs": prior["refs"] if prior else None,
         "created": (prior["created"] if prior else None) or _now(),
         "updated": _now(),
         # Monotonic per-save counter: the deterministic tiebreaker for ordering and trimming
@@ -260,10 +277,12 @@ def _trim_chats(conn):
     within the unpinned group it is allowed to touch. Ingress threads (`_pool`) are
     capped in pools of their own, so they never evict a person's conversations or each other."""
     kept, stale = {}, []
-    for r in conn.execute("SELECT id, title, labels FROM chats WHERE pinned = 0 "
+    for r in conn.execute("SELECT id, title, labels, workstream_id FROM chats WHERE pinned = 0 "
                           "ORDER BY updated DESC, seq DESC"):
-        pool = _pool(_decode(r["labels"]), r["title"])
-        if kept.get(pool, 0) < (MAX_CHATS if pool is None else MAX_RUN_CHATS):
+        pool = _pool(_decode(r["labels"]), r["title"], r["workstream_id"])
+        cap = (MAX_CHATS if pool is None else
+               MAX_WORKSTREAM_CHATS if pool[0] == "workstream" else MAX_RUN_CHATS)
+        if kept.get(pool, 0) < cap:
             kept[pool] = kept.get(pool, 0) + 1
         else:
             stale.append(r["id"])
@@ -271,6 +290,7 @@ def _trim_chats(conn):
         marks = ", ".join("?" * len(stale))
         conn.execute(f"DELETE FROM messages WHERE chat_id IN ({marks})", stale)
         conn.execute(f"DELETE FROM chats WHERE id IN ({marks})", stale)
+        workstreams.gc(conn)
 
 
 def _trim_messages(conn, cid):
@@ -302,6 +322,7 @@ def save(chat):
             "INSERT INTO messages (chat_id, seq, role, text, ts, pending, attachments) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(cid, i) + v for i, v in enumerate(_row_values(messages))])
+        workstreams.attach(conn, cid)
         _trim_chats(conn)
     return cid
 
@@ -343,6 +364,7 @@ def append_messages(cid, messages, *, fill_pending=False, keep=(), **fields):
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             [(cid, nxt + i) + v for i, v in enumerate(_row_values(pending))])
         _trim_messages(conn, cid)
+        workstreams.attach(conn, cid)
         _trim_chats(conn)
     return cid
 
@@ -502,3 +524,4 @@ def delete(cid):
     with _conn() as conn, storage.tx(conn):
         conn.execute("DELETE FROM messages WHERE chat_id = ?", (cid,))
         conn.execute("DELETE FROM chats WHERE id = ?", (cid,))
+        workstreams.gc(conn)
