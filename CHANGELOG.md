@@ -18,12 +18,8 @@ changelog that restates it is a second copy of `git log`.
   or judge. Work that needs a change is handed off to a normal routed run, which still shows its
   plan and waits for your approval. A pinned `/capability`, a repo pick or plan mode takes the full
   path as before. A message that asks for a change skips the quick answer and goes straight to the
-  approval path, and a quick answer that dies on a local model is retried once on Claude.
-
-### Security
-
-- A resumed Codex session can no longer run a turn meant to have no tools with Codex's shell. The
-  "never on Codex" check for that kind of turn now runs after a resume picks its backend.
+  approval path, and a quick answer that dies on a local model is retried once on Claude. In a chat
+  running on Codex, a follow-up that asks for a change tells you to start a new chat instead.
 
 ### Fixed
 
