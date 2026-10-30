@@ -29,15 +29,21 @@ served here — their OAuth lives inside Claude Code — so `engine.run_attempt`
 needs one on the Claude backend rather than letting it discover the gap one hallucinated call
 at a time. Caps that need a repo `.mcp.json` (`cap.mcp_config`) also stay on Claude.
 """
+import fcntl
 import glob as globmod
 import io
 import json
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
+import struct
 import subprocess
 import tempfile
+import termios
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -313,6 +319,112 @@ def _rule_text(rules):
     return ", ".join(" ".join(p) for p, _ in rules) or "(nothing)"
 
 
+# What one Bash result keeps of a pipe: its head and its tail, under `_clip`'s char budget.
+_DRAIN_HEAD, _DRAIN_TAIL, _DRAIN_RING = 4_000, 10_000, 256_000
+_DRAIN_SETTLE_MAX_S = 2.0
+# The process groups this run's Bash calls started, killed when `run_json` ends: a `server &`
+# lives for the rest of the run, never past it (no port held, no drainer pinned in the worker).
+_JOBS = contextvars.ContextVar("otto_local_jobs", default=None)
+
+
+_BG_NOISE_HINT = ("\n(A background job started here still writes to this output and crowded it. "
+                  "Redirect it: `cmd > /tmp/job.log 2>&1 &`.)")
+
+
+def _unread(fd):
+    """Bytes waiting in the pipe."""
+    return struct.unpack("i", fcntl.ioctl(fd, termios.FIONREAD, b"\0\0\0\0"))[0]
+
+
+def _drain(stream):
+    """Read `stream` to EOF on a daemon thread, so a background job holding it never blocks the
+    call or dies of SIGPIPE. Its head and a rolling tail are kept; `_drained` asks for a MARK."""
+    fd = stream.fileno()
+    sink = {"head": bytearray(), "ring": bytearray(), "total": 0, "upto": None, "mark": None,
+            "want": threading.Event(), "marked": threading.Event()}
+
+    def snap(upto):
+        ring = bytes(sink["ring"])
+        ring = ring[:len(ring) - (sink["total"] - upto)]
+        sink["mark"] = (bytes(sink["head"][:upto]), ring, upto)
+        sink["marked"].set()
+
+    def run():
+        try:
+            while True:
+                # The shell has exited (want), so all it wrote is either read or still in the
+                # pipe: it ends by `upto`. Bytes past it are a background job's, and dropped.
+                if sink["want"].is_set() and sink["upto"] is None:
+                    sink["upto"] = sink["total"] + _unread(fd)
+                if (sink["upto"] is not None and not sink["marked"].is_set()
+                        and sink["total"] >= sink["upto"]):
+                    snap(sink["upto"])
+                if not select.select([fd], [], [], 0.05)[0]:
+                    continue
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                room = _DRAIN_HEAD - len(sink["head"])
+                if room > 0:
+                    sink["head"] += chunk[:room]
+                sink["ring"] = (sink["ring"] + chunk)[-_DRAIN_RING:]
+                sink["total"] += len(chunk)
+        except OSError:
+            pass
+        finally:
+            if not sink["marked"].is_set():
+                snap(sink["total"])
+            stream.close()
+    sink["thread"] = threading.Thread(target=run, daemon=True)
+    sink["thread"].start()
+    return sink
+
+
+def _drained(sink):
+    """The pipe's output up to the mark (bounded wait; a pipe a job never lets empty falls back
+    to what was read so far), as head + tail."""
+    sink["want"].set()
+    sink["marked"].wait(_DRAIN_SETTLE_MAX_S)
+    head, ring, total = sink["mark"] or (bytes(sink["head"]), bytes(sink["ring"]), sink["total"])
+    if total <= _DRAIN_HEAD + _DRAIN_TAIL:
+        out = ring[-total:] if total else b""
+    else:
+        tail = ring[-_DRAIN_TAIL:]
+        gap = f"\n… ({total - len(head) - len(tail)} bytes elided) …\n".encode()
+        out = head + gap + tail
+        if sink["thread"].is_alive():
+            # Output interleaved with the command's own can't be told apart from it.
+            out += _BG_NOISE_HINT.encode()
+    return out.decode(errors="replace")
+
+
+def _group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _reap(pgids):
+    """Kill what this run's Bash calls left running. POSIX never reuses a group's id while the
+    group lives, and its leader (the shell) was already waited on — so a live PROCESS holding
+    the number means the group ended and the number was reused: never ours to kill. Accepted:
+    a reused number whose new leader already EXITED looks like ours (needs a pid wrap mid-run)."""
+    for pgid in pgids or ():
+        try:
+            os.getsid(pgid)
+            continue
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            continue
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 def _t_bash(args, cwd, mode=None):
     """`mode` is "confined" for the execution shell, None only under `OTTO_LOCAL_ALLOW_UNGUARDED`,
     "sandbox" for a bwrap read-only one,
@@ -336,24 +448,22 @@ def _t_bash(args, cwd, mode=None):
     else:
         argv, use_shell_cwd = ["bash", "-lc", cmd], True
     try:
-        # `subprocess.run(timeout=)` kills only the process it started, so a timed-out
-        # `bash -lc "terraform apply & ..."` left its children running while the tool result already
-        # said it had timed out. Own process group + `kill_tree`, same as the `claude -p` watchdog.
+        # The call waits on the SHELL, never on EOF: a `cmd &` inherits the pipes and holds them
+        # open. A thread per pipe keeps draining after the call returns, so that job never blocks
+        # it, never dies of SIGPIPE, and never fills a file nobody reads; only the head is kept.
         proc = subprocess.Popen(argv, cwd=(cwd or None) if use_shell_cwd else None,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 start_new_session=True, env=env)
+        sinks = [_drain(proc.stdout), _drain(proc.stderr)]
         try:
-            stdout, stderr = proc.communicate(timeout=config.LOCAL_TOOL_TIMEOUT_S)
+            proc.wait(timeout=config.LOCAL_TOOL_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             claude_cli.kill_tree(proc)
-            # Reap, and drain the pipes the kill just orphaned. Bounded: a grandchild that put
-            # itself in its OWN group survives the group kill and would otherwise hold the pipe
-            # open forever, hanging the tool call instead of returning its timeout.
-            try:
-                proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
+            proc.wait()
             raise                       # the caller turns this into the tool's error text
+        if _JOBS.get() is not None and _group_alive(proc.pid):
+            _JOBS.get().append(proc.pid)        # start_new_session: its pid IS its pgid
+        stdout, stderr = (_drained(s) for s in sinks)
         out = (stdout or "") + (("\n" + stderr) if stderr else "")
         out = out.strip() or "(no output)"
         if proc.returncode != 0:
@@ -1317,6 +1427,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     tools_used = set()             # tools this turn actually CALLED — the judge's real grant
     max_turns = m.get("max_turns") or config.LOCAL_RUNTIME_MAX_TURNS
     draft = _PARTIAL.set(claude_cli.PartialSink(transcript) if transcript else None)
+    jobs = _JOBS.set([])
     try:
         for _turn in range(max_turns):
             if abort is not None and abort.is_set():
@@ -1507,6 +1618,8 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
         result, is_error = f"(local runtime error: {e})"[:500], True
     finally:
         _PARTIAL.reset(draft)
+        _reap(_JOBS.get())
+        _JOBS.reset(jobs)
         # Persist the session only for a SUCCESSFUL turn: saving on error left the failed
         # resume's unanswered user message (and duplicated context) in the stored history,
         # compounding on every retry (observed: a session with three stacked user turns).

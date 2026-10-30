@@ -965,6 +965,53 @@ class LocalRuntimeTests(unittest.TestCase):
             {"id": cid, "type": "function",
              "function": {"name": name, "arguments": json.dumps(args)}}]}
 
+    def test_a_background_job_lives_for_the_run_and_dies_with_it(self):
+        """Cross-call persistence is per RUN: a `server &` left behind would hold its port and
+        pin two drainer threads in the worker for good."""
+        pid = os.path.join(self.tmp, "bg.pid")
+        alive_mid = []
+
+        def check_alive():
+            with open(pid) as f:
+                n = int(f.read())
+            os.kill(n, 0)
+            alive_mid.append(n)
+            return "ok"
+        self._script([
+            self._tool_call("Bash", {"command": f"sleep 600 & echo $! > {pid}; echo up"}),
+            {"role": "assistant", "content": "started"},
+        ])
+        real_post = local_runtime._post
+
+        def post(m, body, timeout):
+            if len(self.requests) == 1:
+                check_alive()              # the job is up between the run's turns
+            return real_post(m, body, timeout)
+        local_runtime._post = post
+        local_runtime.run_json("start it", allowed_tools=config.READ_TOOLS,
+                               model_entry=self.MODEL, cwd=self.tmp)
+        self.assertEqual(len(alive_mid), 1)
+        n = alive_mid[0]
+        for _ in range(50):
+            try:
+                os.kill(n, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(n, signal.SIGKILL)
+            self.fail("the run ended and left its background job running")
+
+    def test_reaping_never_kills_a_group_whose_number_was_reused(self):
+        """A recorded group that ended frees its number; a newcomer leading a group under it
+        is alive as a PROCESS, which ours (the waited-on shell) never is."""
+        other = subprocess.Popen(["sleep", "600"], start_new_session=True)
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        local_runtime._reap([other.pid])
+        with self.assertRaises(subprocess.TimeoutExpired, msg="the reap killed a group it never started"):
+            other.wait(timeout=0.5)
+
     def test_tool_loop_executes_and_feeds_back(self):
         with open(os.path.join(self.tmp, "notes.txt"), "w") as f:
             f.write("hello local\n")
@@ -9291,14 +9338,54 @@ class LocalExecShellConfinementTests(unittest.TestCase):
     @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
     def test_a_background_process_outlives_its_call(self):
         """A PID namespace killed every `cmd &` when the call returned, so a run starting a
-        server in one Bash call found nothing listening in the next."""
+        server in one Bash call found nothing listening in the next. The call must also RETURN:
+        a `cmd &` holding the output pipe blocked it until the timeout's group kill took it down
+        (and a 30s sleep that merely outlived the call raced its own reaping)."""
         pid = os.path.join(self.tmp, "bg.pid")
-        local_runtime._t_bash({"command": f"sleep 30 & echo $! > {pid}"}, self.tmp,
-                              mode="confined")
+        with mock.patch.object(config, "LOCAL_TOOL_TIMEOUT_S", 20):
+            t0 = time.monotonic()
+            out = local_runtime._t_bash({"command": f"sleep 600 & echo $! > {pid}; echo up"},
+                                        self.tmp, mode="confined")
+            took = time.monotonic() - t0
         with open(pid) as f:
             n = int(f.read())
+        self.addCleanup(lambda: os.kill(n, signal.SIGKILL))
+        self.assertLess(took, 15, "the call waited on its background child")
+        self.assertEqual(out, "up")
         os.kill(n, 0)
-        os.kill(n, signal.SIGKILL)
+
+    def test_a_background_job_never_blocks_the_call_or_dies_writing_after_it(self):
+        """No sandbox needed (so CI runs it): the pipe-hold is the shell's, not bwrap's. A job
+        still writing after the call returned must neither get SIGPIPE nor be read by the call."""
+        pid = os.path.join(self.tmp, "bg2.pid")
+        cmd = (f"(sleep 1; for i in $(seq 200000); do echo chatter; done; sleep 600) & "
+               f"echo $! > {pid}; printf '\\xff ok'")
+        with mock.patch.object(config, "LOCAL_TOOL_TIMEOUT_S", 20):
+            t0 = time.monotonic()
+            out = local_runtime._t_bash({"command": cmd}, self.tmp, mode=None)
+            took = time.monotonic() - t0
+        with open(pid) as f:
+            n = int(f.read())
+        pgid = os.getpgid(n)                     # the shell's session, not the subshell's pid
+        self.addCleanup(lambda: os.killpg(pgid, signal.SIGKILL))
+        self.assertLess(took, 5, "the call waited on its background child")
+        self.assertEqual(out, "\ufffd ok", "undecodable bytes are replaced, never raised")
+        time.sleep(3)
+        os.kill(n, 0)   # survived ~1.2MB of writes after the call returned: no SIGPIPE
+
+    def test_a_chatty_background_job_never_crowds_out_the_commands_own_output(self):
+        pid = os.path.join(self.tmp, "bg3.pid")
+        """A server's startup burst fills the head; the command's own last line is the TAIL."""
+        cmd = (f"(seq 1 60000; sleep 600) & echo $! > {pid}; sleep 0.5; echo MINE-LAST")
+        with mock.patch.object(config, "LOCAL_TOOL_TIMEOUT_S", 20):
+            out = local_runtime._t_bash({"command": cmd}, self.tmp, mode=None)
+        with open(pid) as f:
+            pgid = os.getpgid(int(f.read()))
+        self.addCleanup(lambda: os.killpg(pgid, signal.SIGKILL))
+        self.assertTrue(out.startswith("1\n2\n3\n"), out[:40])
+        self.assertIn("bytes elided", out)
+        self.assertIn("MINE-LAST", out)
+        self.assertIn("Redirect it", out, "the model is told how to keep a job's noise out")
 
     @unittest.skipUnless(local_runtime.sandbox_available(), "no usable bwrap here")
     def test_the_read_deny_set_is_masked_and_writes_still_land(self):
