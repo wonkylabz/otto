@@ -8898,6 +8898,25 @@ class WorkflowReplayCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             hist = WorkflowHistory.from_json("replay-fixture", json.load(fh))
         await Replayer(workflows=[OttoWorkflow]).replay_workflow(hist)
 
+    async def test_a_fast_chat_turn_from_before_its_clarify_step_still_replays(self):
+        """Fast chat shipped without clarify; a turn in flight when it came back must not hit a
+        `clarify_request` its history never scheduled (`patched("fronted-clarify")`)."""
+        import json
+        from temporalio.client import WorkflowHistory
+        from temporalio.worker import Replayer
+        from workflows import OttoWorkflow
+        path = os.path.join(os.path.dirname(self.FIXTURE), "history-fast-chat-pre-clarify.json")
+        with open(path, encoding="utf-8") as fh:
+            events = json.load(fh)
+        order = [e["activityTaskScheduledEventAttributes"]["activityType"]["name"]
+                 for e in events["events"]
+                 if e["eventType"] == "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED"]
+        self.assertIn("run_capability", order)
+        self.assertNotIn("clarify_request", order, "not a pre-clarify fast-chat history")
+        # The recorded id: child ids (`<wid>-learn1`) are derived from it.
+        await Replayer(workflows=[OttoWorkflow]).replay_workflow(
+            WorkflowHistory.from_json("web-66b5d68a", events))
+
     def test_the_fixture_still_covers_the_loops_it_was_recorded_for(self):
         """A fixture that lost the post-PR half would replay green while proving nothing about
         the code this test exists to protect."""
@@ -8940,7 +8959,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self._orig_caps = activities._caps
         activities._caps = [front, writer]
         self.pre_run = []
-        engine.clarify = lambda *a, **k: self.pre_run.append("clarify") or None
+        self.clarify_q = None
+        engine.clarify = lambda *a, **k: self.pre_run.append("clarify") or self.clarify_q
         self.write_intent = False
         engine.request_write_intent = lambda *a, **k: (self.pre_run.append("intent")
                                                        or self.write_intent)
@@ -8967,8 +8987,12 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.errors_left, self.local_off, self.err_backend = 0, [], "local"
         self.toolless, self.handoff_says = [], "DELEGATE: " + self.TASK
 
+        self.frontman_requests = []
+
         def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
             self.calls.append((cap.name, frontman, request[:40]))
+            if frontman:
+                self.frontman_requests.append(request)
             self.local_off.append(k.get("local_disabled", False))
             if k.get("fast_lane") == []:
                 self.toolless.append(request)
@@ -9008,7 +9032,8 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
 
     relay_says = "Bumped it — the PR is up."
 
-    async def _drive(self, frontman_says, approve=None, resume=None, web=False, trusted=False):
+    async def _drive(self, frontman_says, approve=None, resume=None, web=False, trusted=False,
+                     answer=None):
         import asyncio
         import uuid
         from workflows import OttoWorkflow
@@ -9049,6 +9074,14 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     h = await env.client.start_workflow(OttoWorkflow.run, params, id=wid,
                                                         task_queue="fmq")
+                    if answer is not None:
+                        for _ in range(200):
+                            if (await h.query(OttoWorkflow.status)).get("awaiting_clarification"):
+                                break
+                            await asyncio.sleep(0.05)
+                        else:
+                            raise AssertionError("the run never asked its clarifying question")
+                        await h.signal(OttoWorkflow.provide_clarification, answer)
                     if approve is not None:
                         child = env.client.get_workflow_handle(f"{wid}-d1")
                         for _ in range(200):
@@ -9106,14 +9139,27 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[2], self.relay_says, "the relay is its own attempt")
 
     async def test_a_web_chat_turn_answers_in_one_unjudged_attempt(self):
-        """The fast chat: no clarify and no judge — the person is reading. The write-intent guard
-        stays: the assistant still holds Bash and inherited connectors."""
+        """The fast chat: no routing and no judge — the person is reading. Clarify and the
+        write-intent guard stay, run side by side: the assistant holds Bash and connectors, and
+        without clarify an ambiguous ask went tool-hunting instead of asking."""
         wid, out = await self._drive("It's the events URL.", web=True)
         self.assertEqual(out["result"], "It's the events URL.")
-        self.assertEqual(self.pre_run, ["intent"])
+        self.assertEqual(sorted(self.pre_run), ["clarify", "intent"])
         self.assertEqual(self.judged, [])
         self.assertIsNone(out.get("verified"))
         self.assertEqual([c[:2] for c in self.calls], [("assistant", True)])
+
+    async def test_an_ambiguous_web_chat_ask_gets_the_question_box_not_a_tool_hunt(self):
+        """web-db296f66: "what is this alert?" spent 21s searching Grafana and New Relic, then
+        said it couldn't tell; with fast chat off, clarify asked in 3s."""
+        self.clarify_q = "Which alert do you mean?"
+        wid, out = await self._drive("It's the disk alert on the staging cluster.", web=True,
+                                     answer="the disk one on staging")
+        asked = [c for c in self.calls if c[:2] == ("assistant", True)]
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(sorted(self.pre_run), ["clarify", "intent", "intent"],
+                         "the write check must re-run on the clarified request")
+        self.assertIn("(clarification)", self.frontman_requests[0])
 
     async def test_an_errored_web_chat_turn_gets_one_retry_off_local(self):
         """`ladder.fix_backstop`: a dead local attempt re-runs once on Claude, bounded."""

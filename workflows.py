@@ -926,10 +926,13 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # reading (contracts._THINKING_PARTNER_FORMAT: "ending on a question is a complete
             # answer"). A separate clarify call ahead of it is a second LLM round-trip that
             # blocks the very first turn on a modal prompt — the opposite of what the mode is for.
-            # A fronted turn asks in-band too; its write-intent guard still runs, and hands off.
+            # A fronted turn KEEPS clarify: it runs alongside the write-intent guard that turn pays
+            # anyway, so it costs nothing, and without it an ambiguous ask ("what is this alert?")
+            # sent the frontman tool-hunting for 20s instead of asking (web-db296f66).
             classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))
                             and not _is_brainstorm(cap))
-            clarify_due = (not subtask and not _is_brainstorm(cap) and not self._fronted
+            clarify_due = (not subtask and not _is_brainstorm(cap)
+                           and (not self._fronted or workflow.patched("fronted-clarify"))
                            and (not unattended or params.get("clarify")))
             # The write-intent guard reads only the request, so it runs WHILE clarify does; a
             # clarification changes the request, and then it is asked again.

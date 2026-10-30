@@ -4916,8 +4916,9 @@ class BrainstormModeTests(unittest.TestCase):
         `intent["redirect"]` is skipped for a PINNED cap, so a write-shaped musing would fall
         through to the risk bump and park the conversation behind an approval card."""
         src = workflow_src()
-        self.assertIn('clarify_due = (not subtask and not _is_brainstorm(cap) and not self._fronted\n'
-                      '                           and (not unattended or params.get("clarify")))', src)
+        self.assertIn('clarify_due = (not subtask and not _is_brainstorm(cap)\n', src)
+        self.assertIn('and (not self._fronted or workflow.patched("fronted-clarify"))', src)
+        self.assertIn('and (not unattended or params.get("clarify")))', src)
         self.assertIn('classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))\n'
                       '                            and not _is_brainstorm(cap))', src)
 
