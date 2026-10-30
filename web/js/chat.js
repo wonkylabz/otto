@@ -522,7 +522,7 @@ async function loadChatList(){
   // working (the poll re-renders only when something actually changed).
   // histShown rides in the signature: "show more" re-renders through this same guard, and
   // without it the click would be swallowed as an unchanged poll.
-  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title]), activeChat&&activeChat.id, histShown]);
+  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title,c.ws_suggest&&c.ws_suggest.id]), activeChat&&activeChat.id, histShown]);
   if(el.dataset.sig===sig) return;
   el.dataset.sig=sig;
   const keepScroll=el.scrollTop;
@@ -530,7 +530,7 @@ async function loadChatList(){
   el.innerHTML = items.length ? page.map(c=>`
     <div class="histitem ${activeChat&&activeChat.id===c.id?'active':''}" data-chat="${esc(c.id)}">
       <div class="htitle">${esc(c.title||'Untitled')}</div>
-      <div class="hmeta">${(c.labels||[]).map(l=>`<span class="hlabel" title="${esc(l)}">${esc(HLABEL_SHORT[l]||l)}</span>`).join("")}${c.workstream?`<span class="hlabel hws" title="workstream: ${esc(c.workstream.title)}">&#9776; ${esc(c.workstream.title)}</span>`:''}${c.cap?`<span class="hcap" title="${esc(c.cap)}">${esc(c.cap)}</span>·`:''}<span class="hcount">${c.messages} msg</span></div>
+      <div class="hmeta">${(c.labels||[]).map(l=>`<span class="hlabel" title="${esc(l)}">${esc(HLABEL_SHORT[l]||l)}</span>`).join("")}${c.workstream?`<span class="hlabel hws" data-wstl="${esc(c.workstream.id)}" title="workstream: ${esc(c.workstream.title)} — open its timeline">&#9776; ${esc(c.workstream.title)}</span>`:wsSuggestChip(c.id, c.ws_suggest, false)}${c.cap?`<span class="hcap" title="${esc(c.cap)}">${esc(c.cap)}</span>·`:''}<span class="hcount">${c.messages} msg</span></div>
       ${c.run_id?`<span class="hspin spin" title="working…"></span>`:''}
       <button class="hpin ${c.pinned?'on':''}" data-pinchat="${esc(c.id)}" data-pinned="${c.pinned?1:0}" title="${c.pinned?'unpin':'pin'}"><svg viewBox="0 0 24 24" fill="${c.pinned?'currentColor':'none'}" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
       <button class="hdel" data-delchat="${esc(c.id)}" title="delete">&times;</button>
@@ -540,8 +540,10 @@ async function loadChatList(){
   const more=document.getElementById("hist-more");
   if(more) more.addEventListener("click",()=>{ histShown+=HIST_PAGE; loadChatList(); });
   el.querySelectorAll("[data-chat]").forEach(d=>d.addEventListener("click",e=>{
-    if(e.target.closest("[data-delchat]")||e.target.closest("[data-pinchat]")) return; openChat(d.dataset.chat);
+    if(e.target.closest("[data-delchat]")||e.target.closest("[data-pinchat]")||e.target.closest("[data-wstl]")||e.target.closest(".wssug")) return; openChat(d.dataset.chat);
   }));
+  wireSuggestions(el, loadChatList);
+  el.querySelectorAll("[data-wstl]").forEach(x=>x.addEventListener("click",e=>{ e.stopPropagation(); openWorkstream(x.dataset.wstl, false); }));
   el.querySelectorAll("[data-pinchat]").forEach(b=>b.addEventListener("click",async e=>{
     e.stopPropagation();
     await postOr("/api/chats/pin",{id:b.dataset.pinchat, pinned:b.dataset.pinned!=="1"},"pinning that chat");

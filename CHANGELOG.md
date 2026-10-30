@@ -13,11 +13,12 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
-- **Workstreams.** Chats that link the same GitHub issue/PR or Jira ticket are grouped
-  automatically, and any chat can be filed by hand from its Swarm card (**+ Workstream**). A card's
-  workstream chip filters the board to it; **Timeline** shows every chat in it, oldest first,
-  including runs the board has stopped showing. Nothing to configure; existing chats join as they
-  are next written.
+- **Workstreams.** Group every chat about one ticket or PR. Chats that link the same GitHub
+  issue/PR or Jira ticket group by themselves; a chat sharing a rare word with a workstream's name
+  gets a one-click "Name?" suggestion; anything else is filed from its Swarm card
+  (**+ Workstream**). Swarm board's title now switches to a **Workstreams** view listing them all,
+  each opening a timeline of its chats, including runs the board no longer shows. A card's
+  workstream chip filters the board to it. Existing chats join as they are next written.
 
 ### Fixed
 

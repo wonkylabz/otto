@@ -124,7 +124,7 @@ const _boardSignature=d=>JSON.stringify({t:d.temporal,ui:d.ui,items:(d.items||[]
   it.id,it.run_id,it.status,it.phase,it.stage,it.verified,it.needs_human,it.pr,it.outcome,it.model,
   it.fallback_from,it.fallback_reason,it.retried_to,it.question,it.risk,it.risk_reason,it.cap,
   it.repo,it.in_place,it.scheduled,it.chat_key,it.start,it.end,it.replaced_by,
-  it.workstream&&it.workstream.id,it.workstream&&it.workstream.title,it.kind,it.archived]),ws:BOARD_WS});
+  it.workstream&&it.workstream.id,it.workstream&&it.workstream.title,it.ws_suggest&&it.ws_suggest.id,it.kind,it.archived]),ws:BOARD_WS,mode:BOARD_MODE});
 let _boardPress=0;   // ms timestamp of a press held on the board; 0 = none
 document.addEventListener("pointerdown",e=>{ _boardPress=e.target.closest("#boardview")?Date.now():0; },true);
 document.addEventListener("pointerup",()=>{ _boardPress=0; },true);
@@ -143,7 +143,7 @@ async function loadBoard(silent){
     return;
   }
   const sig=_boardSignature(data);
-  if(silent && sig===_boardSig){ loadBoardHealth(); return; }  // nothing changed — no DOM churn
+  if(silent && sig===_boardSig){ if(BOARD_MODE==="workstreams") renderWorkstreamsView(el, true); else loadBoardHealth(); return; }  // nothing changed — no DOM churn
   if(silent && _boardPress && Date.now()-_boardPress<5000) return;   // a rebuild between mousedown and mouseup drops the click; sig stays stale so the next poll repaints
   _boardSig=sig;
   const needsYou=it=>{
@@ -173,6 +173,8 @@ async function loadBoard(silent){
   cols.needs.sort((a,b)=>closedAt(b).localeCompare(closedAt(a)));
   setBoardBadge(cols.needs.length+cols.waiting.length);
   mascotFleet({run:cols.running, waiting:cols.waiting.length, needs:cols.needs.length});
+  // The badge and the mascot stay live whichever view is up; the Workstreams view is the list.
+  if(BOARD_MODE==="workstreams") return renderWorkstreamsView(el, silent);
   // The badge and the mascot count EVERY run; a workstream filter narrows only the columns.
   if(BOARD_WS) for(const k in cols) cols[k]=cols[k].filter(it=>it.workstream&&it.workstream.id===BOARD_WS);
   const card=it=>{
@@ -237,7 +239,7 @@ async function loadBoard(silent){
     // the full, comfortably-laid-out text in a modal instead of squinting at a cramped 3-line box.
     const truncated=(it.outcome||"").endsWith("…");
     const statusCls=it.verified===true?'ok':(failed?'bad':(it._needs?'warn':''));
-    const wsc=wsChip(it.workstream);
+    const wsc=it.workstream?wsChip(it.workstream):wsSuggestChip(it.chat_key, it.ws_suggest, true);
     const chips=[needs,advisory,stage,wsc,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',isSub?'<span class="bchip">sub-task</span>':'',inplace,archived].filter(Boolean).join('');
     // A tone per column for the card's left rail, and `fresh` only on a card this tab has not
     // painted before: the board REBUILDS on every change, so an entrance on every card would
@@ -267,9 +269,7 @@ async function loadBoard(silent){
     <div class="bcolhead ${cls}" title="${tip}">${title} <span class="bcount">${items.length}</span></div>
     ${items.map(card).join("") || `<p class="memempty bempty">${EMPTY[cls]||"none"}</p>`}</div>`;
   el.innerHTML=`
-    <div class="phead"><h1>Swarm board</h1>
-      <p class="sub">Live Temporal runs, refreshed automatically.</p>
-      <div class="pside" id="board-health"></div></div>
+    ${boardHead("Live Temporal runs, refreshed automatically.")}
     ${wsFilterBar(data.items||[])}
     <div class="board">
       ${col("Awaiting you",cols.waiting,"wait","paused mid-flight — approve, deny, or answer the clarification")}
@@ -280,6 +280,7 @@ async function loadBoard(silent){
   // Seeded on the first paint (so opening the tab animates nothing), then grows with each card.
   (data.items||[]).forEach(it=>BOARD_SEEN.add(it.id));
   loadBoardHealth();
+  wireBoardHead(el);
   wireWorkstreams(el, ()=>loadBoard());
   el.querySelectorAll("[data-plan]").forEach(x=>x.addEventListener("click",e=>{ e.preventDefault(); openPlanModal(byId[x.dataset.plan]); }));
   el.querySelectorAll("[data-approve]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.approve,true,b.dataset.rev)));

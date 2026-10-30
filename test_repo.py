@@ -2501,6 +2501,46 @@ class WorkstreamTests(unittest.TestCase):
         chats.delete("c")
         self.assertEqual(workstreams.list_all(), [])
 
+    def _corpus(self):
+        # Rarity is measured against every chat, so pad with unrelated ones.
+        for i in range(30):
+            chats.append_run(f"pad{i}", f"rotate the logs on host{i} please", "ok", title=f"logs {i}")
+
+    def test_a_chat_sharing_a_rare_word_with_the_name_is_suggested(self):
+        self._corpus()
+        chats.append_run("a", "is bedrock cheaper for serving the gemma models?", "ok")
+        wsid = workstreams.assign("a", title="Bedrock implementation")
+        chats.append_run("b", "Is Bedrock capable of serving qwen?", "ok")
+        self.assertEqual(workstreams.suggest(["b"]), {"b": {"id": wsid, "title": "Bedrock implementation"}})
+        self.assertIsNone(self._ws("b"), "a suggestion must never file the chat by itself")
+
+    def test_a_side_mention_in_a_member_chat_suggests_nothing(self):
+        # Live: every vLLM alert was suggested into "Bedrock implementation" through a filed
+        # chat's "gemma" — a word from the chat, not from the operator's name for the topic.
+        self._corpus()
+        chats.append_run("a", "is bedrock cheaper for serving the gemma models?", "ok")
+        workstreams.assign("a", title="Bedrock implementation")
+        chats.append_run("alert", "Critical: gemma pod restarting", "ok", labels=["event"])
+        self.assertEqual(workstreams.suggest(["alert"]), {})
+
+    def test_a_common_word_a_detached_chat_and_a_tie_suggest_nothing(self):
+        self._corpus()
+        chats.append_run("a", "rotate the logs", "ok")
+        workstreams.assign("a", title="Logs rotation")
+        chats.append_run("b", "the logs are huge", "ok")
+        self.assertEqual(workstreams.suggest(["b"]), {}, "a word in every chat suggested")
+        chats.append_run("c", "bedrock pricing", "ok")
+        workstreams.assign("c", title="Bedrock")
+        chats.append_run("d", "bedrock limits", "ok")
+        workstreams.assign("d")
+        self.assertEqual(workstreams.suggest(["d"]), {}, "a chat taken out was suggested back")
+        chats.append_run("e", "kafka lag", "ok")
+        workstreams.assign("e", title="Kafka")
+        chats.append_run("g", "redis eviction", "ok")
+        workstreams.assign("g", title="Redis")
+        chats.append_run("f", "redis and kafka", "ok")      # each word in exactly two chats
+        self.assertEqual(workstreams.suggest(["f"]), {}, "a tie picked one")
+
     def test_a_busy_ingress_cannot_evict_another_origins_workstream_history(self):
         with mock.patch.object(chats, "MAX_WORKSTREAM_CHATS", 2):
             chats.append_run("a", f"do {self.ISSUE}", "ok")

@@ -917,8 +917,10 @@ async def _board(limit=40):
             e["chat_key"] = chats.find_by_run_origin(e["id"])
     # Resolved per pass like chat_key: a chat is filed (or moved) long after its card froze.
     filed = workstreams.by_chat()
+    hints = workstreams.suggest([e.get("chat_key") for e in out if e.get("chat_key") not in filed])
     for e in out:
         e["workstream"] = filed.get(e.get("chat_key"))
+        e["ws_suggest"] = hints.get(e.get("chat_key"))
     replaced = _replaced_by(out)
     fac = factory.load()
     # Only a card still ON the board can carry the ticket: one the operator dismissed, or the
@@ -1886,7 +1888,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"repos": [
                 {"name": r["name"], "origin": r["origin"]} for r in workspace.git_repos()]}))
         elif self.path == "/api/chats":
-            self._send(200, json.dumps({"chats": chats.list_summaries()}))
+            rows = chats.list_summaries()
+            hints = workstreams.suggest([c["id"] for c in rows if not c["workstream"]])
+            for c in rows:
+                c["ws_suggest"] = hints.get(c["id"])
+            self._send(200, json.dumps({"chats": rows}))
         elif self.path == "/api/workstreams":
             self._send(200, json.dumps({"workstreams": workstreams.list_all()}))
         elif self.path.startswith("/api/workstreams/get"):

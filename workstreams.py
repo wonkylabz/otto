@@ -16,9 +16,11 @@ the PRs it links (it opened them), since a reply citing related work is not that
 """
 import datetime
 import json
+import math
 import re
 import uuid
 
+import lexicon
 import storage
 
 _GH = re.compile(r"https?://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)", re.I)
@@ -109,6 +111,64 @@ def attach(conn, cid):
     wsid = _create(conn, peers[0]["title"], refs.union(*(_load(p["refs"]) for p in peers)))
     conn.executemany("UPDATE chats SET workstream_id = ? WHERE id = ?",
                      [(wsid, c) for c in [cid] + [p["id"] for p in peers]])
+
+
+# Chat filler: words that open questions about ANY topic, so sharing one says nothing.
+_STOP = frozenset("""what this that with from have does about could would should there their which
+when where into make need want current setup please check work actually than more just like otto
+look help tell show using used also some your mine them they then here these those been being
+were will""".split())
+# The shared vocabulary must be RARE to count: ln((N+1)/(df+1)) >= 2 is a word in under ~1 in 7
+# chats. One common word ("deploy") never suggests on its own; a project noun ("bedrock") does.
+SUGGEST_MIN_SCORE = 2.0
+
+
+def _words(text):
+    return lexicon.tokens(text, min_len=4, stop=_STOP, digits=False)
+
+
+def suggest(cids):
+    """{chat_id: {id, title}} — the workstream each UNFILED chat in `cids` most likely belongs to,
+    by rare words shared with the workstream's title and its chats' titles and opening requests.
+    One of them must be from the workstream's NAME: the operator's own word for the topic. Its
+    chats' side-mentions alone matched every vLLM alert to "Bedrock" through a filed chat's "gemma".
+    A SUGGESTION, never a filing: topic words are fuzzy where a ticket URL is not. A tie, a
+    detached chat (`''`) or nothing rare enough in common suggests nothing."""
+    want = {c for c in cids if c}
+    if not want:
+        return {}
+    with _conn() as conn:
+        rows = conn.execute("""
+            SELECT c.id, c.title, c.workstream_id,
+              (SELECT m.text FROM messages m WHERE m.chat_id = c.id AND m.role = 'user'
+                 ORDER BY m.seq LIMIT 1) AS req
+            FROM chats c""").fetchall()
+        titles = {r["id"]: r["title"] for r in conn.execute("SELECT id, title FROM workstreams")}
+    if not titles:
+        return {}
+    words = {r["id"]: _words(f'{r["title"] or ""} {(r["req"] or "")[:500]}') for r in rows}
+    df = {}
+    for ws in words.values():
+        for w in ws:
+            df[w] = df.get(w, 0) + 1
+    n = len(rows)
+    named = {wsid: _words(t) for wsid, t in titles.items()}
+    vocab = {wsid: set(w) for wsid, w in named.items()}
+    for r in rows:
+        if r["workstream_id"] in vocab:
+            vocab[r["workstream_id"]] |= words[r["id"]]
+    out = {}
+    for r in rows:
+        if r["id"] not in want or r["workstream_id"] is not None:
+            continue
+        scored = sorted(((sum(math.log((n + 1) / (df.get(w, 0) + 1)) for w in words[r["id"]] & v), wsid)
+                         for wsid, v in vocab.items() if words[r["id"]] & named[wsid]), reverse=True)
+        if not scored or scored[0][0] < SUGGEST_MIN_SCORE:
+            continue
+        if len(scored) > 1 and scored[1][0] == scored[0][0]:
+            continue
+        out[r["id"]] = {"id": scored[0][1], "title": titles[scored[0][1]]}
+    return out
 
 
 def gc(conn):
