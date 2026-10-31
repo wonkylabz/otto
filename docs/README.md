@@ -4,6 +4,8 @@ The REFERENCED documentation tier: read only by a session that follows a pointer
 `CLAUDE.md`, and deliberately outside `.claude/rules/` so no convention judge digests it.
 See `maintaining-docs.md` for which tier a new rule belongs in.
 
+- **`guide.md`** — using Otto: repo mode, factory mode, phone access, backends, configuration
+  and secrets — the long-form half of the top-level README.
 - **`operating.md`** — setup, the background service, running, restart discipline, global
   pause, and archiving the frozen pre-SQLite state under `data/`.
 - **`testing.md`** — the unit suite, the regression corpus, the `plan_eval.py` planner
@@ -12,6 +14,9 @@ See `maintaining-docs.md` for which tier a new rule belongs in.
   in-thread approval.
 - **`maintaining-docs.md`** — the three tiers, the rule format, and the enforced ceilings.
 - **`releasing.md`** — what Otto's version number means, and how to cut and publish a release.
+- **`screenshots/`** — the README's images, taken from a live install at 1280×800 (2× DPR)
+  and 390×844 for the phone shot. Retake them after a UI change; never from an install whose
+  chats or runbooks hold anything private.
 
 ## Architecture diagram
 

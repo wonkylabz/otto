@@ -194,7 +194,7 @@ def step_slack_token():
     print(f"      {_DIM}im:history im:read mpim:history channels:history groups:history{_OFF}")
     print(f"      {_DIM}chat:write users:read search:read{_OFF}")
     print(f"      {_DIM}(Otto answering as a BOT under its own name is a separate, optional{_OFF}")
-    print(f"      {_DIM} identity — OTTO_SLACK_BOT_TOKEN; see the README.){_OFF}")
+    print(f"      {_DIM} identity — OTTO_SLACK_BOT_TOKEN; see docs/slack.md.){_OFF}")
     if not confirm("Paste a Slack user token now?", default=False):
         _say("skipped — the Events tab explains the setup when you want it",
              _DIM + "·" + _OFF)
