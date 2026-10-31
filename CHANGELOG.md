@@ -11,6 +11,12 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- README rewritten as a short front page with screenshots; the long-form sections (repo
+  mode, factory mode, phone access, backends, configuration, secrets) moved to
+  `docs/guide.md`. Nothing operational changed.
+
 ### Fixed
 
 - **The mascot no longer waves in his sleep.** The welcome-back greeting fires only from the
@@ -67,7 +73,7 @@ changelog that restates it is a second copy of `git log`.
   - Empty board columns shrink to a row of count tiles.
   - Forms and the plan approval open as bottom sheets.
 
-  Nothing changes on a desktop. To reach Otto from a phone, follow the README's "From your
+  Nothing changes on a desktop. To reach Otto from a phone, follow `docs/guide.md`'s "From your
   phone" section: put Otto behind a private tunnel such as `tailscale serve`, add that URL to
   `OTTO_ALLOWED_ORIGINS` and `OTTO_CLICK_URL`, and restart.
 
