@@ -65,7 +65,7 @@ async function loadAdmin(){
   adminLoaded=true;
   const el=document.getElementById("adminview");
   const view=capViewState(el);
-  el.innerHTML=`<div class="pageSpin"><span class="spin"></span></div>`;
+  el.innerHTML=spinHTML();
   let data, models, health, stats, settings, conv;
   try { [data, models, health, stats, settings, conv]=await Promise.all([
     fetch("/api/policy").then(r=>r.json()), fetch("/api/models").then(r=>r.json()),

@@ -4,6 +4,9 @@
 /* `'` is escaped too: the tree happens to quote every attribute with `"`, so a single quote was
    safe by coincidence rather than by rule — one single-quoted attribute would have broken out. */
 function esc(s){ return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+/* The one loading placeholder: every view and modal that awaits a fetch paints THIS, never a
+   "loading…" line - eleven sites each wrote their own and half of them were plain text. */
+function spinHTML(){ return `<div class="pageSpin"><span class="spin"></span></div>`; }
 
 /* Every /api/* call needs the login cookie (#217). One interceptor rather than ~50 call sites:
    a 401 means the same thing wherever it lands, and logged out every tab is dead, so it raises

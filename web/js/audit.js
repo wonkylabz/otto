@@ -49,7 +49,7 @@ async function openAuditDetail(e){
   if(e.verified===true) meta.push(`<span style="color:var(--ok)">verified</span>`);
   else if(e.verified===false) meta.push(`<span style="color:var(--danger)">unverified</span>`);
   if(e.reason) meta.push(`<span title="${esc(e.reason)}">${esc(auReason(e.reason))}</span>`);
-  body.innerHTML=`<div class="dbgmeta">${meta.join(" &nbsp;·&nbsp; ")}</div><p class="sub">loading…</p>`;
+  body.innerHTML=`<div class="dbgmeta">${meta.join(" &nbsp;·&nbsp; ")}</div>${spinHTML()}`;
   modal.hidden=false;
   const dbg=document.getElementById("ad-debug");
   if(dbg) dbg.addEventListener("click",ev=>{ ev.preventDefault(); openRunDebug(wid, cap, null); });
@@ -195,7 +195,7 @@ async function loadAudit(paging){
   // Turning a page keeps the Health section that is already on screen: blanking the view
   // re-rendered it, reset the scroll and, past the cache window, re-scanned the whole trail.
   const health=paging?document.getElementById("au-health"):null;
-  if(!health) el.innerHTML=`<p class="sub">loading…</p>`;
+  if(!health) el.innerHTML=spinHTML();
   let data;
   const qs=new URLSearchParams();
   if(AUDIT_FILTER.wid) qs.set("wid",AUDIT_FILTER.wid);

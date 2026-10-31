@@ -844,10 +844,11 @@
 
     /** A little wave with the right arm. A one-off GESTURE, not a state: it rides the Web
      *  Animations API, which composites above the CSS state animation and hands the arm back
-     *  when it ends. Only from a resting pose - mid-plan that arm is holding the marker - and any
-     *  state change cancels it, so a run starting mid-wave gets the arm back at once. */
+     *  when it ends. Only from idle - mid-plan that arm is holding the marker, and asleep he is
+     *  not greeting anyone - and any state change cancels it, so a run starting mid-wave gets
+     *  the arm back at once. */
     wave() {
-      if (!['idle', 'sleeping'].includes(this.state) || this._reduced()) return;
+      if (this.state !== 'idle' || this._reduced()) return;
       const arm = this.shadowRoot.querySelector('.arm-r');
       if (!arm) return;
       this._wave = arm.animate(

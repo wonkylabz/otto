@@ -11,6 +11,16 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The mascot no longer waves in his sleep.** The welcome-back greeting fires only from the
+  idle pose; a sleeping Otto stays asleep.
+- **Saving Otto to a phone's home screen now installs the Otto icon** instead of a generic
+  tile: a web manifest (`/manifest.webmanifest`, standalone display) and PNG icons under
+  `/icons/` for both Android and iOS.
+- **Every loading placeholder is the spinner.** Eleven views and modals painted the word
+  "loading…" while they fetched; all of them now share the same spinner (`spinHTML`).
+
 ## [0.9.0] - 2026-10-31
 
 ### Added

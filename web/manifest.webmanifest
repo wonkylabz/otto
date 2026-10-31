@@ -1,0 +1,14 @@
+{
+  "name": "Otto",
+  "short_name": "Otto",
+  "description": "Local agentic orchestrator",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F8F6E7",
+  "theme_color": "#AF5000",
+  "icons": [
+    { "src": "/icons/otto-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/otto-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -95,7 +95,7 @@ function wireBoardHead(el){
 async function openWorkstream(id){
   const body=openFormModal("Workstream");
   body.closest(".modalBox").classList.add("wideModalBox");
-  body.innerHTML=`<p class="sub">loading…</p>`;
+  body.innerHTML=spinHTML();
   let ws;
   try { ws=await getJSON("/api/workstreams/get?id="+encodeURIComponent(id)); }
   catch(e){ body.innerHTML=`<p class="err">Couldn't load it (${esc(e.message)}).</p>`; return; }

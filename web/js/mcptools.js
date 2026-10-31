@@ -16,7 +16,7 @@ let MCPTOOLS_OPEN=0;
 async function showMcpToolsForm(name, display, refresh){
   const mine=++MCPTOOLS_OPEN;
   const c=openFormModal("<b>Safe tools</b><br>"+esc(display||name));
-  c.innerHTML=`<div class="aform"><span class="sk-help">Loading the tool list&hellip;</span></div>`;
+  c.innerHTML=`<div class="aform">${spinHTML()}</div>`;
   let d;
   // Re-list STARTS the server, so it is a POST (CSRF-checked); the plain open reads the cache.
   try { d=refresh ? await postJSON("/api/mcp/tools/list",{name:name})

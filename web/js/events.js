@@ -47,7 +47,7 @@ function bindEventSections(el){
 }
 async function loadEvents(){
   const el=document.getElementById("eventsview");
-  el.innerHTML=`<p class="sub">loading…</p>`;
+  el.innerHTML=spinHTML();
   let data;
   try { data=await (await fetch("/api/event-rules")).json(); }
   catch(e){ el.innerHTML=`<p class="err">Couldn't load event rules (${esc(e.message)}).</p>`; return; }
