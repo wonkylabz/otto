@@ -8870,6 +8870,30 @@ class UiAssetRouteTests(unittest.TestCase):
                      "/js/nonexistent.js", "/data/otto.db", "/js/../data/settings.json"):
             self.assertEqual(self._get(path)[0], 404, path)
 
+    def test_the_home_screen_icon_and_manifest_are_served(self):
+        """"Save to home screen" shows a generic tile unless the page names a PNG icon — iOS
+        reads `apple-touch-icon` only, Android the manifest. Every file the head names must
+        exist and be served with its type, and the icons directory keeps the asset guard."""
+        import server
+        web = os.path.join(os.path.dirname(os.path.abspath(server.__file__)), "web")
+        with open(os.path.join(web, "index.html"), encoding="utf-8") as fh:
+            head = fh.read()
+        self.assertIn('<link rel="manifest" href="/manifest.webmanifest">', head)
+        touch = re.search(r'<link rel="apple-touch-icon" href="(/icons/[\w.-]+\.png)">', head)
+        self.assertIsNotNone(touch, "no apple-touch-icon in the head")
+        status, body, headers = self._get("/manifest.webmanifest")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/manifest+json")
+        manifest = json.loads(body)
+        self.assertEqual(manifest["display"], "standalone")
+        for src in [touch.group(1)] + [i["src"] for i in manifest["icons"]]:
+            status, body, headers = self._get(src)
+            self.assertEqual(status, 200, src)
+            self.assertEqual(headers["Content-Type"], "image/png", src)
+            self.assertTrue(body.startswith(b"\x89PNG"), src)
+        for path in ("/icons/../server.py", "/icons/otto-192.js", "/icons/", "/icons/nope.png"):
+            self.assertEqual(self._get(path)[0], 404, path)
+
     def test_a_non_asset_sitting_in_the_asset_directory_is_still_refused(self):
         """The extension check is what makes the directory an allowlist of ASSETS rather than
         of paths. Without it, anything that ends up beside the scripts — an editor's `.orig`

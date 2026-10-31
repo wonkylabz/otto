@@ -131,7 +131,7 @@ document.addEventListener("pointerup",()=>{ _boardPress=0; },true);
 document.addEventListener("pointercancel",()=>{ _boardPress=0; },true);
 async function loadBoard(silent){
   const el=document.getElementById("boardview");
-  if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
+  if(!silent) el.innerHTML=spinHTML();
   let data;
   // getJSON, not a bare fetch: a 500 resolves like a 200, so `data.temporal` came back falsy
   // and a failed read rendered as the "start Otto with ./run.sh" panel — the wrong diagnosis.
@@ -456,11 +456,11 @@ async function openCardModal(it,ui){
   const link=ui?`${ui}/namespaces/default/workflows/${encodeURIComponent(it.id)}/${encodeURIComponent(it.run_id)}/history`:null;
   title.innerHTML=`<b>${esc(it.cap||'—')}</b><br>${esc(it.id)}${it.repo?' · repo: '+esc(it.repo):''}${link?` · <a href="${link}" target="_blank" rel="noopener">Temporal ↗</a>`:''}`;
   const hint=it._needs?(it.no_retry?SPRINT_HINT:NEEDS_HINT[it._needs]):null;
-  body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')+`<p class="sub">Loading full result…</p>`;
+  body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')+spinHTML();
   modal.hidden=false;
   let r;
   try { r=await (await fetch("/api/board/full?id="+encodeURIComponent(it.id))).json(); }
-  catch(e){ body.innerHTML+=`<p class="err">Couldn't load the full result (${esc(e.message)}).</p>`; return; }
+  catch(e){ body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')+`<p class="err">Couldn't load the full result (${esc(e.message)}).</p>`; return; }
   const hintHtml=hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'';
   if(r.error){ body.innerHTML=hintHtml+`<p class="err">${esc(r.error)}</p>`; return; }
   if(r.status==="RUNNING"){ body.innerHTML=hintHtml+`<p class="sub">Still running — the full result isn't available until it finishes.</p>`; return; }
@@ -514,7 +514,7 @@ async function openRunDebug(wid, capLabel, ui){
         body=document.getElementById("cardModalBody");
   const link=ui?`${ui}/namespaces/default/workflows/${encodeURIComponent(wid)}/history`:null;
   title.innerHTML=`<b>${esc(capLabel||'run')}</b> · debug<br>${esc(wid)}${link?` · <a href="${link}" target="_blank" rel="noopener">Temporal ↗</a>`:''}`;
-  body.innerHTML=`<p class="sub">Loading run detail…</p>`;
+  body.innerHTML=spinHTML();
   modal.hidden=false;
   let r;
   try { r=await (await fetch("/api/run/detail?id="+encodeURIComponent(wid))).json(); }

@@ -241,7 +241,7 @@ function wireGC(){
 
 async function loadMemory(){
   const el=document.getElementById("memoryview");
-  el.innerHTML=`<p class="sub">loading…</p>`;
+  el.innerHTML=spinHTML();
   let data, sdata, bdata, gcs;
   try {
     [data, sdata, bdata, gcs] = await Promise.all([

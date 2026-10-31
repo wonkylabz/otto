@@ -2,7 +2,7 @@
 /* ---- knowledge tab (issue #67): imported reference docs, RAG-injected on fresh runs ---- */
 async function loadKnowledge(){
   const el=document.getElementById("knowledgeview");
-  el.innerHTML=`<p class="sub">loading…</p>`;
+  el.innerHTML=spinHTML();
   let d;
   try { d=await (await fetch("/api/knowledge")).json(); }
   catch(e){ el.innerHTML=`<p class="err">Couldn't load the knowledge base (${esc(e.message)}).</p>`; return; }

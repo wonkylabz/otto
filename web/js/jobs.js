@@ -33,7 +33,7 @@ function jobSection(id, title, hint, rows, empty){
 async function loadJobs(silent){
   if(_dragJob) return POLL_SKIP;   // a poll must never re-render the list mid-drag
   const el=document.getElementById("schedulesview");
-  if(!silent) el.innerHTML=`<p class="sub">loading…</p>`;
+  if(!silent) el.innerHTML=spinHTML();
   let data;
   // getJSON, not a bare fetch: a 500 with a JSON body resolves like a 200, so a sick server
   // rendered as zero jobs AND reported success to the poller, which then never backed off.

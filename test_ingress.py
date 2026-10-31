@@ -5163,7 +5163,7 @@ class AdminCapViewStateTests(unittest.TestCase):
         src = ui_src()
         body = src[src.index("async function loadAdmin(){"):]
         body = body[:body.index("\n}\n")]
-        self.assertLess(body.index("capViewState(el)"), body.index("pageSpin"))
+        self.assertLess(body.index("capViewState(el)"), body.index("spinHTML()"))
         self.assertLess(body.index("renderAdmin(data"), body.index("restoreCapView(el, view)"))
 
 
@@ -5621,8 +5621,10 @@ class MascotStateTests(unittest.TestCase):
             self.assertNotIn("this.state =", body, f"{name} writes the state")
             self.assertNotIn("setAttribute", body, f"{name} writes an attribute")
         wave = comp[comp.index("    wave() {"):]
-        self.assertIn("['idle', 'sleeping'].includes(this.state)", wave[:300],
-                      "a wave can now interrupt a working pose")
+        # Idle ONLY: mid-plan the arm holds the marker, and a sleeping robot waving at the
+        # person coming back is a contradiction the reader notices before the greeting.
+        self.assertIn("this.state !== 'idle'", wave[:300],
+                      "a wave can now interrupt a working pose or wake a sleeping one")
 
     def test_the_board_fills_in_one_mark_at_a_time(self):
         """Every mark on the same delay appears as one flash, which reads as a slide, not as
@@ -7688,7 +7690,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # bottom bar's More button and `viewport-fit=cover` for the safe-area insets.
     # -> 14_840 for workstreams.js: the board's workstream chip, filter and timeline live in
     # their own script rather than growing board.js.
-    INDEX_MAX = 14_840
+    # -> 14_992 for the home-screen install: the manifest link, the apple-touch-icon (iOS reads
+    # neither the manifest's icons nor an SVG) and theme-color. Head tags belong in the shell.
+    INDEX_MAX = 14_992
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:
@@ -7791,6 +7795,17 @@ class UiAssetLayoutTests(unittest.TestCase):
         self.assertNotIn("<style>", doc, "CSS came back inline")
         self.assertNotIn("function ", doc, "logic came back inline")
         self.assertNotRegex(doc, r"<script>\s*\n", "an inline script block came back")
+
+    def test_every_loading_placeholder_is_the_shared_spinner(self):
+        """Eleven sites painted their own "loading…" line; the swap to `spinHTML()` broke the
+        two that located the placeholder by its OLD class (`.sub`) to replace it — a modal
+        that spun forever. So: no text placeholder anywhere, and whatever is swapped out
+        is found by the class the helper actually emits."""
+        src = ui_src()
+        self.assertNotRegex(src, r"<p class=\"sub\">[Ll]oading", "a text loading placeholder came back")
+        self.assertIn('class="pageSpin"', src[src.index("function spinHTML(){"):][:200])
+        self.assertNotIn('querySelector(".sub").outerHTML', src,
+                         "a placeholder swap targets a class spinHTML() does not emit")
 
     def test_no_native_browser_dialog(self):
         """Chrome returned `confirm()` false in 0ms without painting it (measured: Evict GC,

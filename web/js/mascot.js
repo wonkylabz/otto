@@ -300,7 +300,7 @@ if(mBubble) mBubble.addEventListener("click", e=>{
 });
 if(mFig) mFig.addEventListener("click", ()=>{ if(mFig.blink) mFig.blink(); if(mFig.hearts) mFig.hearts(); });
 /* Hello, and welcome back. Gestures, not moods - they never touch MOOD or the state attribute
-   (applyMood is his one writer), and wave() itself refuses anything but a resting pose, so a
+   (applyMood is his one writer), and wave() itself refuses anything but idle (asleep, he stays asleep), so a
    greeting can never interrupt him mid-plan. "Back" means away long enough to have left. */
 const MASCOT_AWAY_MS=10*60*1000;
 let mascotHiddenAt=0;

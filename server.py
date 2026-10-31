@@ -1449,7 +1449,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True}))
 
     def _static(self, path):
-        """Serve web/css/*.css and web/js/*.js — the UI's own assets, nothing else.
+        """Serve web/css/*.css, web/js/*.js and web/icons/*.png — the UI's own assets, nothing else.
 
         `index.html` is the tag list; the stylesheets and the view modules it pulls live
         beside it. The allowlist is (one directory, one extension) with the basename taken
@@ -1459,9 +1459,10 @@ class Handler(BaseHTTPRequestHandler):
         cache-buster, and these are localhost bytes.
         """
         kind, _, name = path.split("?", 1)[0].lstrip("/").partition("/")
-        ctype = {"css": "text/css; charset=utf-8",
-                 "js": "text/javascript; charset=utf-8"}.get(kind)
-        if not ctype or name != os.path.basename(name) or not name.endswith("." + kind):
+        ext, ctype = {"css": ("css", "text/css; charset=utf-8"),
+                      "js": ("js", "text/javascript; charset=utf-8"),
+                      "icons": ("png", "image/png")}.get(kind, (None, None))
+        if not ctype or name != os.path.basename(name) or not name.endswith("." + ext):
             return self._send(404, b"not found", "text/plain")
         try:
             with open(os.path.join(HERE, "web", kind, name), "rb") as f:
@@ -1552,8 +1553,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             with open(os.path.join(HERE, "web", "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
-        elif self.path.startswith("/css/") or self.path.startswith("/js/"):
+        elif self.path.startswith(("/css/", "/js/", "/icons/")):
             self._static(self.path)
+        elif self.path == "/manifest.webmanifest":
+            # The home-screen install record: name, standalone display and the PNG icons.
+            with open(os.path.join(HERE, "web", "manifest.webmanifest"), "rb") as f:
+                self._send(200, f.read(), "application/manifest+json")
         elif self.path.startswith("/api/attachments/"):
             self._get_attachment(self.path[len("/api/attachments/"):].split("?", 1)[0])
         elif self.path == "/api/sessions":

@@ -49,7 +49,7 @@ async function openAuditDetail(e){
   if(e.verified===true) meta.push(`<span style="color:var(--ok)">verified</span>`);
   else if(e.verified===false) meta.push(`<span style="color:var(--danger)">unverified</span>`);
   if(e.reason) meta.push(`<span title="${esc(e.reason)}">${esc(auReason(e.reason))}</span>`);
-  body.innerHTML=`<div class="dbgmeta">${meta.join(" &nbsp;·&nbsp; ")}</div><p class="sub">loading…</p>`;
+  body.innerHTML=`<div class="dbgmeta">${meta.join(" &nbsp;·&nbsp; ")}</div>${spinHTML()}`;
   modal.hidden=false;
   const dbg=document.getElementById("ad-debug");
   if(dbg) dbg.addEventListener("click",ev=>{ ev.preventDefault(); openRunDebug(wid, cap, null); });
@@ -57,7 +57,7 @@ async function openAuditDetail(e){
   if(e.attempt!=null) qs.set("attempt", String(e.attempt));
   let c;
   try { c=await (await fetch("/api/audit/content?"+qs.toString())).json(); }
-  catch(err){ body.querySelector(".sub").outerHTML=`<p class="err">Couldn't load details (${esc(err.message)}).</p>`; return; }
+  catch(err){ body.querySelector(".pageSpin").outerHTML=`<p class="err">Couldn't load details (${esc(err.message)}).</p>`; return; }
   if(modal.hidden) return;                     // closed while the fetch was in flight
   const req=c.request?`<div class="dbgsec">request</div><div class="areq-full">${esc(c.request)}</div>`:"";
   const hasResult=c.result && c.result!=="(no output)";
@@ -66,7 +66,7 @@ async function openAuditDetail(e){
     :`<div class="dbgsec">output</div><p class="sub">${denied?'Declined at the approval gate — the capability never ran.':'(no output)'}</p>`;
   // `detail` is structured forensics on the row (today: the repos an in-place-edit guard caught).
   const det=c.detail?`<div class="dbgsec">detail</div><div class="dbgresult">${esc(typeof c.detail==="string"?c.detail:JSON.stringify(c.detail,null,2))}</div>`:"";
-  body.querySelector(".sub").outerHTML=req+res+det
+  body.querySelector(".pageSpin").outerHTML=req+res+det
     +(truncated?'<div class="aout-trunc">… output truncated to 50k chars — full text in data/audit-content.log</div>':'');
 }
 
@@ -195,7 +195,7 @@ async function loadAudit(paging){
   // Turning a page keeps the Health section that is already on screen: blanking the view
   // re-rendered it, reset the scroll and, past the cache window, re-scanned the whole trail.
   const health=paging?document.getElementById("au-health"):null;
-  if(!health) el.innerHTML=`<p class="sub">loading…</p>`;
+  if(!health) el.innerHTML=spinHTML();
   let data;
   const qs=new URLSearchParams();
   if(AUDIT_FILTER.wid) qs.set("wid",AUDIT_FILTER.wid);
