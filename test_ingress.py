@@ -5163,7 +5163,7 @@ class AdminCapViewStateTests(unittest.TestCase):
         src = ui_src()
         body = src[src.index("async function loadAdmin(){"):]
         body = body[:body.index("\n}\n")]
-        self.assertLess(body.index("capViewState(el)"), body.index("pageSpin"))
+        self.assertLess(body.index("capViewState(el)"), body.index("spinHTML()"))
         self.assertLess(body.index("renderAdmin(data"), body.index("restoreCapView(el, view)"))
 
 
@@ -7795,6 +7795,17 @@ class UiAssetLayoutTests(unittest.TestCase):
         self.assertNotIn("<style>", doc, "CSS came back inline")
         self.assertNotIn("function ", doc, "logic came back inline")
         self.assertNotRegex(doc, r"<script>\s*\n", "an inline script block came back")
+
+    def test_every_loading_placeholder_is_the_shared_spinner(self):
+        """Eleven sites painted their own "loading…" line; the swap to `spinHTML()` broke the
+        two that located the placeholder by its OLD class (`.sub`) to replace it — a modal
+        that spun forever. So: no text placeholder anywhere, and whatever is swapped out
+        is found by the class the helper actually emits."""
+        src = ui_src()
+        self.assertNotRegex(src, r"<p class=\"sub\">[Ll]oading", "a text loading placeholder came back")
+        self.assertIn('class="pageSpin"', src[src.index("function spinHTML(){"):][:200])
+        self.assertNotIn('querySelector(".sub").outerHTML', src,
+                         "a placeholder swap targets a class spinHTML() does not emit")
 
     def test_no_native_browser_dialog(self):
         """Chrome returned `confirm()` false in 0ms without painting it (measured: Evict GC,

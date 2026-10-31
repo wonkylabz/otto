@@ -57,7 +57,7 @@ async function openAuditDetail(e){
   if(e.attempt!=null) qs.set("attempt", String(e.attempt));
   let c;
   try { c=await (await fetch("/api/audit/content?"+qs.toString())).json(); }
-  catch(err){ body.querySelector(".sub").outerHTML=`<p class="err">Couldn't load details (${esc(err.message)}).</p>`; return; }
+  catch(err){ body.querySelector(".pageSpin").outerHTML=`<p class="err">Couldn't load details (${esc(err.message)}).</p>`; return; }
   if(modal.hidden) return;                     // closed while the fetch was in flight
   const req=c.request?`<div class="dbgsec">request</div><div class="areq-full">${esc(c.request)}</div>`:"";
   const hasResult=c.result && c.result!=="(no output)";
@@ -66,7 +66,7 @@ async function openAuditDetail(e){
     :`<div class="dbgsec">output</div><p class="sub">${denied?'Declined at the approval gate — the capability never ran.':'(no output)'}</p>`;
   // `detail` is structured forensics on the row (today: the repos an in-place-edit guard caught).
   const det=c.detail?`<div class="dbgsec">detail</div><div class="dbgresult">${esc(typeof c.detail==="string"?c.detail:JSON.stringify(c.detail,null,2))}</div>`:"";
-  body.querySelector(".sub").outerHTML=req+res+det
+  body.querySelector(".pageSpin").outerHTML=req+res+det
     +(truncated?'<div class="aout-trunc">… output truncated to 50k chars — full text in data/audit-content.log</div>':'');
 }
 

@@ -32,6 +32,9 @@ window.paintFavicon = function(){
     + "<circle cx='50' cy='16' r='8' fill='" + warn + "'/></svg>";
   const link = document.querySelector('link[rel="icon"]');
   if(link) link.setAttribute("href", "data:image/svg+xml," + encodeURIComponent(svg));
+  // The installed app's title bar reads this meta, so it follows the palette like the icon.
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if(meta) meta.setAttribute("content", accent);
 };
 window.applyTheme(window.currentTheme());
 window.paintFavicon();

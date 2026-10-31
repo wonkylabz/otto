@@ -460,7 +460,7 @@ async function openCardModal(it,ui){
   modal.hidden=false;
   let r;
   try { r=await (await fetch("/api/board/full?id="+encodeURIComponent(it.id))).json(); }
-  catch(e){ body.innerHTML+=`<p class="err">Couldn't load the full result (${esc(e.message)}).</p>`; return; }
+  catch(e){ body.innerHTML=(hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'')+`<p class="err">Couldn't load the full result (${esc(e.message)}).</p>`; return; }
   const hintHtml=hint?`<div class="modalHint">⚠ ${esc(hint)}</div>`:'';
   if(r.error){ body.innerHTML=hintHtml+`<p class="err">${esc(r.error)}</p>`; return; }
   if(r.status==="RUNNING"){ body.innerHTML=hintHtml+`<p class="sub">Still running — the full result isn't available until it finishes.</p>`; return; }
