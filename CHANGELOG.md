@@ -11,6 +11,12 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- README rewritten as a short front page with screenshots; the long-form sections (repo
+  mode, factory mode, phone access, backends, configuration, secrets) moved to
+  `docs/guide.md`. Nothing operational changed.
+
 ## [0.9.0] - 2026-10-31
 
 ### Added
