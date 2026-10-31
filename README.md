@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/wonkylabz/otto/actions/workflows/test.yml"><img src="https://github.com/wonkylabz/otto/actions/workflows/test.yml/badge.svg" alt="tests"></a>
-  <a href="https://github.com/wonkylabz/otto/releases"><img src="https://img.shields.io/github/v/release/wonkylabz/otto?display_name=tag" alt="release"></a>
+  <a href="https://github.com/wonkylabz/otto/releases"><img src="https://img.shields.io/github/v/tag/wonkylabz/otto?label=release" alt="release"></a>
   <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="python 3.12+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
   <img src="https://img.shields.io/badge/runs%20on-Claude%20subscription-orange" alt="no API key">

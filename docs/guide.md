@@ -106,6 +106,8 @@ Execution). There are three, and they are not interchangeable:
   every run has a cwd of its own). Codex's own sandbox cannot deny a *read*, so without
   `bwrap` the backend refuses to run rather than expose Otto's key store. `python3 doctor.py`
   checks both, and stays silent if nothing selects Codex.
+- **No API key is needed.** `ANTHROPIC_API_KEY` is optional and only auto-discovers the cloud
+  model list for the Admin picker; without it Claude Code's cached catalog is used.
 - Routing, clarification, planning, judging and memory GC each have their **own** model tier,
   set independently in Admin — a cheap local model can do the plumbing while execution stays
   on Claude. Adding a hosted endpoint: see [openai-models.md](openai-models.md).
