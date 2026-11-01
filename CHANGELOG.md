@@ -13,6 +13,8 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
+- `integrations/` declares which module owns each reply-target kind (Slack, GitHub,
+  webhook). Declarations only this release; nothing dispatches through it yet.
 - Guards ahead of the integrations refactor: one recorded poll history is replayed against
   all three poll workflows, and a test ratchets the core's per-vendor `reply_to` branches so they can
   only fall. Nothing operational changed.
