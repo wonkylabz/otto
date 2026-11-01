@@ -10119,3 +10119,52 @@ class FactoryModeTests(unittest.TestCase):
     def test_factory_state_never_travels_in_a_snapshot(self):
         import snapshot
         self.assertIn("factory.json", snapshot.RUNTIME)
+
+
+class ReplyKindDispatchRatchetTests(unittest.TestCase):
+    """Ratchet: where the CORE branches on a vendor's `reply_to["kind"]`.
+
+    Every such branch is a place a new integration (Teams, GitLab) has to edit the pipeline
+    instead of declaring itself. The integrations refactor moves them behind one dispatch
+    (`integrations.for_kind`), one phase at a time — so the count per file may only FALL, and a
+    branch in a file not listed here is a leak the refactor is meant to end. Lower a number when
+    a phase lands; never raise one."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    CORE = ("workflows.py", "wf_frontman.py", "wf_postpr.py", "wf_repo.py", "wf_runtime.py",
+            "wf_swarm.py", "activities.py", "engine.py", "delivery.py", "privacy.py",
+            "contracts.py", "server.py", "routing.py", "scheduler.py", "worker.py")
+    KINDS = ("slack_thread", "slack_post", "github_issue", "github_pr", "webhook")
+    # A comparison (not a construction: `{"kind": "slack_post"}` is a target being BUILT).
+    _SITE = re.compile(r'kind[^\n]*?(==|!=|\bin\b)[^\n]*?"(' + "|".join(KINDS) + ')"')
+    BASELINE = {"workflows.py": 1, "activities.py": 4, "delivery.py": 8, "privacy.py": 5,
+                "server.py": 1}
+
+    def _sites(self):
+        found = {}
+        for name in self.CORE:
+            with open(os.path.join(self.ROOT, name), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            n = sum(1 for l in lines if self._SITE.search(l) and not l.lstrip().startswith("#"))
+            if n:
+                found[name] = n
+        return found
+
+    def test_no_core_file_gains_a_vendor_kind_branch(self):
+        found = self._sites()
+        grew = {k: (self.BASELINE.get(k, 0), v) for k, v in found.items() if v > self.BASELINE.get(k, 0)}
+        self.assertEqual(grew, {}, f"vendor kind branches grew (baseline, now): {grew} — "
+                                   "dispatch through the integration, don't add a branch")
+
+    def test_the_baseline_is_lowered_when_a_phase_lands(self):
+        """A ratchet left loose stops ratcheting: a file that dropped below its baseline must
+        have the baseline lowered with it, or the next leak hides in the slack."""
+        found = self._sites()
+        loose = {k: (v, found.get(k, 0)) for k, v in self.BASELINE.items() if found.get(k, 0) < v}
+        self.assertEqual(loose, {}, f"lower these baselines (baseline, now): {loose}")
+
+    def test_the_predicate_sees_a_branch(self):
+        self.assertTrue(self._SITE.search('if reply_to.get("kind") == "slack_thread":'))
+        self.assertTrue(self._SITE.search('if kind in ("github_pr", "github_issue"):'))
+        self.assertFalse(self._SITE.search('reply_to = {"kind": "slack_post", "channel": c}'))
+        self.assertFalse(self._SITE.search('AUDIENCE.get(reply_to.get("kind"), DEFAULT_AUDIENCE)'))

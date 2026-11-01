@@ -9299,3 +9299,56 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
                          "gate_timeout")
         self.assertEqual(_outcome(RuntimeError("x")), "failed")
         self.assertEqual(_outcome({"result": "x"}), "done")
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class PollWorkflowReplayTests(unittest.IsolatedAsyncioTestCase):
+    """The three poll workflows are one activity each, and that activity's NAME is their whole
+    replay contract: a schedule fires them every minute, so a rename lands as a NondeterminismError
+    on the first fire after the restart and the ingress goes deaf until someone terminates the run
+    by hand. `WorkflowReplayCompatibilityTests` pins OttoWorkflow only.
+
+    The Slack fixture is a real history (`slack-poll-run-2026-11-01T00:23:00Z`, listener
+    disabled, so its payloads hold nothing). The board and PR-review polls had no live run to
+    export, and their workflows are the same shape — so their histories are DERIVED from it by
+    renaming the workflow and activity type. A derived history is still the contract: the
+    workflow code chooses the commands, the activity's result is opaque to it."""
+
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "regress", "fixtures", "history-slack-poll-pre-integrations.json")
+    POLLS = (("SlackPollWorkflow", "poll_slack"),
+             ("BoardPollWorkflow", "poll_board"),
+             ("PrReviewPollWorkflow", "poll_pr_reviews"))
+
+    def _history(self, wf_type, activity):
+        with open(self.FIXTURE, encoding="utf-8") as fh:
+            text = fh.read()
+        text = text.replace('"SlackPollWorkflow"', f'"{wf_type}"').replace('"poll_slack"', f'"{activity}"')
+        return json.loads(text)
+
+    def test_the_fixture_is_the_slack_poll_as_recorded(self):
+        with open(self.FIXTURE, encoding="utf-8") as fh:
+            events = json.load(fh)["events"]
+        scheduled = [e["activityTaskScheduledEventAttributes"]["activityType"]["name"]
+                     for e in events if e["eventType"] == "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED"]
+        self.assertEqual(scheduled, ["poll_slack"])
+        self.assertEqual(events[0]["workflowExecutionStartedEventAttributes"]["workflowType"]["name"],
+                         "SlackPollWorkflow")
+
+    async def test_every_poll_workflow_replays_its_pre_integrations_history(self):
+        from temporalio.client import WorkflowHistory
+        from temporalio.worker import Replayer
+        import workflows
+        for wf_type, activity in self.POLLS:
+            with self.subTest(workflow=wf_type):
+                hist = WorkflowHistory.from_json(f"{wf_type}-fixture", self._history(wf_type, activity))
+                await Replayer(workflows=[getattr(workflows, wf_type)]).replay_workflow(hist)
+
+    async def test_a_renamed_poll_activity_is_caught(self):
+        """The guard must go red on the failure it exists for, or it documents an intention."""
+        from temporalio.client import WorkflowHistory
+        from temporalio.worker import Replayer
+        import workflows
+        hist = WorkflowHistory.from_json("renamed", self._history("SlackPollWorkflow", "poll_slack_v2"))
+        with self.assertRaises(Exception):
+            await Replayer(workflows=[workflows.SlackPollWorkflow]).replay_workflow(hist)
