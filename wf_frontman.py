@@ -37,15 +37,35 @@ def _outcome(res):
 class FrontmanMixin:
     """Delegate a frontman's hand-off to a child run, then relay its outcome."""
 
+    def _parse_delegation(self, text):
+        """`contracts.parse_delegation`, logging an oversized hand-off: the person only sees
+        "say it in full", which is wrong advice for a task that was already complete."""
+        n = contracts.delegation_overflow(text)
+        if n:
+            workflow.logger.warning(f"delegation dropped: task is {n} chars, cap {contracts.DELEGATE_MAX}")
+        return contracts.parse_delegation(text)
+
+    def _handoff_task(self, text):
+        """The task a `HANDOFF_ASK` turn wrote; multi-line only for runs recorded with the patch."""
+        if not workflow.patched("handoff-multiline"):
+            return self._parse_delegation(text)[1]
+        task = contracts.parse_handoff(text)
+        body = contracts.handoff_body(text)
+        if task is None and body and len(body) > contracts.DELEGATE_MAX:
+            workflow.logger.warning(f"delegation dropped: task is {len(body)} chars, cap {contracts.DELEGATE_MAX}")
+        return task
+
     async def _frontman_turn(self, params, out, attempt):
         """`out` unchanged unless this is a frontman reply ending in a delegation; else the relay
         turn's `out`, whose result is the reply to post. Never raises past the relay: every child
         ending, including its failure, is told to the person."""
         if not params.get("frontman"):
             return out
-        reply, task = contracts.parse_delegation(out.get("result"))
+        reply, task = self._parse_delegation(out.get("result"))
         # A fronted web turn whose write-intent guard said WRITE never ran: the request IS the task.
-        task = out.get("handoff") or task
+        # A handoff turn wrote nothing but the task, so there is no draft to relay.
+        if out.get("handoff"):
+            reply, task = "", out["handoff"]
         if not task or not workflow.patched("frontman-delegate"):
             return out
         wid = workflow.info().workflow_id
