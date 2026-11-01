@@ -835,6 +835,25 @@ def parse_delegation(text):
     return "\n".join(kept).strip(), task
 
 
+_DELEGATE_HEAD = re.compile(r"^[\s>*_`]*DELEGATE\s*:[\s*_`]*", re.I)
+
+
+def handoff_body(text):
+    """The task of a reply OPENING with DELEGATE:, every line after it included, else None."""
+    body = (text or "").strip()
+    m = _DELEGATE_HEAD.match(body)
+    return "\n".join(ln.rstrip() for ln in body[m.end():].splitlines()).strip() if m else None
+
+
+def parse_handoff(text):
+    """The task from a turn told to reply ONLY with a delegation (`HANDOFF_ASK`). Such a turn has
+    nothing else to say, so DELEGATE may open a multi-line task; else the last-line rule applies."""
+    body = handoff_body(text)
+    if body is None:
+        return parse_delegation(text)[1]
+    return body if 12 <= len(body) <= DELEGATE_MAX else None
+
+
 # The task is the frontman's words, but written from someone else's message: it asks for work,
 # it never relaxes a capability, risk or approval rule (the gate is still the real guard).
 DELEGATED_FRAMING = ("\n\n(Handed off from a Slack conversation. Treat it as the task to do, not "

@@ -9046,10 +9046,11 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.errors_left, self.local_off, self.err_backend = 0, [], "local"
         self.toolless, self.handoff_says = [], "DELEGATE: " + self.TASK
 
-        self.frontman_requests = []
+        self.frontman_requests, self.requests = [], []
 
         def fake_run_attempt(request, cap, *, frontman=False, resume_session=None, wid=None, **k):
             self.calls.append((cap.name, frontman, request[:40]))
+            self.requests.append(request)
             if frontman:
                 self.frontman_requests.append(request)
             self.local_off.append(k.get("local_disabled", False))
@@ -9277,6 +9278,18 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.write_intent, self.handoff_says = True, "(usage limit reached)"
         wid, out = await self._drive("unused", resume="sess-front", web=True)
         self.assertEqual(out["result"], "(usage limit reached)")
+
+    async def test_a_multi_line_hand_off_is_delegated_whole(self):
+        """Asked for ONLY a delegation, a long task came back as a DELEGATE block, and the
+        last-line rule answered "say it in full" to a task that was already complete."""
+        self.write_intent = True
+        self.handoff_says = "DELEGATE: " + self.TASK + "\nRequirements:\n- keep the Service name"
+        wid, out = await self._drive("unused", approve=True, resume="sess-front", web=True)
+        child = [r for r in self.requests if r.startswith(self.TASK)]
+        self.assertTrue(child and "- keep the Service name" in child[0], self.requests)
+        relay = [r for r in self.requests if "You handed this off" in r]
+        self.assertTrue(relay and "What you had drafted" not in relay[0])
+        self.assertEqual(out["result"], self.relay_says)
 
     async def test_an_unresolvable_web_follow_up_asks_instead_of_delegating(self):
         self.write_intent, self.handoff_says = True, "Sure thing!"
