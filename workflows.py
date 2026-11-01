@@ -1534,7 +1534,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
                 retry_policy=_RETRY_EXEC)
             # An errored turn keeps its error: "please restate" would hide a wall the person
             # would only hit again.
-            if not out.get("is_error") and not contracts.parse_delegation(out.get("result"))[1]:
+            if not out.get("is_error") and not self._parse_delegation(out.get("result"))[1]:
                 out = {**out, "result": contracts.HANDOFF_UNRESOLVED}
             # The fast lane is judged on the asker's words, and "yes, go ahead" says nothing
             # about the task this turn wrote: that child is always gated.

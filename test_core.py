@@ -4724,6 +4724,12 @@ class FrontmanDelegationParseTests(unittest.TestCase):
         self.assertIsNone(p("DELEGATE: tiny")[1])                         # too short to be a task
         long = "open the vllm PR " + "x" * 2400                         # a long chat's task
         self.assertEqual(p("DELEGATE: " + long)[1], long)
+        edge = "t" * contracts.DELEGATE_MAX
+        self.assertEqual(p("DELEGATE: " + edge)[1], edge)
+        self.assertIsNone(p("DELEGATE: " + edge + "t")[1])
+        self.assertEqual(contracts.delegation_overflow("DELEGATE: " + edge + "t"), len(edge) + 1)
+        self.assertIsNone(contracts.delegation_overflow("DELEGATE: " + edge))
+        self.assertIsNone(p("DELEGATE: " + long, contracts.LEGACY_DELEGATE_MAX)[1])
         self.assertIsNone(p("DELEGATE: bump the widget to 2.0\nthen more")[1])   # not last
         self.assertIsNone(p("I could DELEGATE: this, but won't")[1])
         self.assertIsNone(p("")[1])

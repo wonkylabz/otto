@@ -808,16 +808,31 @@ def frontman_note(audience):
     return _FRONTMAN_DELEGATE if audience == CONVERSATION_AUDIENCE else _FRONTMAN_DELEGATE_WEB
 
 
-def parse_delegation(text):
+DELEGATE_MAX = 8000
+# Pre-#319 cap: workflow code still applies it to a run whose history predates the raise.
+LEGACY_DELEGATE_MAX = 2000
+
+
+def _last_delegate(text):
+    lines = (text or "").rstrip().split("\n")
+    return lines, (_DELEGATE_LINE.match(lines[-1]) if lines else None)
+
+
+def delegation_overflow(text, max_len=DELEGATE_MAX):
+    """Length of a well-formed final DELEGATE task that exceeds `max_len`, else None."""
+    _, m = _last_delegate(text)
+    n = len(m.group(1).strip()) if m else 0
+    return n if n > max_len else None
+
+
+def parse_delegation(text, max_len=DELEGATE_MAX):
     """`(reply, task|None)` for a frontman reply. PURE, biased to None: only the LAST non-empty
     line can delegate, and a malformed or too-short task means no delegation. Every other
     DELEGATE line is stripped, so one never reaches the reader."""
-    lines = (text or "").rstrip().split("\n")
+    lines, m = _last_delegate(text)
     task = None
-    if lines:
-        m = _DELEGATE_LINE.match(lines[-1])
-        if m and 12 <= len(m.group(1).strip()) <= 8000:
-            task = " ".join(m.group(1).split())
+    if m and 12 <= len(m.group(1).strip()) <= max_len:
+        task = " ".join(m.group(1).split())
     kept = [ln for ln in lines if not _DELEGATE_LINE.match(ln)]
     return "\n".join(kept).strip(), task
 
