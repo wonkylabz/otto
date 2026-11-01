@@ -31,6 +31,8 @@ class Integration:
         the scrub and the never-raises wrapper, so nothing else may call it with raw text.
     `source_line(reply_to) -> str | None` — the privacy-safe origin for a push notification.
     `interim(reply_to, text) -> (bool, str, ts | None)` — a mid-run note; None = no such channel.
+    `on_gate_notice(reply_to, wid, notice_ts) -> None` — after a gate notice LANDED: arm the
+        conversation so the reply that clears it is matched to this run.
     `on_delivered(reply_to, payload) -> None` — bookkeeping after `deliver` (session, busy flag).
     `on_needs_human(reply_to) -> dict` — card/label moves when a run parks; {} = nothing to move.
     """
@@ -40,6 +42,7 @@ class Integration:
     deliver: object
     source_line: object
     interim: object = None
+    on_gate_notice: object = None
     on_delivered: object = None
     on_needs_human: object = None
 

@@ -13,6 +13,9 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
+- Delivery, the push notification's source line and the Slack/board bookkeeping hooks now
+  dispatch through `integrations/`. Same behaviour, same stores, same schedules; a restart
+  picks it up.
 - `integrations/` declares which module owns each reply-target kind (Slack, GitHub,
   webhook). Declarations only this release; nothing dispatches through it yet.
 - Guards ahead of the integrations refactor: one recorded poll history is replayed against

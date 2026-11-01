@@ -21,6 +21,7 @@ import time
 import urllib.request
 
 import config
+import integrations
 import privacy
 import storage
 from ui import trace
@@ -32,13 +33,6 @@ from ui import trace
 #   "last"   {ok, at, error, title} — the outcome of the last BLOCKING push, for /api/health
 #   "tokens" {token: {wid, exp}} — single-use approve/deny grants for ntfy action buttons
 _STATE = os.path.join(config.DATA_DIR, "notify-state.json")
-
-_MAX_COMMENT = 50_000   # GitHub rejects comments over ~65KB; stay well under.
-
-# A delivery landing this long after the triggering message gets a "catching up" preface rather
-# than reading as if no time passed — the sleep/downtime case (a run computed fine, delivery just
-# couldn't reach Slack yet) is otherwise indistinguishable from an instant reply.
-STALE_REPLY_S = int(os.environ.get("OTTO_SLACK_STALE_REPLY_S") or 1800)
 
 
 _NTFY_PRIORITY = {"min": 1, "low": 2, "default": 3, "high": 4, "max": 5, "urgent": 5}
@@ -303,20 +297,9 @@ def notify(title, *, lines=None, detail=None, click=None, tags=None, priority="h
 #                    ABOUT them (the 2026-07-31 "Here's the reply to send back on the operator's
 #                    behalf: …" that a colleague received verbatim).
 #   "report"       — the operator, or a durable record teammates read later (a ticket comment).
-# A new kind MUST be added here; `audience_for` defaults it to "report", and
-# test_core asserts every kind `deliver` handles has an explicit entry, so the choice can't be
-# skipped silently.
-AUDIENCE = {
-    "slack_thread": "conversation",
-    # A runbook's Slack destination (scheduler._args): a ONE-WAY post. Nobody asked Otto anything
-    # there and nobody's reply resumes the run, so it is not a conversation — no session is bound,
-    # no interim or gate notice is posted, and the run must not end on a question.
-    "slack_post": "notice",
-    "github_issue": "report",
-    # A PR review is a durable record a reviewer reads later, not a conversation.
-    "github_pr": "report",
-    "webhook": "report",          # a machine reads this one; the report shape is the sane default
-}
+# A new kind declares its audience in `integrations/`, beside its `deliver`; `audience_for`
+# defaults an undeclared one to "report" (`IntegrationRegistryTests`).
+AUDIENCE = integrations.audiences()
 DEFAULT_AUDIENCE = "report"
 # This module OWNS the value (contracts.CONVERSATION_AUDIENCE mirrors it by value, deliberately —
 # importing contracts here would be a cycle). Named so `interim` reads as a rule, not a string.
@@ -362,17 +345,13 @@ def interim(reply_to, text):
     text = privacy.redact(str(text or ""))
     if not text.strip():
         return False, "nothing to say", None
+    owner = integrations.for_kind(reply_to.get("kind"))
+    if owner is None or owner.interim is None:
+        return False, "no interim channel for this target", None
     try:
-        if (reply_to or {}).get("kind") == "slack_thread":
-            import slack
-            ok = slack.post(reply_to.get("channel"), slack.to_mrkdwn(text),
-                            thread_ts=reply_to.get("thread_ts"),
-                            identity=slack.identity_of(reply_to))
-            return (bool(ok), ("interim posted to slack" if ok else "interim post failed"),
-                    ok if isinstance(ok, str) else None)
+        return owner.interim(reply_to, text)
     except Exception as e:  # noqa: BLE001 - never let a progress note break the run
         return False, f"interim failed: {str(e)[:80]}", None
-    return False, "no interim channel for this target", None
 
 
 def deliver(reply_to, result, cap=None, run_id=None):
@@ -391,148 +370,9 @@ def deliver(reply_to, result, cap=None, run_id=None):
     # costs nothing here.
     result = privacy.redact(result)
     try:
-        if kind == "webhook":
-            return _webhook(reply_to, result, cap)
-        if kind == "github_issue":
-            return _github_issue(reply_to, result, cap, run_id)
-        if kind == "github_pr":
-            return _github_pr(reply_to, result)
-        if kind == "slack_thread" or kind == "slack_post":
-            return _slack(reply_to, result, run_id)
-        return f"unsupported reply kind: {kind!r}"
+        owner = integrations.for_kind(kind)
+        if owner is None:
+            return f"unsupported reply kind: {kind!r}"
+        return owner.deliver(reply_to, result, cap, run_id)
     except Exception as e:  # noqa: BLE001 - report, don't propagate
         return f"delivery failed: {str(e)[:140]}"
-
-
-def _github_pr(reply_to, result):
-    """Submit an auto-review to its pull request the moment the run finishes.
-
-    All of the deciding — verdict, nit trim, header, idempotency marker, state stamp — lives in
-    `pr_review.submit`, shared with the button and the poll sweep, so what lands cannot depend
-    on which of the three routes got there first."""
-    import pr_review
-    return pr_review.submit_on_completion(reply_to, result)
-
-
-# Slack's refusals that mean "this bot is not in that channel" — the post certainly did not land.
-_BOT_CANNOT_POST = ("not_in_channel", "channel_not_found")
-
-
-def _slack(reply_to, result, run_id=None):
-    """Post the run's result as a threaded reply in Slack. Idempotent on `run_id` (Slack messages
-    can't carry a hidden marker like the GitHub sink, so we track delivered run ids in state).
-
-    A delivery that took a long time to reach here (worker downtime, an overnight machine sleep —
-    the run itself finished fine, it just couldn't post) gets a staleness check before it lands:
-    if the owner has personally replied in the conversation since the triggering message, this
-    would-be reply is now redundant — piling a stale, superseded answer onto ground already
-    covered reads far worse than saying nothing (`slack.owner_replied_since`). Short of that, a
-    long-delayed reply still says so rather than landing cold as if no time had passed."""
-    import slack
-    # WHICH Slack identity answers rides on the reply target (`slack.reply_target`) — the owner's
-    # own account or the bot user. Anything without one is the owner's, which is what an in-flight
-    # run submitted before the bot existed carries.
-    identity = slack.identity_of(reply_to)
-    if reply_to.get("kind") == "slack_post" and not reply_to.get("identity"):
-        identity = slack.post_identity()
-    if run_id and slack.was_posted(run_id):
-        return "already delivered to slack"
-    # The run decided there was nothing to say back (config.NO_REPLY). Staying silent IS the
-    # delivery — not marked posted, because nothing was.
-    if config.is_no_reply(result):
-        return "nothing to reply — stayed silent"
-    channel = reply_to.get("channel")
-    if not channel:
-        return "slack reply_to missing 'channel'"
-    thread_ts = reply_to.get("thread_ts")            # the real thread ROOT, if any
-    # The specific triggering message's own ts (not the thread root) — `wid_for` always encodes
-    # it, so this is the right "since" boundary even deep in an ongoing thread.
-    trigger = slack.reply_target_from_wid(run_id) if run_id else None
-    since_ts = (trigger or {}).get("thread_ts") or thread_ts
-    if since_ts:
-        superseded, delay_s = slack.owner_replied_since(
-            channel, since_ts, in_thread=bool(thread_ts), thread_root=thread_ts,
-            identity=identity)
-        if superseded:
-            if run_id:
-                slack.mark_posted(run_id)
-            return "skipped — the owner already answered this since it was asked"
-        if delay_s > STALE_REPLY_S:
-            result = (f"_(sorry — catching up after a gap, this is about your message from "
-                      f"earlier)_\n\n{result}")
-    # Claude emits Markdown. Render as Block Kit rich_text (native lists/indents/code) when we can
-    # parse it; the mrkdwn text is always sent as the notification + fallback (and is what shows if
-    # the blocks parse returns None).
-    raw = result or "(no result)"
-    body = slack.to_mrkdwn(raw)
-    blocks = slack.to_blocks(raw)
-    errors = []
-    # `errors=` only where the fallback below can read it — a thread reply has no fallback.
-    extra = {"errors": errors} if reply_to.get("kind") == "slack_post" else {}
-    ok = slack.post(channel, body, thread_ts=reply_to.get("thread_ts"), blocks=blocks,
-                    identity=identity, **extra)
-    if (not ok and reply_to.get("kind") == "slack_post" and identity == slack.BOT
-            and errors and errors[0] in _BOT_CANNOT_POST and slack.enabled()):
-        # A bot posts only where it has joined, so a runbook pointed at a channel only the
-        # owner is in fails `not_in_channel` — a judged-PASS digest must not die on authorship.
-        # ONLY that refusal: a timeout may already have posted, and re-posting it as the owner
-        # puts it in the channel twice. And only with the owner's identity switched on.
-        identity = slack.USER
-        ok = slack.post(channel, body, blocks=blocks, identity=identity)
-    if ok:
-        slack.mark_posted(run_id)
-        return f"posted to slack thread ({channel}, as {identity})"
-    return f"could not post to slack ({channel}, as {identity})"
-
-
-def _webhook(reply_to, result, cap, timeout=15):
-    url = reply_to.get("url")
-    if not url:
-        return "webhook reply_to missing 'url'"
-    body = json.dumps({"result": result, "capability": cap}).encode()
-    headers = {"Content-Type": "application/json", **(reply_to.get("headers") or {})}
-    req = urllib.request.Request(url, method="POST", data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return f"posted to webhook ({r.status})"
-
-
-def _github_issue(reply_to, result, cap, run_id=None):
-    """Comment the run's result on the source issue, then move its board card on. Destination:
-    the **blocked** column when the run needs a human (verification/QA didn't pass — reply_to
-    `blocked`), the Review column for a repo-edit ticket with a draft PR awaiting, else Done.
-    Card-move ids are carried on `reply_to` (resolved by the poll activity).
-
-    Comment-first (before the move) is deliberate: if the process dies between the two, a
-    still-In-Progress card is visible to the reaper, whereas a moved-but-uncommented card would
-    silently lose the result. Idempotent via a hidden `run_id` marker so a retried delivery
-    (e.g. after an activity timeout) doesn't post a duplicate."""
-    import board
-    repo, number = reply_to.get("repo"), reply_to.get("number")
-    body = result if len(result) <= _MAX_COMMENT else (
-        result[:_MAX_COMMENT] + "\n\n_…truncated by Otto (result exceeded comment limit)._")
-    marker = f"<!-- otto-run:{run_id} -->" if run_id else ""
-    # Comments delivered before the Mosaic->Otto rename carry the old marker; check BOTH or a
-    # retried delivery of a pre-rename run would post a duplicate.
-    legacy = f"<!-- mosaic-run:{run_id} -->" if run_id else ""
-    if marker and (board.has_comment_marker(repo, number, marker)
-                   or board.has_comment_marker(repo, number, legacy)):
-        posted = True   # already delivered on a prior (retried) attempt — don't duplicate
-    else:
-        posted = board.comment(repo, number, (marker + "\n" + body) if marker else body)
-
-    if reply_to.get("blocked"):
-        target = reply_to.get("blocked_col")
-    elif reply_to.get("merged"):
-        # Factory mode merged the PR itself: nothing is left to review.
-        target = reply_to.get("done_col")
-    elif reply_to.get("repo_edit"):
-        target = reply_to.get("review_col")
-    else:
-        target = reply_to.get("done_col")
-    option_id = (reply_to.get("status_options") or {}).get(target)
-    moved = board.set_status_raw(reply_to.get("project_id"), reply_to.get("status_field_id"),
-                                 reply_to.get("item_id"), option_id)
-    bits = [f"commented on {repo}#{number}" if posted else f"comment FAILED on {repo}#{number}"]
-    if target:
-        bits.append(f"moved to {target}" if moved else f"could NOT move to {target}")
-    return "; ".join(bits)
