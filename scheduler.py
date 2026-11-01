@@ -131,7 +131,7 @@ def _args(rid, rb, values=None, unattended=True):
     # Its own kind, `slack_post`, NOT a `slack_thread`: a thread target is a CONVERSATION — the
     # run is told someone is waiting to reply, a question back passes the judge, a session is
     # bound, and every decline/error is worded to an asker. None of that is true of a channel a
-    # job posts into. Same sink (`delivery._slack`: idempotent on the run id, honours NO_REPLY),
+    # job posts into. Same sink (`integrations.slack.deliver`: idempotent on the run id, honours NO_REPLY),
     # its own audience (`notice`) and `privacy.source_line` branch (ingress.md).
     if r["slack"]:
         args["reply_to"] = {"kind": "slack_post", "channel": r["slack"]}

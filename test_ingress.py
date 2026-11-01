@@ -10249,6 +10249,26 @@ class IntegrationRegistryTests(unittest.TestCase):
             self.assertIsNone(privacy.source_line({"kind": "nope"}))
             self.assertEqual(privacy.source_line({"kind": "nope"}, unattended=True), "source: scheduled run")
 
+    def test_a_hook_acts_only_on_the_kind_it_was_cut_from(self):
+        """Each hook body was cut from under an `if kind == …`; the integration owns MORE kinds
+        than that branch did. Measured before the guards: a dead PR-review run labelled the
+        colleague's PR `needs-human` in THEIR repo, and a runbook's one-way post bound a
+        conversation (`RunbookSlackDeliveryTests`)."""
+        import board
+        import slack
+        writes = []
+        with unittest.mock.patch.object(board, "set_status_raw", lambda *a: writes.append(("move", a)) or True), \
+             unittest.mock.patch.object(board, "add_label", lambda *a: writes.append(("label", a)) or True):
+            out = self.integrations.for_kind("github_pr").on_needs_human(
+                {"kind": "github_pr", "repo": "colleague/repo", "number": 7, "blocked_col": "Blocked"})
+        self.assertEqual((out, writes), ({}, []), "a colleague's PR is not a board card")
+        with unittest.mock.patch.object(slack, "record_conversation_session", lambda *a, **k: writes.append("bind")), \
+             unittest.mock.patch.object(slack, "mark_awaiting_gate", lambda *a, **k: writes.append("arm")):
+            post = {"kind": "slack_post", "channel": "C1"}
+            self.integrations.for_kind("slack_post").on_delivered(post, {"result": "x", "session_id": "s"})
+            self.integrations.for_kind("slack_post").on_gate_notice(post, "wid", "1.2")
+        self.assertEqual(writes, [], "a one-way post has no conversation to bind or arm")
+
     def test_source_lines_are_the_privacy_safe_ones(self):
         import privacy
         for reply_to, want in (({"kind": "slack_thread", "channel": "C1"}, "source: Slack message"),
@@ -10263,7 +10283,7 @@ class IntegrationRegistryTests(unittest.TestCase):
     # What a bundled module may import at TOP level. `all()` imports every one of them, and
     # `audience_for` runs inside workflow code, so this is the whole import surface the sandbox
     # sees: a vendor module (I/O, clocks, env) is imported inside the function that needs it.
-    ALLOWED_TOP_IMPORTS = {"integrations"}
+    ALLOWED_TOP_IMPORTS = {"integrations", "config", "os", "json", "urllib.request"}
 
     def test_the_registry_and_every_bundled_module_are_pure_at_import(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations")

@@ -8,9 +8,9 @@ do leave, and they are the ones this module guards:
   * **ntfy push** (`delivery.notify`) — a THIRD-PARTY broker (ntfy.sh by default) where the
     topic name is the only credential. Anyone who knows or guesses it reads every push, and
     ntfy caches messages server-side. Treat it as a public bulletin board.
-  * **Slack reply** (`delivery._slack` / `slack.post`) — read by whoever wrote in, who is
+  * **Slack reply** (`integrations.slack.deliver` / `slack.post`) — read by whoever wrote in, who is
     routinely NOT the owner.
-  * **GitHub comment / webhook** (`delivery._github_issue` / `_webhook`) — a durable record
+  * **GitHub comment / webhook** (`integrations.github.deliver_issue` / `integrations.webhook.deliver`) — a durable record
     other people read.
 
 Two separate controls, because they fail differently:

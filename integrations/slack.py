@@ -9,7 +9,13 @@ from integrations import CONVERSATION, Integration, NOTICE
 # A delivery landing this long after the triggering message gets a "catching up" preface rather
 # than reading as if no time passed — the sleep/downtime case (a run computed fine, delivery just
 # couldn't reach Slack yet) is otherwise indistinguishable from an instant reply.
-STALE_REPLY_S = int(os.environ.get("OTTO_SLACK_STALE_REPLY_S") or 1800)
+STALE_REPLY_S = 1800
+
+
+def _stale_reply_s():
+    """Read per call: `all()` imports this module from workflow-side code, so nothing here may
+    read the env at import (`…pure_at_import`)."""
+    return int(os.environ.get("OTTO_SLACK_STALE_REPLY_S") or STALE_REPLY_S)
 
 # Slack's refusals that mean "this bot is not in that channel" — the post certainly did not land.
 _BOT_CANNOT_POST = ("not_in_channel", "channel_not_found")
@@ -54,7 +60,7 @@ def deliver(reply_to, result, cap=None, run_id=None):
             if run_id:
                 slack.mark_posted(run_id)
             return "skipped — the owner already answered this since it was asked"
-        if delay_s > STALE_REPLY_S:
+        if delay_s > _stale_reply_s():
             result = (f"_(sorry — catching up after a gap, this is about your message from "
                       f"earlier)_\n\n{result}")
     # Claude emits Markdown. Render as Block Kit rich_text (native lists/indents/code) when we can

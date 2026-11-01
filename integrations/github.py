@@ -74,7 +74,12 @@ def source_line(reply_to):
 
 def on_needs_human(reply_to):
     """A board-sourced run that parked: move the stuck card OUT of In Progress to the Blocked
-    column and stamp a `needs-human` label (the label survives a board with no Blocked column)."""
+    column and stamp a `needs-human` label (the label survives a board with no Blocked column).
+
+    A `github_pr` is a COLLEAGUE's pull request under review: nothing of Otto's to move, and a
+    label written there is a write into their repo (`IntegrationRegistryTests`)."""
+    if reply_to.get("kind") != "github_issue":
+        return {}
     import board
     repo, number = reply_to.get("repo"), reply_to.get("number")
     blocked_col = reply_to.get("blocked_col")

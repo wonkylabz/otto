@@ -766,7 +766,7 @@ def auto_post_ready(cfg=None):
     cover it — an unattended write to someone else's PR must stop when everything else does.
 
     The BACKSTOP, not the main path: a run finishing delivers its own review (`reply_to` →
-    `delivery._github_pr`). This catches what that could not — a post that failed, a review
+    `integrations.github.deliver`). This catches what that could not — a post that failed, a review
     that finished while the service was down, and one whose run predates `auto_post` being
     turned on. Normally a no-op, because delivery has already stamped `posted_at`."""
     cfg = cfg if cfg is not None else load()

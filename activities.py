@@ -1074,7 +1074,7 @@ def poll_board(payload: dict) -> dict:
     column as an unattended OttoWorkflow, claim it (move out of Ready), and return what was
     picked. Idempotent — a deterministic `gh-issue-<n>[-rK]` workflow id means re-polling a still-
     Ready card never double-runs it. The result is delivered back to the issue by
-    delivery._github_issue (see the `reply_to` enrichment below)."""
+    integrations.github.deliver_issue (see the `reply_to` enrichment below)."""
     import board
     import estop
     # Before load(), and before any card is read: claiming moves the card Ready -> In Progress,
@@ -1274,7 +1274,7 @@ def poll_slack(payload: dict) -> dict:
     OttoWorkflow per message (deterministic `slack-[b-]<ch>-<ts>` id → REJECT_DUPLICATE makes a
     re-poll idempotent), and post the interim ack in-thread.
 
-    The result is delivered back to the thread by delivery._slack. Advances a channel's read cursor
+    The result is delivered back to the thread by integrations.slack.deliver. Advances a channel's read cursor
     only for a message it actually handled (started, duplicate, or answered as a pleasantry) so a
     transient start failure — or a failed greeting post — is retried next poll. Never raises.
 

@@ -5,7 +5,7 @@ as events/schedules. A configured **GitHub Projects (v2)** board has a "Ready" c
 a human (or `sre-pm`) parks there is, on a poll interval, picked up as an unattended run:
 
     Ready ──poll──▶ claim (move to "In Progress") ──▶ OttoWorkflow (unattended)
-          ──done──▶ comment result on the issue + move to "Done"/"Review"  (delivery._github_issue)
+          ──done──▶ comment result on the issue + move to "Done"/"Review"  (integrations.github.deliver_issue)
 
 Design notes:
   * **Moving a card to Ready IS the human approval.** Board-sourced runs default to
