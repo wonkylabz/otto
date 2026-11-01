@@ -10198,3 +10198,82 @@ class ReplyKindDispatchRatchetTests(unittest.TestCase):
                     '"""the kind, when in "slack_post" mode"""',
                     'kinds = ("slack_thread", "slack_post")'):
             self.assertEqual(self._branches(src), 0, src)
+
+
+class IntegrationRegistryTests(unittest.TestCase):
+    """`integrations/` declares who owns each reply-target kind. Phase 1 of the integrations
+    refactor: the registry exists and agrees with `delivery.AUDIENCE`, and nothing reads it yet.
+    Phase 2 makes `delivery`/`privacy` dispatch through it — these tests are what say the move
+    changed nothing."""
+
+    def setUp(self):
+        import integrations
+        self.integrations = integrations
+
+    def test_every_delivery_kind_has_exactly_one_owner(self):
+        import delivery
+        owners = {}
+        for i in self.integrations.all():
+            for k in i.kinds:
+                owners.setdefault(k, []).append(i.name)
+        self.assertEqual(sorted(owners), sorted(delivery.AUDIENCE),
+                         "a kind delivery handles must be declared by one integration, and vice versa")
+        self.assertEqual({k: v for k, v in owners.items() if len(v) != 1}, {})
+
+    def test_declared_audiences_match_delivery(self):
+        import delivery
+        self.assertEqual(self.integrations.audiences(), delivery.AUDIENCE)
+        for i in self.integrations.all():
+            self.assertEqual(sorted(i.audiences), sorted(i.kinds), i.name)
+
+    def test_for_kind_is_total_over_declared_kinds_and_none_otherwise(self):
+        for kind, audience in self.integrations.audiences().items():
+            self.assertEqual(self.integrations.for_kind(kind).audiences[kind], audience)
+        self.assertIsNone(self.integrations.for_kind("teams_chat"))
+        self.assertIsNone(self.integrations.for_kind(None))
+
+    def test_pointers_reach_the_bodies_they_stand_in_for(self):
+        """A pointer that silently calls the wrong body is the one bug phase 2 could ship."""
+        import delivery
+        calls = []
+        with unittest.mock.patch.object(delivery, "_slack", lambda r, s, run_id=None: calls.append(("slack", r["kind"]))), \
+             unittest.mock.patch.object(delivery, "_github_issue", lambda r, s, c, run_id=None: calls.append(("issue", r["kind"]))), \
+             unittest.mock.patch.object(delivery, "_github_pr", lambda r, s: calls.append(("pr", r["kind"]))), \
+             unittest.mock.patch.object(delivery, "_webhook", lambda r, s, c: calls.append(("webhook", r["kind"]))):
+            for kind in ("slack_thread", "slack_post", "github_issue", "github_pr", "webhook"):
+                self.integrations.for_kind(kind).deliver({"kind": kind}, "r", "cap", "wid")
+        self.assertEqual(calls, [("slack", "slack_thread"), ("slack", "slack_post"),
+                                 ("issue", "github_issue"), ("pr", "github_pr"), ("webhook", "webhook")])
+
+    def test_source_lines_are_the_privacy_safe_ones(self):
+        """The exact strings, not "equals privacy.source_line" — a pointer at the function under
+        test compares it to itself and cannot fail."""
+        import privacy
+        for reply_to, want in (({"kind": "slack_thread", "channel": "C1"}, "source: Slack message"),
+                               ({"kind": "slack_post", "channel": "C1"}, "source: runbook"),
+                               ({"kind": "github_issue", "repo": "o/r", "number": 7}, "source: GitHub issue o/r#7"),
+                               ({"kind": "github_pr", "repo": "o/r", "number": 8}, "source: GitHub PR o/r#8"),
+                               ({"kind": "github_pr", "repo": "o/r"}, "source: GitHub o/r"),
+                               ({"kind": "webhook", "url": "https://x/?t=secret"}, "source: webhook")):
+            self.assertEqual(privacy.source_line(reply_to), want)
+            self.assertEqual(self.integrations.for_kind(reply_to["kind"]).source_line(reply_to), want)
+
+    # What a bundled module may import at TOP level. `all()` imports every one of them, and
+    # `audience_for` runs inside workflow code, so this is the whole import surface the sandbox
+    # sees: a vendor module (I/O, clocks, env) is imported inside the function that needs it.
+    ALLOWED_TOP_IMPORTS = {"integrations"}
+
+    def test_the_registry_and_every_bundled_module_are_pure_at_import(self):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations")
+        names = ["__init__"] + list(self.integrations.BUNDLED)
+        for name in names:
+            with open(os.path.join(root, name + ".py"), encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            top = set()
+            for node in tree.body:
+                if isinstance(node, ast.Import):
+                    top.update(a.name for a in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    top.add(node.module)
+            allowed = self.ALLOWED_TOP_IMPORTS | ({"dataclasses", "importlib"} if name == "__init__" else set())
+            self.assertEqual(top - allowed, set(), f"integrations/{name}.py imports at top level")
