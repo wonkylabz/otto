@@ -75,7 +75,7 @@
    "taskId": "521146419",
    "workflowTaskStartedEventAttributes": {
     "scheduledEventId": "2",
-    "identity": "2871898@uq-ms-150124",
+    "identity": "worker",
     "requestId": "cab0b041-0552-436e-b3a3-339cfa5c8c5f",
     "historySizeBytes": "557",
     "workerVersion": {
@@ -91,7 +91,7 @@
    "workflowTaskCompletedEventAttributes": {
     "scheduledEventId": "2",
     "startedEventId": "3",
-    "identity": "2871898@uq-ms-150124",
+    "identity": "worker",
     "workerVersion": {
      "buildId": "fa6a5fc7a437694769c4bf3cc65d3ef6"
     },
@@ -157,7 +157,7 @@
    "taskId": "521146430",
    "activityTaskStartedEventAttributes": {
     "scheduledEventId": "5",
-    "identity": "2871898@uq-ms-150124",
+    "identity": "worker",
     "requestId": "e115ea8a-1c25-4d9c-8334-31320d99fcfa",
     "attempt": 1,
     "workerVersion": {
@@ -183,7 +183,7 @@
     },
     "scheduledEventId": "5",
     "startedEventId": "6",
-    "identity": "2871898@uq-ms-150124"
+    "identity": "worker"
    }
   },
   {
@@ -193,7 +193,7 @@
    "taskId": "521146432",
    "workflowTaskScheduledEventAttributes": {
     "taskQueue": {
-     "name": "2871898@uq-ms-150124-f58d466561764f0e916c80f33b0a351a",
+     "name": "worker-f58d466561764f0e916c80f33b0a351a",
      "kind": "TASK_QUEUE_KIND_STICKY",
      "normalName": "otto"
     },
@@ -208,7 +208,7 @@
    "taskId": "521146436",
    "workflowTaskStartedEventAttributes": {
     "scheduledEventId": "8",
-    "identity": "2871898@uq-ms-150124",
+    "identity": "worker",
     "requestId": "f6cae153-ba3b-45bc-b889-0eee7150311d",
     "historySizeBytes": "1357",
     "workerVersion": {
@@ -224,7 +224,7 @@
    "workflowTaskCompletedEventAttributes": {
     "scheduledEventId": "8",
     "startedEventId": "9",
-    "identity": "2871898@uq-ms-150124",
+    "identity": "worker",
     "workerVersion": {
      "buildId": "fa6a5fc7a437694769c4bf3cc65d3ef6"
     },

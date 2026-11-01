@@ -9349,6 +9349,10 @@ class PollWorkflowReplayTests(unittest.IsolatedAsyncioTestCase):
         from temporalio.client import WorkflowHistory
         from temporalio.worker import Replayer
         import workflows
+        from temporalio.workflow import NondeterminismError
         hist = WorkflowHistory.from_json("renamed", self._history("SlackPollWorkflow", "poll_slack_v2"))
-        with self.assertRaises(Exception):
+        # Not a bare `Exception`: an unregistered workflow type raises too, which would keep this
+        # green with a broken `_history()` substitution.
+        with self.assertRaises(NondeterminismError) as ctx:
             await Replayer(workflows=[workflows.SlackPollWorkflow]).replay_workflow(hist)
+        self.assertIn("poll_slack_v2", str(ctx.exception))
