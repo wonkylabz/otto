@@ -62,7 +62,7 @@ It lives in `_TLDR_SHAPE`, interpolated into `_REPORT_FORMAT`/`_SINGLE_TURN_CONT
 - **A third audience, `brainstorm`, is set from the CAP not the target** (`workflows._audience_of` → `_THINKING_PARTNER_FORMAT`) — a web chat has no `reply_to` at all, so it fell back to `_REPORT_FORMAT` (`BrainstormModeTests`).
 - **The RESUME contract must be picked by audience too** (`contracts._resume_contract`) — `_RESUME_CONTRACT` folds in `_TLDR_SHAPE` on every resumed turn, so a mode forbidding the TLDR reads fine on turn 1 and reverts on turn 2 (`BrainstormModeTests`).
 - All three texts shaping a Slack reply (output contract, `slack.to_request` framing, `verify`'s judge) must agree on who the reader is — the framing text can silently win over the contract.
-- **A conversational run can choose to say nothing** (`config.is_no_reply`) — filler has no keyword-safe detection, so the model decides; a strict sentinel-match lets `verify` pass it and `delivery._slack` post nothing. A silent turn binds the session, never `last_reply`.
+- **A conversational run can choose to say nothing** (`config.is_no_reply`) — filler has no keyword-safe detection, so the model decides; a strict sentinel-match lets `verify` pass it and Slack delivery post nothing. A silent turn binds the session, never `last_reply`.
 
 ## Scorecard
 

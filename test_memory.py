@@ -5,6 +5,7 @@ Shared fixtures and the reason this suite is split by layer: test_support.py.
 import contextlib
 import inspect
 import io
+import importlib
 import json
 import os
 import re
@@ -1097,7 +1098,7 @@ class DeliveryTests(unittest.TestCase):
 
 
 class DeliveryBlockedTests(unittest.TestCase):
-    """delivery._github_issue: blocked routing, idempotency marker, and body cap."""
+    """integrations.github.deliver_issue: blocked routing, idempotency marker, and body cap."""
 
     def _reply(self, **over):
         r = {"kind": "github_issue", "repo": "acme/w", "number": 7, "item_id": "I7",
@@ -1143,7 +1144,7 @@ class DeliveryBlockedTests(unittest.TestCase):
         board.set_status_raw = lambda pid, fid, iid, oid: True
         try:
             delivery.deliver(self._reply(), "x" * 60_000)
-            self.assertLessEqual(len(posted[0]), delivery._MAX_COMMENT + 200)
+            self.assertLessEqual(len(posted[0]), importlib.import_module("integrations.github")._MAX_COMMENT + 200)
             self.assertIn("truncated", posted[0])
         finally:
             board.comment, board.set_status_raw, board.has_comment_marker = orig_c, orig_m, orig_has

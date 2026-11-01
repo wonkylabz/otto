@@ -8,9 +8,9 @@ do leave, and they are the ones this module guards:
   * **ntfy push** (`delivery.notify`) — a THIRD-PARTY broker (ntfy.sh by default) where the
     topic name is the only credential. Anyone who knows or guesses it reads every push, and
     ntfy caches messages server-side. Treat it as a public bulletin board.
-  * **Slack reply** (`delivery._slack` / `slack.post`) — read by whoever wrote in, who is
+  * **Slack reply** (`integrations.slack.deliver` / `slack.post`) — read by whoever wrote in, who is
     routinely NOT the owner.
-  * **GitHub comment / webhook** (`delivery._github_issue` / `_webhook`) — a durable record
+  * **GitHub comment / webhook** (`integrations.github.deliver_issue` / `integrations.webhook.deliver`) — a durable record
     other people read.
 
 Two separate controls, because they fail differently:
@@ -31,6 +31,8 @@ Two separate controls, because they fail differently:
 implementation behind every boundary. A second copy is how one of them silently falls behind.
 """
 import re
+
+import integrations
 
 REDACTED = "[redacted]"
 
@@ -137,26 +139,13 @@ def redact(text):
 
 def source_line(reply_to, unattended=False):
     """Where the run came from, named coarsely enough to be safe on a public topic. Returns None
-    when there's nothing useful to say.
-
-    A Slack source is deliberately NOT identified by channel or user id: the id is a direct
-    pointer into a private DM, and "Slack" plus the run id already gets the owner to the right
-    place in the UI. A GitHub issue IS named (repo#number) — it's the actionable half of the
-    notification, and an internal repo name is a far smaller exposure than a ticket body. A
-    webhook's URL is never included; it routinely carries a token in the path or query."""
+    when there's nothing useful to say. What each vendor may name is decided by its integration's
+    `source_line` — the rule is: Otto's vocabulary and a name the owner chose, never a pointer
+    into a private place or a URL that may carry a token."""
     kind = (reply_to or {}).get("kind") if isinstance(reply_to, dict) else None
-    if kind == "slack_thread":
-        return "source: Slack message"
-    if kind == "slack_post":
-        return "source: runbook"            # a destination, not where the run came from
-    if kind == "github_issue":
-        repo, number = (reply_to.get("repo") or "?"), reply_to.get("number")
-        return f"source: GitHub issue {repo}#{number}" if number else f"source: GitHub {repo}"
-    if kind == "github_pr":
-        repo, number = (reply_to.get("repo") or "?"), reply_to.get("number")
-        return f"source: GitHub PR {repo}#{number}" if number else f"source: GitHub {repo}"
-    if kind == "webhook":
-        return "source: webhook"
+    owner = integrations.for_kind(kind) if kind else None
+    if owner is not None:
+        return owner.source_line(reply_to)
     if unattended:
         return "source: scheduled run"
     return None

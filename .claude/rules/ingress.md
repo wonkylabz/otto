@@ -31,7 +31,7 @@ Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver t
 
 - **All Slack state is namespaced by identity** (`slack_state.ns` — cursors, records, `wid_for`'s `slack-b-…`) — both watch the same channels, so a shared key marks read what nobody answered and a shared wid REJECT_DUPLICATEs the second run (`SlackBotIdentityTests`).
 - **`user` is the UNNAMESPACED namespace** — its keys stay byte-identical to the pre-bot shape, or an installed listener loses every cursor on upgrade and reads as gone deaf (`SlackBotIdentityTests`).
-- **WHO posts travels with WHERE** (`reply_target`'s `identity`, recovered from the wid once history ages out) — `delivery._slack` has nothing else to go on, and the bot's answer on the user token is words in a real person's mouth (`SlackBotIdentityTests`).
+- **WHO posts travels with WHERE** (`reply_target`'s `identity`, recovered from the wid once history ages out) — `integrations.slack.deliver` has nothing else to go on, and the bot's answer on the user token is words in a real person's mouth (`SlackBotIdentityTests`).
 - **The bot's framing PROHIBITS the stand-in claim, never just omits it** (`slack._BOT_FRAMING`) — given the user one it calls itself "the operator's assistant … in his place" 4/4, under a name the reader sees is a bot (`SlackBotIdentityTests`, `slack-bot-speaks-for-itself`).
 - **Separate allowlists** (`bot_allow_*`) — inviting the bot somewhere must not widen what the owner's own account answers there. A bot CHANNEL must be listed to be read at all: that list is what bounds the per-poll history sweep (`SlackBotIdentityTests`).
 - **Bot mentions come from membership, not search** (`_poll_bot_mentions`) — `search:read` is user-token-only. A bare `@otto` stripping to nothing is flagged `summons`, never left to `is_pleasantry`, which refuses `@`/`<>` and empty text by design (`SlackBotIdentityTests`).
@@ -122,7 +122,7 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 
 ## Adding an ingress
 
-Adding a reply-target kind needs a `privacy.source_line` branch AND a `delivery.AUDIENCE` entry, or it silently falls back to `report`.
+A reply-target kind is DECLARED in `integrations/`, else it defaults to `report` (`IntegrationRegistryTests`).
 
 - **A new ingress must consult `estop.blocked` before it reads state, not just before it starts the workflow** — the pause has to land before a card moves Ready→In Progress or a cursor advances (`EstopCoverageTests`).
 - **A Schedule fires from the Temporal server, so it has no in-process step to check** — `activities.estop_check` at the top of `_run_impl` is the pause's backstop for cron. A paused run returns finished, never needs-human.

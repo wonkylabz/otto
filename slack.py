@@ -694,7 +694,7 @@ def post(channel, text, thread_ts=None, blocks=None, identity=USER, errors=None)
     the last line of code before a credential would reach a person who is not the owner, and it
     catches acks, greetings and any future caller that never went through `delivery.deliver`.
     The scrub is idempotent, so the double-pass on a delivered result is free. `blocks` is
-    trusted — `delivery._slack` builds it from the already-redacted text, which is the only way
+    trusted — `integrations.slack.deliver` builds it from the already-redacted text, which is the only way
     to keep the rich rendering and the scrub in agreement (Block Kit is structured, so scrubbing
     it here would mean walking the tree)."""
     if not (channel and text):
@@ -1540,7 +1540,7 @@ def reply_target(msg):
     top_level = bool(msg.get("is_dm")) and not msg.get("thread_ts")
     return {"kind": "slack_thread", "channel": msg.get("channel"),
             "thread_ts": None if top_level else (msg.get("thread_ts") or msg.get("ts")),
-            # WHO posts the answer travels with WHERE it goes: `delivery._slack` has nothing else
+            # WHO posts the answer travels with WHERE it goes: `integrations.slack.deliver` has nothing else
             # to go on, and a bot's reply sent with the owner's token is the owner saying it.
             "identity": identity_of(msg)}
 

@@ -1255,8 +1255,8 @@ class SlackDirectReplyContractTests(unittest.TestCase):
         who reads it. Guard, not a formality: hardcoding "is this Slack?" in the workflow is what
         made this a per-ingress patch instead of a rule."""
         import delivery
-        src = inspect.getsource(delivery.deliver)
-        kinds = set(re.findall(r'kind == "([a-z_]+)"', src))
+        import integrations
+        kinds = {k for i in integrations.all() for k in i.kinds}
         self.assertTrue(kinds, "could not find the delivery kinds")
         self.assertEqual(kinds - set(delivery.AUDIENCE), set(),
                          "a delivery kind with no declared audience")
@@ -2004,7 +2004,7 @@ class SlackTests(unittest.TestCase):
         slack.post = lambda ch, text, thread_ts=None, blocks=None, identity="user": (
             posts.append(text) or True)
         slack.was_posted, slack.mark_posted = lambda rid: False, lambda rid: None
-        slack.owner_replied_since = lambda *a, **k: (False, delivery.STALE_REPLY_S + 1)
+        slack.owner_replied_since = lambda *a, **k: (False, importlib.import_module("integrations.slack").STALE_REPLY_S + 1)
         try:
             r = {"kind": "slack_thread", "channel": "C7", "thread_ts": "100.0"}
             delivery.deliver(r, "here's my analysis of that PR", run_id="slack-C7-100-0")
@@ -2404,7 +2404,7 @@ class SlackBotIdentityTests(unittest.TestCase):
             slack.reply_target_from_wid("slack-C7-100-0")["identity"], "user")
 
     def test_the_reply_target_carries_who_posts(self):
-        """`delivery._slack` has nothing else to go on."""
+        """`integrations.slack.deliver` has nothing else to go on."""
         for identity in ("user", "bot"):
             t = slack.reply_target({"channel": "C9", "ts": "9.0", "identity": identity})
             self.assertEqual(t["identity"], identity)
@@ -9860,7 +9860,7 @@ class FactoryModeTests(unittest.TestCase):
                 unittest.mock.patch.object(board, "comment", return_value=True), \
                 unittest.mock.patch.object(board, "set_status_raw",
                                            side_effect=lambda p, f, i, o: moved.append(o) or True):
-            delivery._github_issue(rt, "sorry", None, run_id="gh-issue-3")
+            importlib.import_module("integrations.github").deliver_issue(rt, "sorry", None, run_id="gh-issue-3")
         self.assertNotIn("R", moved)
 
     def test_a_stop_during_a_board_poll_starts_nothing_more(self):
@@ -9907,7 +9907,7 @@ class FactoryModeTests(unittest.TestCase):
                 unittest.mock.patch.object(board, "comment", return_value=True), \
                 unittest.mock.patch.object(board, "set_status_raw",
                                            side_effect=lambda p, f, i, o: moved.append(o) or True):
-            delivery._github_issue(rt, "done", None, run_id="gh-issue-3")
+            importlib.import_module("integrations.github").deliver_issue(rt, "done", None, run_id="gh-issue-3")
         self.assertEqual(moved, ["D"])
 
     def test_merge_activity_reports_refusal_and_tolerates_a_retried_merge(self):
@@ -10140,8 +10140,7 @@ class ReplyKindDispatchRatchetTests(unittest.TestCase):
     VENDOR = frozenset({"slack.py", "slack_state.py", "slack_socket.py", "slack_mcp.py",
                         "board.py", "pr_review.py", "events.py", "factory.py"})
     KINDS = ("slack_thread", "slack_post", "github_issue", "github_pr", "webhook")
-    BASELINE = {"activities.py": 4, "delivery.py": 9, "privacy.py": 5, "server.py": 1,
-                "workflows.py": 1, "workspace.py": 1}
+    BASELINE = {"activities.py": 1, "server.py": 1, "workflows.py": 1, "workspace.py": 1}
 
     @classmethod
     def _branches(cls, src):
@@ -10232,22 +10231,45 @@ class IntegrationRegistryTests(unittest.TestCase):
         self.assertIsNone(self.integrations.for_kind("teams_chat"))
         self.assertIsNone(self.integrations.for_kind(None))
 
-    def test_pointers_reach_the_bodies_they_stand_in_for(self):
-        """A pointer that silently calls the wrong body is the one bug phase 2 could ship."""
+    def test_delivery_and_privacy_dispatch_through_the_registry(self):
+        """A kind the registry owns is delivered by its owner and sourced by it; one it doesn't is
+        refused, never guessed. Patched at `for_kind`, the one seam both consumers share."""
         import delivery
-        calls = []
-        with unittest.mock.patch.object(delivery, "_slack", lambda r, s, run_id=None: calls.append(("slack", r["kind"]))), \
-             unittest.mock.patch.object(delivery, "_github_issue", lambda r, s, c, run_id=None: calls.append(("issue", r["kind"]))), \
-             unittest.mock.patch.object(delivery, "_github_pr", lambda r, s: calls.append(("pr", r["kind"]))), \
-             unittest.mock.patch.object(delivery, "_webhook", lambda r, s, c: calls.append(("webhook", r["kind"]))):
-            for kind in ("slack_thread", "slack_post", "github_issue", "github_pr", "webhook"):
-                self.integrations.for_kind(kind).deliver({"kind": kind}, "r", "cap", "wid")
-        self.assertEqual(calls, [("slack", "slack_thread"), ("slack", "slack_post"),
-                                 ("issue", "github_issue"), ("pr", "github_pr"), ("webhook", "webhook")])
+        import privacy
+        fake = self.integrations.Integration(
+            name="teams", kinds=("teams_chat",), audiences={"teams_chat": "conversation"},
+            deliver=lambda r, s, c, run_id: f"teams got {s} for {run_id}",
+            source_line=lambda r: "source: Teams")
+        with unittest.mock.patch.object(self.integrations, "for_kind",
+                                        lambda k: fake if k == "teams_chat" else None):
+            self.assertEqual(delivery.deliver({"kind": "teams_chat"}, "hi", "cap", run_id="w1"),
+                             "teams got hi for w1")
+            self.assertEqual(delivery.deliver({"kind": "nope"}, "hi"), "unsupported reply kind: 'nope'")
+            self.assertEqual(privacy.source_line({"kind": "teams_chat"}), "source: Teams")
+            self.assertIsNone(privacy.source_line({"kind": "nope"}))
+            self.assertEqual(privacy.source_line({"kind": "nope"}, unattended=True), "source: scheduled run")
+
+    def test_a_hook_acts_only_on_the_kind_it_was_cut_from(self):
+        """Each hook body was cut from under an `if kind == …`; the integration owns MORE kinds
+        than that branch did. Measured before the guards: a dead PR-review run labelled the
+        colleague's PR `needs-human` in THEIR repo, and a runbook's one-way post bound a
+        conversation (`RunbookSlackDeliveryTests`)."""
+        import board
+        import slack
+        writes = []
+        with unittest.mock.patch.object(board, "set_status_raw", lambda *a: writes.append(("move", a)) or True), \
+             unittest.mock.patch.object(board, "add_label", lambda *a: writes.append(("label", a)) or True):
+            out = self.integrations.for_kind("github_pr").on_needs_human(
+                {"kind": "github_pr", "repo": "colleague/repo", "number": 7, "blocked_col": "Blocked"})
+        self.assertEqual((out, writes), ({}, []), "a colleague's PR is not a board card")
+        with unittest.mock.patch.object(slack, "record_conversation_session", lambda *a, **k: writes.append("bind")), \
+             unittest.mock.patch.object(slack, "mark_awaiting_gate", lambda *a, **k: writes.append("arm")):
+            post = {"kind": "slack_post", "channel": "C1"}
+            self.integrations.for_kind("slack_post").on_delivered(post, {"result": "x", "session_id": "s"})
+            self.integrations.for_kind("slack_post").on_gate_notice(post, "wid", "1.2")
+        self.assertEqual(writes, [], "a one-way post has no conversation to bind or arm")
 
     def test_source_lines_are_the_privacy_safe_ones(self):
-        """The exact strings, not "equals privacy.source_line" — a pointer at the function under
-        test compares it to itself and cannot fail."""
         import privacy
         for reply_to, want in (({"kind": "slack_thread", "channel": "C1"}, "source: Slack message"),
                                ({"kind": "slack_post", "channel": "C1"}, "source: runbook"),
@@ -10261,19 +10283,37 @@ class IntegrationRegistryTests(unittest.TestCase):
     # What a bundled module may import at TOP level. `all()` imports every one of them, and
     # `audience_for` runs inside workflow code, so this is the whole import surface the sandbox
     # sees: a vendor module (I/O, clocks, env) is imported inside the function that needs it.
-    ALLOWED_TOP_IMPORTS = {"integrations"}
+    ALLOWED_TOP_IMPORTS = {"integrations", "config", "os", "json", "urllib.request"}
+    # The only calls a module may make while being imported: its own declaration.
+    ALLOWED_IMPORT_TIME_CALLS = {"Integration", "dataclass"}
 
     def test_the_registry_and_every_bundled_module_are_pure_at_import(self):
+        """Walks every node NOT nested in a function: a `try: import x` at module level still runs
+        at import, and so does `int(os.environ.get(...))` — the exact regression this guards
+        (`STALE_REPLY_S` was read at import before `_stale_reply_s`), which an import-NAME
+        allowlist containing `os` let through."""
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations")
-        names = ["__init__"] + list(self.integrations.BUNDLED)
-        for name in names:
+
+        def walk(node, imports, calls):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    continue
+                if isinstance(child, ast.Import):
+                    imports.update(a.name for a in child.names)
+                elif isinstance(child, ast.ImportFrom):
+                    imports.add(child.module)
+                elif isinstance(child, ast.Call):
+                    f = child.func
+                    name = f.id if isinstance(f, ast.Name) else ast.unparse(f)
+                    if name not in self.ALLOWED_IMPORT_TIME_CALLS:
+                        calls.append(f"{child.lineno}: {name}(...)")
+                walk(child, imports, calls)
+
+        for name in ["__init__"] + list(self.integrations.BUNDLED):
             with open(os.path.join(root, name + ".py"), encoding="utf-8") as f:
                 tree = ast.parse(f.read())
-            top = set()
-            for node in tree.body:
-                if isinstance(node, ast.Import):
-                    top.update(a.name for a in node.names)
-                elif isinstance(node, ast.ImportFrom):
-                    top.add(node.module)
+            imports, calls = set(), []
+            walk(tree, imports, calls)
             allowed = self.ALLOWED_TOP_IMPORTS | ({"dataclasses", "importlib"} if name == "__init__" else set())
-            self.assertEqual(top - allowed, set(), f"integrations/{name}.py imports at top level")
+            self.assertEqual(imports - allowed, set(), f"integrations/{name}.py imports at top level")
+            self.assertEqual(calls, [], f"integrations/{name}.py runs code at import: {calls}")

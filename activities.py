@@ -915,7 +915,7 @@ def interim_notice(payload: dict) -> dict:
     an approval gate they cannot see.
 
     Deliberately not `deliver_result`: that one marks the run delivered (so the real answer would
-    later be swallowed by `_slack`'s idempotency check), records the Claude session, and clears
+    later be swallowed by Slack delivery's idempotency check), records the Claude session, and clears
     the conversation's in-flight flag. This posts and nothing else.
 
     `delivery` is imported HERE, like every other activity in this module — the module-level name
@@ -924,6 +924,7 @@ def interim_notice(payload: dict) -> dict:
     nothing. That is exactly what happened (`slack-b-D0BVD1F856Y-1788736699-386419`, three failed
     attempts in the worker log, a silent gate on the asker's side)."""
     import delivery
+    import integrations
     reply_to = payload.get("reply_to")
     delivered, status, notice_ts = delivery.interim(reply_to, payload.get("text", ""))
     # A gate notice also ARMS the conversation: the reply that clears it has to be matchable to
@@ -932,18 +933,9 @@ def interim_notice(payload: dict) -> dict:
     # armed a thread that was never told anything, and a later unrelated "ok" or "no" in it would
     # be consumed as a verdict on a gate nobody saw, for the next 25 hours.
     wid = payload.get("awaiting_wid")
-    if wid and delivered and (reply_to or {}).get("kind") == "slack_thread":
-        import slack
-        # A notice at a DM's top level grows its own thread, which the DM poll never reads —
-        # so its ts is recorded and that thread is read too. In a channel thread the notice is
-        # already a reply inside the watched thread, and Slack does not nest threads. BOT only:
-        # nobody can approve under the user identity (slack.may_approve), so reading its thread
-        # would spend the user token's rate limit for 25h on a pick that can never happen.
-        identity = slack.identity_of(reply_to)
-        slack.mark_awaiting_gate(reply_to.get("channel"), reply_to.get("thread_ts"),
-                                 wid=wid, identity=identity,
-                                 notice_ts=(notice_ts if identity == slack.BOT
-                                            and not reply_to.get("thread_ts") else None))
+    owner = integrations.for_kind((reply_to or {}).get("kind"))
+    if wid and delivered and owner is not None and owner.on_gate_notice is not None:
+        owner.on_gate_notice(reply_to, wid, notice_ts)
     activity.logger.info(f"interim notice -> {status}")
     return {"status": status}
 
@@ -952,6 +944,7 @@ def interim_notice(payload: dict) -> dict:
 def deliver_result(payload: dict) -> dict:
     """Send a finished unattended run's result to its reply target (webhook, etc.)."""
     import delivery
+    import integrations
     reply_to = payload.get("reply_to") or {}
     status = delivery.deliver(reply_to, payload.get("result", ""),
                               (payload.get("cap") or {}).get("name"), run_id=payload.get("run_id"))
@@ -960,21 +953,9 @@ def deliver_result(payload: dict) -> dict:
     # capability, and the reply text (which the handoff classifier reads next turn) so the next
     # message resumes this conversation. Also clears the in-flight marker, whatever the delivery
     # outcome — a jammed conversation would swallow every later message.
-    if reply_to.get("kind") == "slack_thread":
-        import slack
-        # A silent turn still binds the session (the next message must resume it), but it must not
-        # become `last_reply` — that's what the handoff classifier reads next turn, and "NO_REPLY"
-        # is not something Otto said. Falsy leaves the previous reply in place.
-        result = payload.get("result", "")
-        slack.record_conversation_session(
-            reply_to.get("channel"), reply_to.get("thread_ts"),
-            session=payload.get("session_id"), cap=payload.get("cap"),
-            last_reply="" if config.is_no_reply(result) else result,
-            # The session belongs to the identity that ran it: resuming the bot's session under the
-            # owner's token would answer as them, in a thread they were never part of.
-            identity=slack.identity_of(reply_to),
-            # Which run delivered: only its own gate (or its child's) is resolved by this.
-            run_id=payload.get("run_id"))
+    owner = integrations.for_kind(reply_to.get("kind"))
+    if owner is not None and owner.on_delivered is not None:
+        owner.on_delivered(reply_to, payload)
     # A failed/partial delivery is reported here (not raised — delivery never fails the run) so the
     # workflow can record a terminal audit row instead of the result silently vanishing.
     failed = ("failed" in status.lower()) or ("could not" in status.lower())
@@ -1024,8 +1005,8 @@ def finalize_terminal(payload: dict) -> dict:
     QA fail/inconclusive, or a budget stop). Writes a durable terminal audit row and, for a
     board-sourced run, moves the stuck card OUT of In Progress to the Blocked column and stamps a
     `needs-human` label (the label survives a board with no Blocked column). Never raises."""
-    import board
     import delivery
+    import integrations
     wid = payload.get("wid")
     engine.record_terminal(wid, payload.get("request", ""), payload.get("cap"),
                            payload.get("reason", "failed"), detail=payload.get("detail", ""),
@@ -1049,15 +1030,9 @@ def finalize_terminal(payload: dict) -> dict:
                     priority="high", kind="terminal",
                     wid=wid)
     reply_to = payload.get("reply_to") or {}
-    moved = labelled = False
-    if reply_to.get("kind") == "github_issue":
-        repo, number = reply_to.get("repo"), reply_to.get("number")
-        blocked_col = reply_to.get("blocked_col")
-        option_id = (reply_to.get("status_options") or {}).get(blocked_col)
-        moved = board.set_status_raw(reply_to.get("project_id"), reply_to.get("status_field_id"),
-                                     reply_to.get("item_id"), option_id)
-        labelled = board.add_label(repo, number, "needs-human")
-    return {"audited": True, "moved": moved, "labelled": labelled}
+    owner = integrations.for_kind(reply_to.get("kind"))
+    hook = (owner.on_needs_human(reply_to) if owner is not None and owner.on_needs_human else None) or {}
+    return {"audited": True, "moved": bool(hook.get("moved")), "labelled": bool(hook.get("labelled"))}
 
 
 @activity.defn
@@ -1099,7 +1074,7 @@ def poll_board(payload: dict) -> dict:
     column as an unattended OttoWorkflow, claim it (move out of Ready), and return what was
     picked. Idempotent — a deterministic `gh-issue-<n>[-rK]` workflow id means re-polling a still-
     Ready card never double-runs it. The result is delivered back to the issue by
-    delivery._github_issue (see the `reply_to` enrichment below)."""
+    integrations.github.deliver_issue (see the `reply_to` enrichment below)."""
     import board
     import estop
     # Before load(), and before any card is read: claiming moves the card Ready -> In Progress,
@@ -1299,7 +1274,7 @@ def poll_slack(payload: dict) -> dict:
     OttoWorkflow per message (deterministic `slack-[b-]<ch>-<ts>` id → REJECT_DUPLICATE makes a
     re-poll idempotent), and post the interim ack in-thread.
 
-    The result is delivered back to the thread by delivery._slack. Advances a channel's read cursor
+    The result is delivered back to the thread by integrations.slack.deliver. Advances a channel's read cursor
     only for a message it actually handled (started, duplicate, or answered as a pleasantry) so a
     transient start failure — or a failed greeting post — is retried next poll. Never raises.
 
