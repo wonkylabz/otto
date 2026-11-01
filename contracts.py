@@ -816,7 +816,7 @@ def parse_delegation(text):
     task = None
     if lines:
         m = _DELEGATE_LINE.match(lines[-1])
-        if m and 12 <= len(m.group(1).strip()) <= 2000:
+        if m and 12 <= len(m.group(1).strip()) <= 8000:
             task = " ".join(m.group(1).split())
     kept = [ln for ln in lines if not _DELEGATE_LINE.match(ln)]
     return "\n".join(kept).strip(), task
