@@ -37,13 +37,21 @@ def _outcome(res):
 class FrontmanMixin:
     """Delegate a frontman's hand-off to a child run, then relay its outcome."""
 
+    def _parse_delegation(self, text):
+        """`contracts.parse_delegation`, logging an oversized hand-off: the person only sees
+        "say it in full", which is wrong advice for a task that was already complete."""
+        n = contracts.delegation_overflow(text)
+        if n:
+            workflow.logger.warning(f"delegation dropped: task is {n} chars, cap {contracts.DELEGATE_MAX}")
+        return contracts.parse_delegation(text)
+
     async def _frontman_turn(self, params, out, attempt):
         """`out` unchanged unless this is a frontman reply ending in a delegation; else the relay
         turn's `out`, whose result is the reply to post. Never raises past the relay: every child
         ending, including its failure, is told to the person."""
         if not params.get("frontman"):
             return out
-        reply, task = contracts.parse_delegation(out.get("result"))
+        reply, task = self._parse_delegation(out.get("result"))
         # A fronted web turn whose write-intent guard said WRITE never ran: the request IS the task.
         task = out.get("handoff") or task
         if not task or not workflow.patched("frontman-delegate"):

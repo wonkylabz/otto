@@ -27,6 +27,8 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **A chat hand-off over the 8000-character limit is now logged** in the worker log, instead
+  of only answering "say it in full". Nothing else changes.
 - **A long chat no longer stops Otto from taking on a task.** A follow-up asking for work
   answered "I couldn't turn that into a task" once the conversation was long: the hand-off
   accepted at most 2000 characters and silently dropped longer ones. The limit is now 8000.
