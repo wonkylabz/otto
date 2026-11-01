@@ -45,6 +45,16 @@ class FrontmanMixin:
             workflow.logger.warning(f"delegation dropped: task is {n} chars, cap {contracts.DELEGATE_MAX}")
         return contracts.parse_delegation(text)
 
+    def _handoff_task(self, text):
+        """The task a `HANDOFF_ASK` turn wrote; multi-line only for runs recorded with the patch."""
+        if not workflow.patched("handoff-multiline"):
+            return self._parse_delegation(text)[1]
+        task = contracts.parse_handoff(text)
+        body = contracts.handoff_body(text)
+        if task is None and body and len(body) > contracts.DELEGATE_MAX:
+            workflow.logger.warning(f"delegation dropped: task is {len(body)} chars, cap {contracts.DELEGATE_MAX}")
+        return task
+
     async def _frontman_turn(self, params, out, attempt):
         """`out` unchanged unless this is a frontman reply ending in a delegation; else the relay
         turn's `out`, whose result is the reply to post. Never raises past the relay: every child
@@ -53,7 +63,9 @@ class FrontmanMixin:
             return out
         reply, task = self._parse_delegation(out.get("result"))
         # A fronted web turn whose write-intent guard said WRITE never ran: the request IS the task.
-        task = out.get("handoff") or task
+        # A handoff turn wrote nothing but the task, so there is no draft to relay.
+        if out.get("handoff"):
+            reply, task = "", out["handoff"]
         if not task or not workflow.patched("frontman-delegate"):
             return out
         wid = workflow.info().workflow_id

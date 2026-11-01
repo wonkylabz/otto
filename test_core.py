@@ -4733,6 +4733,19 @@ class FrontmanDelegationParseTests(unittest.TestCase):
         self.assertIsNone(p("I could DELEGATE: this, but won't")[1])
         self.assertIsNone(p("")[1])
 
+    def test_a_handoff_turn_may_write_a_multi_line_task(self):
+        import contracts
+        p = contracts.parse_handoff
+        self.assertEqual(p("DELEGATE: open the vllm PR\nRequirements:\n- keep the name  "),
+                         "open the vllm PR\nRequirements:\n- keep the name")
+        self.assertEqual(p("**DELEGATE:** bump the widget to 2.0"), "bump the widget to 2.0")
+        self.assertEqual(p("Sure.\nDELEGATE: bump the widget to 2.0"), "bump the widget to 2.0")
+        self.assertIsNone(p("Sure thing!"))
+        self.assertIsNone(p("DELEGATE: tiny"))
+        self.assertIsNone(p("DELEGATE: " + "t" * (contracts.DELEGATE_MAX + 1)))
+        # The frontman's own turn keeps the last-line rule: trailing text is no delegation.
+        self.assertIsNone(contracts.parse_delegation("DELEGATE: open the vllm PR\nRequirements:")[1])
+
     def test_no_delegate_line_ever_reaches_the_reader(self):
         import contracts
         reply, task = contracts.parse_delegation("hi\nDELEGATE: bump the widget to 2.0\nbye")

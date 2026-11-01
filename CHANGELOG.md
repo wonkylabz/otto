@@ -27,6 +27,9 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **A chat follow-up whose task Otto wrote over several lines now runs.** Otto answered "say it
+  in full" whenever its hand-off spanned more than one line, as long tasks with a requirements
+  list do. Runs started before the upgrade keep the old behaviour; a restart picks it up.
 - **A chat hand-off over the 8000-character limit is now logged** in the worker log, instead
   of only answering "say it in full". Nothing else changes.
 - **A long chat no longer stops Otto from taking on a task.** A follow-up asking for work
