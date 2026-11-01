@@ -10119,3 +10119,82 @@ class FactoryModeTests(unittest.TestCase):
     def test_factory_state_never_travels_in_a_snapshot(self):
         import snapshot
         self.assertIn("factory.json", snapshot.RUNTIME)
+
+
+class ReplyKindDispatchRatchetTests(unittest.TestCase):
+    """Ratchet: where the CORE branches on a vendor's `reply_to["kind"]`.
+
+    Every such branch is a place a new integration (Teams, GitLab) has to edit the pipeline
+    instead of declaring itself. The integrations refactor moves them behind one dispatch
+    (`integrations.for_kind`), one phase at a time — so the count per file may only FALL, and a
+    branch in a file not listed here is a leak the refactor is meant to end. Lower a number when
+    a phase lands; never raise one.
+
+    Scanned by DEFAULT: every module at the root that is not a test and not the vendor's own
+    (`VENDOR`), so an unlisted core file is covered rather than exempt. Counted on the AST, not a
+    regex: a comparison (`==`, `!=`, `in`, `not in`) against one of the kind literals, or a
+    `match` case on one — so a renamed variable, a quote style or a tuple of kinds still counts,
+    and a docstring or a `{"kind": "slack_post"}` being BUILT does not."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+    VENDOR = frozenset({"slack.py", "slack_state.py", "slack_socket.py", "slack_mcp.py",
+                        "board.py", "pr_review.py", "events.py", "factory.py"})
+    KINDS = ("slack_thread", "slack_post", "github_issue", "github_pr", "webhook")
+    BASELINE = {"activities.py": 4, "delivery.py": 9, "privacy.py": 5, "server.py": 1,
+                "workflows.py": 1, "workspace.py": 1}
+
+    @classmethod
+    def _branches(cls, src):
+        def is_kind(n):
+            return isinstance(n, ast.Constant) and n.value in cls.KINDS
+
+        def has_kind(n):
+            return is_kind(n) or (isinstance(n, (ast.Tuple, ast.List, ast.Set))
+                                  and any(is_kind(e) for e in n.elts))
+        n = 0
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Compare) and any(has_kind(c) for c in [node.left, *node.comparators]):
+                n += 1
+            elif isinstance(node, ast.MatchValue) and is_kind(node.value):
+                n += 1
+        return n
+
+    def _sites(self):
+        found = {}
+        for path in sorted(glob.glob(os.path.join(self.ROOT, "*.py"))):
+            name = os.path.basename(path)
+            if name.startswith("test_") or name in self.VENDOR:
+                continue
+            with open(path, encoding="utf-8") as f:
+                n = self._branches(f.read())
+            if n:
+                found[name] = n
+        return found
+
+    def test_no_core_file_gains_a_vendor_kind_branch(self):
+        found = self._sites()
+        grew = {k: (self.BASELINE.get(k, 0), v) for k, v in found.items() if v > self.BASELINE.get(k, 0)}
+        self.assertEqual(grew, {}, f"vendor kind branches grew (baseline, now): {grew} — "
+                                   "dispatch through the integration, don't add a branch")
+
+    def test_the_baseline_is_lowered_when_a_phase_lands(self):
+        """A ratchet left loose stops ratcheting: a file that dropped below its baseline must
+        have the baseline lowered with it, or the next leak hides in the slack."""
+        found = self._sites()
+        loose = {k: (v, found.get(k, 0)) for k, v in self.BASELINE.items() if found.get(k, 0) < v}
+        self.assertEqual(loose, {}, f"lower these baselines (baseline, now): {loose}")
+
+    def test_the_predicate_counts_branches_not_spellings(self):
+        for src in ('if reply_to.get("kind") == "slack_thread": pass',
+                    "k = reply_to.get('kind')\nif k == 'slack_thread': pass",
+                    'if "slack_thread" == kind: pass',
+                    'if kind in ("github_pr", "github_issue"): pass',
+                    'if kind not in {"webhook"}: pass',
+                    'match kind:\n    case "slack_post": pass\n    case _: pass'):
+            self.assertEqual(self._branches(src), 1, src)
+        self.assertEqual(self._branches('if kind == "slack_thread" or kind == "slack_post": pass'), 2)
+        for src in ('reply_to = {"kind": "slack_post", "channel": c}',
+                    'AUDIENCE.get(reply_to.get("kind"), DEFAULT_AUDIENCE)',
+                    '"""the kind, when in "slack_post" mode"""',
+                    'kinds = ("slack_thread", "slack_post")'):
+            self.assertEqual(self._branches(src), 0, src)

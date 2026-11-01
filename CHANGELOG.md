@@ -13,6 +13,9 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
+- Guards ahead of the integrations refactor: one recorded poll history is replayed against
+  all three poll workflows, and a test ratchets the core's per-vendor `reply_to` branches so they can
+  only fall. Nothing operational changed.
 - README rewritten as a short front page with screenshots; the long-form sections (repo
   mode, factory mode, phone access, backends, configuration, secrets) moved to
   `docs/guide.md`. Nothing operational changed.
