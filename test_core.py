@@ -4722,6 +4722,8 @@ class FrontmanDelegationParseTests(unittest.TestCase):
                          ("Sure.", "bump the widget to 2.0 in example-repo"))
         self.assertEqual(p("**DELEGATE:** bump the widget to 2.0")[1], "bump the widget to 2.0")
         self.assertIsNone(p("DELEGATE: tiny")[1])                         # too short to be a task
+        long = "open the vllm PR " + "x" * 2400                         # a long chat's task
+        self.assertEqual(p("DELEGATE: " + long)[1], long)
         self.assertIsNone(p("DELEGATE: bump the widget to 2.0\nthen more")[1])   # not last
         self.assertIsNone(p("I could DELEGATE: this, but won't")[1])
         self.assertIsNone(p("")[1])

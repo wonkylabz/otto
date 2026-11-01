@@ -27,6 +27,10 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **A long chat no longer stops Otto from taking on a task.** A follow-up asking for work
+  answered "I couldn't turn that into a task" once the conversation was long: the hand-off
+  accepted at most 2000 characters and silently dropped longer ones. The limit is now 8000.
+  A restart picks it up.
 - **The mascot no longer waves in his sleep.** The welcome-back greeting fires only from the
   idle pose; a sleeping Otto stays asleep.
 - **Saving Otto to a phone's home screen now installs the Otto icon** instead of a generic
