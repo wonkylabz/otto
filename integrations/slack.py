@@ -1,6 +1,6 @@
 """Slack: a thread someone asked in (`slack_thread`, a conversation) and a runbook's one-way
 channel post (`slack_post`, a notice). The bodies still live in `delivery`/`privacy`/`activities`
-until phase 2 moves them; these are pointers. (`import slack` below is the top-level module.)"""
+until phase 2 moves them; these are pointers."""
 from integrations import CONVERSATION, Integration, NOTICE
 
 

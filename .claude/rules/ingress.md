@@ -122,7 +122,7 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 
 ## Adding an ingress
 
-A reply-target kind is DECLARED in `integrations/`, or it silently falls back to `report` (`IntegrationRegistryTests`).
+Adding a reply-target kind needs a `privacy.source_line` branch AND a `delivery.AUDIENCE` entry, or it silently falls back to `report`.
 
 - **A new ingress must consult `estop.blocked` before it reads state, not just before it starts the workflow** — the pause has to land before a card moves Ready→In Progress or a cursor advances (`EstopCoverageTests`).
 - **A Schedule fires from the Temporal server, so it has no in-process step to check** — `activities.estop_check` at the top of `_run_impl` is the pause's backstop for cron. A paused run returns finished, never needs-human.

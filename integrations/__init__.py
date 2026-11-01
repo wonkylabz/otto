@@ -27,6 +27,8 @@ class Integration:
     did, so moving a body here is a cut-and-paste, not a redesign.
 
     `deliver(reply_to, result, cap, run_id) -> str` — the push; returns a status for the trace.
+        It receives text `delivery.deliver` has ALREADY redacted and may raise: that caller owns
+        the scrub and the never-raises wrapper, so nothing else may call it with raw text.
     `source_line(reply_to) -> str | None` — the privacy-safe origin for a push notification.
     `interim(reply_to, text) -> (bool, str, ts | None)` — a mid-run note; None = no such channel.
     `on_delivered(reply_to, payload) -> None` — bookkeeping after `deliver` (session, busy flag).

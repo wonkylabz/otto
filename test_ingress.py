@@ -10245,17 +10245,35 @@ class IntegrationRegistryTests(unittest.TestCase):
         self.assertEqual(calls, [("slack", "slack_thread"), ("slack", "slack_post"),
                                  ("issue", "github_issue"), ("pr", "github_pr"), ("webhook", "webhook")])
 
-    def test_source_lines_agree_with_privacy(self):
+    def test_source_lines_are_the_privacy_safe_ones(self):
+        """The exact strings, not "equals privacy.source_line" — a pointer at the function under
+        test compares it to itself and cannot fail."""
         import privacy
-        for reply_to in ({"kind": "slack_thread", "channel": "C1"}, {"kind": "slack_post"},
-                         {"kind": "github_issue", "repo": "o/r", "number": 7},
-                         {"kind": "github_pr", "repo": "o/r", "number": 8}, {"kind": "webhook"}):
-            i = self.integrations.for_kind(reply_to["kind"])
-            self.assertEqual(i.source_line(reply_to), privacy.source_line(reply_to))
+        for reply_to, want in (({"kind": "slack_thread", "channel": "C1"}, "source: Slack message"),
+                               ({"kind": "slack_post", "channel": "C1"}, "source: runbook"),
+                               ({"kind": "github_issue", "repo": "o/r", "number": 7}, "source: GitHub issue o/r#7"),
+                               ({"kind": "github_pr", "repo": "o/r", "number": 8}, "source: GitHub PR o/r#8"),
+                               ({"kind": "github_pr", "repo": "o/r"}, "source: GitHub o/r"),
+                               ({"kind": "webhook", "url": "https://x/?t=secret"}, "source: webhook")):
+            self.assertEqual(privacy.source_line(reply_to), want)
+            self.assertEqual(self.integrations.for_kind(reply_to["kind"]).source_line(reply_to), want)
 
-    def test_the_registry_is_pure_at_import(self):
-        """`audience_for` runs inside workflow code: the package must import nothing with I/O."""
-        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "integrations", "__init__.py"), encoding="utf-8").read()
-        top = [l for l in src.splitlines() if l.startswith(("import ", "from "))]
-        self.assertEqual(top, ["from dataclasses import dataclass", "import importlib"])
+    # What a bundled module may import at TOP level. `all()` imports every one of them, and
+    # `audience_for` runs inside workflow code, so this is the whole import surface the sandbox
+    # sees: a vendor module (I/O, clocks, env) is imported inside the function that needs it.
+    ALLOWED_TOP_IMPORTS = {"integrations"}
+
+    def test_the_registry_and_every_bundled_module_are_pure_at_import(self):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations")
+        names = ["__init__"] + list(self.integrations.BUNDLED)
+        for name in names:
+            with open(os.path.join(root, name + ".py"), encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            top = set()
+            for node in tree.body:
+                if isinstance(node, ast.Import):
+                    top.update(a.name for a in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    top.add(node.module)
+            allowed = self.ALLOWED_TOP_IMPORTS | ({"dataclasses", "importlib"} if name == "__init__" else set())
+            self.assertEqual(top - allowed, set(), f"integrations/{name}.py imports at top level")
