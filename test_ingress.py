@@ -10284,18 +10284,36 @@ class IntegrationRegistryTests(unittest.TestCase):
     # `audience_for` runs inside workflow code, so this is the whole import surface the sandbox
     # sees: a vendor module (I/O, clocks, env) is imported inside the function that needs it.
     ALLOWED_TOP_IMPORTS = {"integrations", "config", "os", "json", "urllib.request"}
+    # The only calls a module may make while being imported: its own declaration.
+    ALLOWED_IMPORT_TIME_CALLS = {"Integration", "dataclass"}
 
     def test_the_registry_and_every_bundled_module_are_pure_at_import(self):
+        """Walks every node NOT nested in a function: a `try: import x` at module level still runs
+        at import, and so does `int(os.environ.get(...))` — the exact regression this guards
+        (`STALE_REPLY_S` was read at import before `_stale_reply_s`), which an import-NAME
+        allowlist containing `os` let through."""
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "integrations")
-        names = ["__init__"] + list(self.integrations.BUNDLED)
-        for name in names:
+
+        def walk(node, imports, calls):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    continue
+                if isinstance(child, ast.Import):
+                    imports.update(a.name for a in child.names)
+                elif isinstance(child, ast.ImportFrom):
+                    imports.add(child.module)
+                elif isinstance(child, ast.Call):
+                    f = child.func
+                    name = f.id if isinstance(f, ast.Name) else ast.unparse(f)
+                    if name not in self.ALLOWED_IMPORT_TIME_CALLS:
+                        calls.append(f"{child.lineno}: {name}(...)")
+                walk(child, imports, calls)
+
+        for name in ["__init__"] + list(self.integrations.BUNDLED):
             with open(os.path.join(root, name + ".py"), encoding="utf-8") as f:
                 tree = ast.parse(f.read())
-            top = set()
-            for node in tree.body:
-                if isinstance(node, ast.Import):
-                    top.update(a.name for a in node.names)
-                elif isinstance(node, ast.ImportFrom):
-                    top.add(node.module)
+            imports, calls = set(), []
+            walk(tree, imports, calls)
             allowed = self.ALLOWED_TOP_IMPORTS | ({"dataclasses", "importlib"} if name == "__init__" else set())
-            self.assertEqual(top - allowed, set(), f"integrations/{name}.py imports at top level")
+            self.assertEqual(imports - allowed, set(), f"integrations/{name}.py imports at top level")
+            self.assertEqual(calls, [], f"integrations/{name}.py runs code at import: {calls}")
