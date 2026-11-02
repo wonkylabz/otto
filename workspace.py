@@ -504,6 +504,13 @@ def pr_target(repo, request, limit=3):
             trace("WORKSPACE", f"PR #{num} is not {viewer or 'the operator'}'s — "
                                f"branching off the default instead")
             continue
+        # Owning a PR the task NAMES is not the task asking to work on it — "close #759 once
+        # this lands" and "ignore #46" both took over runs. Asked last: it is the only model call.
+        import intents
+        if not intents.works_on_pr(request, num):
+            trace("WORKSPACE", f"request names PR #{num} but does not work on it — "
+                               f"branching off the default instead")
+            continue
         trace("WORKSPACE", f"request names open PR #{num} in {slug} — targeting branch {branch}")
         return {"number": num, "url": d.get("url") or "", "branch": branch}
     return None

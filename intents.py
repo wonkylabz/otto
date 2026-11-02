@@ -422,6 +422,28 @@ def repo_layout(path, cap=700):
         return ""
 
 
+def works_on_pr(request, number):
+    """True only when the task asks for its change to land ON open PR #`number`'s branch. A PR
+    named to close, ignore, supersede or copy from is not a target (`web-bce4211b`: "Close #759
+    once this lands" checked #759 out). Cheap 'clarify' tier, UNANIMOUS over `_TARGET_SAMPLES`
+    or False — False is the fresh-branch behaviour that predates `pr_target`."""
+    prompt = (
+        f"A user's request mentions pull request #{number}. Decide whether the request asks for "
+        f"the work to be done ON that pull request — committing to its branch, fixing or "
+        f"finishing it, addressing its review. A pull request named to be closed, ignored, "
+        f"superseded or replaced, used as an example or reference, or only mentioned as context "
+        f"is NOT worked on.\n"
+        + _DATA_FENCE_PREAMBLE + "\n"
+        f"The request is:\n{_fenced(request)}\n\n"
+        f"Reply ON if the work lands on pull request #{number}, otherwise NOT. Reply with one word.")
+    votes = [gateway._strip_reasoning(gateway.complete("clarify", prompt) or "").strip().upper()
+             .startswith("ON") for _ in range(_TARGET_SAMPLES)]
+    on = all(votes)
+    gateway.decided("clarify", "ON" if on else "NOT")
+    trace("WORKSPACE", f"works on PR #{number}? votes={votes} -> {'ON' if on else 'NOT'}")
+    return on
+
+
 def repo_edit_target(request, repos, layouts=None):
     """Which ONE of several registered `repos` a request's code change must land in, or None.
     Naming two repos ("the infra/billing repository ... the billing service") is ambiguity to a

@@ -2638,6 +2638,54 @@ class PrTargetTests(unittest.TestCase):
     whose default-branch copy is 82 lines long, so no attempt could reach the code and the run
     shipped a change to the wrong revision as a second PR against the wrong base)."""
 
+    def setUp(self):
+        import intents
+        self._orig_works_on = intents.works_on_pr
+        intents.works_on_pr = lambda request, num: True
+
+    def tearDown(self):
+        import intents
+        intents.works_on_pr = self._orig_works_on
+
+    def test_an_owned_pr_the_task_does_not_work_ON_is_never_a_target(self):
+        """`web-bce4211b`: "Close ... #759 once this lands" checked #759 out, and `web-eaa3d9ec`:
+        "Ignore open vllm PRs #21, #46" worked on #46 — owned and open, but not the task."""
+        import intents
+        asked = []
+
+        def fake_run(args, **kw):
+            if args[:3] == ["gh", "api", "user"]:
+                return (0, "me", "")
+            return (0, '{"state":"OPEN","url":"u","headRefName":"feat",'
+                       '"isCrossRepository":false,"author":{"login":"me"}}', "")
+        intents.works_on_pr = lambda request, num: asked.append(num) or num == 8
+        orig_run, orig_resolve = workspace._run, workspace.resolve
+        workspace._run = fake_run
+        workspace.resolve = lambda r: {"name": "infra", "path": "/x",
+                                       "origin": "https://github.com/acme/infra.git"}
+        try:
+            self.assertIsNone(workspace.pr_target("infra", "build it; close acme/infra#7 after"))
+            self.assertEqual(asked, [7])
+            got = workspace.pr_target("infra", "ignore acme/infra#7, finish acme/infra#8")
+            self.assertEqual(got["number"], 8)
+        finally:
+            workspace._run, workspace.resolve = orig_run, orig_resolve
+
+    def test_works_on_pr_needs_a_UNANIMOUS_on(self):
+        """A wrong target pushes into a PR the task never asked to touch; a missed one is the
+        fresh-branch behaviour that predates `pr_target`. So one dissent is NOT."""
+        import intents
+        intents.works_on_pr = self._orig_works_on
+        orig = intents.gateway.complete
+        for replies, want in ((["ON", "ON", "ON"], True), (["ON", "NOT", "ON"], False),
+                              (["NOT"] * 3, False), (["", "", ""], False)):
+            it = iter(replies)
+            intents.gateway.complete = lambda tier, prompt, **k: next(it)
+            try:
+                self.assertIs(intents.works_on_pr("finish #8", 8), want, replies)
+            finally:
+                intents.gateway.complete = orig
+
     def test_refs_are_extracted_from_every_shape(self):
         slug = "acme/infra"
         f = workspace.request_pr_refs
