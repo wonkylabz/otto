@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-03
+
 ### Changed
 
 - Delivery, the push notification's source line and the Slack/board bookkeeping hooks now
@@ -559,7 +561,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/wonkylabz/otto/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/wonkylabz/otto/compare/v0.8.7...v0.9.0
 [0.8.7]: https://github.com/wonkylabz/otto/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/wonkylabz/otto/compare/v0.8.5...v0.8.6
