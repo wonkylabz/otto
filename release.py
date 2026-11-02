@@ -2,6 +2,7 @@
 """Cut a release: bump the version, close the changelog section, open the release PR.
 
     python3 release.py patch|minor|major|X.Y.Z [--dry-run]
+    python3 release.py notes X.Y.Z    # that version's changelog section (GitHub Release notes)
 
 The version lives in exactly one place (`pyproject.toml`), the changelog in exactly one
 (`CHANGELOG.md`), and the tag must agree with both — three files a human keeps in sync by
@@ -96,9 +97,20 @@ def _tagged_changelog(version):
     return r.stdout if r.returncode == 0 else None
 
 
+def notes(text, version):
+    """A release's GitHub notes: its dated changelog section, or None when it has none."""
+    return released_sections(text).get(version) or None
+
+
 def main(argv):
     dry = "--dry-run" in argv
     args = [a for a in argv if not a.startswith("--")]
+    if args[:1] == ["notes"] and len(args) == 2:
+        body = notes(open(os.path.join(HERE, "CHANGELOG.md")).read(), args[1].lstrip("v"))
+        if body is None:
+            die(f"no dated [{args[1]}] section in CHANGELOG.md")
+        print(body)
+        return
     if len(args) != 1:
         die(__doc__.splitlines()[2].strip())
 
