@@ -136,7 +136,9 @@
   .stream::-webkit-scrollbar { width: 10px; }
   .stream::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; }
 
-  .msg { max-width: 680px; margin: 0 0 22px; }
+  .msg { margin: 0 0 22px; }
+  /* bubbles hug content and stay out of the other side's lane */
+  .msg.user, .msg.eno { max-width: 80%; }
   /* "Show earlier" pill at the top of a replayed chat. The older turns stay in the DOM, hidden,
      so revealing them costs no re-render and keeps their order. */
   .msgmore { display: block; margin: 0 auto 22px; padding: 6px 14px; font-family: var(--sans);
@@ -152,26 +154,29 @@
   .avatar { flex: none; width: 30px; height: 30px; display: grid; place-items: center; }
   .avatar > svg { width: 30px; height: 30px; }
   .msg.eno .body { background: var(--surface); border: 1px solid var(--line);
-    border-radius: 4px 14px 14px 14px; padding: 13px 16px; flex: 1; min-width: 0; }
+    border-radius: 4px 14px 14px 14px; padding: 16px 20px; flex: 0 1 auto; min-width: 0; }
+  /* a form card fills its lane; hugging left its input ~150px */
+  .msg.eno .body:has(.gate, .clarify, .swarm) { flex: 1; }
   .msg .body { overflow-wrap: anywhere; word-break: break-word; }
   .msg .who { font-size: 12px; color: var(--text-2); margin-bottom: 6px;
     display: flex; align-items: center; gap: 8px; }
   .msg .body p { margin: 0 0 8px; }
   .msg .body p:last-child { margin-bottom: 0; }
   .msg .body strong { color: var(--text); font-weight: 600; }
-  .msg .body code { font-family: var(--mono); font-size: 12.5px; background: var(--raised); padding: 1px 5px; border-radius: 4px; color: var(--text-2); }
-  .result { font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; word-break: break-word; color: var(--text); }
+  .msg .body code { font-family: var(--mono); font-size: .86em; background: var(--raised); padding: 1px 4px; border-radius: 4px; color: var(--text-2); }
+  .result { font-size: 15px; line-height: 1.7; overflow-wrap: anywhere; word-break: break-word; color: var(--text); }
   .result.plain { white-space: pre-wrap; }
-  .result p { margin: 0 0 9px; }
+  .result p { margin: 0 0 12px; }
   .result p:last-child { margin-bottom: 0; }
   .result h1, .result h2, .result h3, .result h4, .result h5, .result h6 {
-    font-size: 15px; font-weight: 600; color: var(--text); margin: 14px 0 7px; letter-spacing: .01em; }
+    font-size: 16px; font-weight: 600; color: var(--text); margin: 14px 0 7px; letter-spacing: .01em; }
   .result h1:first-child, .result h2:first-child, .result h3:first-child { margin-top: 0; }
   .result strong { color: var(--text); font-weight: 600; }
   .result em { font-style: italic; }
-  .result code { font-family: var(--mono); font-size: 12.5px; background: var(--raised); padding: 1px 5px; border-radius: 4px; color: var(--text-2); }
-  .result ul, .result ol { margin: 4px 0 9px; padding-left: 20px; }
-  .result li { margin: 2px 0; }
+  .result code { font-family: var(--mono); font-size: .86em; background: var(--raised); padding: 1px 4px; border-radius: 4px; color: var(--text-2); }
+  .result ul, .result ol { margin: 4px 0 12px; padding-left: 22px; }
+  .result li { margin: 5px 0; }
+  .result li::marker { color: var(--dim); }
   .result a { color: var(--accent); text-decoration: underline; }
   .result pre { background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-md);
     padding: 11px 13px; margin: 8px 0; overflow-x: auto; }
@@ -415,7 +420,8 @@
   .slashitem small { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
   .field { display: flex; gap: 12px; align-items: flex-end; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 10px 12px; transition: border-color .15s; }
   .field:focus-within { border-color: var(--accent); }
-  .field textarea { flex: 1; resize: none; background: none; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; max-height: 120px; outline: none; }
+  .field textarea { flex: 1; resize: none; background: none; border: none; color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5; max-height: 120px; outline: none;
+    padding: 8px 0; min-height: 40px; }
   textarea::placeholder { color: var(--dim); }
   .send { flex: none; background: var(--accent); color: var(--on-accent); border: none; width: 40px; height: 40px; border-radius: var(--r-md); cursor: pointer; font-size: 17px; transition: filter .15s, background .15s; }
   .send:hover { filter: brightness(1.08); }
@@ -829,7 +835,7 @@
   .mcpwarn { background: var(--danger-soft); border: 1px solid var(--danger-line); border-radius: var(--r-md);
     padding: 10px 12px; margin: 4px 0 12px; font-size: 13px; color: var(--text); display: flex;
     align-items: center; gap: 12px; }
-  .mcpwarn .msg { flex: 1; max-width: none; margin: 0; }   /* not the chat bubble .msg (680px cap) */
+  .mcpwarn .msg { flex: 1; max-width: none; margin: 0; }
   .testbtn { text-transform: none; letter-spacing: 0; }
   .tres { font-size: 12px; flex: 1; min-width: 0; text-align: right;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1521,9 +1527,6 @@
 
   /* Tight screens: drop the informational rail first (keep the interactive Chats sidebar),
      then the sidebar only on very narrow widths. */
-  /* Wide screens: messages and composer share one centred reading column instead of spanning the monitor. */
-  @media (min-width: 1700px) { .stream { padding-inline: max(34px, calc((100% - 1040px) / 2)); }
-    .composer { padding-inline: max(24px, calc((100% - 1040px) / 2)); } }
   @media (max-width: 1100px) { .chatview { grid-template-columns: var(--hist-w) minmax(0,1fr); } .rail { display: none; } }
   @media (max-width: 1280px) { .status { gap: 12px; } .wordmark span { display: none; } }
   @media (max-width: 1140px) { header { gap: 10px; padding: 12px 14px; } .tabs { margin-left: 8px; }
