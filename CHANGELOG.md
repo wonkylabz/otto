@@ -16,8 +16,9 @@ changelog that restates it is a second copy of `git log`.
 - Every version is now published as a GitHub Release with its changelog notes, so the
   repo's Releases panel lists what each tag shipped. Nothing changes on an install.
 - The chat uses the full width of its pane instead of a narrow off-centre column; each side's
-  bubbles hug their content and stop at 80%, replies read larger with more line spacing, and
-  the composer's placeholder sits level with its buttons.
+  bubbles hug their content and stop at 80% (question and approval cards still fill that
+  width; on a phone Otto's replies stay full width), replies read larger with more line
+  spacing, and the composer's placeholder sits level with its buttons.
 
 ### Fixed
 
