@@ -3811,6 +3811,56 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         self.assertEqual(bad, [], f"execution activities not on _RETRY_EXEC: {bad}")
 
 
+class WorkflowDeterminismGuardTests(unittest.TestCase):
+    """Workflow code is passed through the sandbox (`worker.workflow_runner`), so nothing at
+    runtime rejects a clock, RNG or env read in it any more; this does, statically."""
+
+    # Imported at all is the violation: banning the IMPORT closes every alias and `from` form.
+    _BANNED_MODULES = {"time", "random", "uuid", "os", "secrets", "pathlib", "io"}
+    _DATETIME_OK = {"timedelta"}
+    # Reached as attributes of modules workflow code legitimately imports.
+    _BANNED_ATTRS = {"asyncio": {"wait", "as_completed"}, "datetime": {"now", "utcnow", "today"}}
+
+    def _hits(self, src):
+        hits = []
+        for n in ast.walk(ast.parse(src)):
+            if isinstance(n, ast.Import):
+                hits += [f"import {a.name}" for a in n.names
+                         if a.name.split(".")[0] in self._BANNED_MODULES | {"datetime"}]
+            elif isinstance(n, ast.ImportFrom) and n.module:
+                root = n.module.split(".")[0]
+                if root in self._BANNED_MODULES:
+                    hits.append(f"from {n.module}")
+                elif root == "datetime":
+                    hits += [f"from datetime import {a.name}" for a in n.names
+                             if a.name not in self._DATETIME_OK]
+            elif isinstance(n, ast.Attribute):
+                v = n.value                             # `datetime.datetime.now` -> datetime
+                base = v.id if isinstance(v, ast.Name) else (
+                    "datetime" if isinstance(v, ast.Attribute) and v.attr == "datetime"
+                    and isinstance(v.value, ast.Name) and v.value.id == "datetime" else None)
+                if n.attr in self._BANNED_ATTRS.get(base, ()):
+                    hits.append(f"{base}.{n.attr}")
+            elif isinstance(n, ast.Call) and getattr(n.func, "id", None) == "open":
+                hits.append("open")
+        return hits
+
+    def test_workflow_code_reads_no_clock_rng_or_env(self):
+        self.assertEqual(self._hits(workflow_src()), [],
+                         "use workflow.now()/random()/uuid4(), workflow.wait, or an activity")
+
+    def test_the_guard_catches_what_it_names(self):
+        bad = ("import asyncio, time as _t\n"
+               "from datetime import datetime as dt, timedelta\n"
+               "from random import choice\n"
+               "async def f(self):\n"
+               "    await asyncio.wait([]); open('x')\n"
+               "    return dt.now(), self.random.x, d.date.today(), workflow.now()\n")
+        self.assertEqual(sorted(self._hits(bad)),
+                         ["asyncio.wait", "from datetime import datetime", "from random",
+                          "import time", "open"])
+
+
 class PipelineSourceReaderTests(unittest.TestCase):
     """`OttoWorkflow` is one class at runtime and four files on disk (issue #58), and ~40 guards
     across this suite read the pipeline by GREPPING or `ast.parse`-ing its source.

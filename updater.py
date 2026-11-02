@@ -416,8 +416,8 @@ def apply(old_sha, port, svc, root=None, restart=None, wait=None, busy=None, pip
         state, err = "aborted", str(e)[-300:]
     except Exception as e:  # noqa: BLE001 - recorded, never raised: nobody is listening
         err = str(e)[-300:]
-        # Never leave the tree on new code under an old process: the worker re-imports
-        # workflow code per task, so it would run new workflows against old activities.
+        # Never leave the tree on new code under an old process: workflow code is frozen at
+        # startup, but modules an activity imports lazily still load from disk.
         if _git("rev-parse", "HEAD", root=root)[1] != old_sha:
             step(f"{err} — rolling back")
             try:
