@@ -9468,3 +9468,4 @@ class WorkflowCodeFrozenTests(unittest.IsolatedAsyncioTestCase):
             sys.path.remove(d)
             for m in (wf_mod, mix_mod):
                 sys.modules.pop(m, None)
+            shutil.rmtree(d, ignore_errors=True)

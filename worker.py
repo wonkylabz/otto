@@ -22,7 +22,7 @@ TASK_QUEUE = os.environ.get("OTTO_TASK_QUEUE", "otto")
 def workflow_runner(modules=("workflows",)):
     """The sandbox, with workflow code FROZEN at worker startup like every other module.
 
-    Sandboxed, `workflows.py` was re-read from disk per workflow task while its passed-through
+    Sandboxed, `workflows.py` was re-read from disk per workflow instance while its passed-through
     mixins stayed at startup, so a `git pull` before a restart ran new code against old: run
     `web-fd301c60-d1` died on `'OttoWorkflow' object has no attribute '_resolve_pr_target'`."""
     return SandboxedWorkflowRunner(

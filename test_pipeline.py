@@ -3811,6 +3811,42 @@ class ExecutionHeartbeatTests(unittest.TestCase):
         self.assertEqual(bad, [], f"execution activities not on _RETRY_EXEC: {bad}")
 
 
+class WorkflowDeterminismGuardTests(unittest.TestCase):
+    """Workflow code is passed through the sandbox (`worker.workflow_runner`), so nothing at
+    runtime rejects a clock, RNG or env read in it any more; this does, statically."""
+
+    _BANNED = {"asyncio": {"wait", "as_completed"}, "datetime": {"now", "utcnow", "today"},
+               "date": {"today"}, "time": {"time", "monotonic", "sleep", "time_ns"},
+               "os": {"getenv", "environ"}, "random": None, "uuid": None}
+
+    def _hits(self, src):
+        hits = []
+        for n in ast.walk(ast.parse(src)):
+            base = None
+            if isinstance(n, ast.Attribute):            # `datetime.datetime.now` -> datetime
+                base = getattr(n.value, "id", None) or getattr(n.value, "attr", None)
+            if base:
+                banned = self._BANNED.get(base, set())
+                if banned is None or n.attr in banned:
+                    hits.append(f"{base}.{n.attr}")
+            elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                  and n.func.id == "open"):
+                hits.append("open")
+        return hits
+
+    def test_workflow_code_reads_no_clock_rng_or_env(self):
+        self.assertEqual(self._hits(workflow_src()), [],
+                         "use workflow.now()/random()/uuid4(), workflow.wait, or an activity")
+
+    def test_the_guard_catches_what_it_names(self):
+        bad = ("import asyncio, datetime, uuid, os\n"
+               "async def f():\n"
+               "    await asyncio.wait([]); open('x')\n"
+               "    return datetime.datetime.now(), uuid.uuid4(), os.environ, workflow.now()\n")
+        self.assertEqual(sorted(self._hits(bad)),
+                         ["asyncio.wait", "datetime.now", "open", "os.environ", "uuid.uuid4"])
+
+
 class PipelineSourceReaderTests(unittest.TestCase):
     """`OttoWorkflow` is one class at runtime and four files on disk (issue #58), and ~40 guards
     across this suite read the pipeline by GREPPING or `ast.parse`-ing its source.
