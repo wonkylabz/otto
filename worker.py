@@ -8,6 +8,7 @@ import concurrent.futures
 
 from temporalio.client import Client
 from temporalio.worker import Worker
+from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 import os
 
@@ -16,6 +17,16 @@ from workflows import (BoardPollWorkflow, FactorySprintWorkflow, OttoWorkflow,
                        PrReviewPollWorkflow, ReaperWorkflow, SlackPollWorkflow, LearnWorkflow)
 
 TASK_QUEUE = os.environ.get("OTTO_TASK_QUEUE", "otto")
+
+
+def workflow_runner(modules=("workflows",)):
+    """The sandbox, with workflow code FROZEN at worker startup like every other module.
+
+    Sandboxed, `workflows.py` was re-read from disk per workflow task while its passed-through
+    mixins stayed at startup, so a `git pull` before a restart ran new code against old: run
+    `web-fd301c60-d1` died on `'OttoWorkflow' object has no attribute '_resolve_pr_target'`."""
+    return SandboxedWorkflowRunner(
+        restrictions=SandboxRestrictions.default.with_passthrough_modules(*modules))
 
 # Every @activity.defn in activities.py MUST be listed here, or the workflow will
 # call an unregistered activity and Temporal retries it forever (silent hang).
@@ -57,6 +68,7 @@ async def main():
                        SlackPollWorkflow, FactorySprintWorkflow],
             activities=ACTIVITIES,
             activity_executor=executor,
+            workflow_runner=workflow_runner(),
         )
         print(f"[worker] running on task queue '{TASK_QUEUE}'  (Ctrl-C to stop)")
         await worker.run()

@@ -26,7 +26,7 @@ Full detail in **`docs/operating.md`** (setup, service, restart discipline, glob
 - **Tests are `./.venv/bin/python -m unittest`, never bare `python3`** — Temporal tests self-skip without `temporalio`, so bare `python3` reports a green `OK (skipped=93)` having tested nothing.
 - **Run `regress.py` before and after editing any prompt** — unit tests only assert a prompt *contains* a clause, never that the model still *obeys* it.
 - **Restart the worker after changing any module it imports**, or the edit has no effect and the fix looks failed. Mid-activity it costs that run's attempt, within `_HEARTBEAT` (3min).
-- **This repo IS the live service's cwd.** Temporal re-imports *workflow* code fresh per task; *activities* keep running whatever loaded at worker startup — so editing `workflows.py` mid-run can crash on a version mismatch before you restart anything.
+- **This repo IS the live service's cwd.** ALL code, workflows included, is frozen at worker startup (`worker.workflow_runner`) — a pull does nothing until restart. Modules an activity imports lazily still load from disk.
 - **Global pause**: `data/ESTOP` (`estop.py`, `POST /api/estop`) stops every ingress starting new work, never kills in-flight — nothing re-checks it mid-activity.
 
 ## Architecture (each file ≈ one layer)

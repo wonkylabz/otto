@@ -16,6 +16,12 @@ changelog that restates it is a second copy of `git log`.
 - Every version is now published as a GitHub Release with its changelog notes, so the
   repo's Releases panel lists what each tag shipped. Nothing changes on an install.
 
+### Fixed
+
+- **A `git pull` no longer crashes runs started before the worker restarts.** Workflow code
+  now loads once at startup like the rest, so an update takes effect on restart. Restart the
+  worker.
+
 ## [0.9.1] - 2026-11-03
 
 ### Changed

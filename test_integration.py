@@ -17,6 +17,7 @@ import os
 import pathlib
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -7056,7 +7057,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         # ...and the clone it provisioned is still torn down.
         self.assertTrue(self.cleaned)
 
-    async def _run_reviewed(self, queue):
+    async def _run_reviewed(self, queue, **worker_kw):
         """Drive one repo-mode run through the gate and the review loop; returns its result."""
         import asyncio
         import uuid
@@ -7078,7 +7079,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                                 run_capability, verify_capability, review_capability,
                                 judge_review, record_attempt, record_skip, pr_head_branch,
                                 finalize_terminal, notify_human, deliver_result],
-                    activity_executor=ex,
+                    activity_executor=ex, **worker_kw,
                 ):
                     h = await env.client.start_workflow(
                         OttoWorkflow.run,
@@ -7106,6 +7107,13 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pushed nothing", out["review"]["critique"])
         self.assertIn("hardcoded region", out["review"]["critique"])
         self.assertEqual(out["needs_human"]["reason"], "review_inconclusive")
+
+    async def test_the_pipeline_runs_under_the_production_runner(self):
+        """`worker.workflow_runner` passes `workflows` through the sandbox; every other test
+        Worker uses the default runner, so this is the one proof the real pipeline runs on it."""
+        import worker
+        out = await self._run_reviewed("revq-runner", workflow_runner=worker.workflow_runner())
+        self.assertEqual(out["review"]["state"], "pass", out)
 
     def _fix_runs(self):
         import config
@@ -9400,3 +9408,63 @@ class PollWorkflowReplayTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(NondeterminismError) as ctx:
             await Replayer(workflows=[workflows.SlackPollWorkflow]).replay_workflow(hist)
         self.assertIn("poll_slack_v2", str(ctx.exception))
+
+
+@unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
+class WorkflowCodeFrozenTests(unittest.IsolatedAsyncioTestCase):
+    """A `git pull` before a restart must not mix new workflow code with old mixins in memory:
+    `web-fd301c60-d1` died on `'OttoWorkflow' object has no attribute '_resolve_pr_target'`."""
+
+    def test_the_live_worker_uses_the_frozen_runner(self):
+        import ast
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "worker.py")).read()
+        calls = [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", None) == "Worker"]
+        self.assertEqual(len(calls), 1)
+        kw = {k.arg: k.value for k in calls[0].keywords}
+        self.assertIn("workflow_runner", kw)
+        self.assertEqual(getattr(kw["workflow_runner"].func, "id", None), "workflow_runner")
+
+    async def test_workflow_code_edited_on_disk_is_not_picked_up_until_restart(self):
+        import tempfile
+        import uuid
+        import worker
+        from datetime import timedelta
+        d = tempfile.mkdtemp()
+        tag = uuid.uuid4().hex[:6]
+        wf_mod, mix_mod = f"frozen_wf_{tag}", f"frozen_mix_{tag}"
+        tmpl = ("from temporalio import workflow\n"
+                "with workflow.unsafe.imports_passed_through():\n"
+                f"    import {mix_mod}\n"
+                "@workflow.defn\n"
+                "class FrozenWf:\n"
+                "    @workflow.run\n"
+                "    async def run(self) -> str:\n"
+                f"        return {mix_mod}.%s()\n")
+
+        def write(name, text):
+            with open(os.path.join(d, name + ".py"), "w") as f:
+                f.write(text)
+        write(mix_mod, "def helper():\n    return 'v1'\n")
+        write(wf_mod, tmpl % "helper")
+        sys.path.insert(0, d)
+        try:
+            mod = __import__(wf_mod)
+            async with await _time_skipping_env() as env:
+                q = "frozen-" + tag
+                async with Worker(env.client, task_queue=q, workflows=[mod.FrozenWf],
+                                  workflow_runner=worker.workflow_runner((wf_mod,))):
+                    async def run():
+                        return await env.client.execute_workflow(
+                            mod.FrozenWf.run, id=q + uuid.uuid4().hex[:6], task_queue=q,
+                            execution_timeout=timedelta(seconds=10))
+                    self.assertEqual(await run(), "v1")
+                    # What a pull does: new workflow code calling what only the NEW mixin has.
+                    write(mix_mod, "def helper():\n    return 'v1'\ndef helper_v2():\n"
+                                   "    return 'v2'\n")
+                    write(wf_mod, tmpl % "helper_v2")
+                    self.assertEqual(await run(), "v1")
+        finally:
+            sys.path.remove(d)
+            for m in (wf_mod, mix_mod):
+                sys.modules.pop(m, None)
