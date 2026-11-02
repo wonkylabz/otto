@@ -24,6 +24,18 @@ with workflow.unsafe.imports_passed_through():
 class RepoFlowMixin:
     """Provisioning a resumed repo chat's clone, and the repo-mode PR tail."""
 
+    async def _resolve_pr_target(self, payload):
+        """`resolve_pr_target`, best-effort like the function it wraps: a dead or timed-out
+        activity is no target, never a failed run. The budget covers its classifier calls
+        (`intents.works_on_pr`), each bounded by `CLAUDE_TIER_TIMEOUT_S`."""
+        try:
+            return await workflow.execute_activity(
+                resolve_pr_target, payload,
+                start_to_close_timeout=timedelta(minutes=10), heartbeat_timeout=_HEARTBEAT,
+                retry_policy=_RETRY) or {}
+        except exceptions.ActivityError:
+            return {}
+
     async def _resume_workspace(self, repo, git_run_id, git_branch, request=None):
         """Re-provision a repo-mode chat's isolated clone so a follow-up can be answered. Returns
         the workspace dict, or None when this conversation genuinely cannot be continued.
@@ -113,9 +125,7 @@ class RepoFlowMixin:
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=_RETRY)).get("notes") or []
             if self._grounding:
-                target = (await workflow.execute_activity(
-                    resolve_pr_target, {"repo": repo, "request": request},
-                    start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)) or {}
+                target = await self._resolve_pr_target({"repo": repo, "request": request})
                 branch = target.get("branch")
                 if branch and branch != ws.get("branch"):
                     try:
