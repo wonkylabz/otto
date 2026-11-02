@@ -436,8 +436,16 @@ def works_on_pr(request, number):
         + _DATA_FENCE_PREAMBLE + "\n"
         f"The request is:\n{_fenced(request)}\n\n"
         f"Reply ON if the work lands on pull request #{number}, otherwise NOT. Reply with one word.")
-    votes = [gateway._strip_reasoning(gateway.complete("clarify", prompt) or "").strip().upper()
-             .startswith("ON") for _ in range(_TARGET_SAMPLES)]
+    votes = []
+    try:
+        for _ in range(_TARGET_SAMPLES):
+            reply = gateway._strip_reasoning(gateway.complete("clarify", prompt) or "")
+            votes.append(reply.strip().upper().startswith("ON"))
+            if not votes[-1]:
+                break                     # one dissent decides it
+    except Exception as e:                # `pr_target` is best-effort: a failure is no target
+        trace("WORKSPACE", f"works on PR #{number}? classifier failed: {e}")
+        votes.append(False)
     on = all(votes)
     gateway.decided("clarify", "ON" if on else "NOT")
     trace("WORKSPACE", f"works on PR #{number}? votes={votes} -> {'ON' if on else 'NOT'}")

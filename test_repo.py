@@ -2686,6 +2686,21 @@ class PrTargetTests(unittest.TestCase):
             finally:
                 intents.gateway.complete = orig
 
+    def test_a_failing_classifier_means_no_target_not_a_dead_run(self):
+        """`gateway.complete` raises on a tier error or a strict-mode stop; `pr_target` is
+        best-effort, so that must read as NOT rather than fail `resolve_pr_target`."""
+        import intents
+        intents.works_on_pr = self._orig_works_on
+        orig = intents.gateway.complete
+
+        def boom(tier, prompt, **k):
+            raise RuntimeError("claude tier call failed")
+        intents.gateway.complete = boom
+        try:
+            self.assertIs(intents.works_on_pr("finish #8", 8), False)
+        finally:
+            intents.gateway.complete = orig
+
     def test_refs_are_extracted_from_every_shape(self):
         slug = "acme/infra"
         f = workspace.request_pr_refs
