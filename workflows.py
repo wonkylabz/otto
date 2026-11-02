@@ -34,7 +34,7 @@ with workflow.unsafe.imports_passed_through():
                             resolve_pinned_cap,
                             notify_human, plan_capability, plan_swarm, open_chat,
                             plan_task_steps, poll_board, poll_pr_reviews, poll_slack,
-                            provision_workspace, resolve_pr_target, check_grounding,
+                            provision_workspace, check_grounding,
                             interim_notice, reap_stuck,
                             distil_memory, record_attempt, record_chat, record_skip,
                             route_request,
@@ -1156,13 +1156,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # provision time. Two things depend on it and the preview is the earlier one: it runs from
         # the repo's live checkout (the default branch), so without this it plans against a tree
         # that does not contain the code — `web-a6122d6c` spent the full 909s ceiling doing
-        # exactly that. Cheap (`gh` only, no clone) and cached on self, so provisioning below
-        # reuses it instead of asking again.
+        # exactly that. No clone (`gh` plus a cheap-tier intent check) and cached on self, so
+        # provisioning below reuses it instead of asking again.
         if repo and not resume and not subtask:
-            self._pr_target = await workflow.execute_activity(
-                resolve_pr_target, {"repo": repo, "request": request,
-                                    "fresh": params.get("fresh_branch")},
-                start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY) or {}
+            self._pr_target = await self._resolve_pr_target(
+                {"repo": repo, "request": request, "fresh": params.get("fresh_branch")})
 
         # Approval for writes. Unless the fast lane (issue #193) already decided it needs none.
         if not await self._take_fast_lane(params, request, cap, approval, unattended, resume,

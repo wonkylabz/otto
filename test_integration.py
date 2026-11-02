@@ -7094,6 +7094,20 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         import config
         return [r for r in self.runs if r["cap"] == config.WORKER_CAP and r["critique"]]
 
+    async def test_a_dead_pr_target_activity_is_no_target_not_a_dead_run(self):
+        """`resolve_pr_target` now makes model calls, so it can time out; it is best-effort, so
+        the run must still open its PR instead of failing before the gate."""
+        def boom(repo, request, limit=3):
+            raise RuntimeError("classifier hung")
+        orig = self.workspace.pr_target
+        self.workspace.pr_target = boom
+        try:
+            out = await self._run_reviewed("revq-prt")
+        finally:
+            self.workspace.pr_target = orig
+        self.assertEqual((out.get("pr") or {}).get("pr_url"), "https://github.com/o/r/pull/1", out)
+        self.assertEqual(out["review"]["state"], "pass")
+
     async def test_a_fix_round_runs_on_the_operators_backend(self):
         """A local-only install must be able to run its fix rounds locally: routing every round
         to Claude up front made that impossible (gh-issue-128..133 ran strict, so locally)."""

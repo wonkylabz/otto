@@ -533,6 +533,7 @@ def pr_head_branch(payload: dict) -> dict:
 
 
 @activity.defn
+@_heartbeats("pr-target")
 def resolve_pr_target(payload: dict) -> dict:
     """The OPEN pull request a FRESH request asks to work on, so repo-mode branches off THAT
     PR's head instead of the default branch. {} when the request names none — which is the
