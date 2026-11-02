@@ -30,7 +30,8 @@ changelog that restates it is a second copy of `git log`.
 - **A request naming one of your open PRs only to close or ignore it no longer works on it.**
   Otto checked that PR's branch out and reviewed the wrong diff; it now starts a fresh branch.
   Restart the worker.
-
+- **A review or QA fix round that changes nothing now stops the loop for you.** Otto used to
+  re-review the same unchanged PR until the round budget ran out. Restart the worker.
 - **A chat follow-up whose task Otto wrote over several lines now runs.** Otto answered "say it
   in full" whenever its hand-off spanned more than one line, as long tasks with a requirements
   list do. Runs started before the upgrade keep the old behaviour; a restart picks it up.

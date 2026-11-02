@@ -298,7 +298,7 @@ class PostPrMixin:
                     local_disabled_reason=_FIX_NO_LADDER,
                     critique=fix_payload["critique"] + _BACKSTOP_NOTE + self._fix_error(fix)))
                 self._account(fix)
-            await workflow.execute_activity(
+            landed = await workflow.execute_activity(
                 finalize_workspace,
                 {"run_id": run_id, "title": request[:120], "head": ws["head"],
                  "existing_pr": True, "branch": ws["branch"],
@@ -334,6 +334,14 @@ class PostPrMixin:
                 return {"state": "inconclusive", "rounds": rnd, cap_field: cap_name,
                         "critique": f"{spec['unfinished_lead']} the fix round did not finish — "
                                     f"{self._fix_error(fix)}\n" + critique}
+            if ((landed or {}).get("pushed") is False
+                    and workflow.patched("fix-round-no-push")):
+                # Nothing reached the PR, so the next round re-reviews the diff it just failed
+                # (`web-bce4211b`: four identical review_fail rounds). Stop for a human.
+                return {"state": "inconclusive", "rounds": rnd, cap_field: cap_name,
+                        "critique": f"{spec['unfinished_lead']} the fix round pushed nothing to "
+                                    f"the PR ({(landed or {}).get('detail') or 'no changes'}).\n"
+                                    + critique}
             prior.append({"findings": critique, "fix": fix.get("result") or ""})
         return {"state": "fail", "rounds": rounds, cap_field: cap_name}
 

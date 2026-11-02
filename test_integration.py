@@ -6757,6 +6757,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.fix_errors = False           # make the post-review fix round die like a real one
         self.fix_local_dies = False       # ... or die on the LOCAL backend only (Claude succeeds)
+        self.fix_pushes_nothing = False   # the fix round finishes but leaves the PR untouched
 
         def fake_run_attempt(request, cap, *, attempt=1, critique=None, escalate=False,
                              extra_tools=None, mcp_config_path=None, resume_session=None,
@@ -6799,6 +6800,9 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
 
         def fake_finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None, body=None, **kw):
             self.finalizes.append({"existing_pr": existing_pr, "branch": branch})
+            if existing_pr and self.fix_pushes_nothing:
+                return {"branch": branch, "pushed": False, "committed": False,
+                        "pr_url": None, "detail": "no changes in the isolated clone"}
             return {"branch": "otto/x", "pushed": True, "committed": True,
                     "pr_url": (None if existing_pr else "https://github.com/o/r/pull/1"),
                     "detail": ""}
@@ -7089,6 +7093,19 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
                         self.fail("never reached the write-approval gate")
                     await h.signal(OttoWorkflow.approve, True)
                     return await h.result()
+
+    async def test_a_fix_round_that_pushes_nothing_stops_instead_of_rereviewing(self):
+        """`web-bce4211b`: four review rounds judged the SAME diff, because each fix round
+        finished cleanly but pushed nothing. Re-reviewing an unchanged PR can only repeat the
+        verdict, so the loop stops for a human."""
+        import config
+        self.fix_pushes_nothing = True
+        out = await self._run_reviewed("revq-nopush")
+        self.assertEqual(len([r for r in self.runs if r["cap"] == config.REVIEW_CAP]), 1, self.runs)
+        self.assertEqual(out["review"]["state"], "inconclusive")
+        self.assertIn("pushed nothing", out["review"]["critique"])
+        self.assertIn("hardcoded region", out["review"]["critique"])
+        self.assertEqual(out["needs_human"]["reason"], "review_inconclusive")
 
     def _fix_runs(self):
         import config
