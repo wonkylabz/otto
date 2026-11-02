@@ -11,6 +11,11 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- Every version is now published as a GitHub Release with its changelog notes, so the
+  repo's Releases panel lists what each tag shipped. Nothing changes on an install.
+
 ## [0.9.1] - 2026-11-03
 
 ### Changed
