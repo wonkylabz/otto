@@ -2010,6 +2010,19 @@ class ReleaseScriptTests(unittest.TestCase):
         import release
         self.release = release
 
+    def test_release_notes_are_that_versions_section_only(self):
+        """A tag alone never shows under Releases; the workflow publishes one with these notes."""
+        text = ("## [Unreleased]\n\n- next\n\n## [0.2.0] - 2026-09-05\n\n- second\n\n"
+                "## [0.1.0] - 2026-09-04\n\n- first\n\n"
+                "[Unreleased]: https://example.invalid/compare/v0.2.0...HEAD\n")
+        self.assertEqual(self.release.notes(text, "0.2.0"), "- second")
+        self.assertEqual(self.release.notes(text, "0.1.0"), "- first")
+        self.assertIsNone(self.release.notes(text, "0.3.0"))
+        wf = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               ".github", "workflows", "release-tag.yml")).read()
+        self.assertIn("python release.py notes", wf)
+        self.assertIn("gh release create", wf)
+
     def test_bump_walks_semver_and_accepts_an_explicit_version(self):
         self.assertEqual(self.release.bump("1.2.3", "patch"), "1.2.4")
         self.assertEqual(self.release.bump("1.2.3", "minor"), "1.3.0")
