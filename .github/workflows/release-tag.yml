@@ -47,4 +47,4 @@ jobs:
             echo "v$V already released"; exit 0
           fi
           python release.py notes "$V" > notes.md
-          gh release create "v$V" --verify-tag --title "Otto v$V" --notes-file notes.md
+          gh release create "v$V" --verify-tag --title "v$V" --notes-file notes.md
