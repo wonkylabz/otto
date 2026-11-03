@@ -1,4 +1,4 @@
-"""Slack triggers — a bot's post in a watched channel becomes an unattended run.
+"""Slack triggers — a post in a watched channel becomes an unattended run.
 
 The event ingress for systems that already talk to Slack (a New Relic alert, a PagerDuty page, a
 Grafana notification, AWS DevOps Agent's findings) but cannot reach Otto: Otto polls outward, so
@@ -12,10 +12,15 @@ so a signed POST to `/api/events/slack` would fire an alert trigger with a forge
 Rules live in `data/slack-triggers.json`:
 
     [{ "id": "a1b2c3",                    # minted on save; keys the dedupe
+       "title": "Access requests",         # optional display name; never keys the dedupe
        "channels": ["C0123ABCD"],          # every channel this rule watches
-       "bots": ["B01NEWRELIC"],            # bot_id / app_id / app name allowed to fire it (required)
-       "match": "(?i)\\bopened\\b",        # regex over the post's text; empty = every post
-       "ignore": "(?i)\\bis closed\\b",    # a post this matches never fires, whatever else does
+       "authors": "bots",                  # bots | people | anyone (humans; never auto-approves)
+       "bots": ["B01NEWRELIC"],            # bot_id / app_id / app name (required for "bots")
+       "people": ["U01ABCDE2FG"],          # Slack user ids (required for "people")
+       "contains": ["opened"],             # plain phrases, any one, case-insensitive; empty = all
+       "skip": ["is closed"],              # a post containing any of these never fires
+       "match": "(?i)\\bopened\\b",        # advanced: regex over the post's text
+       "ignore": "(?i)\\bis closed\\b",    # advanced: a post this matches never fires
        "key": "Issue ID: (\\w+)",          # group 1 dedupes; absent = one run per post
        "template": "Investigate this alert: {text}",
        "cap": "incident-responder",    # optional pin, resolved against the trusted registry
@@ -46,6 +51,10 @@ DEDUPE_TTL_S = 24 * 3600    # one run per incident key for this long
 _MAX_FIRED = 2000
 _MAX_TEXT = 4000
 _APPROVALS = ("auto", "ask", "skip")
+AUTHORS = ("bots", "people", "anyone")
+# A human post that is still a human post: a file upload and "also send to channel" carry a
+# subtype; joins, topic changes and edits are channel noise, never a request.
+_HUMAN_SUBTYPES = (None, "file_share", "thread_broadcast")
 
 
 # --- rules -----------------------------------------------------------------
@@ -59,16 +68,29 @@ def rule_enabled(rule):
     return (rule or {}).get("enabled", True) is not False
 
 
+def _phrases(raw):
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    return list(dict.fromkeys(p for p in (str(x).strip() for x in (raw or [])) if p))
+
+
 def normalize(rule):
-    """A storable rule, or None. PURE apart from minting an id. A rule with no `bots` is refused:
-    "any author" in a shared channel lets whoever can post there start work."""
+    """A storable rule, or None. PURE apart from minting an id. Who may fire it is DECLARED
+    (`authors`): a listed-bots rule with no bots is refused, and an "anyone" rule never
+    auto-approves — whoever can post in a shared channel would start pre-approved writes."""
     if not isinstance(rule, dict):
         return None
     raw = rule.get("channels") or [rule.get("channel")]
     channels = list(dict.fromkeys(c for c in (str(x or "").strip().strip(".,;#") for x in raw) if c))
     template = str(rule.get("template") or "").strip()
     bots = [b for b in (str(x).strip().strip(".,;") for x in (rule.get("bots") or [])) if b]
-    if not (channels and template and bots):
+    people = [p for p in (str(x).strip() for x in (rule.get("people") or [])) if _entry_id(p)]
+    authors = rule.get("authors") if rule.get("authors") in AUTHORS else "bots"
+    if not (channels and template):
+        return None
+    if (authors == "bots" and not bots) or (authors == "people" and not people):
+        return None
+    if authors == "anyone" and rule.get("approval") == "auto":
         return None
     for pat in (rule.get("match"), rule.get("ignore"), rule.get("key")):
         if pat:
@@ -79,12 +101,21 @@ def normalize(rule):
     # A missing id is DERIVED, never random: rules re-normalize on every load, and the id keys
     # the dedupe, so a random one made each poll re-fire the same incident.
     rid = str(rule.get("id") or "").strip() or hashlib.sha256(
-        f"{channels}|{bots}|{template}".encode()).hexdigest()[:8]
-    out = {"id": rid, "channels": channels, "bots": bots,
-           "template": template,
+        (f"{channels}|{bots}|{template}" + ("" if authors == "bots" else f"|{authors}|{people}")
+        ).encode()).hexdigest()[:8]
+    out = {"id": rid, "channels": channels, "authors": authors, "template": template,
            "approval": rule.get("approval") if rule.get("approval") in _APPROVALS else "ask",
            "identity": "user" if rule.get("identity") == "user" else "bot",
            "reply_in_thread": rule.get("reply_in_thread", True) is not False}
+    if authors == "bots":
+        out["bots"] = bots
+    elif authors == "people":
+        out["people"] = people
+    for k in ("contains", "skip"):
+        if _phrases(rule.get(k)):
+            out[k] = _phrases(rule.get(k))
+    if str(rule.get("title") or "").strip():
+        out["title"] = str(rule["title"]).strip()[:80]
     for k in ("match", "ignore", "key", "cap"):
         if str(rule.get(k) or "").strip():
             out[k] = str(rule[k]).strip()
@@ -139,8 +170,28 @@ def message_text(m):
     return "\n".join(out)[:_MAX_TEXT]
 
 
-def author_ok(rule, m):
-    """Only a listed BOT fires a rule — a human's message never does, whatever it says."""
+def _entry_id(entry):
+    """Stored verbatim so a label (`U01ABCDE2FG  #alex`) survives; compared bare."""
+    import slack
+    return slack.entry_id(entry)
+
+
+def needs_self_id(rule):
+    return rule.get("authors") in ("people", "anyone")
+
+
+def author_ok(rule, m, self_id=None):
+    """Who may fire is the rule's `authors`. A "bots" rule: only a listed BOT, never a human
+    whatever it says. A human rule: a real person's post (no bot, no channel noise), never the
+    reading identity's own — Otto's top-level reply would otherwise re-fire it."""
+    mode = rule.get("authors") or "bots"
+    if mode != "bots":
+        user = m.get("user")
+        if m.get("bot_id") or not user or m.get("subtype") not in _HUMAN_SUBTYPES:
+            return False
+        if not self_id or user == self_id:
+            return False
+        return mode == "anyone" or user in {_entry_id(p) for p in rule.get("people") or []}
     if not m.get("bot_id"):
         return False
     names = {m.get("bot_id"), m.get("app_id"), (m.get("bot_profile") or {}).get("name"),
@@ -149,10 +200,26 @@ def author_ok(rule, m):
     return any(str(b).lower() in names for b in rule.get("bots") or [])
 
 
+def _phrase_re(p):
+    """Case-insensitive, whole-word at a word edge: "done" must not match "undone"."""
+    lead = r"\b" if re.match(r"\w", p) else ""
+    tail = r"\b" if re.search(r"\w$", p) else ""
+    return re.compile(lead + re.escape(p) + tail, re.I)
+
+
+def _has_phrase(phrases, text):
+    return any(_phrase_re(p).search(text or "") for p in phrases or [])
+
+
 def match(rule, text):
-    """The regex's named groups (possibly empty) on a match, else None. An `ignore` hit is None:
-    a filter left to the template's prose ("ignore a closing message") still starts a run."""
+    """The regex's named groups (possibly empty) on a match, else None. An `ignore`/`skip` hit is
+    None: a filter left to the template's prose ("ignore a closing message") still starts a run.
+    Plain phrases and the advanced regex both apply when both are set."""
     if rule.get("ignore") and re.search(rule["ignore"], text or ""):
+        return None
+    if _has_phrase(rule.get("skip"), text):
+        return None
+    if rule.get("contains") and not _has_phrase(rule["contains"], text):
         return None
     pat = rule.get("match")
     if not pat:
@@ -182,18 +249,19 @@ def fresh(ts, now, max_age_s):
         return False
 
 
-def pick(rules, m, now, channel):
+def pick(rules, m, now, channel, self_id=None):
     """(rule, payload, key) for the first enabled rule a post in `channel` fires, or None. PURE."""
     text = message_text(m)
     for r in rules:
-        if not (rule_enabled(r) and author_ok(r, m) and fresh(m.get("ts"), now, r.get("max_age_s", MAX_AGE_S))):
+        if not (rule_enabled(r) and author_ok(r, m, self_id) and fresh(m.get("ts"), now, r.get("max_age_s", MAX_AGE_S))):
             continue
         groups = match(r, text)
         if groups is None:
             continue
         key = dedupe_key(r, text, f"{channel}:{m.get('ts')}")
+        bot = (m.get("bot_profile") or {}).get("name") or m.get("username") or ""
         payload = {**groups, "text": text, "channel": channel, "ts": m.get("ts"),
-                   "bot": (m.get("bot_profile") or {}).get("name") or m.get("username") or "",
+                   "bot": bot, "author": bot if m.get("bot_id") else (m.get("user") or ""),
                    "key": key}
         return r, payload, key
     return None
@@ -220,6 +288,8 @@ def to_params(rule, payload, wid):
               # own "Jira", and a capture rendered on its own just fires (the cheap direction).
               "external_text": [_POST_HEADER, text,
                                 contracts.fence_block(text, '"""')] if text else [_POST_HEADER]}
+    if needs_self_id(rule):
+        params["untrusted_author"] = True
     if rule.get("reply_in_thread", True):
         params["reply_to"] = {"kind": "slack_thread", "channel": payload["channel"],
                               "thread_ts": payload.get("ts"), "identity": rule["identity"]}
@@ -312,6 +382,13 @@ def poll(resolve_cap, now=None):
     for (identity, channel), rs in by_channel.items():
         try:
             max_age = max(r.get("max_age_s", MAX_AGE_S) for r in rs)
+            self_id = None
+            if any(needs_self_id(r) for r in rs):
+                import slack
+                self_id = slack.whoami(identity)
+                if not self_id:            # unknown self = Otto's own reply could re-fire it
+                    errors.append(f"{channel}: can't resolve the {identity} identity's user id")
+                    continue           # whole channel waits: a cursor past it loses the post
             cur = (_st().get("cursors") or {}).get(_cursor_key(identity, channel))
             floor = slack_state.normalize_ts(now - max_age)
             if cur is None or slack_state.past_cursor(floor, cur):
@@ -325,7 +402,7 @@ def poll(resolve_cap, now=None):
                            if m.get("ts") and slack_state.past_cursor(m["ts"], cur)),
                           key=lambda m: float(m["ts"]))
             for m in msgs:
-                hit = pick(rs, m, now, channel)
+                hit = pick(rs, m, now, channel, self_id)
                 if hit:
                     rule, payload, key = hit
                     key_id = f"{rule['id']}|{key}"

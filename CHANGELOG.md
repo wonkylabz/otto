@@ -13,6 +13,14 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
+- **Slack triggers can fire on people, not just bots** (Events → Triggers). A new *Who can fire it*
+  picks listed bots, listed people, or anyone in the channel, so a channel like #access-requests
+  can start runs. Human modes ignore joins, edits, bot posts and the reading account's own posts.
+  An *anyone* trigger never auto-approves writes, and a run a person starts is always checked for
+  write intent, retries included, so it can't slip past approval on a read-only route.
+- Slack trigger matching takes plain phrases (*Only posts containing* / *Skip posts containing*,
+  whole words, any case); the regexes moved under *Advanced*. A trigger can carry an optional
+  title, shown on its card. Existing triggers keep working unchanged.
 - Every version is now published as a GitHub Release with its changelog notes, so the
   repo's Releases panel lists what each tag shipped. Nothing changes on an install.
 - The chat uses the full width of its pane instead of a narrow off-centre column; each side's

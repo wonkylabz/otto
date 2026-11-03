@@ -732,7 +732,7 @@
   .addbtn.addnew:hover, .asection h3 .addbtn:hover { border-color: var(--accent); }
   .aform { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: 15px;
     margin: 12px 0; display: flex; flex-direction: column; gap: 10px; }
-  .aform label { font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: -4px; }
+  .aform label, .aform summary { font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: -4px; }
   .aform input, .aform textarea, .aform select { padding: 9px 11px; }
   .aform textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
   /* A one-per-line list of arguments or NAME=value pairs is code, not prose: 64px shows
@@ -751,7 +751,7 @@
   .aform textarea.prosearea { min-height: 190px; flex: 0 0 auto; max-height: none; }
   .aform textarea.reqarea { min-height: 72px; flex: 0 0 auto; max-height: none; }
   .aform .frow { display: flex; gap: 12px; }
-  .aform .frow > div { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+  .aform .frow > div, .aform details > div { flex: 1; display: flex; flex-direction: column; gap: 8px; }
   .aform .ferr { color: var(--danger); font-size: 12px; }
   .aform .factions { display: flex; gap: 9px; }
   /* Endpoints: the same table idiom as the models below it — a sibling, not a card. */
