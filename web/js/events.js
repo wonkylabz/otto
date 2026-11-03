@@ -901,7 +901,12 @@ function showRuleForm(idx){
   };
 }
 
-/* ---- Slack triggers: a listed bot's post in a channel starts an unattended run ---- */
+/* ---- Slack triggers: a post in a watched channel starts an unattended run ---- */
+const TRIG_AUTHORS={bots:"listed bots", people:"listed people", anyone:"anyone"};
+function trigWho(r){
+  const a=r.authors||"bots";
+  return a==="anyone"?"anyone":(a==="people"?(r.people||[]):(r.bots||[])).join(", ");
+}
 let SLACK_TRIGGERS=[], SLACKTRIG_CAPS=[], SLACKTRIG_ACTIVE=0;
 async function loadSlackTriggers(){
   const host=document.getElementById("slacktrig-section");
@@ -917,21 +922,22 @@ async function loadSlackTriggers(){
   const errs=(d.last_errors||[]).map(e=>`<li>${esc(e)}</li>`).join("");
   const cards=SLACK_TRIGGERS.map((r,i)=>`<div class="job ${r.enabled===false?'off':''}">
     <div class="jtop"><span class="switch ${r.enabled===false?'':'on'}" data-toggletrig="${i}" title="enable / disable"></span>
-      <span class="jcron">${esc((r.channels||[]).map(c=>"#"+c).join(" "))} &middot; ${esc((r.bots||[]).join(", "))}</span>
+      <span class="jcron">${r.title?`<b>${esc(r.title)}</b> &middot; `:''}${esc((r.channels||[]).map(c=>"#"+c).join(" "))} &middot; ${esc(trigWho(r))}</span>
       <div class="jactions"><button class="addbtn" data-edittrig="${i}">edit</button>
         <button class="remove" data-deltrig="${i}" title="remove">&times;</button></div></div>
     <div class="jreq">${esc(r.template||'')}</div>
     <div class="jstatus">${r.cap?`&rarr; <b>${esc(r.cap)}</b>`:'auto-route'} ·
       ${({auto:'<span class="warn">auto-approves writes</span>',ask:'writes need Board approval',skip:'writes skipped'})[r.approval||'ask']}
+      ${(r.contains||[]).length?` · contains ${esc(r.contains.join(", "))}`:''}${(r.skip||[]).length?` · skips ${esc(r.skip.join(", "))}`:''}
       ${r.match?` · match <code>${esc(r.match)}</code>`:''}${r.ignore?` · ignore <code>${esc(r.ignore)}</code>`:''}${r.key?` · dedupe <code>${esc(r.key)}</code>`:''}
       · reads as ${esc(r.identity||'bot')}${tok[r.identity||'bot']?'':' <span class="warn">(no token)</span>'}</div>
   </div>`).join("");
   const closed=evCollapsed()['ev-slacktrig'];
   host.innerHTML=`<div class="asection coll subsection${closed?' collapsed':''}" data-sect="ev-slacktrig">
     <h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>Triggers<span class="badge ${active?'on':'off'}">${active?'on':'off'}</span><span class="sectcount">${SLACK_TRIGGERS.length} trigger${SLACK_TRIGGERS.length===1?'':'s'}</span></span>
-      <button class="addbtn addnew" id="add-slacktrig" title="Run when a bot (New Relic, PagerDuty, DevOps Agent…) posts in a channel. Otto polls outward, so nothing is exposed.">+ Add trigger</button></h3>
+      <button class="addbtn addnew" id="add-slacktrig" title="Run when a bot (New Relic, PagerDuty…) or a person posts in a channel, e.g. #access-requests. Otto polls outward, so nothing is exposed.">+ Add trigger</button></h3>
     <div class="asection-body">
-      <p class="sub" style="margin:10px 0 10px">A post by a listed bot in a watched channel starts an unattended run, one per incident key. Rides the Slack poll; posts older than the max age are skipped, so downtime never replays old alerts.</p>
+      <p class="sub" style="margin:10px 0 10px">A post in a watched channel, by a listed bot, listed people or anyone, starts an unattended run, one per incident key. Rides the Slack poll; posts older than the max age are skipped, so downtime never replays old alerts.</p>
       ${errs?`<p class="err">Last poll:</p><ul class="err">${errs}</ul>`:''}
       ${cards||'<p class="memempty">No triggers yet.</p>'}
     </div>
@@ -953,16 +959,27 @@ async function saveSlackTriggers(){
 }
 function showSlackTriggerForm(idx){
   const editing=idx>=0, r=editing?SLACK_TRIGGERS[idx]:{};
-  const c=openFormModal(editing?"<b>Edit Slack trigger</b><br>"+esc((r.channels||[]).join(", ")):"<b>New Slack trigger</b><br>turn a bot's post into a run");
+  const c=openFormModal(editing?"<b>Edit Slack trigger</b><br>"+esc(r.title||(r.channels||[]).join(", ")):"<b>New Slack trigger</b><br>turn a channel post into a run");
   const capOpts=['<option value="">(auto-route)</option>'].concat((SLACKTRIG_CAPS||[]).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`)).concat(
     (r.cap && !(SLACKTRIG_CAPS||[]).includes(r.cap)) ? [`<option value="${esc(r.cap)}">${esc(r.cap)} (disabled)</option>`] : []);
   c.innerHTML=`<div class="aform">
+    <label>Title (optional)</label><input id="st-title" placeholder="A short name for this trigger">
     <label>Channel ids &mdash; comma-separated</label><input id="st-channel" placeholder="C0123ABCD, C0456EFGH">
-    <label>Bots allowed to fire it &mdash; bot id, app id or app name, comma-separated</label><input id="st-bots" placeholder="New Relic">
-    <label>Match (optional) &mdash; regex over the post; named groups become template tokens</label><input id="st-match" placeholder="(?i)opened: (?P&lt;condition&gt;.+)">
-    <label>Ignore (optional) &mdash; regex; a post it matches never fires, e.g. the alert closing</label><input id="st-ignore" placeholder="(?i)&#92;bis closed&#92;b">
-    <label>Dedupe key (optional) &mdash; regex, group 1 is the incident key; blank = one run per post</label><input id="st-key" placeholder="Issue ID: (&#92;w+)">
-    <label>Request template &mdash; {text}, {bot}, {key}, {ts} and your named groups (the post is appended if {text} is omitted)</label>
+    <label>Who can fire it</label><select id="st-authors">
+      <option value="bots">listed bots or apps</option>
+      <option value="people">listed people</option>
+      <option value="anyone">anyone in the channel (people, never auto-approves)</option>
+    </select>
+    <label data-who="bots">Bots &mdash; bot id, app id or app name, comma-separated</label><input data-who="bots" id="st-bots" placeholder="New Relic">
+    <label data-who="people">People &mdash; Slack user ids, comma-separated</label><input data-who="people" id="st-people" placeholder="U01ABCDE2FG, U02BCDEF3GH">
+    <label>Only posts containing (optional) &mdash; words or phrases, comma-separated; any one fires, case-insensitive</label><input id="st-contains" placeholder="access, permission">
+    <label>Skip posts containing (optional) &mdash; e.g. the alert closing</label><input id="st-skip" placeholder="is closed, resolved">
+    <details class="st-adv" id="st-adv"><summary>Advanced &mdash; regular expressions</summary><div style="margin-top:10px">
+      <label>Match regex &mdash; named groups become template tokens</label><input id="st-match" placeholder="(?i)opened: (?P&lt;condition&gt;.+)">
+      <label>Ignore regex &mdash; a post it matches never fires</label><input id="st-ignore" placeholder="(?i)&#92;bis closed&#92;b">
+      <label>Dedupe key &mdash; group 1 is the incident key; blank = one run per post</label><input id="st-key" placeholder="Issue ID: (&#92;w+)">
+    </div></details>
+    <label>Request template &mdash; {text}, {author}, {key}, {ts} and your named groups (the post is appended if {text} is omitted)</label>
     <textarea id="st-template" placeholder="Investigate this alert and propose a fix: {text}"></textarea>
     <div class="frow">
       <div><label>Capability</label><select id="st-cap">${capOpts.join("")}</select></div>
@@ -983,22 +1000,39 @@ function showSlackTriggerForm(idx){
   const set=(id,v)=>{ document.getElementById(id).value=v; };
   if(editing){
     set("st-channel",(r.channels||[]).join(", ")); set("st-bots",(r.bots||[]).join(", "));
+    set("st-people",(r.people||[]).join(", ")); set("st-title",r.title||"");
+    set("st-contains",(r.contains||[]).join(", ")); set("st-skip",(r.skip||[]).join(", "));
     set("st-match",r.match||""); set("st-ignore",r.ignore||""); set("st-key",r.key||""); set("st-template",r.template||"");
     set("st-cap",r.cap||""); set("st-identity",r.identity||"bot"); set("st-age",r.max_age_s||"");
     document.getElementById("st-thread").checked=r.reply_in_thread!==false;
   }
-  set("st-approval",r.approval||"ask");
+  set("st-approval",r.approval||"ask"); set("st-authors",r.authors||"bots");
+  document.getElementById("st-adv").open=!!(r.match||r.ignore||r.key);
+  const authors=document.getElementById("st-authors"), autoOpt=document.querySelector('#st-approval option[value="auto"]');
+  const syncAuthors=()=>{
+    const a=authors.value;
+    c.querySelectorAll("[data-who]").forEach(e=>{ e.hidden=e.dataset.who!==a; });
+    autoOpt.disabled=a==="anyone";
+    if(a==="anyone" && val("st-approval")==="auto") set("st-approval","ask");
+  };
+  authors.addEventListener("change",syncAuthors); syncAuthors();
   document.getElementById("st-cancel").onclick=closeFormModal;
   document.getElementById("st-save").onclick=async()=>{
     const rule={id:r.id, channels:val("st-channel").split(",").map(s=>s.trim()).filter(Boolean), template:document.getElementById("st-template").value.trim(),
-      bots:val("st-bots").split(",").map(s=>s.trim()).filter(Boolean),
+      title:val("st-title"), authors:val("st-authors"),
+      contains:val("st-contains").split(",").map(s=>s.trim()).filter(Boolean),
+      skip:val("st-skip").split(",").map(s=>s.trim()).filter(Boolean),
       match:val("st-match"), ignore:val("st-ignore"), key:val("st-key"), cap:val("st-cap"),
       approval:val("st-approval"), identity:val("st-identity"),
       reply_in_thread:document.getElementById("st-thread").checked};
+    const list=id=>val(id).split(",").map(s=>s.trim()).filter(Boolean);
+    if(rule.authors==="bots") rule.bots=list("st-bots");
+    if(rule.authors==="people") rule.people=list("st-people");
     const age=val("st-age"); if(age) rule.max_age_s=+age;
     if(editing && r.enabled===false) rule.enabled=false;
-    if(!rule.channels.length||!rule.template||!rule.bots.length){
-      document.getElementById("st-err").textContent="a channel, at least one bot and a template are required"; return; }
+    const who=rule.authors==="bots"?rule.bots:rule.authors==="people"?rule.people:["*"];
+    if(!rule.channels.length||!rule.template||!who.length){
+      document.getElementById("st-err").textContent=`a channel, a template and at least one ${rule.authors==="people"?"person":"bot"} are required`; return; }
     const prev=SLACK_TRIGGERS.slice();
     if(editing) SLACK_TRIGGERS[idx]=rule; else SLACK_TRIGGERS.push(rule);
     let res;

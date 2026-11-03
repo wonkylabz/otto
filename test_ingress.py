@@ -8550,7 +8550,7 @@ class SlackAdminMcpSpawnTests(unittest.TestCase):
 
 
 class SlackTriggerTests(unittest.TestCase):
-    """A listed bot's post in a watched channel starts ONE unattended run per incident key."""
+    """A post by a declared author in a watched channel starts ONE unattended run per incident key."""
 
     NOW = 1_800_000_000.0
 
@@ -8735,6 +8735,80 @@ class SlackTriggerTests(unittest.TestCase):
         self.assertTrue(res["errors"])
         _, _, retried = self._poll(posts, page=2)
         self.assertEqual(5, len(retried))
+
+    def _human(self, ts, text, user="U7", subtype=None):
+        m = {"ts": f"{ts:.6f}", "text": text, "user": user}
+        if subtype:
+            m["subtype"] = subtype
+        return m
+
+    def test_an_anyone_rule_fires_on_a_person_but_never_on_noise_a_bot_or_itself(self):
+        """#access-requests: the requests come from people, so a bots-only trigger never fired."""
+        r = self.st.normalize({"channels": ["C1"], "authors": "anyone", "template": "Handle: {text}"})
+        pick = lambda m: self.st.pick([r], m, self.NOW, "C1", "USELF")
+        self.assertIsNotNone(pick(self._human(self.NOW - 5, "need prod access")))
+        self.assertIsNotNone(pick(self._human(self.NOW - 5, "see file", subtype="file_share")))
+        self.assertIsNone(pick(self._human(self.NOW - 5, "joined", subtype="channel_join")))
+        self.assertIsNone(pick(self._post(self.NOW - 5, "opened: x")), "a bot fired a people rule")
+        self.assertIsNone(pick(self._human(self.NOW - 5, "my own reply", user="USELF")))
+        self.assertIsNone(self.st.pick([r], self._human(self.NOW - 5, "x"), self.NOW, "C1", None),
+                          "an unknown self id must fail closed")
+
+    def test_an_anyone_rule_never_auto_approves(self):
+        base = {"channels": ["C1"], "authors": "anyone", "template": "t"}
+        self.assertIsNone(self.st.normalize({**base, "approval": "auto"}))
+        self.assertEqual("ask", self.st.normalize(base)["approval"])
+
+    def test_a_people_rule_fires_only_for_listed_people_labels_included(self):
+        r = self.st.normalize({"channels": ["C1"], "authors": "people", "template": "t",
+                               "people": ["U7  #alex"]})
+        self.assertEqual(["U7  #alex"], r["people"])
+        self.assertIsNotNone(self.st.pick([r], self._human(self.NOW - 5, "x"), self.NOW, "C1", "US"))
+        self.assertIsNone(self.st.pick([r], self._human(self.NOW - 5, "x", user="U8"), self.NOW,
+                                       "C1", "US"))
+        self.assertIsNone(self.st.normalize({"channels": ["C1"], "authors": "people",
+                                             "template": "t"}))
+
+    def test_plain_phrases_match_whole_words_case_insensitively(self):
+        r = self.st.normalize({"channels": ["C1"], "bots": ["b"], "template": "t",
+                               "contains": "access, permission", "skip": ["done"]})
+        self.assertEqual({}, self.st.match(r, "Can I get ACCESS to prod?"))
+        self.assertIsNone(self.st.match(r, "accessibility audit"))
+        self.assertIsNone(self.st.match(r, "access granted, done"))
+        self.assertEqual({}, self.st.match(r, "access request undone"))
+
+    def test_a_people_poll_with_no_self_id_moves_no_cursor(self):
+        import slack
+        self.st.save_rules([{"channels": ["C1"], "authors": "anyone", "template": "t"}])
+        m = self._human(self.NOW - 5, "need access")
+        with unittest.mock.patch.object(slack, "whoami", return_value=None):
+            res, calls, started = self._poll([m])
+        self.assertEqual([], calls)
+        self.assertTrue(res["errors"])
+        with unittest.mock.patch.object(slack, "whoami", return_value="USELF"):
+            _, _, started = self._poll([m])
+        self.assertEqual(1, len(started))
+        self.assertIn("need access", started[0][1]["request"])
+
+    def test_a_title_is_optional_display_only_and_never_rekeys_the_dedupe(self):
+        base = {"channels": ["C1"], "bots": ["b"], "template": "t"}
+        self.assertNotIn("title", self.st.normalize(base))
+        titled = self.st.normalize({**base, "title": "  Access requests "})
+        self.assertEqual("Access requests", titled["title"])
+        self.assertEqual(self.st.normalize(base)["id"], titled["id"])
+        src = ui_src()
+        self.assertIn('set("st-title",r.title||"")', src)
+        self.assertIn('title:val("st-title")', src)
+
+    def test_the_form_round_trips_authors_and_phrases_and_folds_the_regexes(self):
+        src = ui_src()
+        for k in ("authors", "people", "contains", "skip"):
+            self.assertIn(f'id="st-{k}"', src)
+        self.assertIn('set("st-authors",r.authors||"bots")', src)
+        self.assertIn('rule.people=list("st-people")', src)
+        self.assertIn('<details class="st-adv" id="st-adv">', src)
+        self.assertLess(src.index('<details class="st-adv"'), src.index('id="st-match"'))
+        self.assertIn('autoOpt.disabled=a==="anyone"', src)
 
     def test_a_rule_stored_without_an_id_keeps_one_id_across_loads(self):
         """Rules re-normalize on every poll; a random id re-fired every incident each poll."""
