@@ -8786,6 +8786,9 @@ class SlackTriggerTests(unittest.TestCase):
         self.assertNotIn("untrusted_author", self.st.to_params(bots, pay, "w"))
         self.assertIn('classify_due = classify_due or (cap["risk"] == "read" and '
                       'bool(params.get("untrusted_author"))', workflow_src())
+        import server
+        retry = inspect.getsource(server)
+        self.assertIn('if origin.get("untrusted_author"):', retry, "a retry dropped the flag")
 
     def test_a_derived_id_differs_by_author_mode_but_stays_stable_for_bots(self):
         base = {"channels": ["C1"], "template": "t"}

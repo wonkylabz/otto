@@ -2371,6 +2371,8 @@ class Handler(BaseHTTPRequestHandler):
         # The quoted post stays DATA on retry (#223), or the connector guard reads it as the ask.
         if origin.get("external_text"):
             params["external_text"] = origin["external_text"]
+        if origin.get("untrusted_author"):     # a person-fired trigger stays write-intent checked
+            params["untrusted_author"] = True
         new_id = "web-" + uuid.uuid4().hex
         if (reply_to or {}).get("kind") == "github_issue":
             # A board card's retry is the card's NEXT GENERATION, not a side run: as a `web-*`
