@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-04
+
 ### Changed
 
 - **Slack triggers can fire on people, not just bots** (Events → Triggers). A new *Who can fire it*
@@ -584,7 +586,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/wonkylabz/otto/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/wonkylabz/otto/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/wonkylabz/otto/compare/v0.8.7...v0.9.0
 [0.8.7]: https://github.com/wonkylabz/otto/compare/v0.8.6...v0.8.7
