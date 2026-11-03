@@ -8777,6 +8777,23 @@ class SlackTriggerTests(unittest.TestCase):
         self.assertIsNone(self.st.match(r, "access granted, done"))
         self.assertEqual({}, self.st.match(r, "access request undone"))
 
+    def test_a_person_fired_run_is_write_intent_checked_even_unattended(self):
+        """A stranger's post routed to a read cap would otherwise run Bash with no gate."""
+        human = self.st.normalize({"channels": ["C1"], "authors": "anyone", "template": "t"})
+        bots = self.st.normalize({"channels": ["C1"], "bots": ["b"], "template": "t"})
+        pay = {"text": "x", "channel": "C1", "ts": "1"}
+        self.assertTrue(self.st.to_params(human, pay, "w").get("untrusted_author"))
+        self.assertNotIn("untrusted_author", self.st.to_params(bots, pay, "w"))
+        self.assertIn('classify_due = classify_due or (cap["risk"] == "read" and '
+                      'bool(params.get("untrusted_author"))', workflow_src())
+
+    def test_a_derived_id_differs_by_author_mode_but_stays_stable_for_bots(self):
+        base = {"channels": ["C1"], "template": "t"}
+        self.assertNotEqual(self.st.normalize({**base, "authors": "anyone"})["id"],
+                            self.st.normalize({**base, "authors": "people", "people": ["U1"]})["id"])
+        legacy = __import__("hashlib").sha256(b"['C1']|['b']|t").hexdigest()[:8]
+        self.assertEqual(legacy, self.st.normalize({**base, "bots": ["b"]})["id"])
+
     def test_a_people_poll_with_no_self_id_moves_no_cursor(self):
         import slack
         self.st.save_rules([{"channels": ["C1"], "authors": "anyone", "template": "t"}])

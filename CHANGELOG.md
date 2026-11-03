@@ -15,7 +15,8 @@ changelog that restates it is a second copy of `git log`.
 
 - **Slack triggers can fire on people, not just bots** (Events → Triggers). A new *Who can fire it*
   picks listed bots, listed people, or anyone in the channel, so a channel like #access-requests
-  can start runs. An *anyone* trigger never auto-approves writes. Matching now takes plain
+  can start runs. An *anyone* trigger never auto-approves writes, and a run a person starts is
+  always checked for write intent, so it can't slip past approval on a read-only route. Matching now takes plain
   phrases (*Only posts containing* / *Skip posts containing*); the regexes moved under
   *Advanced*. A trigger can carry an optional title, shown on its card. Existing triggers keep
   working unchanged.

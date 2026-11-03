@@ -101,7 +101,8 @@ def normalize(rule):
     # A missing id is DERIVED, never random: rules re-normalize on every load, and the id keys
     # the dedupe, so a random one made each poll re-fire the same incident.
     rid = str(rule.get("id") or "").strip() or hashlib.sha256(
-        f"{channels}|{bots}|{template}".encode()).hexdigest()[:8]
+        (f"{channels}|{bots}|{template}" + ("" if authors == "bots" else f"|{authors}|{people}")
+        ).encode()).hexdigest()[:8]
     out = {"id": rid, "channels": channels, "authors": authors, "template": template,
            "approval": rule.get("approval") if rule.get("approval") in _APPROVALS else "ask",
            "identity": "user" if rule.get("identity") == "user" else "bot",
@@ -287,6 +288,8 @@ def to_params(rule, payload, wid):
               # own "Jira", and a capture rendered on its own just fires (the cheap direction).
               "external_text": [_POST_HEADER, text,
                                 contracts.fence_block(text, '"""')] if text else [_POST_HEADER]}
+    if needs_self_id(rule):
+        params["untrusted_author"] = True
     if rule.get("reply_in_thread", True):
         params["reply_to"] = {"kind": "slack_thread", "channel": payload["channel"],
                               "thread_ts": payload.get("ts"), "identity": rule["identity"]}
@@ -385,7 +388,7 @@ def poll(resolve_cap, now=None):
                 self_id = slack.whoami(identity)
                 if not self_id:            # unknown self = Otto's own reply could re-fire it
                     errors.append(f"{channel}: can't resolve the {identity} identity's user id")
-                    continue
+                    continue           # whole channel waits: a cursor past it loses the post
             cur = (_st().get("cursors") or {}).get(_cursor_key(identity, channel))
             floor = slack_state.normalize_ts(now - max_age)
             if cur is None or slack_state.past_cursor(floor, cur):

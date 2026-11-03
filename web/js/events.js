@@ -902,7 +902,6 @@ function showRuleForm(idx){
 }
 
 /* ---- Slack triggers: a post in a watched channel starts an unattended run ---- */
-const TRIG_AUTHORS={bots:"listed bots", people:"listed people", anyone:"anyone"};
 function trigWho(r){
   const a=r.authors||"bots";
   return a==="anyone"?"anyone":(a==="people"?(r.people||[]):(r.bots||[])).join(", ");

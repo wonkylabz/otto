@@ -931,6 +931,9 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
             # sent the frontman tool-hunting for 20s instead of asking (web-db296f66).
             classify_due = (cap["risk"] == "read" and (not unattended or params.get("delegated"))
                             and not _is_brainstorm(cap))
+            # A Slack trigger a PERSON fires is a stranger's text: a read cap still holds Bash.
+            classify_due = classify_due or (cap["risk"] == "read" and bool(params.get("untrusted_author"))
+                                            and not _is_brainstorm(cap))
             clarify_due = (not subtask and not _is_brainstorm(cap)
                            and (not self._fronted or workflow.patched("fronted-clarify"))
                            and (not unattended or params.get("clarify")))
