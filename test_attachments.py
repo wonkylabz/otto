@@ -431,16 +431,20 @@ class LocalVisionTests(unittest.TestCase):
         self.assertIn("if(inp.checked) p.vision=true; else delete p.vision;", ui)
 
 
-def _pdf(text, pages=1):
+def _pdf(text, pages=1, xobject_dos=0):
     """A PDF with real text, built by hand so the test needs no PDF writer. Every page shares ONE
-    content stream — the shape that makes a small file extract to an enormous text."""
-    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    content stream, and `xobject_dos` makes that stream draw one text Form XObject N times — the
+    two shapes that make a small file extract to an enormous text."""
+    text_op = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    stream = b"/X1 Do\n" * xobject_dos if xobject_dos else text_op
     objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
             b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join([b"3 0 R"] * pages), pages),
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
-            b"/Resources << /Font << /F1 5 0 R >> >> >>",
+            b"/Resources << /Font << /F1 5 0 R >> /XObject << /X1 6 0 R >> >> >>",
             b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
-            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            b"<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >>"
+            b" /Length %d >>\nstream\n" % len(text_op) + text_op + b"\nendstream"]
     out, offs = bytearray(b"%PDF-1.4\n"), []
     for i, o in enumerate(objs, 1):
         offs.append(len(out))
@@ -490,6 +494,15 @@ class KnowledgeFileExtractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "split the document"):
                 knowledge.extract_text("many.pdf", pdf)
         self.assertLess(len(calls), 600, "extraction must stop at the cap, not read every page")
+
+    def test_one_page_repeating_a_form_xobject_is_refused_fast(self):
+        """A cap checked between pages never fires inside one: this 115 KB page ran 185s first."""
+        import knowledge
+        pdf = _pdf("x" * 100_000, xobject_dos=2000)
+        t = time.monotonic()
+        with self.assertRaisesRegex(ValueError, "split the document"):
+            knowledge.extract_text("one-page.pdf", pdf)
+        self.assertLess(time.monotonic() - t, 10)
         with self.assertRaisesRegex(ValueError, "split the document"):
             knowledge.extract_text("big.txt", b"a" * (knowledge._MAX_TEXT_CHARS + 1))
 

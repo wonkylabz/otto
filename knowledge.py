@@ -229,14 +229,15 @@ def _pdf_text(data):
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted and not reader.decrypt(""):
             raise ValueError("the PDF is password-protected")
-        pages, total = [], 0
-        for pg in reader.pages:
-            t = (pg.extract_text() or "").strip()
-            total += len(t)
-            if total > _MAX_TEXT_CHARS:
+        # Counted INSIDE extraction: one page repeating a Form XObject multiplies its text, so a
+        # check between pages let a 115 KB file run 185s and 564 MB before refusing.
+        total = [0]
+
+        def count(text, *_):
+            total[0] += len(text)
+            if total[0] > _MAX_TEXT_CHARS:
                 raise ValueError(_TOO_MUCH)
-            pages.append(t)
-        return "\n\n".join(pages)
+        return "\n\n".join((pg.extract_text(visitor_text=count) or "").strip() for pg in reader.pages)
     except ValueError:
         raise
     except Exception as e:
