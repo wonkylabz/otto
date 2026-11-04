@@ -429,3 +429,143 @@ class LocalVisionTests(unittest.TestCase):
         row = re.search(r'<td class="c-vision">\$\{\((.*?)\)\?', ui).group(1)
         self.assertEqual(row, "p.provider!=='claude'&&p.provider!=='codex'")
         self.assertIn("if(inp.checked) p.vision=true; else delete p.vision;", ui)
+
+
+def _pdf(text, pages=1, xobject_dos=0):
+    """A PDF with real text, built by hand so the test needs no PDF writer. Every page shares ONE
+    content stream, and `xobject_dos` makes that stream draw one text Form XObject N times — the
+    two shapes that make a small file extract to an enormous text."""
+    text_op = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    stream = b"/X1 Do\n" * xobject_dos if xobject_dos else text_op
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join([b"3 0 R"] * pages), pages),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+            b"/Resources << /Font << /F1 5 0 R >> /XObject << /X1 6 0 R >> >> >>",
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            b"<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >>"
+            b" /Length %d >>\nstream\n" % len(text_op) + text_op + b"\nendstream"]
+    out, offs = bytearray(b"%PDF-1.4\n"), []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offs)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return bytes(out)
+
+
+def _docx(*paras, xml=None, compress=0):
+    import zipfile
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    body = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paras)
+    if xml is None:
+        xml = f'<w:document xmlns:w="{w}"><w:body>{body}</w:body></w:document>'.encode()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=compress) as z:
+        z.writestr("word/document.xml", xml)
+    return buf.getvalue()
+
+
+class KnowledgeFileExtractTests(unittest.TestCase):
+    def test_pdf_docx_and_text_files_yield_their_text(self):
+        import knowledge
+        self.assertIn("renew the vpn cert", knowledge.extract_text("r.pdf", _pdf("renew the vpn cert")))
+        self.assertEqual("step one\nstep two", knowledge.extract_text("r.docx", _docx("step one", "step two")))
+        self.assertEqual("# hi", knowledge.extract_text("r.md", "﻿# hi".encode()))
+
+    def test_a_docx_with_a_dtd_is_refused_in_any_encoding(self):
+        """UTF-16 hid the DTD from a byte search; the refusal must happen in the parser."""
+        import knowledge
+        bomb = '<?xml version="1.0" encoding="%s"?><!DOCTYPE d [<!ENTITY a "aaaa">]><d>&a;</d>'
+        for enc in ("utf-8", "utf-16"):
+            with self.subTest(enc), self.assertRaisesRegex(ValueError, "DTD"):
+                knowledge.extract_text("bomb.docx", _docx(xml=(bomb % enc).encode(enc)))
+
+    def test_extracted_text_is_capped_however_small_the_file(self):
+        import knowledge
+        pdf = _pdf("x" * 2000, pages=600)
+        self.assertLess(len(pdf), 20_000)
+        from pypdf import PageObject
+        real, calls = PageObject.extract_text, []
+        with mock.patch.object(PageObject, "extract_text",
+                               lambda pg, *a, **k: calls.append(1) or real(pg, *a, **k)):
+            with self.assertRaisesRegex(ValueError, "split the document"):
+                knowledge.extract_text("many.pdf", pdf)
+        self.assertLess(len(calls), 600, "extraction must stop at the cap, not read every page")
+
+    def test_a_pdf_that_draws_without_text_is_bounded_in_time(self):
+        """The text counter never fires on drawing operators, so a textless page held the CPU."""
+        import knowledge
+        pdf = _pdf("x", xobject_dos=4000)
+        with mock.patch.object(knowledge, "_PDF_DEADLINE_S", 0):
+            with self.assertRaisesRegex(ValueError, "took over 0s"):
+                knowledge.extract_text("slow.pdf", pdf)
+
+    def test_one_page_repeating_a_form_xobject_is_refused_fast(self):
+        """A cap checked between pages never fires inside one: this 115 KB page ran 185s first."""
+        import knowledge
+        pdf = _pdf("x" * 100_000, xobject_dos=2000)
+        t = time.monotonic()
+        with self.assertRaisesRegex(ValueError, "split the document"):
+            knowledge.extract_text("one-page.pdf", pdf)
+        self.assertLess(time.monotonic() - t, 10)
+        with self.assertRaisesRegex(ValueError, "split the document"):
+            knowledge.extract_text("big.txt", b"a" * (knowledge._MAX_TEXT_CHARS + 1))
+
+    def test_a_docx_over_the_unpacked_limit_is_refused_even_if_its_header_lies(self):
+        import knowledge
+        import zipfile
+        big = _docx(xml=b"<d>" + b"a" * 5000 + b"</d>", compress=zipfile.ZIP_DEFLATED)
+        with mock.patch.object(knowledge, "_DOCX_MAX_XML", 1000):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                knowledge.extract_text("big.docx", big)
+        lied = big.replace((5007).to_bytes(4, "little"), (100).to_bytes(4, "little"))
+        self.assertNotEqual(lied, big)
+        with self.assertRaisesRegex(ValueError, "couldn't read"):
+            knowledge.extract_text("lied.docx", lied)
+
+    def test_a_corrupt_docx_is_refused_with_a_reason_never_a_500(self):
+        import knowledge
+        import zipfile
+        good = _docx("hello " * 200, compress=zipfile.ZIP_DEFLATED)
+        i = good.index(b"word/document.xml") + len(b"word/document.xml")
+        corrupt = good[:i + 10] + bytes(b ^ 0xFF for b in good[i + 10:i + 40]) + good[i + 40:]
+        with self.assertRaisesRegex(ValueError, "couldn't read the Word document"):
+            knowledge.extract_text("bad.docx", corrupt)
+
+    def test_unreadable_files_are_refused_with_a_reason_never_stored_as_text(self):
+        import knowledge
+        for name, data in (("a.bin", b"\x00\x01binary"), ("a.pdf", b"not a pdf"),
+                           ("a.docx", b"not a zip"), ("a.xlsx", b"PK"), ("a.txt", b"   ")):
+            with self.subTest(name), self.assertRaises(ValueError):
+                knowledge.extract_text(name, data)
+
+
+class KnowledgeFileHttpTests(unittest.TestCase):
+    setUpClass = classmethod(AttachmentHttpTests.setUpClass.__func__)
+    tearDownClass = classmethod(AttachmentHttpTests.tearDownClass.__func__)
+    _upload = AttachmentHttpTests._upload
+
+    def _add(self, body):
+        st, _, out = _req(self.base, "/api/knowledge/add", json.dumps(body).encode(),
+                          {"Content-Type": "application/json"})
+        return st, json.loads(out or b"{}")
+
+    def test_an_uploaded_file_becomes_a_document_and_the_upload_is_consumed(self):
+        _, meta = self._upload("VPN runbook.docx", _docx("renew the client vpn certificate"))
+        st, out = self._add({"attachment": meta["id"]})
+        self.assertEqual(st, 200, out)
+        self.assertEqual(out["doc"]["title"], "VPN runbook")
+        self.assertEqual(out["doc"]["source"], "file:VPN runbook.docx")
+        self.assertIsNone(attachments.get(meta["id"]))
+
+    def test_a_refused_file_says_why_and_an_unknown_id_is_rejected(self):
+        _, meta = self._upload("blob.bin", b"\x00\x00\x00")
+        st, out = self._add({"attachment": meta["id"]})
+        self.assertEqual(st, 400)
+        self.assertIn("blob.bin", out["error"])
+        st, out = self._add({"attachment": "../../etc/passwd"})
+        self.assertEqual(st, 400)
+        self.assertIn("expired or unknown", out["error"])

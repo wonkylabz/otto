@@ -15,9 +15,15 @@ required); FAISS would only be a scale optimisation, not a dependency. Execution
 import array
 import contextlib
 import datetime
+import io
 import math
+import os
 import re
+import time
 import uuid
+import zipfile
+from xml.etree import ElementTree
+from xml.parsers import expat
 
 import config
 import gateway
@@ -204,6 +210,117 @@ def add_document(title, text, source="paste"):
     embedded = sum(1 for c in doc["chunks"] if c["embedding"])
     trace("KNOWLEDGE", f"added '{doc['title']}' — {len(chunks)} chunk(s), {embedded} embedded")
     return _summary(doc)
+
+
+# A .docx is a zip: its inflated XML is bounded, or a small upload can expand without limit.
+_DOCX_MAX_XML = 50 * 1024 * 1024
+# Extracted text is bounded like a pasted body (`server._MAX_BODY`): a small PDF whose pages share
+# one content stream extracts 100M chars, which then chunks, embeds and is cosine-scanned forever.
+_MAX_TEXT_CHARS = 1_000_000
+_PDF_DEADLINE_S = 60
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_TOO_MUCH = f"more than {_MAX_TEXT_CHARS:,} characters of text — split the document"
+
+
+def _pdf_text(data):
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        raise ValueError("PDF support needs the pypdf package — re-run ./install.sh")
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise ValueError("the PDF is password-protected")
+        # Counted INSIDE extraction: one page repeating a Form XObject multiplies its text, so a
+        # check between pages let a 115 KB file run 185s and 564 MB before refusing.
+        # A page that draws without text never reaches the counter, so time is bounded per operator.
+        total, deadline = [0], time.monotonic() + _PDF_DEADLINE_S
+
+        def count(text, *_):
+            total[0] += len(text)
+            if total[0] > _MAX_TEXT_CHARS:
+                raise ValueError(_TOO_MUCH)
+
+        def clock(*_):
+            if time.monotonic() > deadline:
+                raise ValueError(f"the PDF took over {_PDF_DEADLINE_S}s to read — it may be malformed")
+        return "\n\n".join((pg.extract_text(visitor_text=count, visitor_operand_before=clock) or "").strip()
+                           for pg in reader.pages)
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"couldn't read the PDF ({type(e).__name__})")
+
+
+def _refuse_dtd(*_):
+    raise ValueError("the Word document contains a DTD, which .docx never does")
+
+
+def _no_dtd(xml):
+    """Refuse any DTD at the PARSER, whatever the encoding: OOXML never carries one, so this
+    rules out entity-expansion bombs. A byte search for `<!DOCTYPE` misses UTF-16."""
+    p = expat.ParserCreate()
+    p.StartDoctypeDeclHandler = p.EntityDeclHandler = _refuse_dtd
+    p.Parse(xml, True)
+
+
+def _docx_text(data):
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            info = z.getinfo("word/document.xml")
+            if info.file_size > _DOCX_MAX_XML:
+                raise ValueError("the document is too large once unpacked")
+            xml = z.read(info)
+        _no_dtd(xml)
+        root = ElementTree.fromstring(xml)
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError("couldn't read the Word document")
+    paras = []
+    for p in root.iter(_W + "p"):
+        parts = []
+        for el in p.iter():
+            if el.tag == _W + "t" and el.text:
+                parts.append(el.text)
+            elif el.tag == _W + "tab":
+                parts.append("\t")
+            elif el.tag in (_W + "br", _W + "cr"):
+                parts.append("\n")
+        paras.append("".join(parts))
+    return "\n".join(paras)
+
+
+def _plain_text(data):
+    if b"\x00" in data[:8192]:
+        raise ValueError("unsupported file type — upload a PDF, a .docx or a text file")
+    return data.decode("utf-8-sig", errors="replace")
+
+
+def extract_text(name, data):
+    """Text of an uploaded file, by extension: PDF, .docx, else UTF-8 text. Raises ValueError
+    with a reason a person can act on; never returns an error string as the document."""
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext == ".pdf":
+        text = _pdf_text(data)
+    elif ext == ".docx":
+        text = _docx_text(data)
+    elif ext in (".doc", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".rtf"):
+        raise ValueError(f"{ext} isn't supported — upload a PDF, a .docx or a text file")
+    else:
+        text = _plain_text(data)
+    if len(text) > _MAX_TEXT_CHARS:
+        raise ValueError(_TOO_MUCH)
+    if not text.strip():
+        raise ValueError("no text could be extracted (a scanned PDF has none to read)")
+    return text
+
+
+def add_file(title, name, data):
+    """Extract an uploaded file and store it as a document named after it unless titled."""
+    text = extract_text(name, data)
+    stem = os.path.splitext(os.path.basename(name or ""))[0]
+    return add_document((title or "").strip() or stem, text, f"file:{os.path.basename(name or '')}")
 
 
 def _summary(doc):

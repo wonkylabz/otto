@@ -84,30 +84,67 @@ async function loadKnowledge(){
 /* "+ Add document" opens the shared config-form modal, like every other add control in the app
    (ui.md). It used to toggle a paste box open inline, which pushed the document list and the
    retrieval settings down the page while you typed into it. */
+const K_UPLOAD=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>`;
+
 function showDocForm(){
   const c=openFormModal("<b>New document</b><br>reference text Otto retrieves into every fresh run");
   c.innerHTML=`<div class="aform">
-    <label>Title</label><input id="k-title" placeholder="e.g. AWS VPN renewal runbook">
-    <label>Text</label><textarea id="k-text" class="prosearea" placeholder="Paste the document text…"></textarea>
+    <label>Title</label><input id="k-title" placeholder="Optional — used when adding one document; files default to their name">
+    <label>Files</label>
+    <div class="kdrop" id="k-drop" tabindex="0" role="button">${K_UPLOAD}
+      <div><b>Drop files here or <u>browse</u></b>PDF, Word (.docx) or text — each file becomes its own document</div></div>
+    <input type="file" id="k-file" multiple hidden accept=".pdf,.docx,.md,.txt,.json,.yaml,.yml,.csv,.html,.xml,.log,text/*">
+    <div class="attachbar kfiles" id="k-files"></div>
+    <label>Or paste text</label><textarea id="k-text" class="prosearea kpaste" placeholder="Paste the document text…"></textarea>
     <div class="ferr" id="k-err"></div>
     <div class="factions"><button class="btn approve" id="kf-save">Add document</button>
       <button class="btn decline" id="kf-cancel">Cancel</button></div>
   </div>`;
   document.getElementById("k-title").focus();
   document.getElementById("kf-cancel").onclick=closeFormModal;
-  const save=document.getElementById("kf-save");
+  const fileEl=document.getElementById("k-file"), drop=document.getElementById("k-drop"),
+        list=document.getElementById("k-files"), save=document.getElementById("kf-save"),
+        err=document.getElementById("k-err");
+  let files=[];   // [{f, err}]
+  const label=()=>files.length>1?`Add ${files.length} documents`:"Add document";
+  const render=()=>{
+    list.innerHTML=files.map((x,i)=>`<span class="attchip${x.err?" err":""}" title="${esc(x.err||x.f.name)}">${ATT_CLIP}`
+      +`<span>${esc(x.f.name)} · ${esc(attSize(x.f.size))}</span><button type="button" data-i="${i}" aria-label="Remove ${esc(x.f.name)}">×</button></span>`).join("");
+    save.textContent=label();
+  };
+  const add=fl=>{ files=files.concat([...fl].map(f=>({f}))); render(); };
+  list.addEventListener("click",e=>{ const b=e.target.closest("button[data-i]"); if(b){ files.splice(+b.dataset.i,1); render(); } });
+  drop.addEventListener("click",()=>fileEl.click());
+  drop.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fileEl.click(); } });
+  fileEl.addEventListener("change",()=>{ add(fileEl.files); fileEl.value=""; });
+  drop.addEventListener("dragover",e=>{ e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave",()=>drop.classList.remove("over"));
+  drop.addEventListener("drop",e=>{ e.preventDefault(); drop.classList.remove("over"); add(e.dataTransfer.files); });
   save.onclick=async()=>{
     const title=(document.getElementById("k-title").value||"").trim();
     const text=(document.getElementById("k-text").value||"").trim();
-    // Silence read as a dead button: the old inline form just returned on empty text.
-    if(!text){ document.getElementById("k-err").textContent="paste the document text first"; return; }
-    save.disabled=true; save.textContent="Adding…";
-    // The old `finally` closed the modal whatever happened, so a refused add was indistinguishable
-    // from an accepted one — with the pasted text gone. Keep the form up and say why instead.
-    try { await postJSON("/api/knowledge/add",{title,text}); }
-    catch(e){
-      document.getElementById("k-err").textContent=e.message;
-      save.disabled=false; save.textContent="Add document"; return;
+    if(!text && !files.length){ err.textContent="pick a file or paste the document text first"; return; }
+    save.disabled=true; err.textContent="";
+    const failed=[], one=files.length+(text?1:0)===1;
+    // A file is uploaded raw, then added by id: the server extracts it, so PDFs and .docx work.
+    for(const [i,x] of files.entries()){
+      save.textContent=`Adding ${i+1}/${files.length}…`;
+      try {
+        const up=await postFile("/api/attachments", x.f, x.f.name);
+        await postJSON("/api/knowledge/add",{title: one?title:"", attachment: up.id});
+        x.done=true;
+      } catch(e){ x.err=e.message.replace(x.f.name+": ",""); failed.push(`${x.f.name}: ${x.err}`); }
+    }
+    if(text){
+      save.textContent="Adding…";
+      try { await postJSON("/api/knowledge/add",{title: one?title:"", text}); document.getElementById("k-text").value=""; }
+      catch(e){ failed.push(e.message); }
+    }
+    // Keep the form up naming what failed; a retry resends only that, never what was already added.
+    files=files.filter(x=>!x.done);
+    if(failed.length){
+      err.textContent=failed.join(" · ");
+      save.disabled=false; render(); loadKnowledge(); return;
     }
     closeFormModal(); loadKnowledge();
   };

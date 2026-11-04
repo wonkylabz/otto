@@ -108,6 +108,12 @@ def sweep(ttl_h=None):
             pass
 
 
+def discard(aid):
+    """Delete one upload now (a consumed knowledge file). Never raises."""
+    if valid_id(aid):
+        shutil.rmtree(os.path.join(upload_dir(), aid), ignore_errors=True)
+
+
 def granted_dirs(atts):
     """The upload directories a run carrying `atts` may read (file_safety.upload_grant)."""
     return tuple(os.path.dirname(a["path"]) for a in atts or [] if a.get("path"))

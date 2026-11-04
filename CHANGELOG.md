@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Knowledge documents can be uploaded as files** (Knowledge → + Add document). Pick or drop
+  PDFs, Word `.docx` or text files (several at once, each shown as a removable chip); each becomes
+  its own document titled after the file, and a retry resends only the files that failed. PDF
+  support needs the new `pypdf` requirement: **re-run `./install.sh`** (until then a PDF is
+  refused with a reason, everything else works). Scanned PDFs have no text and are refused.
+
 ## [0.10.0] - 2026-11-04
 
 ### Changed
