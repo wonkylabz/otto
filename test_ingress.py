@@ -6671,6 +6671,9 @@ class ChatViewCollapseTests(unittest.TestCase):
         i = ui.index("function scroll(force)")
         self.assertIn("if(pinned) stream.scrollTop=stream.scrollHeight;", ui[i:i + 200])
         self.assertNotIn("function scroll(){ stream.scrollTop=stream.scrollHeight; }", ui)
+        self.assertIn("else if(t<lastTop) pinned=false;", ui,
+                      "`.stream` scrolls smoothly: unpinning on any off-bottom position drops the "
+                      "follow mid-animation and the stream stops tracking a reply")
         self.assertIn('stream.appendChild(m); scroll(true); recordMsg("user"', ui,
                       "sending a message must still jump to the bottom")
 

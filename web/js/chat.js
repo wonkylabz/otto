@@ -103,8 +103,11 @@ let busy=false, TEMPORAL=false, currentSession=null;
 let suppressCarry=false;   // set by "New task" so its next submit starts a clean slate (no context carry)
 // Follows the bottom only while the reader is there — poll ticks re-render the live draft, so an
 // unconditional pin yanked anyone scrolled up back down. `force` is for the reader's own actions.
-let pinned=true;
-stream.addEventListener("scroll", ()=>{ pinned=stream.scrollTop+stream.clientHeight>=stream.scrollHeight-24; }, {passive:true});
+// Only an UPWARD move unpins: `.stream` scrolls smoothly, so our own pin passes mid-way positions.
+let pinned=true, lastTop=0;
+stream.addEventListener("scroll", ()=>{ const t=stream.scrollTop;
+  if(t+stream.clientHeight>=stream.scrollHeight-24) pinned=true; else if(t<lastTop) pinned=false;
+  lastTop=t; }, {passive:true});
 function scroll(force){ if(force) pinned=true; if(pinned) stream.scrollTop=stream.scrollHeight; }
 
 /* ---- live-run tracking ----
