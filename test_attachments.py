@@ -495,6 +495,14 @@ class KnowledgeFileExtractTests(unittest.TestCase):
                 knowledge.extract_text("many.pdf", pdf)
         self.assertLess(len(calls), 600, "extraction must stop at the cap, not read every page")
 
+    def test_a_pdf_that_draws_without_text_is_bounded_in_time(self):
+        """The text counter never fires on drawing operators, so a textless page held the CPU."""
+        import knowledge
+        pdf = _pdf("x", xobject_dos=4000)
+        with mock.patch.object(knowledge, "_PDF_DEADLINE_S", 0):
+            with self.assertRaisesRegex(ValueError, "took over 0s"):
+                knowledge.extract_text("slow.pdf", pdf)
+
     def test_one_page_repeating_a_form_xobject_is_refused_fast(self):
         """A cap checked between pages never fires inside one: this 115 KB page ran 185s first."""
         import knowledge

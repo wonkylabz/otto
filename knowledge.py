@@ -19,6 +19,7 @@ import io
 import math
 import os
 import re
+import time
 import uuid
 import zipfile
 from xml.etree import ElementTree
@@ -216,6 +217,7 @@ _DOCX_MAX_XML = 50 * 1024 * 1024
 # Extracted text is bounded like a pasted body (`server._MAX_BODY`): a small PDF whose pages share
 # one content stream extracts 100M chars, which then chunks, embeds and is cosine-scanned forever.
 _MAX_TEXT_CHARS = 1_000_000
+_PDF_DEADLINE_S = 60
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _TOO_MUCH = f"more than {_MAX_TEXT_CHARS:,} characters of text — split the document"
 
@@ -231,13 +233,19 @@ def _pdf_text(data):
             raise ValueError("the PDF is password-protected")
         # Counted INSIDE extraction: one page repeating a Form XObject multiplies its text, so a
         # check between pages let a 115 KB file run 185s and 564 MB before refusing.
-        total = [0]
+        # A page that draws without text never reaches the counter, so time is bounded per operator.
+        total, deadline = [0], time.monotonic() + _PDF_DEADLINE_S
 
         def count(text, *_):
             total[0] += len(text)
             if total[0] > _MAX_TEXT_CHARS:
                 raise ValueError(_TOO_MUCH)
-        return "\n\n".join((pg.extract_text(visitor_text=count) or "").strip() for pg in reader.pages)
+
+        def clock(*_):
+            if time.monotonic() > deadline:
+                raise ValueError(f"the PDF took over {_PDF_DEADLINE_S}s to read — it may be malformed")
+        return "\n\n".join((pg.extract_text(visitor_text=count, visitor_operand_before=clock) or "").strip()
+                           for pg in reader.pages)
     except ValueError:
         raise
     except Exception as e:
