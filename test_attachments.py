@@ -431,11 +431,12 @@ class LocalVisionTests(unittest.TestCase):
         self.assertIn("if(inp.checked) p.vision=true; else delete p.vision;", ui)
 
 
-def _pdf(text):
-    """A one-page PDF with real text, built by hand so the test needs no PDF writer."""
+def _pdf(text, pages=1):
+    """A PDF with real text, built by hand so the test needs no PDF writer. Every page shares ONE
+    content stream — the shape that makes a small file extract to an enormous text."""
     stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
     objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
-            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join([b"3 0 R"] * pages), pages),
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
             b"/Resources << /Font << /F1 5 0 R >> >> >>",
             b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
@@ -451,13 +452,15 @@ def _pdf(text):
     return bytes(out)
 
 
-def _docx(*paras):
+def _docx(*paras, xml=None, compress=0):
     import zipfile
     w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     body = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paras)
+    if xml is None:
+        xml = f'<w:document xmlns:w="{w}"><w:body>{body}</w:body></w:document>'.encode()
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("word/document.xml", f'<w:document xmlns:w="{w}"><w:body>{body}</w:body></w:document>')
+    with zipfile.ZipFile(buf, "w", compression=compress) as z:
+        z.writestr("word/document.xml", xml)
     return buf.getvalue()
 
 
@@ -468,14 +471,48 @@ class KnowledgeFileExtractTests(unittest.TestCase):
         self.assertEqual("step one\nstep two", knowledge.extract_text("r.docx", _docx("step one", "step two")))
         self.assertEqual("# hi", knowledge.extract_text("r.md", "﻿# hi".encode()))
 
-    def test_a_docx_with_a_dtd_is_refused_before_parsing(self):
+    def test_a_docx_with_a_dtd_is_refused_in_any_encoding(self):
+        """UTF-16 hid the DTD from a byte search; the refusal must happen in the parser."""
+        import knowledge
+        bomb = '<?xml version="1.0" encoding="%s"?><!DOCTYPE d [<!ENTITY a "aaaa">]><d>&a;</d>'
+        for enc in ("utf-8", "utf-16"):
+            with self.subTest(enc), self.assertRaisesRegex(ValueError, "DTD"):
+                knowledge.extract_text("bomb.docx", _docx(xml=(bomb % enc).encode(enc)))
+
+    def test_extracted_text_is_capped_however_small_the_file(self):
+        import knowledge
+        pdf = _pdf("x" * 2000, pages=600)
+        self.assertLess(len(pdf), 20_000)
+        from pypdf import PageObject
+        real, calls = PageObject.extract_text, []
+        with mock.patch.object(PageObject, "extract_text",
+                               lambda pg, *a, **k: calls.append(1) or real(pg, *a, **k)):
+            with self.assertRaisesRegex(ValueError, "split the document"):
+                knowledge.extract_text("many.pdf", pdf)
+        self.assertLess(len(calls), 600, "extraction must stop at the cap, not read every page")
+        with self.assertRaisesRegex(ValueError, "split the document"):
+            knowledge.extract_text("big.txt", b"a" * (knowledge._MAX_TEXT_CHARS + 1))
+
+    def test_a_docx_over_the_unpacked_limit_is_refused_even_if_its_header_lies(self):
         import knowledge
         import zipfile
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as z:
-            z.writestr("word/document.xml", '<!DOCTYPE d [<!ENTITY a "aaaa">]><d>&a;</d>')
-        with self.assertRaisesRegex(ValueError, "DTD"):
-            knowledge.extract_text("bomb.docx", buf.getvalue())
+        big = _docx(xml=b"<d>" + b"a" * 5000 + b"</d>", compress=zipfile.ZIP_DEFLATED)
+        with mock.patch.object(knowledge, "_DOCX_MAX_XML", 1000):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                knowledge.extract_text("big.docx", big)
+        lied = big.replace((5007).to_bytes(4, "little"), (100).to_bytes(4, "little"))
+        self.assertNotEqual(lied, big)
+        with self.assertRaisesRegex(ValueError, "couldn't read"):
+            knowledge.extract_text("lied.docx", lied)
+
+    def test_a_corrupt_docx_is_refused_with_a_reason_never_a_500(self):
+        import knowledge
+        import zipfile
+        good = _docx("hello " * 200, compress=zipfile.ZIP_DEFLATED)
+        i = good.index(b"word/document.xml") + len(b"word/document.xml")
+        corrupt = good[:i + 10] + bytes(b ^ 0xFF for b in good[i + 10:i + 40]) + good[i + 40:]
+        with self.assertRaisesRegex(ValueError, "couldn't read the Word document"):
+            knowledge.extract_text("bad.docx", corrupt)
 
     def test_unreadable_files_are_refused_with_a_reason_never_stored_as_text(self):
         import knowledge

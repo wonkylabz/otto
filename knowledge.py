@@ -22,6 +22,7 @@ import re
 import uuid
 import zipfile
 from xml.etree import ElementTree
+from xml.parsers import expat
 
 import config
 import gateway
@@ -212,7 +213,11 @@ def add_document(title, text, source="paste"):
 
 # A .docx is a zip: its inflated XML is bounded, or a small upload can expand without limit.
 _DOCX_MAX_XML = 50 * 1024 * 1024
+# Extracted text is bounded like a pasted body (`server._MAX_BODY`): a small PDF whose pages share
+# one content stream extracts 100M chars, which then chunks, embeds and is cosine-scanned forever.
+_MAX_TEXT_CHARS = 1_000_000
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_TOO_MUCH = f"more than {_MAX_TEXT_CHARS:,} characters of text — split the document"
 
 
 def _pdf_text(data):
@@ -224,11 +229,30 @@ def _pdf_text(data):
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted and not reader.decrypt(""):
             raise ValueError("the PDF is password-protected")
-        return "\n\n".join((pg.extract_text() or "").strip() for pg in reader.pages)
+        pages, total = [], 0
+        for pg in reader.pages:
+            t = (pg.extract_text() or "").strip()
+            total += len(t)
+            if total > _MAX_TEXT_CHARS:
+                raise ValueError(_TOO_MUCH)
+            pages.append(t)
+        return "\n\n".join(pages)
     except ValueError:
         raise
     except Exception as e:
         raise ValueError(f"couldn't read the PDF ({type(e).__name__})")
+
+
+def _refuse_dtd(*_):
+    raise ValueError("the Word document contains a DTD, which .docx never does")
+
+
+def _no_dtd(xml):
+    """Refuse any DTD at the PARSER, whatever the encoding: OOXML never carries one, so this
+    rules out entity-expansion bombs. A byte search for `<!DOCTYPE` misses UTF-16."""
+    p = expat.ParserCreate()
+    p.StartDoctypeDeclHandler = p.EntityDeclHandler = _refuse_dtd
+    p.Parse(xml, True)
 
 
 def _docx_text(data):
@@ -238,11 +262,11 @@ def _docx_text(data):
             if info.file_size > _DOCX_MAX_XML:
                 raise ValueError("the document is too large once unpacked")
             xml = z.read(info)
-            # OOXML never carries a DTD; refusing one rules out entity-expansion bombs.
-            if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
-                raise ValueError("the Word document contains a DTD, which .docx never does")
-            root = ElementTree.fromstring(xml)
-    except (KeyError, zipfile.BadZipFile, ElementTree.ParseError):
+        _no_dtd(xml)
+        root = ElementTree.fromstring(xml)
+    except ValueError:
+        raise
+    except Exception:
         raise ValueError("couldn't read the Word document")
     paras = []
     for p in root.iter(_W + "p"):
@@ -276,6 +300,8 @@ def extract_text(name, data):
         raise ValueError(f"{ext} isn't supported — upload a PDF, a .docx or a text file")
     else:
         text = _plain_text(data)
+    if len(text) > _MAX_TEXT_CHARS:
+        raise ValueError(_TOO_MUCH)
     if not text.strip():
         raise ValueError("no text could be extracted (a scanned PDF has none to read)")
     return text

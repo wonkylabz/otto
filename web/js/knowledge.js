@@ -89,7 +89,7 @@ const K_UPLOAD=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 function showDocForm(){
   const c=openFormModal("<b>New document</b><br>reference text Otto retrieves into every fresh run");
   c.innerHTML=`<div class="aform">
-    <label>Title</label><input id="k-title" placeholder="Defaults to the file name">
+    <label>Title</label><input id="k-title" placeholder="Optional — used when adding one document; files default to their name">
     <label>Files</label>
     <div class="kdrop" id="k-drop" tabindex="0" role="button">${K_UPLOAD}
       <div><b>Drop files here or <u>browse</u></b>PDF, Word (.docx) or text — each file becomes its own document</div></div>
@@ -125,19 +125,19 @@ function showDocForm(){
     const text=(document.getElementById("k-text").value||"").trim();
     if(!text && !files.length){ err.textContent="pick a file or paste the document text first"; return; }
     save.disabled=true; err.textContent="";
-    const failed=[];
+    const failed=[], one=files.length+(text?1:0)===1;
     // A file is uploaded raw, then added by id: the server extracts it, so PDFs and .docx work.
     for(const [i,x] of files.entries()){
       save.textContent=`Adding ${i+1}/${files.length}…`;
       try {
         const up=await postFile("/api/attachments", x.f, x.f.name);
-        await postJSON("/api/knowledge/add",{title: files.length===1?title:"", attachment: up.id});
+        await postJSON("/api/knowledge/add",{title: one?title:"", attachment: up.id});
         x.done=true;
       } catch(e){ x.err=e.message.replace(x.f.name+": ",""); failed.push(`${x.f.name}: ${x.err}`); }
     }
     if(text){
       save.textContent="Adding…";
-      try { await postJSON("/api/knowledge/add",{title: files.length?"":title, text}); document.getElementById("k-text").value=""; }
+      try { await postJSON("/api/knowledge/add",{title: one?title:"", text}); document.getElementById("k-text").value=""; }
       catch(e){ failed.push(e.message); }
     }
     // Keep the form up naming what failed; a retry resends only that, never what was already added.
