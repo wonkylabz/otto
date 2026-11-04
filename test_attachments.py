@@ -429,3 +429,85 @@ class LocalVisionTests(unittest.TestCase):
         row = re.search(r'<td class="c-vision">\$\{\((.*?)\)\?', ui).group(1)
         self.assertEqual(row, "p.provider!=='claude'&&p.provider!=='codex'")
         self.assertIn("if(inp.checked) p.vision=true; else delete p.vision;", ui)
+
+
+def _pdf(text):
+    """A one-page PDF with real text, built by hand so the test needs no PDF writer."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+            b"/Resources << /Font << /F1 5 0 R >> >> >>",
+            b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offs = bytearray(b"%PDF-1.4\n"), []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offs)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return bytes(out)
+
+
+def _docx(*paras):
+    import zipfile
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    body = "".join(f"<w:p><w:r><w:t>{p}</w:t></w:r></w:p>" for p in paras)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("word/document.xml", f'<w:document xmlns:w="{w}"><w:body>{body}</w:body></w:document>')
+    return buf.getvalue()
+
+
+class KnowledgeFileExtractTests(unittest.TestCase):
+    def test_pdf_docx_and_text_files_yield_their_text(self):
+        import knowledge
+        self.assertIn("renew the vpn cert", knowledge.extract_text("r.pdf", _pdf("renew the vpn cert")))
+        self.assertEqual("step one\nstep two", knowledge.extract_text("r.docx", _docx("step one", "step two")))
+        self.assertEqual("# hi", knowledge.extract_text("r.md", "﻿# hi".encode()))
+
+    def test_a_docx_with_a_dtd_is_refused_before_parsing(self):
+        import knowledge
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("word/document.xml", '<!DOCTYPE d [<!ENTITY a "aaaa">]><d>&a;</d>')
+        with self.assertRaisesRegex(ValueError, "DTD"):
+            knowledge.extract_text("bomb.docx", buf.getvalue())
+
+    def test_unreadable_files_are_refused_with_a_reason_never_stored_as_text(self):
+        import knowledge
+        for name, data in (("a.bin", b"\x00\x01binary"), ("a.pdf", b"not a pdf"),
+                           ("a.docx", b"not a zip"), ("a.xlsx", b"PK"), ("a.txt", b"   ")):
+            with self.subTest(name), self.assertRaises(ValueError):
+                knowledge.extract_text(name, data)
+
+
+class KnowledgeFileHttpTests(unittest.TestCase):
+    setUpClass = classmethod(AttachmentHttpTests.setUpClass.__func__)
+    tearDownClass = classmethod(AttachmentHttpTests.tearDownClass.__func__)
+    _upload = AttachmentHttpTests._upload
+
+    def _add(self, body):
+        st, _, out = _req(self.base, "/api/knowledge/add", json.dumps(body).encode(),
+                          {"Content-Type": "application/json"})
+        return st, json.loads(out or b"{}")
+
+    def test_an_uploaded_file_becomes_a_document_and_the_upload_is_consumed(self):
+        _, meta = self._upload("VPN runbook.docx", _docx("renew the client vpn certificate"))
+        st, out = self._add({"attachment": meta["id"]})
+        self.assertEqual(st, 200, out)
+        self.assertEqual(out["doc"]["title"], "VPN runbook")
+        self.assertEqual(out["doc"]["source"], "file:VPN runbook.docx")
+        self.assertIsNone(attachments.get(meta["id"]))
+
+    def test_a_refused_file_says_why_and_an_unknown_id_is_rejected(self):
+        _, meta = self._upload("blob.bin", b"\x00\x00\x00")
+        st, out = self._add({"attachment": meta["id"]})
+        self.assertEqual(st, 400)
+        self.assertIn("blob.bin", out["error"])
+        st, out = self._add({"attachment": "../../etc/passwd"})
+        self.assertEqual(st, 400)
+        self.assertIn("expired or unknown", out["error"])

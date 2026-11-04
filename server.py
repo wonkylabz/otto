@@ -2973,7 +2973,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps({"ok": True, "evicted": n}))
 
     def _post_knowledge_add(self, body):
-        """POST /api/knowledge/add"""
+        """POST /api/knowledge/add — pasted `text`, or an `attachment` id from /api/attachments
+        whose file is extracted server-side and then discarded."""
+        aid = body.get("attachment")
+        if aid:
+            meta = attachments.get(aid)
+            if not meta:
+                self._send(400, json.dumps({"error": "upload expired or unknown — attach it again"})); return
+            try:
+                with open(meta["path"], "rb") as f:
+                    doc = knowledge.add_file(body.get("title", ""), meta["name"], f.read())
+            except ValueError as e:
+                self._send(400, json.dumps({"error": f"{meta['name']}: {e}"})); return
+            finally:
+                attachments.discard(aid)
+            if not doc:
+                self._send(400, json.dumps({"error": f"{meta['name']}: no text to add"})); return
+            self._send(200, json.dumps({"ok": True, "doc": doc})); return
         doc = knowledge.add_document(body.get("title", ""), body.get("text", ""),
                                      body.get("source", "paste"))
         if not doc:

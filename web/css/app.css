@@ -987,6 +987,14 @@
   .kprev input { width: 100%; box-sizing: border-box; background: var(--raised); color: var(--text);
     border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 12px; font: inherit; font-size: 13.5px; margin-bottom: 8px; }
   .kdoc { font-size: 14px; color: var(--text); }
+  .kdrop { display: flex; align-items: center; gap: 14px; padding: 16px 18px; border: 1.5px dashed var(--line-strong);
+    border-radius: var(--r-md); color: var(--dim); font-size: 12.5px; cursor: pointer; transition: border-color .15s, background .15s; }
+  .kdrop:hover, .kdrop:focus-visible, .kdrop.over { border-color: var(--accent); background: var(--surface-2); outline: none; }
+  .kdrop svg { width: 26px; height: 26px; flex: none; color: var(--accent); }
+  .kdrop b { display: block; color: var(--text); font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+  .kdrop u { color: var(--accent); text-underline-offset: 2px; }
+  .kfiles { margin: -2px 0 0; } .kfiles:empty { display: none; }
+  .aform textarea.prosearea.kpaste { min-height: 110px; }
   .kwarn { font-size: 11px; color: var(--warn); border: 1px solid var(--warn-line);
     border-radius: var(--r-sm); padding: 1px 6px; margin-left: 6px; white-space: nowrap; }
   .ksettings { display: flex; gap: 26px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }

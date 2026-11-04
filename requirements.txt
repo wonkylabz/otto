@@ -10,3 +10,7 @@ temporalio==1.35.0
 # back to the 60s poll with a status line saying so, exactly like temporalio's absence in tests.
 # Pinned for the same reason as above.
 websockets==17.3
+
+# PDF text extraction for Knowledge → Add document (knowledge._pdf_text). Pure Python, soft-imported:
+# without it a PDF upload is refused with a reason, everything else still works.
+pypdf==6.21.4

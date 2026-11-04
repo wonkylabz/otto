@@ -15,9 +15,13 @@ required); FAISS would only be a scale optimisation, not a dependency. Execution
 import array
 import contextlib
 import datetime
+import io
 import math
+import os
 import re
 import uuid
+import zipfile
+from xml.etree import ElementTree
 
 import config
 import gateway
@@ -204,6 +208,84 @@ def add_document(title, text, source="paste"):
     embedded = sum(1 for c in doc["chunks"] if c["embedding"])
     trace("KNOWLEDGE", f"added '{doc['title']}' — {len(chunks)} chunk(s), {embedded} embedded")
     return _summary(doc)
+
+
+# A .docx is a zip: its inflated XML is bounded, or a small upload can expand without limit.
+_DOCX_MAX_XML = 50 * 1024 * 1024
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _pdf_text(data):
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        raise ValueError("PDF support needs the pypdf package — re-run ./install.sh")
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise ValueError("the PDF is password-protected")
+        return "\n\n".join((pg.extract_text() or "").strip() for pg in reader.pages)
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"couldn't read the PDF ({type(e).__name__})")
+
+
+def _docx_text(data):
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            info = z.getinfo("word/document.xml")
+            if info.file_size > _DOCX_MAX_XML:
+                raise ValueError("the document is too large once unpacked")
+            xml = z.read(info)
+            # OOXML never carries a DTD; refusing one rules out entity-expansion bombs.
+            if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
+                raise ValueError("the Word document contains a DTD, which .docx never does")
+            root = ElementTree.fromstring(xml)
+    except (KeyError, zipfile.BadZipFile, ElementTree.ParseError):
+        raise ValueError("couldn't read the Word document")
+    paras = []
+    for p in root.iter(_W + "p"):
+        parts = []
+        for el in p.iter():
+            if el.tag == _W + "t" and el.text:
+                parts.append(el.text)
+            elif el.tag == _W + "tab":
+                parts.append("\t")
+            elif el.tag in (_W + "br", _W + "cr"):
+                parts.append("\n")
+        paras.append("".join(parts))
+    return "\n".join(paras)
+
+
+def _plain_text(data):
+    if b"\x00" in data[:8192]:
+        raise ValueError("unsupported file type — upload a PDF, a .docx or a text file")
+    return data.decode("utf-8-sig", errors="replace")
+
+
+def extract_text(name, data):
+    """Text of an uploaded file, by extension: PDF, .docx, else UTF-8 text. Raises ValueError
+    with a reason a person can act on; never returns an error string as the document."""
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext == ".pdf":
+        text = _pdf_text(data)
+    elif ext == ".docx":
+        text = _docx_text(data)
+    elif ext in (".doc", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".rtf"):
+        raise ValueError(f"{ext} isn't supported — upload a PDF, a .docx or a text file")
+    else:
+        text = _plain_text(data)
+    if not text.strip():
+        raise ValueError("no text could be extracted (a scanned PDF has none to read)")
+    return text
+
+
+def add_file(title, name, data):
+    """Extract an uploaded file and store it as a document named after it unless titled."""
+    text = extract_text(name, data)
+    stem = os.path.splitext(os.path.basename(name or ""))[0]
+    return add_document((title or "").strip() or stem, text, f"file:{os.path.basename(name or '')}")
 
 
 def _summary(doc):

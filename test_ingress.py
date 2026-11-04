@@ -7772,7 +7772,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # setting carries a label and a group, and the bytes are that help line and one group entry.
     # -> 126900 for the fallback-rate panel (Admin -> LLM models): a per-phase card grid with a
     # "since" date; the bytes are its CSS and the markup that dates the counters.
-    ASSET_MAX = 126900
+    # -> 127656 for Knowledge file upload: a drop zone (click/keyboard/drag states) and the
+    # picked-file chips; the native file input is unstyleable, so it is hidden behind them.
+    ASSET_MAX = 127656
 
     def _assets(self):
         out = {}
