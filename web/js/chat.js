@@ -101,7 +101,11 @@ function render(){
 const stream=document.getElementById("stream"), input=document.getElementById("input"), sendBtn=document.getElementById("send");
 let busy=false, TEMPORAL=false, currentSession=null;
 let suppressCarry=false;   // set by "New task" so its next submit starts a clean slate (no context carry)
-function scroll(){ stream.scrollTop=stream.scrollHeight; }
+// Follows the bottom only while the reader is there — poll ticks re-render the live draft, so an
+// unconditional pin yanked anyone scrolled up back down. `force` is for the reader's own actions.
+let pinned=true;
+stream.addEventListener("scroll", ()=>{ pinned=stream.scrollTop+stream.clientHeight>=stream.scrollHeight-24; }, {passive:true});
+function scroll(force){ if(force) pinned=true; if(pinned) stream.scrollTop=stream.scrollHeight; }
 
 /* ---- live-run tracking ----
    A running turn is a Temporal workflow that keeps going server-side regardless of the
@@ -586,7 +590,7 @@ async function openChat(id){
     if(last) last.insertAdjacentHTML("beforeend", `<div class="sessmeta">session ${sidChip(chat.session_id)}</div>`);
   }
   if(!activeChat.run_id && pipeSnaps.has(activeChat.id)) pipeEl.innerHTML=pipeSnaps.get(activeChat.id);
-  updateSessionBar(); loadChatList(); scroll();
+  updateSessionBar(); loadChatList(); scroll(true);
   updatePrBar();                            // a PR-review thread gets its post/approve actions
   if(activeChat.run_id) await reattachRun();   // a turn is still in flight — resume its live view
 }
@@ -652,7 +656,7 @@ function stampMsg(content, ts){ const m=content&&content.closest(".msg"); if(m&&
 function userMsg(text, ts, atts){ ts=ts||(recording?new Date().toISOString():null);
   const m=document.createElement("div"); m.className="msg user"; m.innerHTML=`<div class="body"></div>`; m.querySelector(".body").textContent=text;
   m.querySelector(".body").insertAdjacentHTML("beforeend", attsHTML(atts));
-  m.insertAdjacentHTML("beforeend", stampHTML(ts)); stream.appendChild(m); scroll(); recordMsg("user", text, ts, atts); }
+  m.insertAdjacentHTML("beforeend", stampHTML(ts)); stream.appendChild(m); scroll(true); recordMsg("user", text, ts, atts); }
 function enoMsg(){ const m=document.createElement("div"); m.className="msg eno";
   m.innerHTML=`<div class="row"><div class="avatar"><svg aria-hidden="true"><use href="#mk"/></svg></div><div class="body"><div class="who">Otto</div><div class="content"></div></div></div>`;
   stream.appendChild(m); scroll(); return m.querySelector(".content"); }

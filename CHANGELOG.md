@@ -40,6 +40,8 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **Scrolling up in Chat while Otto is replying no longer snaps back to the bottom.** The chat
+  follows new text only while you're already at the bottom; sending a message still jumps down.
 - **A `git pull` no longer crashes runs started before the worker restarts.** Workflow code
   now loads once at startup like the rest, so an update takes effect on restart. Restart the
   worker.

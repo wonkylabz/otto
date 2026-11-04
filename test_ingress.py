@@ -6664,6 +6664,16 @@ class ChatViewCollapseTests(unittest.TestCase):
                       "content is inserted above the viewport without correcting the scroll, "
                       "throwing the reader back into old turns")
 
+    def test_a_live_turn_never_yanks_a_reader_scrolled_up(self):
+        """Every poll tick re-renders the draft and calls scroll(); pinning unconditionally threw
+        a reader scrolled up back to the bottom until the reply finished."""
+        ui = self._ui()
+        i = ui.index("function scroll(force)")
+        self.assertIn("if(pinned) stream.scrollTop=stream.scrollHeight;", ui[i:i + 200])
+        self.assertNotIn("function scroll(){ stream.scrollTop=stream.scrollHeight; }", ui)
+        self.assertIn('stream.appendChild(m); scroll(true); recordMsg("user"', ui,
+                      "sending a message must still jump to the bottom")
+
 
 class MascotHomeTests(unittest.TestCase):
     """Where Otto STANDS before anyone drags him. His old home was the bottom-left corner, over
