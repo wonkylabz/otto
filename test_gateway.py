@@ -1362,16 +1362,18 @@ class LocalRuntimeTests(unittest.TestCase):
         # local server" would send the operator after a healthy one.
         import http.client
         self._no_backoff()
-        sent = []
+        for bad in (http.client.InvalidURL("URL can't contain control characters"),
+                    http.client.BadStatusLine("\x15\x03\x01")):   # a TLS port spoken to in http
+            sent = []
 
-        def fake_post(m, body, timeout):
-            sent.append(body)
-            raise http.client.InvalidURL("URL can't contain control characters")
-        local_runtime._post = fake_post
-        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
-        self.assertTrue(out["is_error"])
-        self.assertEqual(len(sent), 1)
-        self.assertFalse(out.get("unavailable"))
+            def fake_post(m, body, timeout):
+                sent.append(body)
+                raise bad
+            local_runtime._post = fake_post
+            out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+            self.assertTrue(out["is_error"], bad)
+            self.assertEqual(len(sent), 1, bad)
+            self.assertFalse(out.get("unavailable"), bad)
 
     def test_a_retry_after_a_late_drop_stays_inside_the_run_deadline(self):
         # The timeout is clamped before the first send; a retry has to re-clamp what is left.

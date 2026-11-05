@@ -1093,13 +1093,13 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None, learned=None):
                 + (f"(≥{prompt_tokens} prompt tokens vs {max_len} max — " if max_len
                    else "(")
                 + "the conversation/tool history no longer fits this model)") from None
-        except (OSError, http.client.BadStatusLine, http.client.IncompleteRead) as e:
+        except (OSError, http.client.IncompleteRead) as e:
             # Connection-level failure (refused/reset/DNS/socket timeout) — the server is down
             # or restarting. Same transient treatment as a 5xx: back off, then fail clean.
             # OSError, because urllib wraps only the SEND in URLError: a server dropping the
             # socket raises a bare RemoteDisconnected or SSLError out of getresponse(), so one
-            # spent a run's whole ladder in seconds. Not all of HTTPException: InvalidURL is a
-            # bad config, and retrying it would send the operator to restart a healthy server.
+            # spent a run's whole ladder in seconds. Not all of HTTPException: InvalidURL or a
+            # non-HTTP reply is bad config, and retrying sends the operator to a healthy server.
             # TimeoutError (== socket.timeout) is NOT a URLError subclass, so a read that
             # outlived its timeout used to escape this handler into run_json's bare
             # `except Exception`: no backoff, no classification, just a raw error string.
