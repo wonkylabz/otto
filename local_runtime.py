@@ -31,6 +31,7 @@ at a time. Caps that need a repo `.mcp.json` (`cap.mcp_config`) also stay on Cla
 """
 import fcntl
 import glob as globmod
+import http.client
 import io
 import json
 import os
@@ -997,8 +998,15 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None, learned=None):
     transient = 0
     compacted = None   # the history as it had to be shrunk to fit — handed back to the caller
     for _ in range(max(1, _rounds)):
+        # `timeout` was clamped to the run's deadline before the first send, so a retry after a
+        # late drop has to re-clamp it or it outlives the run's wall clock.
+        left = timeout
+        if deadline is not None:
+            left = min(timeout, deadline - time.time())
+            if left <= 0:
+                raise RunDeadline()
         try:
-            return _post(m, body, timeout), compacted
+            return _post(m, body, left), compacted
         except urllib.error.HTTPError as e:
             try:
                 detail = e.read().decode("utf-8", errors="replace")[:400]
@@ -1085,9 +1093,13 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None, learned=None):
                 + (f"(≥{prompt_tokens} prompt tokens vs {max_len} max — " if max_len
                    else "(")
                 + "the conversation/tool history no longer fits this model)") from None
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (OSError, http.client.IncompleteRead) as e:
             # Connection-level failure (refused/reset/DNS/socket timeout) — the server is down
             # or restarting. Same transient treatment as a 5xx: back off, then fail clean.
+            # OSError, because urllib wraps only the SEND in URLError: a server dropping the
+            # socket raises a bare RemoteDisconnected or SSLError out of getresponse(), so one
+            # spent a run's whole ladder in seconds. Not all of HTTPException: InvalidURL or a
+            # non-HTTP reply is bad config, and retrying sends the operator to a healthy server.
             # TimeoutError (== socket.timeout) is NOT a URLError subclass, so a read that
             # outlived its timeout used to escape this handler into run_json's bare
             # `except Exception`: no backoff, no classification, just a raw error string.

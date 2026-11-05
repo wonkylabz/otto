@@ -1319,6 +1319,78 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertEqual(out["result"], "answered")
         self.assertEqual(len(sent), 2)                                # backed off and retried
 
+    def test_a_dropped_connection_is_transient_not_an_unhandled_crash(self):
+        # urllib wraps only the SEND in URLError, so a server dropping the socket before it
+        # answers surfaces raw from getresponse(), and a run spent its whole ladder in seconds on
+        # "(local runtime error: Remote end closed connection...)".
+        import http.client
+        import ssl
+        self._no_backoff()
+        for dropped in (http.client.RemoteDisconnected("Remote end closed connection"),
+                        http.client.IncompleteRead(b""),
+                        ssl.SSLEOFError("EOF occurred in violation of protocol"),
+                        ConnectionResetError("reset by peer")):
+            sent = []
+
+            def fake_post(m, body, timeout):
+                sent.append(body)
+                if len(sent) == 1:
+                    raise dropped
+                return {"choices": [{"message": {"role": "assistant", "content": "answered"}}],
+                        "usage": {}}
+            local_runtime._post = fake_post
+            out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+            self.assertFalse(out["is_error"], dropped)
+            self.assertEqual(len(sent), 2, dropped)
+
+    def test_a_connection_that_stays_down_is_a_wall_not_an_anonymous_error(self):
+        # Past the retries it must latch like any unreachable endpoint, or each ladder rung
+        # re-pays the same outage and the run ends blamed on the harness.
+        import http.client
+        self._no_backoff()
+
+        def fake_post(m, body, timeout):
+            raise http.client.RemoteDisconnected("Remote end closed connection")
+        local_runtime._post = fake_post
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertTrue(out["is_error"])
+        self.assertTrue(out["unavailable"])
+        self.assertTrue(out["wall_reason"])
+
+    def test_a_bad_url_is_not_reported_as_a_server_outage(self):
+        # InvalidURL is an HTTPException too, but no retry fixes a config typo, and "restart the
+        # local server" would send the operator after a healthy one.
+        import http.client
+        self._no_backoff()
+        for bad in (http.client.InvalidURL("URL can't contain control characters"),
+                    http.client.BadStatusLine("\x15\x03\x01")):   # a TLS port spoken to in http
+            sent = []
+
+            def fake_post(m, body, timeout):
+                sent.append(body)
+                raise bad
+            local_runtime._post = fake_post
+            out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+            self.assertTrue(out["is_error"], bad)
+            self.assertEqual(len(sent), 1, bad)
+            self.assertFalse(out.get("unavailable"), bad)
+
+    def test_a_retry_after_a_late_drop_stays_inside_the_run_deadline(self):
+        # The timeout is clamped before the first send; a retry has to re-clamp what is left.
+        import http.client
+        import time
+        self._no_backoff()
+        timeouts = []
+        deadline = time.time() + 60
+
+        def fake_post(m, body, timeout):
+            timeouts.append(timeout)
+            raise http.client.RemoteDisconnected("Remote end closed connection")
+        local_runtime._post = fake_post
+        with self.assertRaises(local_runtime.Unavailable):
+            local_runtime._chat_step(self.MODEL, {"messages": []}, 1000, deadline=deadline)
+        self.assertLessEqual(max(timeouts), 60)
+
     def test_read_timeout_past_the_run_deadline_is_a_timeout_not_a_wall(self):
         # The per-step timeout is CLAMPED to whatever is left of the run's wall clock, so the
         # commonest read timeout is our own deadline arriving mid-request on a healthy server.
@@ -4487,6 +4559,43 @@ class LocalConnectorGapTests(unittest.TestCase):
                         "summarise the audit trail for today",
                         "email the team about the outage"):   # 'email' is deliberately not a word
             self.assertEqual(self.m.connectors_named(request), [], request)
+
+    def _review_door(self, kind, request, prior):
+        """What `_post_pr_capability` hands `run_attempt`, read off the real activity."""
+        import activities
+        import types
+        from unittest import mock
+        seen = {}
+
+        def attempt(req, cap, **k):
+            seen.update(request=req, exclude=k.get("external_text"))
+            return {"workflow": "w", "result": "", "cost": 0}
+        cap = types.SimpleNamespace(name="reviewer", risk="read")
+        with mock.patch.object(activities, "_cap", lambda *_: cap), \
+                mock.patch.object(activities, "_mcp", lambda *_: ([], None)), \
+                mock.patch.object(activities, "_warm_conventions", lambda *_: None), \
+                mock.patch.object(activities, "_qa_checkout", lambda *_: None), \
+                mock.patch.object(activities.engine, "run_attempt", attempt):
+            activities._post_pr_capability(kind, {"pr_url": "u", "repo": "r", "wid": "w",
+                                                  "request": request, "prior": prior})
+        return seen
+
+    def test_an_earlier_rounds_report_is_not_the_operator_naming_a_connector(self):
+        """A fix report saying "calendar day" reached the re-review's request, so strict mode
+        stopped the review as a Google Calendar task."""
+        self.m.connectors = lambda pol=None: {"claude_ai_Google_Calendar": "claude.ai Calendar"}
+        prior = [{"findings": "the table shows the UTC day", "fix": "use the calendar day"}]
+        for kind in ("review", "qa"):
+            seen = self._review_door(kind, "scaffold the app", prior)
+            self.assertTrue(self.m.connectors_named(seen["request"]), "fixture lost its word")
+            self.assertEqual(self.m.connectors_named(seen["request"], exclude=seen["exclude"]),
+                             [], kind)
+
+    def test_the_operators_own_words_still_count_on_a_later_round(self):
+        self.m.connectors = lambda pol=None: {"claude_ai_Google_Calendar": "claude.ai Calendar"}
+        seen = self._review_door("review", "sync it to my calendar",
+                                 [{"findings": "a", "fix": "b"}])
+        self.assertTrue(self.m.connectors_named(seen["request"], exclude=seen["exclude"]))
 
     def test_a_cap_declaring_nothing_is_still_covered(self):
         """The hole itself: `unservable` reads the cap's frontmatter and the worker has none."""

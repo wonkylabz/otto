@@ -19,6 +19,15 @@ changelog that restates it is a second copy of `git log`.
   support needs the new `pypdf` requirement: **re-run `./install.sh`** (until then a PDF is
   refused with a reason, everything else works). Scanned PDFs have no text and are refused.
 
+### Fixed
+
+- **A local model server dropping the connection no longer ends a run in seconds.** Otto now backs
+  off and retries, including on TLS endpoints, and an outage that outlasts the retries shows as
+  the server being unreachable, not a harness failure. **Restart the worker** to pick this up.
+- **Review and QA rounds are no longer stopped by a word in an earlier round's report.** A fix
+  report mentioning a "calendar day" read as a Google Calendar task, so the round moved off local
+  or, with Claude fallback off, stopped the review. Your own request still counts.
+
 ## [0.10.0] - 2026-11-04
 
 ### Changed
