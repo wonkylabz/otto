@@ -1092,7 +1092,7 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None, learned=None):
             # or restarting. Same transient treatment as a 5xx: back off, then fail clean.
             # urllib wraps only the SEND in URLError: a server dropping the socket before it
             # answers raises a bare RemoteDisconnected out of getresponse(), which is neither of
-            # the first two (`factory-20261105121701-s3` spent all 3 attempts in 22s on one).
+            # the first two, so one spent a run's whole ladder in seconds.
             # TimeoutError (== socket.timeout) is NOT a URLError subclass, so a read that
             # outlived its timeout used to escape this handler into run_json's bare
             # `except Exception`: no backoff, no classification, just a raw error string.

@@ -1321,8 +1321,8 @@ class LocalRuntimeTests(unittest.TestCase):
 
     def test_a_dropped_connection_is_transient_not_an_unhandled_crash(self):
         # urllib wraps only the SEND in URLError, so a server dropping the socket before it
-        # answers surfaces raw from getresponse(). `factory-20261105121701-s3` spent its whole
-        # ladder in 22s on "(local runtime error: Remote end closed connection...)".
+        # answers surfaces raw from getresponse(), and a run spent its whole ladder in seconds on
+        # "(local runtime error: Remote end closed connection...)".
         import http.client
         self._no_backoff()
         for dropped in (http.client.RemoteDisconnected("Remote end closed connection"),
@@ -4545,8 +4545,8 @@ class LocalConnectorGapTests(unittest.TestCase):
         return seen
 
     def test_an_earlier_rounds_report_is_not_the_operator_naming_a_connector(self):
-        """`gh-issue-1-wonkylabz-lull`: a fix report's "zone-local calendar day" reached the
-        re-review's request, so strict mode stopped the review as a Google Calendar task."""
+        """A fix report saying "calendar day" reached the re-review's request, so strict mode
+        stopped the review as a Google Calendar task."""
         self.m.connectors = lambda pol=None: {"claude_ai_Google_Calendar": "claude.ai Calendar"}
         prior = [{"findings": "the table shows the UTC day", "fix": "use the calendar day"}]
         for kind in ("review", "qa"):
