@@ -59,7 +59,7 @@ from intents import (_parse_clarification, clarify, _parse_write_intent,  # noqa
                      _is_operational_sentinel, pr_copy, auto_engage_repo)  # noqa: F401
 from judging import (_parse_verdict, _parse_qa_verdict, _APPROVED_PLAN_CHARS,  # noqa: F401
                      _approved_plan_note, _grounding_note, _JUDGE_REASONING_RULE,  # noqa: F401
-                     verify, qa_review_request, prior_rounds_quoted,  # noqa: F401
+                     verify, qa_review_request,  # noqa: F401
                      judge_qa, review_request, judge_review, error_verdict, _is_duplicated,  # noqa: F401
                      guard_resume_result)  # noqa: F401
 from memory import (_SOLUTIONS_MAX, _BEHAVIORS_MAX, _extract_facts, _extract_solution,  # noqa: F401
