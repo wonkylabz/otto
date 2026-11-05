@@ -1324,9 +1324,11 @@ class LocalRuntimeTests(unittest.TestCase):
         # answers surfaces raw from getresponse(), and a run spent its whole ladder in seconds on
         # "(local runtime error: Remote end closed connection...)".
         import http.client
+        import ssl
         self._no_backoff()
         for dropped in (http.client.RemoteDisconnected("Remote end closed connection"),
                         http.client.IncompleteRead(b""),
+                        ssl.SSLEOFError("EOF occurred in violation of protocol"),
                         ConnectionResetError("reset by peer")):
             sent = []
 
@@ -1354,6 +1356,38 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertTrue(out["is_error"])
         self.assertTrue(out["unavailable"])
         self.assertTrue(out["wall_reason"])
+
+    def test_a_bad_url_is_not_reported_as_a_server_outage(self):
+        # InvalidURL is an HTTPException too, but no retry fixes a config typo, and "restart the
+        # local server" would send the operator after a healthy one.
+        import http.client
+        self._no_backoff()
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            raise http.client.InvalidURL("URL can't contain control characters")
+        local_runtime._post = fake_post
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertTrue(out["is_error"])
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(out.get("unavailable"))
+
+    def test_a_retry_after_a_late_drop_stays_inside_the_run_deadline(self):
+        # The timeout is clamped before the first send; a retry has to re-clamp what is left.
+        import http.client
+        import time
+        self._no_backoff()
+        timeouts = []
+        deadline = time.time() + 60
+
+        def fake_post(m, body, timeout):
+            timeouts.append(timeout)
+            raise http.client.RemoteDisconnected("Remote end closed connection")
+        local_runtime._post = fake_post
+        with self.assertRaises(local_runtime.Unavailable):
+            local_runtime._chat_step(self.MODEL, {"messages": []}, 1000, deadline=deadline)
+        self.assertLessEqual(max(timeouts), 60)
 
     def test_read_timeout_past_the_run_deadline_is_a_timeout_not_a_wall(self):
         # The per-step timeout is CLAMPED to whatever is left of the run's wall clock, so the
