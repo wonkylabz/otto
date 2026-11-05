@@ -656,19 +656,26 @@ _PRIOR_FINDINGS_CHARS = 3_000
 _PRIOR_FIX_CHARS = 1_500
 
 
+def prior_rounds_quoted(prior):
+    """The model-written half of `prior_rounds_note`, byte for byte as it appears there — a
+    report's words are not the operator asking for anything, so `engine.run_attempt` cuts this
+    out before reading the request for connectors. Pure."""
+    from plans import _clipped_input
+    parts = []
+    for i, r in enumerate(prior or (), 1):
+        found, cut = _clipped_input(r.get("findings"), _PRIOR_FINDINGS_CHARS)
+        fix, fcut = _clipped_input(r.get("fix") or "(no reply)", _PRIOR_FIX_CHARS)
+        parts.append(f"Round {i} — findings raised:\n{found}{cut}\n\n"
+                     f"Round {i} — what the fix round reported doing:\n{fix}{fcut}")
+    return "\n\n".join(parts)
+
+
 def prior_rounds_note(noun, prior):
     """What earlier rounds of a post-PR loop raised and what each fix round did, for the next
     pass. Pure. A cold pass re-reviewed from scratch, so findings moved every round and one asked
     to remove three regions the round before had asked to add (runbook-rb-e0f48559)."""
     if not prior:
         return ""
-    from plans import _clipped_input
-    parts = []
-    for i, r in enumerate(prior, 1):
-        found, cut = _clipped_input(r.get("findings"), _PRIOR_FINDINGS_CHARS)
-        fix, fcut = _clipped_input(r.get("fix") or "(no reply)", _PRIOR_FIX_CHARS)
-        parts.append(f"Round {i} — findings raised:\n{found}{cut}\n\n"
-                     f"Round {i} — what the fix round reported doing:\n{fix}{fcut}")
     return (
         f"\n\nThis is a follow-up {noun}: earlier rounds raised findings and a fix round "
         "was pushed to the same branch after each. Check FIRST whether each earlier finding is "
@@ -677,7 +684,7 @@ def prior_rounds_note(noun, prior):
         "or the reverse) unless you name that earlier finding and give the concrete reason it "
         "was wrong; an unexplained reversal makes the loop oscillate and never finish. Raise a "
         "NEW finding only if it is must-fix or should-fix on its own merits.\n\n"
-        + "\n\n".join(parts))
+        + prior_rounds_quoted(prior))
 
 
 def qa_review_request(pr_url, repo, request, checkout=None, checkout_error=None,

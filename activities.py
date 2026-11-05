@@ -20,6 +20,7 @@ import config
 import storage
 import engine
 import file_safety
+import judging
 import mcp_client
 import policy
 import registry
@@ -816,6 +817,9 @@ def _post_pr_capability(kind, payload):
         att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
                                  mcp_config_path=mcp_path, wid=payload.get("wid"),
                                  cwd=ws["path"] if ws else None,
+                                 # Earlier rounds' reports name whatever they name: "calendar
+                                 # day" in a fix report stopped a re-review as a Calendar task.
+                                 external_text=[judging.prior_rounds_quoted(payload.get("prior"))],
                                  deny_tools=_mcp_denies(payload.get("wid")))
     finally:
         if ws:

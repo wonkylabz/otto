@@ -31,6 +31,7 @@ at a time. Caps that need a repo `.mcp.json` (`cap.mcp_config`) also stay on Cla
 """
 import fcntl
 import glob as globmod
+import http.client
 import io
 import json
 import os
@@ -1085,9 +1086,13 @@ def _chat_step(m, body, timeout, _rounds=10, deadline=None, learned=None):
                 + (f"(≥{prompt_tokens} prompt tokens vs {max_len} max — " if max_len
                    else "(")
                 + "the conversation/tool history no longer fits this model)") from None
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException,
+                ConnectionError) as e:
             # Connection-level failure (refused/reset/DNS/socket timeout) — the server is down
             # or restarting. Same transient treatment as a 5xx: back off, then fail clean.
+            # urllib wraps only the SEND in URLError: a server dropping the socket before it
+            # answers raises a bare RemoteDisconnected out of getresponse(), which is neither of
+            # the first two (`factory-20261105121701-s3` spent all 3 attempts in 22s on one).
             # TimeoutError (== socket.timeout) is NOT a URLError subclass, so a read that
             # outlived its timeout used to escape this handler into run_json's bare
             # `except Exception`: no backoff, no classification, just a raw error string.

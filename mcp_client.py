@@ -464,8 +464,9 @@ def connectors_named(request, pol=None, exclude=()):
     FIRE: a false positive runs on Claude (the work lands, a little dearer), a false negative
     is the run above.
 
-    `exclude` is external DATA quoted into the request (a Slack trigger's post, #223): it names
-    whatever it names, so it is cut out before matching rather than read as the operator asking."""
+    `exclude` is external DATA quoted into the request (a Slack trigger's post, #223; an earlier
+    review round's report): it names whatever it names, so it is cut out before matching rather
+    than read as the operator asking."""
     text = request or ""
     for x in sorted((x for x in exclude or () if x), key=len, reverse=True):
         text = text.replace(x, " ")
