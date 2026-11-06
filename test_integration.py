@@ -6758,6 +6758,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.fix_errors = False           # make the post-review fix round die like a real one
         self.fix_local_dies = False       # ... or die on the LOCAL backend only (Claude succeeds)
+        self.review_local_dies = False    # the reviewer itself dies on the LOCAL backend
         self.fix_pushes_nothing = False   # the fix round finishes but leaves the PR untouched
 
         def fake_run_attempt(request, cap, *, attempt=1, critique=None, escalate=False,
@@ -6766,6 +6767,11 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
             self.runs.append({"cap": cap.name, "critique": critique, "cwd": cwd,
                               "local_disabled": kwargs.get("local_disabled"), "request": request})
             res = "review transcript" if cap.name == config.REVIEW_CAP else "edited the code"
+            if (self.review_local_dies and cap.name == config.REVIEW_CAP
+                    and not kwargs.get("local_disabled")):
+                return {"workflow": wid or "w", "result": "(local runtime error: stream dropped)",
+                        "cost": 0.0, "is_error": True, "session_id": "local-s", "model": "flash",
+                        "backend": "local", "attempt": attempt}
             # A fix round is a worker run carrying the reviewer's critique.
             if (self.fix_local_dies and cap.name == config.WORKER_CAP and critique
                     and not kwargs.get("local_disabled")):
@@ -7152,6 +7158,33 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         # The re-run is told the clone holds what the dead attempt left behind.
         self.assertIn("may have left uncommitted or partial edits", fix_runs[1]["critique"])
         self.assertIn("(timed out)", fix_runs[1]["critique"])
+
+    def _review_runs(self):
+        import config
+        return [r for r in self.runs if r["cap"] == config.REVIEW_CAP]
+
+    async def test_a_dead_local_review_is_covered_by_claude_once(self):
+        """A review that died has judged nothing, so its error text can only read inconclusive,
+        which parks a PR for a human over an endpoint hiccup."""
+        self.review_local_dies = True
+        self.verdicts = iter([{"verdict": "pass", "critique": ""}])
+        seen = []
+        engine.judge_review = lambda request, result, project=None: (
+            seen.append(result), {"verdict": "pass", "critique": ""})[1]
+        out = await self._run_reviewed("revq7")
+        self.assertEqual([bool(r["local_disabled"]) for r in self._review_runs()],
+                         [False, True], self.runs)
+        self.assertEqual(out["review"]["state"], "pass")
+        self.assertEqual(seen, ["review transcript"], "the dead run's error is never judged")
+
+    async def test_strict_mode_keeps_a_dead_local_review_local(self):
+        self.review_local_dies = True
+        self.verdicts = iter([{"verdict": "inconclusive", "critique": "nothing to judge"}])
+        with mock.patch.dict(os.environ, {"OTTO_LOCAL_FALLBACK": "0"}):
+            out = await self._run_reviewed("revq8")
+        self.assertEqual([bool(r["local_disabled"]) for r in self._review_runs()], [False],
+                         self.runs)
+        self.assertEqual(out["review"]["state"], "inconclusive")
 
     async def test_strict_mode_keeps_a_dead_local_fix_round_local(self):
         self.fix_local_dies = True

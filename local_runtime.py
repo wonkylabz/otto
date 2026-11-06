@@ -890,11 +890,29 @@ def _post_stream(m, body, timeout, partial):
         return _assemble_sse(r, partial, until=time.time() + timeout)
 
 
+def _stream_failure(error):
+    """An error sent INSIDE a 200 stream, as the HTTPError it would have been before the headers
+    went out, so `_chat_step` classifies it like any other. As a bare RuntimeError it skipped the
+    retries, and one proxy hiccup threw away a long run's every earlier turn. An error with no
+    usable status is a 500: the stream failed, and nothing says the request was at fault."""
+    try:
+        code = int(error.get("code"))
+    except (AttributeError, TypeError, ValueError):
+        code = 500
+    if not 400 <= code <= 599:
+        code = 500
+    return urllib.error.HTTPError("", code, "error in stream", None,
+                                  io.BytesIO(json.dumps({"error": error}).encode()))
+
+
 def _assemble_sse(lines, partial, until=None):
     """SSE chunks -> the non-streamed `{"choices": [{"message", "finish_reason"}], "usage"}`.
     Every string field of a delta concatenates (content, reasoning, …); tool calls merge by
-    index. Content deltas also feed the draft. Pure over an iterable of byte lines."""
-    msg, calls, finish, usage = {"role": "assistant"}, {}, None, None
+    index. Content deltas also feed the draft. Pure over an iterable of byte lines.
+
+    A stream that stops with neither `[DONE]` nor a `finish_reason`, or mid-chunk, was CUT, and
+    its half a reply is not an answer: raised as IncompleteRead, which `_chat_step` retries."""
+    msg, calls, finish, usage, done = {"role": "assistant"}, {}, None, None, False
     for raw in lines:
         if until is not None and time.time() > until:
             raise TimeoutError("stream outlived its timeout")
@@ -903,10 +921,14 @@ def _assemble_sse(lines, partial, until=None):
             continue
         payload = line[5:].strip()
         if payload == "[DONE]":
+            done = True
             break
-        chunk = json.loads(payload)
+        try:
+            chunk = json.loads(payload)
+        except ValueError:
+            raise http.client.IncompleteRead(b"") from None
         if chunk.get("error"):
-            raise RuntimeError(f"stream error: {json.dumps(chunk['error'])[:400]}")
+            raise _stream_failure(chunk["error"])
         usage = chunk.get("usage") or usage
         for choice in chunk.get("choices") or []:
             finish = choice.get("finish_reason") or finish
@@ -926,6 +948,8 @@ def _assemble_sse(lines, partial, until=None):
                     msg[k] = msg.get(k, "") + v
                     if k == "content":
                         partial.add(v)
+    if not done and finish is None:
+        raise http.client.IncompleteRead(b"")
     partial.flush()
     if calls:
         msg["tool_calls"] = [calls[i] for i in sorted(calls)]
