@@ -44,6 +44,8 @@ _FIX_ORDER = ("committing the fix to the current branch (do NOT open a new PR). 
               "actually changed.\n")
 
 # Told to a fix round re-run on Claude after the first attempt died: the clone is NOT clean.
+_ROUND_NO_LADDER = ("the post-PR round died off Claude, and a round is one-shot, with no ladder "
+                    "rung above it — so Claude covers it")
 _BACKSTOP_NOTE = ("\nAn earlier attempt at this round died before it finished and may have left "
                   "uncommitted or partial edits, or commits, in this tree. Check `git status`, `git diff` "
                   "and `git log` first: keep what is right, fix or revert what is not. It ended "
@@ -174,6 +176,13 @@ class PostPrMixin:
             return {"workflow": payload["wid"], "is_error": True, "cost": 0,
                     "result": f"(the fix round died before it finished: {_failure_detail(e)})"}
 
+    async def _round_capability(self, spec, payload):
+        """One review or QA pass against the PR."""
+        return await workflow.execute_activity(
+            spec["capability"], payload,
+            start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
+            retry_policy=_RETRY_EXEC)
+
     async def _run_fix_loop(self, kind, request, cap, repo, pr_url, rounds=None, tag=""):
         """Judge the opened PR with `kind`'s capability; on an adverse verdict, fold its findings
         into a fix on the SAME branch and re-judge. Returns {state, rounds, <cap_field>,
@@ -208,12 +217,33 @@ class PostPrMixin:
                 verdict = {"verdict": "fail", "critique": repo_checks.critique(checks)}
             else:
                 try:
-                    out = await workflow.execute_activity(
-                        spec["capability"],
-                        {"pr_url": pr_url, "repo": repo, "request": request,
-                         "wid": f"{run_id}-{spec['wid']}{tag}{rnd}", "prior": list(prior)},
-                        start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
-                        retry_policy=_RETRY_EXEC)
+                    payload = {"pr_url": pr_url, "repo": repo, "request": request,
+                               "wid": f"{run_id}-{spec['wid']}{tag}{rnd}", "prior": list(prior)}
+                    out = await self._round_capability(spec, payload)
+                    self._account(out)
+                    # The same one re-run a dead fix round gets (`ladder.fix_backstop`): judging
+                    # a dead run's error text can only say inconclusive, which parks a PR for a
+                    # human over an endpoint hiccup. Patched: a history recorded before it
+                    # replays without these commands.
+                    if (ladder.fix_backstop(out, self._setting("local_fallback"))
+                            and not config.budget_exceeded(
+                                self._spent["output"], self._spent["cost"],
+                                hard=True, snapshot=self._settings)
+                            and workflow.patched("post-pr-round-backstop")):
+                        await workflow.execute_activity(
+                            record_attempt,
+                            {"wid": out["workflow"],
+                             "request": f"[{spec['label']}, {out.get('backend')}] {request}",
+                             "name": out.get(cap_field), "result": out["result"],
+                             "cost": out.get("cost", 0), "attempt": rnd + 1,
+                             "tokens": out.get("tokens"), "model": out.get("model"),
+                             "duration_s": out.get("duration_s"), "backend": out.get("backend"),
+                             "verdict": None, "remember": False, "repo": repo},
+                            start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+                        out = await self._round_capability(spec, dict(
+                            payload, attempt=2, local_disabled=True, supervise_enforce=False,
+                            local_disabled_reason=_ROUND_NO_LADDER))
+                        self._account(out)
                 except exceptions.ActivityError as e:
                     if isinstance(e.cause, exceptions.CancelledError):
                         raise
@@ -227,7 +257,6 @@ class PostPrMixin:
                 if out.get("missing"):
                     setattr(self, spec["attr"], {"state": "unavailable", "round": rnd})
                     return {"state": "unavailable", "rounds": rnd, cap_field: out.get(cap_field)}
-                self._account(out)
                 cap_name = out.get(cap_field)
                 judged = {"request": request, "result": out["result"], "repo": repo}
                 note = repo_checks.judge_note(checks)
@@ -243,7 +272,10 @@ class PostPrMixin:
                     {"wid": out["workflow"], "request": f"[{spec['label']}] {request}",
                      "name": cap_name, "result": out["result"], "cost": out.get("cost", 0),
                      "attempt": rnd + 1, "tokens": out.get("tokens"), "model": out.get("model"),
-                     "duration_s": out.get("duration_s"),
+                     "duration_s": out.get("duration_s"), "backend": out.get("backend"),
+                     "fallback_from": out.get("fallback_from"),
+                     "fallback_reason": out.get("fallback_reason"),
+                     "fallback_detail": out.get("fallback_detail"),
                      "verdict": {"passed": verdict["verdict"] == "pass",
                                  "critique": verdict.get("critique", ""), "source": spec["source"]},
                      "remember": False, "repo": repo},

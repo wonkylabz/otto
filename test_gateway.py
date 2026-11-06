@@ -1343,6 +1343,135 @@ class LocalRuntimeTests(unittest.TestCase):
             self.assertFalse(out["is_error"], dropped)
             self.assertEqual(len(sent), 2, dropped)
 
+    def _stream_turns(self, *turns):
+        """`_post` over real SSE reassembly: each turn is the byte lines one request answers."""
+        sent = []
+
+        def fake_post(m, body, timeout):
+            sent.append(body)
+            return local_runtime._assemble_sse(turns[min(len(sent), len(turns)) - 1],
+                                               claude_cli.PartialSink(None))
+        local_runtime._post = fake_post
+        return sent
+
+    @staticmethod
+    def _sse(*chunks, done=True):
+        return ([f"data: {json.dumps(c)}\n".encode() for c in chunks]
+                + ([b"data: [DONE]\n"] if done else []))
+
+    def _answered(self):
+        return self._sse({"choices": [{"delta": {"content": "answered"},
+                                       "finish_reason": "stop"}]})
+
+    def test_an_error_inside_a_stream_is_retried_not_the_end_of_the_run(self):
+        # A proxy that loses its backend mid-reply can only say so inside the 200 it already
+        # started, and a RuntimeError there threw away every earlier turn of a long review.
+        self._no_backoff()
+        dropped = self._sse({"choices": [{"delta": {"content": "half a re"}}]},
+                            {"error": {"message": "Response payload is not completed",
+                                       "type": None, "param": None, "code": "500"}}, done=False)
+        sent = self._stream_turns(dropped, self._answered())
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertFalse(out["is_error"], out["result"])
+        self.assertEqual(out["result"], "answered")
+        self.assertEqual(len(sent), 2)
+
+    def test_an_error_in_a_stream_with_no_status_is_retried_too(self):
+        self._no_backoff()
+        for error in ({"message": "boom"}, "boom", {"message": "boom", "code": "server_error"},
+                      {"message": "boom", "code": 200}):
+            sent = self._stream_turns(self._sse({"error": error}, done=False), self._answered())
+            out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+            self.assertFalse(out["is_error"], error)
+            self.assertEqual(len(sent), 2, error)
+
+    def test_a_refusal_inside_a_stream_is_still_a_refusal(self):
+        # Routed through the same classifier as a status line: a dead key walls at once, rather
+        # than earning the backoffs a blip gets.
+        self._no_backoff()
+        sent = self._stream_turns(self._sse({"error": {"message": "invalid api key", "code": 401}},
+                                            done=False))
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertTrue(out["is_error"])
+        self.assertEqual(len(sent), 1, "a deterministic rejection is not retried")
+        self.assertTrue(out.get("wall_reason"), out)
+
+    def test_a_cut_stream_is_retried_never_delivered_as_the_answer(self):
+        # Half a reply with no end marker read as a finished turn: the model "stopped" there.
+        self._no_backoff()
+        for cut in (self._sse({"choices": [{"delta": {"content": "half a re"}}]}, done=False),
+                    [b'data: {"choices": [{"delta": {"content": "ha']):
+            sent = self._stream_turns(cut, self._answered())
+            out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+            self.assertFalse(out["is_error"], out["result"])
+            self.assertEqual(out["result"], "answered")
+            self.assertEqual(len(sent), 2)
+
+    def test_a_stream_that_finished_needs_no_done_marker(self):
+        # `[DONE]` is a convention: a finish_reason already says the turn ended.
+        self._no_backoff()
+        sent = self._stream_turns(self._sse(
+            {"choices": [{"delta": {"content": "answered"}, "finish_reason": "stop"}]},
+            done=False))
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertEqual((out["result"], len(sent)), ("answered", 1))
+
+    def test_a_stream_error_spelling_its_code_as_a_word_keeps_its_class(self):
+        # Read as a 500 its body is never classified, so an overflow resent the same prompt
+        # until it walled the run off the model as a server failure.
+        for error, status in (({"code": "context_length_exceeded", "message": "too long",
+                                "type": "invalid_request_error"}, 400),
+                              ({"code": None, "message": "no", "type": "authentication_error"}, 401),
+                              ({"code": "throttled", "type": "rate_limit_error"}, 429),
+                              ({"code": "boom", "type": "server_error"}, 500),
+                              ({"code": None, "type": ["not", "hashable"]}, 500)):
+            self.assertEqual(local_runtime._stream_failure(error).code, status, error)
+
+    def test_an_overflow_spelled_in_a_stream_shrinks_the_turn(self):
+        self._no_backoff()
+        over = self._sse({"error": {"code": "context_length_exceeded",
+                                    "type": "invalid_request_error",
+                                    "message": "This model's maximum context length is 8192 tokens"}},
+                         done=False)
+        sent = self._stream_turns(over, self._answered())
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertFalse(out["is_error"], out["result"])
+        self.assertEqual(len(sent), 2)
+        self.assertLess(sent[1].get("max_tokens") or sent[1].get("max_completion_tokens"),
+                        sent[0].get("max_tokens") or sent[0].get("max_completion_tokens"))
+
+    def test_a_400_inside_a_stream_is_never_a_refusal_of_streaming(self):
+        # "upstream" holds the word `_post` looks for, and the server had accepted `stream`
+        # already: the plain re-send would turn the endpoint's live draft off until a restart.
+        import urllib.request
+        from unittest import mock
+        key = ("http://x/v1", "m")
+        self.addCleanup(local_runtime._NO_STREAM.discard, key)
+        self.addCleanup(setattr, local_runtime, "_post", local_runtime._post)
+        lines = self._sse({"error": {"code": 400, "message": "upstream connect error"}}, done=False)
+
+        class Reply(list):
+            headers = {"Content-Type": "text/event-stream"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        sent = []
+
+        def urlopen(req, timeout=None):
+            sent.append(json.loads(req.data).get("stream"))
+            return Reply(lines)
+        token = local_runtime._PARTIAL.set(claude_cli.PartialSink(None))
+        self.addCleanup(local_runtime._PARTIAL.reset, token)
+        with mock.patch.object(urllib.request, "urlopen", urlopen):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                local_runtime._post({"base_url": key[0], "model": key[1]}, {"messages": []}, 5)
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(sent, [True], "never re-sent plain")
+        self.assertNotIn(key, local_runtime._NO_STREAM)
+
     def test_a_connection_that_stays_down_is_a_wall_not_an_anonymous_error(self):
         # Past the retries it must latch like any unreachable endpoint, or each ladder rung
         # re-pays the same outage and the run ends blamed on the harness.
@@ -11713,10 +11842,12 @@ class StreamingDraftTests(unittest.TestCase):
         with open(claude_cli.partial_path(self.transcript)) as f:
             self.assertEqual(f.read(), "Hello")
 
-    def test_a_stream_error_chunk_raises(self):
-        with self.assertRaises(RuntimeError):
-            local_runtime._assemble_sse(self._sse({"error": {"message": "boom"}}),
+    def test_a_stream_error_chunk_raises_as_the_http_error_it_stands_for(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            local_runtime._assemble_sse(self._sse({"error": {"message": "boom", "code": 503}}),
                                         claude_cli.PartialSink(self.transcript))
+        self.assertEqual(caught.exception.code, 503)
+        self.assertIn(b"boom", caught.exception.read())
 
     def test_draft_is_scrubbed(self):
         sink = claude_cli.PartialSink(self.transcript)

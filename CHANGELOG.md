@@ -24,6 +24,12 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **A local model's stream that fails partway is retried instead of ending the run**: an error sent
+  inside the stream goes through the same classification as an HTTP status, and a stream cut off
+  with no end marker no longer counts as a finished reply.
+- **A code review or QA round that dies on a local backend gets one re-run on Claude**, as a dead
+  fix round already did, rather than parking the PR as inconclusive. **Restart the worker** to pick
+  this up.
 - **A local model server dropping the connection no longer ends a run in seconds.** Otto now backs
   off and retries, including on TLS endpoints, and an outage that outlasts the retries shows as
   the server being unreachable, not a harness failure. **Restart the worker** to pick this up.

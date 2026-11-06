@@ -814,9 +814,13 @@ def _post_pr_capability(kind, payload):
                                            payload["request"], prior=payload.get("prior"),
                                            **extra)
     try:
-        att = engine.run_attempt(req, cap, attempt=1, extra_tools=mcp_tools,
+        att = engine.run_attempt(req, cap, attempt=payload.get("attempt", 1),
+                                 extra_tools=mcp_tools,
                                  mcp_config_path=mcp_path, wid=payload.get("wid"),
                                  cwd=ws["path"] if ws else None,
+                                 local_disabled=bool(payload.get("local_disabled")),
+                                 local_disabled_reason=payload.get("local_disabled_reason"),
+                                 supervise_enforce=payload.get("supervise_enforce", True),
                                  # Earlier rounds' reports name whatever they name: "calendar
                                  # day" in a fix report stopped a re-review as a Calendar task.
                                  external_text=[judging.prior_rounds_quoted(payload.get("prior"))],
@@ -827,7 +831,11 @@ def _post_pr_capability(kind, payload):
             workspace.cleanup(ws["run_id"])
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
-            "duration_s": att.get("duration_s"),
+            "duration_s": att.get("duration_s"), "is_error": bool(att.get("is_error")),
+            "backend": att.get("backend"), "published": att.get("published"),
+            "fallback_from": att.get("fallback_from"),
+            "fallback_reason": att.get("fallback_reason"),
+            "fallback_detail": att.get("fallback_detail"),
             spec["cap_field"]: cap.name, spec["risk_field"]: cap.risk}
 
 
