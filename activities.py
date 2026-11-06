@@ -833,6 +833,9 @@ def _post_pr_capability(kind, payload):
             "tokens": att.get("tokens"), "model": att.get("model"),
             "duration_s": att.get("duration_s"), "is_error": bool(att.get("is_error")),
             "backend": att.get("backend"), "published": att.get("published"),
+            "fallback_from": att.get("fallback_from"),
+            "fallback_reason": att.get("fallback_reason"),
+            "fallback_detail": att.get("fallback_detail"),
             spec["cap_field"]: cap.name, spec["risk_field"]: cap.risk}
 
 

@@ -857,6 +857,8 @@ def _post(m, body, timeout):
         try:
             return _post_stream(m, {**body, "stream": True,
                                     "stream_options": {"include_usage": True}}, timeout, partial)
+        except _StreamFailure:
+            raise
         except urllib.error.HTTPError as e:
             raw = e.read() if e.code in (400, 422) else b""
             if b"stream" not in raw.lower():
@@ -890,6 +892,11 @@ def _post_stream(m, body, timeout, partial):
         return _assemble_sse(r, partial, until=time.time() + timeout)
 
 
+class _StreamFailure(urllib.error.HTTPError):
+    """An HTTPError raised from INSIDE a stream the server had already accepted, so `_post` must
+    not read it as a refusal of `stream` itself."""
+
+
 def _stream_failure(error):
     """An error sent INSIDE a 200 stream, as the HTTPError it would have been before the headers
     went out, so `_chat_step` classifies it like any other. As a bare RuntimeError it skipped the
@@ -901,8 +908,8 @@ def _stream_failure(error):
         code = 500
     if not 400 <= code <= 599:
         code = 500
-    return urllib.error.HTTPError("", code, "error in stream", None,
-                                  io.BytesIO(json.dumps({"error": error}).encode()))
+    return _StreamFailure("", code, "error in stream", None,
+                          io.BytesIO(json.dumps({"error": error}).encode()))
 
 
 def _assemble_sse(lines, partial, until=None):

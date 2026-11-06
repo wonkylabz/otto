@@ -1416,6 +1416,38 @@ class LocalRuntimeTests(unittest.TestCase):
         out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
         self.assertEqual((out["result"], len(sent)), ("answered", 1))
 
+    def test_a_400_inside_a_stream_is_never_a_refusal_of_streaming(self):
+        # "upstream" holds the word `_post` looks for, and the server had accepted `stream`
+        # already: the plain re-send would turn the endpoint's live draft off until a restart.
+        import urllib.request
+        from unittest import mock
+        key = ("http://x/v1", "m")
+        self.addCleanup(local_runtime._NO_STREAM.discard, key)
+        self.addCleanup(setattr, local_runtime, "_post", local_runtime._post)
+        lines = self._sse({"error": {"code": 400, "message": "upstream connect error"}}, done=False)
+
+        class Reply(list):
+            headers = {"Content-Type": "text/event-stream"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+        sent = []
+
+        def urlopen(req, timeout=None):
+            sent.append(json.loads(req.data).get("stream"))
+            return Reply(lines)
+        token = local_runtime._PARTIAL.set(claude_cli.PartialSink(None))
+        self.addCleanup(local_runtime._PARTIAL.reset, token)
+        with mock.patch.object(urllib.request, "urlopen", urlopen):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                local_runtime._post({"base_url": key[0], "model": key[1]}, {"messages": []}, 5)
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(sent, [True], "never re-sent plain")
+        self.assertNotIn(key, local_runtime._NO_STREAM)
+
     def test_a_connection_that_stays_down_is_a_wall_not_an_anonymous_error(self):
         # Past the retries it must latch like any unreachable endpoint, or each ladder rung
         # re-pays the same outage and the run ends blamed on the harness.

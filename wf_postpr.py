@@ -220,6 +220,7 @@ class PostPrMixin:
                     payload = {"pr_url": pr_url, "repo": repo, "request": request,
                                "wid": f"{run_id}-{spec['wid']}{tag}{rnd}", "prior": list(prior)}
                     out = await self._round_capability(spec, payload)
+                    self._account(out)
                     # The same one re-run a dead fix round gets (`ladder.fix_backstop`): judging
                     # a dead run's error text can only say inconclusive, which parks a PR for a
                     # human over an endpoint hiccup. Patched: a history recorded before it
@@ -229,7 +230,6 @@ class PostPrMixin:
                                 self._spent["output"], self._spent["cost"],
                                 hard=True, snapshot=self._settings)
                             and workflow.patched("post-pr-round-backstop")):
-                        self._account(out)
                         await workflow.execute_activity(
                             record_attempt,
                             {"wid": out["workflow"],
@@ -243,6 +243,7 @@ class PostPrMixin:
                         out = await self._round_capability(spec, dict(
                             payload, attempt=2, local_disabled=True, supervise_enforce=False,
                             local_disabled_reason=_ROUND_NO_LADDER))
+                        self._account(out)
                 except exceptions.ActivityError as e:
                     if isinstance(e.cause, exceptions.CancelledError):
                         raise
@@ -256,7 +257,6 @@ class PostPrMixin:
                 if out.get("missing"):
                     setattr(self, spec["attr"], {"state": "unavailable", "round": rnd})
                     return {"state": "unavailable", "rounds": rnd, cap_field: out.get(cap_field)}
-                self._account(out)
                 cap_name = out.get(cap_field)
                 judged = {"request": request, "result": out["result"], "repo": repo}
                 note = repo_checks.judge_note(checks)
@@ -272,7 +272,10 @@ class PostPrMixin:
                     {"wid": out["workflow"], "request": f"[{spec['label']}] {request}",
                      "name": cap_name, "result": out["result"], "cost": out.get("cost", 0),
                      "attempt": rnd + 1, "tokens": out.get("tokens"), "model": out.get("model"),
-                     "duration_s": out.get("duration_s"),
+                     "duration_s": out.get("duration_s"), "backend": out.get("backend"),
+                     "fallback_from": out.get("fallback_from"),
+                     "fallback_reason": out.get("fallback_reason"),
+                     "fallback_detail": out.get("fallback_detail"),
                      "verdict": {"passed": verdict["verdict"] == "pass",
                                  "critique": verdict.get("critique", ""), "source": spec["source"]},
                      "remember": False, "repo": repo},
