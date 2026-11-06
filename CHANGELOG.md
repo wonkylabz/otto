@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-06
+
 ### Added
 
 - **Board cards show the ticket they belong to.** A card is labelled with the GitHub issue/PR or
@@ -614,7 +616,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/wonkylabz/otto/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/wonkylabz/otto/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/wonkylabz/otto/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/wonkylabz/otto/compare/v0.8.7...v0.9.0
