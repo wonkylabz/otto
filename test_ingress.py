@@ -7605,12 +7605,18 @@ class RenderMdListTests(unittest.TestCase):
         if not self.node:
             self.skipTest("node not available")
         self.assertNotIn('<code>x</code>"', self._render("see https://a.b/c```x``` now"))
+        self.assertEqual(
+            self._render("GET https://a.b/`id`/posts"),
+            '<p>GET <a href="https://a.b/" target="_blank" rel="noopener">https://a.b/</a><code>id</code>/posts</p>')
 
-    def test_the_whole_info_string_is_dropped(self):
+    def test_only_a_single_token_is_an_info_string(self):
         if not self.node:
             self.skipTest("node not available")
-        for info in ("python", "c++", 'js title="a"'):
+        for info in ("python", "c++", "ts:foo.ts"):
             self.assertEqual(self._render(f"```{info}\nx = 1\n```"), "<pre><code>x = 1</code></pre>")
+        self.assertEqual(self._render("```npm test\n```"), "<pre><code>npm test</code></pre>")
+        self.assertEqual(self._render("```this is prose\nmore\n```"),
+                         "<pre><code>this is prose\nmore</code></pre>")
 
     def test_a_literal_placeholder_can_never_become_a_block(self):
         if not self.node:
@@ -7623,10 +7629,18 @@ class RenderMdListTests(unittest.TestCase):
             self.skipTest("node not available")
         for text in ("multiply 2*3 and 4*5", "rm *.log and *.tmp", "pass **kwargs and *args",
                      "rm src/*.log tests/*.tmp", "*.py|*.js", "glob *.log,*.tmp", "(a)*(b)*(c)",
-                     "价格*数量*税率", "é*x*é"):
+                     "价格*数量*税率", "é*x*é", "merge {**a, **b} here", "2**3 + 4**5"):
             self.assertEqual(self._render(text), f"<p>{text}</p>")
         self.assertEqual(self._render("*a* and (*b*), *two words*."),
                          "<p><em>a</em> and (<em>b</em>), <em>two words</em>.</p>")
+
+    def test_bold_still_renders_where_it_should(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("***both***"), "<p><em><strong>both</strong></em></p>")
+        self.assertEqual(self._render("**TLDR**: done, **really**."),
+                         "<p><strong>TLDR</strong>: done, <strong>really</strong>.</p>")
+        self.assertEqual(self._render("这是**粗体**文字"), "<p>这是<strong>粗体</strong>文字</p>")
 
     def test_emphasis_never_pairs_across_code_spans(self):
         if not self.node:

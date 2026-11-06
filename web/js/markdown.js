@@ -12,9 +12,9 @@ function renderMD(src){
   src = String(src==null ? "" : src).replace(/\r\n?/g,"\n").replace(/[\uE000\uE001]/g,"");
   const blocks = [];
   // A fence opening its line is a block, and whatever follows the close starts a new line, since
-  // a <pre> can't live inside a <p>. Its first line is an info string only if a newline ends it:
-  // in ```npm test``` the first word is code. Anywhere else a fence is just inline code.
-  src = src.replace(/```([^\n`]*\n)?([\s\S]*?)```/g, (_,info,code,at,all)=>{
+  // a <pre> can't live inside a <p>. Its first line is an info string only if it is one token and
+  // a newline ends it: in ```npm test``` the words are code. Elsewhere a fence is inline code.
+  src = src.replace(/```([ \t]*[^\s`]*[ \t]*\n)?([\s\S]*?)```/g, (_,info,code,at,all)=>{
     const lead = all.slice(all.lastIndexOf("\n",at-1)+1, at), block = !lead.trim();
     blocks.push(block
       ? `<pre><code>${esc(code.replace(/\n[ \t]*$/,"").replace(new RegExp("^"+lead,"gm"),""))}</code></pre>`
@@ -30,12 +30,14 @@ function renderMD(src){
     const spans = [];
     return s
       .replace(/`([^`]+)`/g, (_,c)=>{ spans.push(`<code>${c}</code>`); return `\uE001${spans.length-1}\uE001`; })
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      // Strong hugs its text outside ASCII words, so 2**3 + 4**5 and {**a, **b} stay literal.
+      // ASCII only: CJK has no spaces, and bold there runs straight into the next word.
+      .replace(/(^|[^A-Za-z0-9_])\*\*([^*\s](?:[^*]*[^*\s])?)\*\*(?![A-Za-z0-9_])/g, "$1<strong>$2</strong>")
       // Emphasis opens on a letter or digit at the start of a word, so 2*3 and 4*5, or
-      // rm src/*.log *.tmp, stay literal.
-      .replace(/(^|[^*\p{L}\p{N}_])\*([\p{L}\p{N}\uE000\uE001](?:[^*]*[^*\s])?)\*(?![\p{L}\p{N}_*])/gu, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:[^)\s\uE000]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/(^|\s)(https?:\/\/[^\s<\uE000]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+      // rm src/*.log *.tmp, stay literal. A < can only be the <strong> of ***x***: src is escaped.
+      .replace(/(^|[^*\p{L}\p{N}_])\*([\p{L}\p{N}<\uE000\uE001](?:[^*]*[^*\s])?)\*(?![\p{L}\p{N}_*])/gu, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:[^)\s\uE000\uE001]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|\s)(https?:\/\/[^\s<\uE000\uE001]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
       .replace(/\uE001(\d+)\uE001/g, (_,n)=>spans[+n]);
   };
   let html = "", list = null;
