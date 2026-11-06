@@ -13,6 +13,9 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
+- **Board cards show the ticket they belong to.** A card is labelled with the GitHub issue/PR or
+  Jira ticket its run is about (from the request's links, the PR Otto opened, or the board issue
+  that started it); a GitHub label links to it. **Restart the server** to pick this up.
 - **Knowledge documents can be uploaded as files** (Knowledge → + Add document). Pick or drop
   PDFs, Word `.docx` or text files (several at once, each shown as a removable chip); each becomes
   its own document titled after the file, and a retry resends only the files that failed. PDF

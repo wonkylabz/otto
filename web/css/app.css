@@ -1318,8 +1318,9 @@
      was reading as "local ·"), not a new visual language — the chip's text says which. */
   .bchip.local, .bchip.hosted { color: var(--accent); border-color: var(--accent-line); }
   .bchip.bfell { color: var(--warn); border-color: var(--warn-line); }
-  .bchip.warn, a.bchip.warn { color: var(--warn); border-color: var(--warn-line); text-decoration: none; }
-  a.bchip.warn:hover { border-color: var(--warn); }
+  .bchip.warn { color: var(--warn); border-color: var(--warn-line); }
+  a.bchip { text-decoration: none; }
+  a.bchip:hover { border-color: currentColor; }
   .bsched { color: var(--warn); }
   .bwarn { color: var(--warn); }
   a.bwarn { text-decoration: none; } a.bwarn:hover { text-decoration: underline; }

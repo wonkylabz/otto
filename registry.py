@@ -408,6 +408,16 @@ def projects():
     return [project_path(e) for e in _project_entries()]
 
 
+def project_slugs():
+    """`owner/name` of every registered repo with a URL. Offline: a store read, never `git`."""
+    out = []
+    for e in _project_entries():
+        r = repos.parse(e.get("url") or "")
+        if r:
+            out.append(f"{r['owner']}/{r['name']}")
+    return out
+
+
 def _entry_for(path):
     """The entry a caller means by `path`. Matched on the effective path first (that is what the
     UI renders and posts back) and on the stored checkout second, so a client holding either
