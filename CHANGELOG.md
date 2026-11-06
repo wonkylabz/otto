@@ -16,6 +16,9 @@ changelog that restates it is a second copy of `git log`.
 - **Your own chat messages now render markdown.** A message, or the ticket a board run started
   from, showed as one flat block with its headings, lists and line breaks lost; it now renders
   the same way Otto's replies do. A browser refresh picks this up.
+- **Code blocks no longer vanish from rendered text.** A fence in a ticket saved with Windows line
+  endings, or one sharing a line with other text, showed as a blank. Literal asterisks such as
+  `2*3` or `rm *.log *.tmp` are also no longer turned into italics.
 
 ## [0.11.0] - 2026-11-06
 

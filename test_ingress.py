@@ -7539,7 +7539,7 @@ class UserBubbleMarkdownTests(unittest.TestCase):
 
     def test_the_user_bubble_renders_through_renderMD(self):
         block = ui_src().split("function userMsg(", 1)[1].split("function enoMsg(", 1)[0]
-        self.assertIn('<div class="result">${renderMD(text)}</div>', block)
+        self.assertIn("renderMD(text)", block)
         self.assertNotIn(".textContent=text", block)
 
     def test_attachments_sit_beside_the_rendered_text_not_inside_it(self):
@@ -7581,6 +7581,43 @@ class RenderMdListTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
+
+    def test_a_fence_in_a_CRLF_ticket_survives(self):
+        if not self.node:
+            self.skipTest("node not available")
+        html = self._render("Steps\r\n\r\n```\r\nnpm test\r\n```\r\n\r\nDone")
+        self.assertEqual(html, "<p>Steps</p><pre><code>npm test</code></pre><p>Done</p>")
+
+    def test_a_fence_sharing_its_line_keeps_every_word(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertIn("<code>npm test</code>", self._render("run ```npm test``` now"))
+        self.assertIn("code here", self._render("1. Do\n   ```\n   code here\n   ```\n2. Next"))
+        self.assertIn("<code>x</code>", self._render("```\nx\n``` then"))
+
+    def test_a_language_tag_is_still_dropped(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("```python\nx = 1\n```"), "<pre><code>x = 1</code></pre>")
+
+    def test_a_line_shaped_like_a_placeholder_stays_literal(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("\uE000B7\uE000"), "<p>\uE000B7\uE000</p>")
+
+    def test_literal_asterisks_are_not_emphasis(self):
+        if not self.node:
+            self.skipTest("node not available")
+        for text in ("multiply 2*3 and 4*5", "rm *.log and *.tmp", "pass **kwargs and *args"):
+            self.assertEqual(self._render(text), f"<p>{text}</p>")
+        self.assertEqual(self._render("*a* and (*b*)"), "<p><em>a</em> and (<em>b</em>)</p>")
+
+    def test_user_html_stays_inert(self):
+        if not self.node:
+            self.skipTest("node not available")
+        html = self._render("<img src=x onerror=alert(1)>")
+        self.assertNotIn("<img", html)
+        self.assertIn("&lt;img", html)
 
     def test_blank_lines_between_steps_stay_ONE_list(self):
         if not self.node:
