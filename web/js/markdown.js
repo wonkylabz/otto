@@ -7,25 +7,37 @@
    verbatim. */
 function renderMD(src){
   // GitHub's editor saves CRLF, and a stray \r defeats every line-anchored rule below.
-  src = String(src==null ? "" : src).replace(/\r\n?/g,"\n");
+  // The placeholders below are private-use code points, so drop any in the text: literal ones
+  // would otherwise be swapped for a code block.
+  src = String(src==null ? "" : src).replace(/\r\n?/g,"\n").replace(/[\uE000\uE001]/g,"");
   const blocks = [];
-  // A language tag only counts when a newline ends it: in ```npm test``` the first word is code.
-  src = src.replace(/```(?:[ \t]*[\w.-]*[ \t]*\n)?([\s\S]*?)```/g, (_,code)=>{
-    blocks.push(`<pre><code>${esc(code.replace(/\n$/,""))}</code></pre>`);
-    // The placeholder must be a sequence no model output can contain and no HTML escape
-    // rewrites. U+E000 is a private-use code point, written as an escape so this file stays
-    // plain ASCII - it used to be a literal NUL byte, which defeated every string-matching
-    // editor and forced `grep -a` on the whole page.
-    return `\uE000B${blocks.length-1}\uE000`;
+  // A fence opening its line is a block, and whatever follows the close starts a new line, since
+  // a <pre> can't live inside a <p>. Its first line is an info string only if a newline ends it:
+  // in ```npm test``` the first word is code. Anywhere else a fence is just inline code.
+  src = src.replace(/```([^\n`]*\n)?([\s\S]*?)```/g, (_,info,code,at,all)=>{
+    const lead = all.slice(all.lastIndexOf("\n",at-1)+1, at), block = !lead.trim();
+    blocks.push(block
+      ? `<pre><code>${esc(code.replace(/\n[ \t]*$/,"").replace(new RegExp("^"+lead,"gm"),""))}</code></pre>`
+      : `<code>${esc(((info||"")+code).trim())}</code>`);
+    // The placeholder must be a sequence no HTML escape rewrites. U+E000 is a private-use code
+    // point, written as an escape so this file stays plain ASCII - it used to be a literal NUL
+    // byte, which defeated every string-matching editor and forced `grep -a` on the whole page.
+    return `\uE000B${blocks.length-1}\uE000`+(block?"\n":"");
   });
   src = esc(src);
-  const inline = s => s
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    // Emphasis hugs its text and starts a word, so 2*3 and 4*5, or rm *.log *.tmp, stay literal.
-    .replace(/(^|[^*\w])\*([^*\s](?:[^*]*[^*\s])?)\*(?![\w*])/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-    .replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  const inline = s => {
+    // Code spans sit out the rest, or emphasis pairs the asterisks of `*.log` and `*.tmp`.
+    const spans = [];
+    return s
+      .replace(/`([^`]+)`/g, (_,c)=>{ spans.push(`<code>${c}</code>`); return `\uE001${spans.length-1}\uE001`; })
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      // Emphasis opens on a letter or digit at the start of a word, so 2*3 and 4*5, or
+      // rm src/*.log *.tmp, stay literal.
+      .replace(/(^|[^*\p{L}\p{N}_])\*([\p{L}\p{N}\uE000\uE001](?:[^*]*[^*\s])?)\*(?![\p{L}\p{N}_*])/gu, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:[^)\s\uE000]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|\s)(https?:\/\/[^\s<\uE000]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+      .replace(/\uE001(\d+)\uE001/g, (_,n)=>spans[+n]);
+  };
   let html = "", list = null;
   const closeList = () => { if(list){ html += `</${list}>`; list = null; } };
   const splitRow = r => r.trim().replace(/^\|/,"").replace(/\|$/,"").split("|").map(c=>c.trim());
@@ -34,7 +46,7 @@ function renderMD(src){
   for(let i=0; i<lines.length; i++){
     const raw = lines[i];
     const ph = raw.match(/^\s*\uE000B(\d+)\uE000\s*$/);
-    if(ph && blocks[+ph[1]]){ closeList(); html += blocks[+ph[1]]; continue; }
+    if(ph){ closeList(); html += blocks[+ph[1]]; continue; }
     const line = raw.replace(/\s+$/,"");
     let m;
     // A blank line does NOT end a list. Every plan step is a paragraph with a blank line after
@@ -71,7 +83,5 @@ function renderMD(src){
     closeList(); html += `<p>${inline(line)}</p>`;
   }
   closeList();
-  // A fence sharing its line with text is inside another block by now, and must not vanish there.
-  // An index with no block is literal text that happens to look like a placeholder.
-  return html.replace(/\uE000B(\d+)\uE000/g, (m,n)=>blocks[+n]||m);
+  return html.replace(/\uE000B(\d+)\uE000/g, (_,n)=>blocks[+n]);
 }

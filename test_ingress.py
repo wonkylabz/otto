@@ -7591,26 +7591,49 @@ class RenderMdListTests(unittest.TestCase):
     def test_a_fence_sharing_its_line_keeps_every_word(self):
         if not self.node:
             self.skipTest("node not available")
-        self.assertIn("<code>npm test</code>", self._render("run ```npm test``` now"))
-        self.assertIn("code here", self._render("1. Do\n   ```\n   code here\n   ```\n2. Next"))
-        self.assertIn("<code>x</code>", self._render("```\nx\n``` then"))
+        self.assertEqual(self._render("run ```npm test``` now"), "<p>run <code>npm test</code> now</p>")
+        self.assertEqual(self._render("x ```a\nb\n``` y"), "<p>x <code>a\nb</code> y</p>")
+        self.assertEqual(self._render("```\nx\n``` then"), "<pre><code>x</code></pre><p> then</p>")
 
-    def test_a_language_tag_is_still_dropped(self):
+    def test_an_indented_fence_loses_only_its_own_indent(self):
         if not self.node:
             self.skipTest("node not available")
-        self.assertEqual(self._render("```python\nx = 1\n```"), "<pre><code>x = 1</code></pre>")
+        self.assertEqual(self._render("1. Do\n   ```\n   a\n     b\n   ```\n2. Next"),
+                         '<ol><li>Do</li></ol><pre><code>a\n  b</code></pre><ol start="2"><li>Next</li></ol>')
 
-    def test_a_line_shaped_like_a_placeholder_stays_literal(self):
+    def test_a_fence_never_lands_in_a_link(self):
         if not self.node:
             self.skipTest("node not available")
-        self.assertEqual(self._render("\uE000B7\uE000"), "<p>\uE000B7\uE000</p>")
+        self.assertNotIn('<code>x</code>"', self._render("see https://a.b/c```x``` now"))
+
+    def test_the_whole_info_string_is_dropped(self):
+        if not self.node:
+            self.skipTest("node not available")
+        for info in ("python", "c++", 'js title="a"'):
+            self.assertEqual(self._render(f"```{info}\nx = 1\n```"), "<pre><code>x = 1</code></pre>")
+
+    def test_a_literal_placeholder_can_never_become_a_block(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("\uE000B7\uE000"), "<p>B7</p>")
+        self.assertEqual(self._render("mid \uE000B0\uE000 line\n\n```\nsecret\n```").count("secret"), 1)
 
     def test_literal_asterisks_are_not_emphasis(self):
         if not self.node:
             self.skipTest("node not available")
-        for text in ("multiply 2*3 and 4*5", "rm *.log and *.tmp", "pass **kwargs and *args"):
+        for text in ("multiply 2*3 and 4*5", "rm *.log and *.tmp", "pass **kwargs and *args",
+                     "rm src/*.log tests/*.tmp", "*.py|*.js", "glob *.log,*.tmp", "(a)*(b)*(c)",
+                     "价格*数量*税率", "é*x*é"):
             self.assertEqual(self._render(text), f"<p>{text}</p>")
-        self.assertEqual(self._render("*a* and (*b*)"), "<p><em>a</em> and (<em>b</em>)</p>")
+        self.assertEqual(self._render("*a* and (*b*), *two words*."),
+                         "<p><em>a</em> and (<em>b</em>), <em>two words</em>.</p>")
+
+    def test_emphasis_never_pairs_across_code_spans(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("use `*.log` and `*.tmp`"),
+                         "<p>use <code>*.log</code> and <code>*.tmp</code></p>")
+        self.assertEqual(self._render("*see `x`*"), "<p><em>see <code>x</code></em></p>")
 
     def test_user_html_stays_inert(self):
         if not self.node:
