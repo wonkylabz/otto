@@ -11,6 +11,12 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Your own chat messages now render markdown.** A message, or the ticket a board run started
+  from, showed as one flat block with its headings, lists and line breaks lost; it now renders
+  the same way Otto's replies do. A browser refresh picks this up.
+
 ## [0.11.0] - 2026-11-06
 
 ### Added

@@ -7533,6 +7533,21 @@ class PrReviewWiringTests(unittest.TestCase):
                          "come from an unauthenticated client")
 
 
+class UserBubbleMarkdownTests(unittest.TestCase):
+    """The user's bubble was `textContent` in a box with no `pre-wrap`, so a multi-line message
+    or a board ticket collapsed into one paragraph of literal `##` and `**`."""
+
+    def test_the_user_bubble_renders_through_renderMD(self):
+        block = ui_src().split("function userMsg(", 1)[1].split("function enoMsg(", 1)[0]
+        self.assertIn('<div class="result">${renderMD(text)}</div>', block)
+        self.assertNotIn(".textContent=text", block)
+
+    def test_attachments_sit_beside_the_rendered_text_not_inside_it(self):
+        """`.result` is innerHTML from markdown; a thumbnail belongs to the bubble."""
+        block = ui_src().split("function userMsg(", 1)[1].split("function enoMsg(", 1)[0]
+        self.assertIn('querySelector(".body").insertAdjacentHTML("beforeend", attsHTML(atts))', block)
+
+
 class RenderMdListTests(unittest.TestCase):
     """`renderMD` closed the open list on every BLANK line, and a plan's steps are paragraphs
     with a blank line between them — so each step became its own `<ol>` and all eleven rendered
