@@ -62,7 +62,7 @@ def chat_refs(conn, cid):
     return refs
 
 
-_BOARD_WID = re.compile(r"^gh-issue-(\d+)-(.+?)(?:-r\d+)?$")
+_BOARD_WID = re.compile(r"^gh-issue-(\d+)-(.+?)(?:-r\d+)?(?:-s\d+)?$")   # generation, swarm child
 
 
 def card_tickets(wid, refs, slugs=()):
@@ -74,7 +74,7 @@ def card_tickets(wid, refs, slugs=()):
     m = _BOARD_WID.match(wid or "")
     if m:
         for s in slugs:
-            if re.sub(r"[^A-Za-z0-9_.-]+", "-", s) == m.group(2):
+            if re.sub(r"[^A-Za-z0-9_.-]+", "-", s).lower() == m.group(2).lower():
                 out.add(f"{s.lower()}#{m.group(1)}")
                 break
     return sorted(out)

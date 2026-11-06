@@ -2409,7 +2409,8 @@ class BoardCardTicketTests(unittest.TestCase):
 
     def test_a_board_run_is_labelled_from_its_wid_against_registered_slugs(self):
         slugs = ["Acme/my-api", "acme/other"]
-        for wid in ("gh-issue-7-Acme-my-api", "gh-issue-7-Acme-my-api-r2"):
+        for wid in ("gh-issue-7-Acme-my-api", "gh-issue-7-Acme-my-api-r2",
+                    "gh-issue-7-acme-my-api-s1", "gh-issue-7-Acme-my-api-r2-s3"):
             self.assertEqual(workstreams.card_tickets(wid, set(), slugs), ["acme/my-api#7"], wid)
 
     def test_an_unregistered_or_legacy_board_wid_adds_nothing(self):
