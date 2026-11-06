@@ -918,9 +918,12 @@ async def _board(limit=40):
     # Resolved per pass like chat_key: a chat is filed (or moved) long after its card froze.
     filed = workstreams.by_chat()
     hints = workstreams.suggest([e.get("chat_key") for e in out if e.get("chat_key") not in filed])
+    refs = workstreams.refs_by_chat(e.get("chat_key") for e in out)
+    slugs = registry.project_slugs()
     for e in out:
         e["workstream"] = filed.get(e.get("chat_key"))
         e["ws_suggest"] = hints.get(e.get("chat_key"))
+        e["tickets"] = workstreams.card_tickets(e["id"], refs.get(e.get("chat_key")), slugs)
     replaced = _replaced_by(out)
     fac = factory.load()
     # Only a card still ON the board can carry the ticket: one the operator dismissed, or the

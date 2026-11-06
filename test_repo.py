@@ -2400,6 +2400,29 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(sum(c["id"] == "shared" for c in chats.list_summaries()), 1)
 
 
+class BoardCardTicketTests(unittest.TestCase):
+    """A board card is labelled with the ticket it belongs to (`workstreams.card_tickets`)."""
+
+    def test_chat_refs_label_the_card(self):
+        self.assertEqual(workstreams.card_tickets("web-ab12-0001", {"acme/api#12", "jira:OPS-3"}),
+                         ["acme/api#12", "jira:OPS-3"])
+
+    def test_a_board_run_is_labelled_from_its_wid_against_registered_slugs(self):
+        slugs = ["Acme/my-api", "acme/other"]
+        for wid in ("gh-issue-7-Acme-my-api", "gh-issue-7-Acme-my-api-r2",
+                    "gh-issue-7-acme-my-api-s1", "gh-issue-7-Acme-my-api-r2-s3"):
+            self.assertEqual(workstreams.card_tickets(wid, set(), slugs), ["acme/my-api#7"], wid)
+
+    def test_an_unregistered_or_legacy_board_wid_adds_nothing(self):
+        self.assertEqual(workstreams.card_tickets("gh-issue-7-x-y", set(), ["acme/api"]), [])
+        self.assertEqual(workstreams.card_tickets("gh-issue-7", set(), ["acme/api"]), [])
+
+    def test_board_feeds_tickets_to_the_card_and_the_ui_renders_them(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")).read()
+        self.assertIn('e["tickets"] = workstreams.card_tickets(', src)
+        self.assertIn("ticketChips(it.tickets)", test_support.ui_src())
+
+
 class WorkstreamTests(unittest.TestCase):
     """Workstreams group every chat about one ticket/PR (workstreams.py). Display-only, so what
     these pin is the grouping itself: who joins, who must NOT, and that it survives the writers."""

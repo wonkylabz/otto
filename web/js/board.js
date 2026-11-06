@@ -177,6 +177,14 @@ async function loadBoard(silent){
   if(BOARD_MODE==="workstreams") return renderWorkstreamsView(el, silent);
   // The badge and the mascot count EVERY run; a workstream filter narrows only the columns.
   if(BOARD_WS) for(const k in cols) cols[k]=cols[k].filter(it=>it.workstream&&it.workstream.id===BOARD_WS);
+  // The ticket/issue a card belongs to: `owner/repo#N` links to GitHub (an issue URL redirects
+  // to a PR of the same number), `jira:KEY` has no host on record so it is a plain label.
+  const ticketChips=(refs=[])=>refs.slice(0,2).map(r=>{
+    if(r.startsWith("jira:")) return `<span class="bchip ticket" title="Jira ticket this run belongs to">&#127915; ${esc(r.slice(5))}</span>`;
+    const m=/^(.+)\/([^/#]+)#(\d+)$/.exec(r);
+    if(!m) return `<span class="bchip ticket">&#127915; ${esc(r)}</span>`;
+    return `<a class="bchip ticket" href="https://github.com/${esc(m[1])}/${esc(m[2])}/issues/${m[3]}" target="_blank" rel="noopener" title="${esc(r)} — the issue/PR this run belongs to">&#127915; ${esc(m[2])}#${m[3]}</a>`;
+  }).join('')+(refs.length>2?`<span class="bchip" title="${esc(refs.slice(2).join(', '))}">+${refs.length-2}</span>`:'');
   const card=it=>{
     const failed=it.status!=="COMPLETED" && it.status!=="RUNNING";
     const risk=it.risk?`<span class="badge ${esc(it.risk)}">${esc(it.risk)}</span>`:"";
@@ -240,7 +248,7 @@ async function loadBoard(silent){
     const truncated=(it.outcome||"").endsWith("…");
     const statusCls=it.verified===true?'ok':(failed?'bad':(it._needs?'warn':''));
     const wsc=it.workstream?wsChip(it.workstream):wsSuggestChip(it.chat_key, it.ws_suggest, true);
-    const chips=[needs,advisory,stage,wsc,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',isSub?'<span class="bchip">sub-task</span>':'',inplace,archived].filter(Boolean).join('');
+    const chips=[needs,advisory,stage,ticketChips(it.tickets),wsc,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',isSub?'<span class="bchip">sub-task</span>':'',inplace,archived].filter(Boolean).join('');
     // A tone per column for the card's left rail, and `fresh` only on a card this tab has not
     // painted before: the board REBUILDS on every change, so an entrance on every card would
     // replay the whole board each time one run moved.

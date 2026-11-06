@@ -62,6 +62,33 @@ def chat_refs(conn, cid):
     return refs
 
 
+_BOARD_WID = re.compile(r"^gh-issue-(\d+)-(.+?)(?:-r\d+)?(?:-s\d+)?$")   # generation, swarm child
+
+
+def card_tickets(wid, refs, slugs=()):
+    """The tickets a board card belongs to, sorted: its chat's subject refs, plus a board run's own
+    issue. A board run's chat opens on the ticket's TEXT, never its URL, so only its wid
+    (`gh-issue-<n>-<owner-repo>`) names it; resolved against the registered `slugs`, since the
+    dashed form can't be split back into owner/repo. Pure."""
+    out = set(refs or ())
+    m = _BOARD_WID.match(wid or "")
+    if m:
+        for s in slugs:
+            if re.sub(r"[^A-Za-z0-9_.-]+", "-", s).lower() == m.group(2).lower():
+                out.add(f"{s.lower()}#{m.group(1)}")
+                break
+    return sorted(out)
+
+
+def refs_by_chat(cids):
+    """{chat_id: refs} for each chat in `cids` — one connection, for the board's per-card label."""
+    want = sorted({c for c in cids if c})
+    if not want:
+        return {}
+    with _conn() as conn:
+        return {c: chat_refs(conn, c) for c in want}
+
+
 def _load(value):
     try:
         return set(json.loads(value or "[]"))
