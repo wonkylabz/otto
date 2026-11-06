@@ -1416,6 +1416,30 @@ class LocalRuntimeTests(unittest.TestCase):
         out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
         self.assertEqual((out["result"], len(sent)), ("answered", 1))
 
+    def test_a_stream_error_spelling_its_code_as_a_word_keeps_its_class(self):
+        # Read as a 500 its body is never classified, so an overflow resent the same prompt
+        # until it walled the run off the model as a server failure.
+        for error, status in (({"code": "context_length_exceeded", "message": "too long",
+                                "type": "invalid_request_error"}, 400),
+                              ({"code": None, "message": "no", "type": "authentication_error"}, 401),
+                              ({"code": "throttled", "type": "rate_limit_error"}, 429),
+                              ({"code": "boom", "type": "server_error"}, 500),
+                              ({"code": None, "type": ["not", "hashable"]}, 500)):
+            self.assertEqual(local_runtime._stream_failure(error).code, status, error)
+
+    def test_an_overflow_spelled_in_a_stream_shrinks_the_turn(self):
+        self._no_backoff()
+        over = self._sse({"error": {"code": "context_length_exceeded",
+                                    "type": "invalid_request_error",
+                                    "message": "This model's maximum context length is 8192 tokens"}},
+                         done=False)
+        sent = self._stream_turns(over, self._answered())
+        out = local_runtime.run_json("x", allowed_tools=[], model_entry=self.MODEL)
+        self.assertFalse(out["is_error"], out["result"])
+        self.assertEqual(len(sent), 2)
+        self.assertLess(sent[1].get("max_tokens") or sent[1].get("max_completion_tokens"),
+                        sent[0].get("max_tokens") or sent[0].get("max_completion_tokens"))
+
     def test_a_400_inside_a_stream_is_never_a_refusal_of_streaming(self):
         # "upstream" holds the word `_post` looks for, and the server had accepted `stream`
         # already: the plain re-send would turn the endpoint's live draft off until a restart.

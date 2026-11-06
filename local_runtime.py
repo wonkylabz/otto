@@ -892,6 +892,10 @@ def _post_stream(m, body, timeout, partial):
         return _assemble_sse(r, partial, until=time.time() + timeout)
 
 
+_STREAM_ERROR_TYPES = {"invalid_request_error": 400, "authentication_error": 401,
+                       "permission_error": 403, "rate_limit_error": 429}
+
+
 class _StreamFailure(urllib.error.HTTPError):
     """An HTTPError raised from INSIDE a stream the server had already accepted, so `_post` must
     not read it as a refusal of `stream` itself."""
@@ -900,12 +904,15 @@ class _StreamFailure(urllib.error.HTTPError):
 def _stream_failure(error):
     """An error sent INSIDE a 200 stream, as the HTTPError it would have been before the headers
     went out, so `_chat_step` classifies it like any other. As a bare RuntimeError it skipped the
-    retries, and one proxy hiccup threw away a long run's every earlier turn. An error with no
-    usable status is a 500: the stream failed, and nothing says the request was at fault."""
+    retries, and one proxy hiccup threw away a long run's every earlier turn. OpenAI's dialect
+    spells `code` as a word and puts the class in `type`, and a 500 is never read for its body,
+    so an overflow spelled that way would resend the same prompt until it walled. With neither,
+    it is a 500: the stream failed, and nothing says the request was at fault."""
+    kind = error.get("type") if isinstance(error, dict) else None
     try:
         code = int(error.get("code"))
     except (AttributeError, TypeError, ValueError):
-        code = 500
+        code = _STREAM_ERROR_TYPES.get(kind, 500) if isinstance(kind, str) else 500
     if not 400 <= code <= 599:
         code = 500
     return _StreamFailure("", code, "error in stream", None,
