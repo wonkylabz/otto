@@ -6,23 +6,40 @@
    blockquotes, hr. Code blocks are pulled out before escaping so their contents render
    verbatim. */
 function renderMD(src){
-  src = String(src==null ? "" : src);
+  // GitHub's editor saves CRLF, and a stray \r defeats every line-anchored rule below.
+  // The placeholders below are private-use code points, so drop any in the text: literal ones
+  // would otherwise be swapped for a code block.
+  src = String(src==null ? "" : src).replace(/\r\n?/g,"\n").replace(/[\uE000\uE001]/g,"");
   const blocks = [];
-  src = src.replace(/```[ \t]*([\w.-]*)\r?\n?([\s\S]*?)```/g, (_,lang,code)=>{
-    blocks.push(`<pre><code>${esc(code.replace(/\n$/,""))}</code></pre>`);
-    // The placeholder must be a sequence no model output can contain and no HTML escape
-    // rewrites. U+E000 is a private-use code point, written as an escape so this file stays
-    // plain ASCII - it used to be a literal NUL byte, which defeated every string-matching
-    // editor and forced `grep -a` on the whole page.
-    return `\uE000B${blocks.length-1}\uE000`;
+  // A fence opening its line is a block, and whatever follows the close starts a new line, since
+  // a <pre> can't live inside a <p>. Its first line is an info string only if it is one token and
+  // a newline ends it: in ```npm test``` the words are code. Elsewhere a fence is inline code.
+  src = src.replace(/```([ \t]*[^\s`]*[ \t]*\n)?([\s\S]*?)```/g, (_,info,code,at,all)=>{
+    const lead = all.slice(all.lastIndexOf("\n",at-1)+1, at), block = !lead.trim();
+    blocks.push(block
+      ? `<pre><code>${esc(code.replace(/\n[ \t]*$/,"").replace(new RegExp("^"+lead,"gm"),""))}</code></pre>`
+      : `<code>${esc(((info||"")+code).trim())}</code>`);
+    // The placeholder must be a sequence no HTML escape rewrites. U+E000 is a private-use code
+    // point, written as an escape so this file stays plain ASCII - it used to be a literal NUL
+    // byte, which defeated every string-matching editor and forced `grep -a` on the whole page.
+    return `\uE000B${blocks.length-1}\uE000`+(block?"\n":"");
   });
   src = esc(src);
-  const inline = s => s
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-    .replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  const inline = s => {
+    // Code spans sit out the rest, or emphasis pairs the asterisks of `*.log` and `*.tmp`.
+    const spans = [];
+    return s
+      .replace(/`([^`]+)`/g, (_,c)=>{ spans.push(`<code>${c}</code>`); return `\uE001${spans.length-1}\uE001`; })
+      // Strong hugs its text outside ASCII words, so 2**3 + 4**5 and {**a, **b} stay literal.
+      // ASCII only: CJK has no spaces, and bold there runs straight into the next word.
+      .replace(/(^|[^A-Za-z0-9_])\*\*([^*\s](?:[^*]*[^*\s])?)\*\*(?![A-Za-z0-9_])/g, "$1<strong>$2</strong>")
+      // Emphasis opens on a letter or digit at the start of a word, so 2*3 and 4*5, or
+      // rm src/*.log *.tmp, stay literal. A < can only be the <strong> of ***x***: src is escaped.
+      .replace(/(^|[^*\p{L}\p{N}_])\*([\p{L}\p{N}<\uE000\uE001](?:[^*]*[^*\s])?)\*(?![\p{L}\p{N}_*])/gu, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\((https?:[^)\s\uE000\uE001]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|\s)(https?:\/\/[^\s<\uE000\uE001]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+      .replace(/\uE001(\d+)\uE001/g, (_,n)=>spans[+n]);
+  };
   let html = "", list = null;
   const closeList = () => { if(list){ html += `</${list}>`; list = null; } };
   const splitRow = r => r.trim().replace(/^\|/,"").replace(/\|$/,"").split("|").map(c=>c.trim());
@@ -30,7 +47,7 @@ function renderMD(src){
   const lines = src.split("\n");
   for(let i=0; i<lines.length; i++){
     const raw = lines[i];
-    const ph = raw.match(/^\uE000B(\d+)\uE000$/);
+    const ph = raw.match(/^\s*\uE000B(\d+)\uE000\s*$/);
     if(ph){ closeList(); html += blocks[+ph[1]]; continue; }
     const line = raw.replace(/\s+$/,"");
     let m;
@@ -68,5 +85,5 @@ function renderMD(src){
     closeList(); html += `<p>${inline(line)}</p>`;
   }
   closeList();
-  return html;
+  return html.replace(/\uE000B(\d+)\uE000/g, (_,n)=>blocks[+n]);
 }

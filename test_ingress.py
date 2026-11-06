@@ -7533,6 +7533,21 @@ class PrReviewWiringTests(unittest.TestCase):
                          "come from an unauthenticated client")
 
 
+class UserBubbleMarkdownTests(unittest.TestCase):
+    """The user's bubble was `textContent` in a box with no `pre-wrap`, so a multi-line message
+    or a board ticket collapsed into one paragraph of literal `##` and `**`."""
+
+    def test_the_user_bubble_renders_through_renderMD(self):
+        block = ui_src().split("function userMsg(", 1)[1].split("function enoMsg(", 1)[0]
+        self.assertIn("renderMD(text)", block)
+        self.assertNotIn(".textContent=text", block)
+
+    def test_attachments_sit_beside_the_rendered_text_not_inside_it(self):
+        """`.result` is innerHTML from markdown; a thumbnail belongs to the bubble."""
+        block = ui_src().split("function userMsg(", 1)[1].split("function enoMsg(", 1)[0]
+        self.assertIn('querySelector(".body").insertAdjacentHTML("beforeend", attsHTML(atts))', block)
+
+
 class RenderMdListTests(unittest.TestCase):
     """`renderMD` closed the open list on every BLANK line, and a plan's steps are paragraphs
     with a blank line between them — so each step became its own `<ol>` and all eleven rendered
@@ -7566,6 +7581,80 @@ class RenderMdListTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
+
+    def test_a_fence_in_a_CRLF_ticket_survives(self):
+        if not self.node:
+            self.skipTest("node not available")
+        html = self._render("Steps\r\n\r\n```\r\nnpm test\r\n```\r\n\r\nDone")
+        self.assertEqual(html, "<p>Steps</p><pre><code>npm test</code></pre><p>Done</p>")
+
+    def test_a_fence_sharing_its_line_keeps_every_word(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("run ```npm test``` now"), "<p>run <code>npm test</code> now</p>")
+        self.assertEqual(self._render("x ```a\nb\n``` y"), "<p>x <code>a\nb</code> y</p>")
+        self.assertEqual(self._render("```\nx\n``` then"), "<pre><code>x</code></pre><p> then</p>")
+
+    def test_an_indented_fence_loses_only_its_own_indent(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("1. Do\n   ```\n   a\n     b\n   ```\n2. Next"),
+                         '<ol><li>Do</li></ol><pre><code>a\n  b</code></pre><ol start="2"><li>Next</li></ol>')
+
+    def test_a_fence_never_lands_in_a_link(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertNotIn('<code>x</code>"', self._render("see https://a.b/c```x``` now"))
+        self.assertEqual(
+            self._render("GET https://a.b/`id`/posts"),
+            '<p>GET <a href="https://a.b/" target="_blank" rel="noopener">https://a.b/</a><code>id</code>/posts</p>')
+
+    def test_only_a_single_token_is_an_info_string(self):
+        if not self.node:
+            self.skipTest("node not available")
+        for info in ("python", "c++", "ts:foo.ts"):
+            self.assertEqual(self._render(f"```{info}\nx = 1\n```"), "<pre><code>x = 1</code></pre>")
+        self.assertEqual(self._render("```npm test\n```"), "<pre><code>npm test</code></pre>")
+        self.assertEqual(self._render("```this is prose\nmore\n```"),
+                         "<pre><code>this is prose\nmore</code></pre>")
+
+    def test_a_literal_placeholder_can_never_become_a_block(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("\uE000B7\uE000"), "<p>B7</p>")
+        self.assertEqual(self._render("mid \uE000B0\uE000 line\n\n```\nsecret\n```").count("secret"), 1)
+
+    def test_literal_asterisks_are_not_emphasis(self):
+        if not self.node:
+            self.skipTest("node not available")
+        for text in ("multiply 2*3 and 4*5", "rm *.log and *.tmp", "pass **kwargs and *args",
+                     "rm src/*.log tests/*.tmp", "*.py|*.js", "glob *.log,*.tmp", "(a)*(b)*(c)",
+                     "价格*数量*税率", "é*x*é", "merge {**a, **b} here", "2**3 + 4**5"):
+            self.assertEqual(self._render(text), f"<p>{text}</p>")
+        self.assertEqual(self._render("*a* and (*b*), *two words*."),
+                         "<p><em>a</em> and (<em>b</em>), <em>two words</em>.</p>")
+
+    def test_bold_still_renders_where_it_should(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("***both***"), "<p><em><strong>both</strong></em></p>")
+        self.assertEqual(self._render("**TLDR**: done, **really**."),
+                         "<p><strong>TLDR</strong>: done, <strong>really</strong>.</p>")
+        self.assertEqual(self._render("这是**粗体**文字"), "<p>这是<strong>粗体</strong>文字</p>")
+
+    def test_emphasis_never_pairs_across_code_spans(self):
+        if not self.node:
+            self.skipTest("node not available")
+        self.assertEqual(self._render("use `*.log` and `*.tmp`"),
+                         "<p>use <code>*.log</code> and <code>*.tmp</code></p>")
+        self.assertEqual(self._render("*see `x`*"), "<p><em>see <code>x</code></em></p>")
+
+    def test_user_html_stays_inert(self):
+        if not self.node:
+            self.skipTest("node not available")
+        html = self._render("<img src=x onerror=alert(1)>")
+        self.assertNotIn("<img", html)
+        self.assertIn("&lt;img", html)
 
     def test_blank_lines_between_steps_stay_ONE_list(self):
         if not self.node:

@@ -657,7 +657,7 @@ function stampHTML(ts){
    so it's the one bubble that otherwise renders stampless — live time is right here). */
 function stampMsg(content, ts){ const m=content&&content.closest(".msg"); if(m&&!m.querySelector(":scope > .stamp")) m.insertAdjacentHTML("beforeend", stampHTML(ts||new Date().toISOString())); }
 function userMsg(text, ts, atts){ ts=ts||(recording?new Date().toISOString():null);
-  const m=document.createElement("div"); m.className="msg user"; m.innerHTML=`<div class="body"></div>`; m.querySelector(".body").textContent=text;
+  const m=document.createElement("div"); m.className="msg user"; m.innerHTML=`<div class="body"><div class="result">${renderMD(text)}</div></div>`;
   m.querySelector(".body").insertAdjacentHTML("beforeend", attsHTML(atts));
   m.insertAdjacentHTML("beforeend", stampHTML(ts)); stream.appendChild(m); scroll(true); recordMsg("user", text, ts, atts); }
 function enoMsg(){ const m=document.createElement("div"); m.className="msg eno";
