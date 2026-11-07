@@ -6466,6 +6466,8 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
         # `otto/<run_id>`: a run amending an existing PR pushes to that PR's branch.
         self._orig_prb = workspace.pr_branch
         workspace.pr_branch = lambda repo, pr_url: "feature/someone-elses"
+        self.addCleanup(setattr, workspace, "linear_since", workspace.linear_since)
+        workspace.linear_since = lambda path, sha: True
 
     def tearDown(self):
         for n, fn in self._orig.items():
@@ -6796,7 +6798,9 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
             {"verdict": "fail", "critique": "hardcoded region string in the resource"},
             {"verdict": "pass", "critique": ""},
         ])
-        engine.judge_review = lambda request, result, project=None: next(self.verdicts)
+        self.judged_scoped = []
+        engine.judge_review = lambda request, result, project=None, scoped=False: (
+            self.judged_scoped.append(scoped), next(self.verdicts))[1]
 
         self._orig_ws = {n: getattr(workspace, n) for n in ("provision", "finalize", "cleanup")}
         self.provisions, self.finalizes, self.cleaned = [], [], []
@@ -6826,6 +6830,8 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         # `otto/<run_id>`: a run amending an existing PR pushes to that PR's branch.
         self._orig_prb = workspace.pr_branch
         workspace.pr_branch = lambda repo, pr_url: "feature/someone-elses"
+        self.addCleanup(setattr, workspace, "linear_since", workspace.linear_since)
+        workspace.linear_since = lambda path, sha: True
 
     def tearDown(self):
         for n, fn in self._orig.items():
@@ -6943,6 +6949,10 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("follow-up review", review_runs[0]["request"])
         self.assertIn("hardcoded region string", review_runs[1]["request"])
         self.assertIn("edited the code", review_runs[1]["request"])
+        # Round 1 read the whole PR, so the re-review reads only what the fix changed.
+        self.assertNotIn("git diff", review_runs[0]["request"])
+        self.assertIn("`git diff h0 HEAD`", review_runs[1]["request"])
+        self.assertEqual(self.judged_scoped, [False, True])
         # The fix re-provisioned the EXISTING branch and pushed to the EXISTING PR (no new PR).
         self.assertTrue(any(p["from_branch"] for p in self.provisions))
         self.assertTrue(any(f["existing_pr"] for f in self.finalizes))
@@ -7175,7 +7185,7 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         self.review_local_dies = True
         self.verdicts = iter([{"verdict": "pass", "critique": ""}])
         seen = []
-        engine.judge_review = lambda request, result, project=None: (
+        engine.judge_review = lambda request, result, project=None, scoped=False: (
             seen.append(result), {"verdict": "pass", "critique": ""})[1]
         out = await self._run_reviewed("revq7")
         self.assertEqual([bool(r["local_disabled"]) for r in self._review_runs()],

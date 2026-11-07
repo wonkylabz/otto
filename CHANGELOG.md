@@ -15,6 +15,11 @@ changelog that restates it is a second copy of `git log`.
 
 - **A retried factory ticket continues its open PR instead of closing it and starting over.** Only
   a PR that conflicts with the base is rebuilt. **Restart the worker** to pick this up.
+- **Code review reruns only look at the fix.** After the first round, a review reads what changed
+  since the last one and raises only a must-fix on those lines. Anything else is listed as a
+  follow-up, and factory mode files those as an issue after the merge. Reviewers also read a clone
+  of the PR instead of fetching files one at a time, except one set up in a project's own repo,
+  which keeps working there. **Restart the worker** to pick this up.
 
 ### Fixed
 

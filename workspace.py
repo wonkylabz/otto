@@ -111,6 +111,18 @@ def _git_origin(path):
     return out if rc == 0 and out else None
 
 
+def linear_since(path, sha):
+    """Is `sha..HEAD` only the commits made on this branch since `sha`? False for a rebased-away
+    or unknown commit, a value git would read as a flag, or a merge in the range, which would
+    show other people's work as this branch's change."""
+    if not sha or str(sha).startswith("-"):
+        return False
+    if _run(["git", "-C", path, "merge-base", "--is-ancestor", str(sha), "HEAD"])[0] != 0:
+        return False
+    rc, out, _ = _run(["git", "-C", path, "rev-list", "--merges", "--count", f"{sha}..HEAD"])
+    return rc == 0 and out.strip() == "0"
+
+
 def _current_branch(path):
     rc, out, _ = _run(["git", "-C", path, "branch", "--show-current"])
     return out if rc == 0 and out else None

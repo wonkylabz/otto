@@ -139,7 +139,9 @@ up the rest.
    close its PR, then drop it with `gh issue close --reason "not planned"` and a one-line comment
    saying why. Closing it any other way reads as shipped, so Otto reopens it. If the work is still
    needed, write it as a new ticket buildable from the default branch.
-3. Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
+3. An open issue titled "Review follow-ups" is what a merged PR's review left for later: turn what
+   is worth doing into tickets, then close it (`--reason "not planned"` if nothing is).
+   Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
    Definition of Done and the Product section. Each must be one coherent PR, mergeable on top of
    the current default branch, and state its own acceptance criteria — including the tests it adds
    and that the test and lint commands under Commands pass LOCALLY. Every criterion must be checkable from a

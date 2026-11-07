@@ -6,6 +6,8 @@ its parsers, the QA / code-review request builders and judges, the approved-plan
 judge receives, and the resume/error result guards.
 """
 
+import re
+
 import attachments as attachments_mod
 import config
 import conventions
@@ -670,21 +672,56 @@ def prior_rounds_quoted(prior):
     return "\n\n".join(parts)
 
 
-def prior_rounds_note(noun, prior):
+def prior_rounds_note(noun, prior, since=None):
     """What earlier rounds of a post-PR loop raised and what each fix round did, for the next
     pass. Pure. A cold pass re-reviewed from scratch, so findings moved every round and one asked
-    to remove three regions the round before had asked to add (runbook-rb-e0f48559)."""
+    to remove three regions the round before had asked to add (runbook-rb-e0f48559).
+    `since` scopes the pass to the commits after that sha, the fix rounds' own change."""
     if not prior:
         return ""
+    new_findings = (
+        f"Review ONLY what changed since the last round: `git diff {since} HEAD`. Read the rest "
+        "for context, but the whole PR was already reviewed. Raise a NEW finding only if it is "
+        "must-fix AND caused by that diff, on a line it changed or one it broke. List anything "
+        "else worth doing under a `## Follow-ups` heading: follow-ups are not findings and "
+        "never change your verdict."
+        if since else
+        "Raise a NEW finding only if it is must-fix or should-fix on its own merits.")
     return (
         f"\n\nThis is a follow-up {noun}: earlier rounds raised findings and a fix round "
         "was pushed to the same branch after each. Check FIRST whether each earlier finding is "
         "now resolved in the current diff, and say so per finding.\n"
         "Never ask to undo a change an earlier round required (removing what it asked to add, "
         "or the reverse) unless you name that earlier finding and give the concrete reason it "
-        "was wrong; an unexplained reversal makes the loop oscillate and never finish. Raise a "
-        "NEW finding only if it is must-fix or should-fix on its own merits.\n\n"
+        f"was wrong; an unexplained reversal makes the loop oscillate and never finish. "
+        f"{new_findings}\n\n"
         + prior_rounds_quoted(prior))
+
+
+# Opens on a heading, or a label alone on its line, in either number. Ends at a top-level heading
+# or the sections a report closes on — as a heading, a bold label or "Verdict:", never a list item
+# that merely starts with the word. Sub-headings and bold labels inside are how items are grouped.
+_FOLLOW_UPS_RE = re.compile(r"^(?:#{1,6}\s*\**\s*follow[- ]?ups?\b[^\n]*"
+                            r"|\**\s*follow[- ]?ups?\s*:?\s*\**\s*:?[ \t]*)\n(.*?)"
+                            r"(?=^#{1,2}\s|^(?:#{1,6}\s*\**|\*\*)\s*(?:could not assess|verdict)\b"
+                            r"|^(?:could not assess|verdict)\s*:|\Z)",
+                            re.I | re.M | re.S)
+_VERDICT_LINE_RE = re.compile(r"\n\W*(?:PASS|CHANGES|INCONCLUSIVE)\W*$")
+# Only a placeholder: "None." / "None found" / "None — clean", never "None of the helpers…".
+_NO_FOLLOW_UPS_RE = re.compile(
+    r"[\W_]*(?:none|nothing|n/?a|no follow[- ]?ups?)"
+    r"(?:\s+(?:found|noted|identified|needed|worth (?:raising|noting|filing)"
+    r"|to (?:report|add|note|file)))?(?:\s*[.,;:!\u2014\u2013-][^\n]{0,60})?\s*", re.I)
+
+
+def follow_ups(result):
+    """The text of a review's `## Follow-ups` section, without the verdict line that may end it;
+    "" when it has none, or says it has none. Pure."""
+    m = _FOLLOW_UPS_RE.search(result or "")
+    if not m:
+        return ""
+    text = _VERDICT_LINE_RE.sub("", "\n" + m.group(1).rstrip()).strip()
+    return "" if _NO_FOLLOW_UPS_RE.fullmatch(text) else text
 
 
 def qa_review_request(pr_url, repo, request, checkout=None, checkout_error=None,
@@ -764,14 +801,20 @@ _TRANSCRIPT_JUDGES = {
 }
 
 
-def _judge_transcript(kind, request, result, project=None, checks=""):
+_SCOPED_JUDGE = ("This is a follow-up round that read only the last fix: FAIL only for an earlier "
+                 "finding still unresolved, or a new must-fix caused by that fix. "
+                 "Anything under Follow-ups is left for later and never fails the PR.\n")
+
+
+def _judge_transcript(kind, request, result, project=None, checks="", scoped=False):
     """Distil one post-PR transcript to {verdict, critique}, verdict 'pass'|'fail'|'inconclusive'.
 
     Runs on the 'verify' tier — a cheap judge over the capability's own findings, not a fresh
     test. FAIL's critique is folded into the next fix round; INCONCLUSIVE and FAIL-after-budget
     both stop the loop for a human. `project` injects the target repo's own CLAUDE.md conventions
     (see verify()). The verdict is re-sampled if adverse: `claude -p` has no temperature or seed,
-    so one sample is a coin flip on a clean PR (`confirm_adverse`)."""
+    so one sample is a coin flip on a clean PR (`confirm_adverse`). `scoped`: a follow-up pass
+    that read only the fix, so only what it was told to raise can fail it."""
     spec = _TRANSCRIPT_JUDGES[kind]
     if not result or result == "(no output)":
         return {"verdict": "inconclusive", "critique": spec["empty"]}
@@ -785,6 +828,7 @@ def _judge_transcript(kind, request, result, project=None, checks=""):
         + f"{spec['label']}:\n{result[:6000]}\n\n"
         "Reply with PASS, FAIL, or INCONCLUSIVE on the first line:\n"
         + spec["verdicts"] + "\n"
+        + (_SCOPED_JUDGE if scoped else "")
         + spec["closing"])
     verdict = confirm_adverse("verify", prompt, _parse_qa_verdict, _qa_adverse)
     trace(spec["tag"], f"verdict={verdict['verdict']} — {verdict['critique'][:120]}")
@@ -797,17 +841,24 @@ def judge_qa(request, qa_result, project=None, checks=""):
     return _judge_transcript("qa", request, qa_result, project, checks)
 
 
-def review_request(pr_url, repo, request, prior=None):
+def review_request(pr_url, repo, request, prior=None, checkout=None, checkout_error=None,
+                   since=None):
     """The instruction handed to the review capability (default: the stock code-reviewer) for the
     post-PR review loop. Pure (unit-testable). Tells the reviewer to read the PR diff and
     review it strictly WITHOUT changing anything — the platform folds any findings into a fix
     on the same branch. This is the code-review sibling of qa_review_request (which validates
-    empirically); together they mirror sre-minion's self-review + iterate phases."""
+    empirically); together they mirror sre-minion's self-review + iterate phases.
+    `checkout` names a throwaway clone of the PR's head to read instead of fetching files one
+    at a time; `since` scopes a follow-up to the commits after that sha (`prior_rounds_note`)."""
     repo = f" in repo `{repo}`" if repo else ""
-    return (
-        f"Review this pull request{repo} as a strict code reviewer before it merges: {pr_url}\n\n"
-        f"It was opened to satisfy this request:\n{request}"
-        f"{prior_rounds_note('review', prior)}\n\n"
+    source = (
+        f"Your working directory `{checkout}` is a throwaway clone of this PR's head branch, "
+        "yours alone and fully up to date. Take the PR's description from `gh pr view`"
+        + (", and the diff from the `git diff` above" if since and prior else
+           " and the diff from `gh pr diff`") +
+        ". Read everything else from this clone rather than fetching files one at a time with "
+        "`gh api`. Never read any other checkout on this machine, and change nothing here.\n\n"
+    ) if checkout else (
         "Fetch the diff with `gh pr diff` / `gh pr view` (and `gh api` for anything else about "
         "the PR) and review THAT — do not clone, `cd` into, or read files from any local "
         "checkout, even one you can find on this machine. A local checkout can be on the wrong "
@@ -815,6 +866,12 @@ def review_request(pr_url, repo, request, prior=None):
         "is against (observed live: a reviewer browsed local files instead of the PR diff and "
         "wandered into an entirely unrelated repo mentioned only in passing in the ticket text). "
         "The PR's own diff via `gh` is the only source of truth for what this review judges.\n\n"
+    )
+    return (
+        f"Review this pull request{repo} as a strict code reviewer before it merges: {pr_url}\n\n"
+        f"It was opened to satisfy this request:\n{request}"
+        f"{prior_rounds_note('review', prior, since)}\n\n"
+        f"{source}"
         "Review it for correctness bugs, security/IAM issues, resource-lifecycle and "
         "blast-radius concerns, hardcoded values, missing error handling, and deviations from "
         "the repo's own conventions. Do NOT modify code, push, comment on the PR, or mark it "
@@ -830,10 +887,10 @@ def review_request(pr_url, repo, request, prior=None):
         "an empty diff — say why).")
 
 
-def judge_review(request, review_result, project=None, checks=""):
+def judge_review(request, review_result, project=None, checks="", scoped=False):
     """Judge a review transcript: pass=clean, fail=must/should-fix findings. Shares
     `_parse_qa_verdict` with `judge_qa` — deliberately the same verdict vocabulary."""
-    return _judge_transcript("review", request, review_result, project, checks)
+    return _judge_transcript("review", request, review_result, project, checks, scoped)
 
 
 def error_verdict(result):

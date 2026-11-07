@@ -4703,11 +4703,32 @@ class LocalConnectorGapTests(unittest.TestCase):
         with mock.patch.object(activities, "_cap", lambda *_: cap), \
                 mock.patch.object(activities, "_mcp", lambda *_: ([], None)), \
                 mock.patch.object(activities, "_warm_conventions", lambda *_: None), \
-                mock.patch.object(activities, "_qa_checkout", lambda *_: None), \
+                mock.patch.object(activities, "_pr_checkout", lambda *_: None), \
                 mock.patch.object(activities.engine, "run_attempt", attempt):
             activities._post_pr_capability(kind, {"pr_url": "u", "repo": "r", "wid": "w",
                                                   "request": request, "prior": prior})
         return seen
+
+    def test_a_project_reviewer_keeps_its_own_repo_as_cwd(self):
+        """An explicit clone cwd would override a project cap's own, losing its skills."""
+        import activities
+        import types
+        from unittest import mock
+        for kind, want in (("review", []), ("qa", ["qa"])):
+            asked, seen = [], {}
+            cap = types.SimpleNamespace(name="reviewer", risk="read", cwd="/elsewhere")
+            with mock.patch.object(activities, "_cap", lambda *_: cap), \
+                    mock.patch.object(activities, "_mcp", lambda *_: ([], None)), \
+                    mock.patch.object(activities, "_warm_conventions", lambda *_: None), \
+                    mock.patch.object(activities, "_pr_checkout",
+                                      lambda *_: asked.append(kind)), \
+                    mock.patch.object(activities.engine, "run_attempt",
+                                      lambda req, c, **k: seen.update(k) or
+                                      {"workflow": "w", "result": "", "cost": 0}):
+                activities._post_pr_capability(kind, {"pr_url": "u", "repo": "r", "wid": "w",
+                                                      "request": "x"})
+            self.assertEqual(asked, want, kind)
+            self.assertIsNone(seen["cwd"], kind)
 
     def test_an_earlier_rounds_report_is_not_the_operator_naming_a_connector(self):
         """A fix report saying "calendar day" reached the re-review's request, so strict mode
