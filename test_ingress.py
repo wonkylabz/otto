@@ -9365,6 +9365,13 @@ class FactoryModeTests(unittest.TestCase):
         if os.path.exists(factory._path()):
             os.remove(factory._path())
         self.addCleanup(lambda: os.path.exists(factory._path()) and os.remove(factory._path()))
+        import board
+        no_gh = unittest.mock.patch.object(board, "_run", return_value=(0, "[]", ""))
+        no_gh.start()
+        self.addCleanup(no_gh.stop)
+        empty = unittest.mock.patch.object(board, "item_list", return_value={"items": []})
+        empty.start()
+        self.addCleanup(empty.stop)
 
     def _on(self, **kw):
         state = {"enabled": True, "repo": "game", "slug": "me/game", "started_at": "2026-10-10T10:00:00",
@@ -9449,8 +9456,14 @@ class FactoryModeTests(unittest.TestCase):
                 self.assertIn("queued", self.factory.gate()["why"])
             with unittest.mock.patch.object(board, "column_counts", return_value=None):
                 self.assertEqual(self.factory.gate()["why"], "board unreadable")
+            # A sweep that could not tell is blind, never "nothing unshipped".
+            with unittest.mock.patch.object(board, "column_counts", return_value={"Done": 4}), \
+                    unittest.mock.patch.object(board, "unshipped_done", return_value=None):
+                self.assertEqual(self.factory.gate()["why"], "closed tickets unreadable")
+            self.assertEqual(self.factory.load()["blind_ticks"], 2)
             with unittest.mock.patch.object(board, "column_counts", return_value={"Done": 4}):
                 g = self.factory.gate()
+            self.assertFalse(self.factory.load().get("blind_ticks"))
         self.assertTrue(g["go"])
         self.assertEqual(g["params"]["cap_name"], self.factory.PM_CAP)
         self.assertEqual(g["params"]["approval"], "auto")

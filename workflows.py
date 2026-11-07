@@ -48,7 +48,7 @@ with workflow.unsafe.imports_passed_through():
     from wf_runtime import (_EXEC_CEILING, _HEARTBEAT, _JUDGE_CEILING, _NEEDS_HUMAN_BANNER,
                             _PLAN_CEILING, _RETRY, _RETRY_EXEC, _failure_detail)
     from wf_postpr import PostPrMixin
-    from wf_repo import RETRY_NOTE, RepoFlowMixin
+    from wf_repo import RETRY_NOTE, RepoFlowMixin, strip_retry_note
     from wf_frontman import FrontmanMixin
     from wf_swarm import SwarmMixin
 
@@ -1162,6 +1162,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         # exactly that. No clone (`gh` plus a cheap-tier intent check) and cached on self, so
         # provisioning below reuses it instead of asking again.
         if repo and not resume and not subtask:
+            request = strip_retry_note(request)
             self._pr_target = await self._resolve_pr_target(
                 {"repo": repo, "request": request, "fresh": params.get("fresh_branch"),
                  "issue": params.get("reply_to"), "update": approval != "ask"})
