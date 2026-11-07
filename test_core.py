@@ -1483,7 +1483,7 @@ class QARequestTests(unittest.TestCase):
              mock.patch.object(workspace, "pr_branch", return_value="b"), \
              mock.patch.object(workspace, "provision", **provision), \
              mock.patch.object(workspace, "cleanup"), \
-             mock.patch.object(workspace, "is_ancestor", return_value=ancestor), \
+             mock.patch.object(workspace, "linear_since", return_value=ancestor), \
              mock.patch.object(engine, "run_attempt",
                                side_effect=lambda req, c, **k: seen.update(k, req=req) or
                                {"workflow": "w", "result": result, "cost": 0}):
@@ -1500,6 +1500,7 @@ class QARequestTests(unittest.TestCase):
         self.assertEqual((out["head"], out["scoped"], out["follow_ups"]),
                          ("def456", True, "- rename x"))
         self.assertEqual(seen["repo"], "r")             # pinned to the clone it was handed
+        self.assertIn("/w/x", seen["external_text"])    # its path names no connector
 
     def test_a_rebased_branch_gets_a_whole_review(self):
         out, seen = self._review_round({"return_value": {"path": "/w/x", "head": "def456"}},

@@ -698,11 +698,13 @@ def prior_rounds_note(noun, prior, since=None):
         + prior_rounds_quoted(prior))
 
 
-# Ends at the next heading, `#` or a bold line alone: the stock reviewer closes on one.
-_FOLLOW_UPS_RE = re.compile(r"^#{1,6}\s*\**\s*follow[- ]?ups\b[^\n]*\n"
-                            r"(.*?)(?=^#{1,6}\s|^\*\*[^\n]*\*\*\s*$|\Z)", re.I | re.M | re.S)
-_VERDICT_LINE_RE = re.compile(r"\n\W*(?:(?i:verdict):\s*)?(?:PASS|CHANGES|INCONCLUSIVE)\W*$")
-_NO_FOLLOW_UPS_RE = re.compile(r"[\W_]*(?:none|nothing|n/?a)[\W_]*", re.I)
+# Ends at a top-level heading or the sections a report closes on; sub-headings and bold labels
+# inside the section are how a reviewer groups its items.
+_FOLLOW_UPS_RE = re.compile(r"^#{1,6}\s*\**\s*follow[- ]?ups\b[^\n]*\n(.*?)"
+                            r"(?=^#{1,2}\s|^[#*\s]*(?:could not assess|verdict)\b|\Z)",
+                            re.I | re.M | re.S)
+_VERDICT_LINE_RE = re.compile(r"\n\W*(?:PASS|CHANGES|INCONCLUSIVE)\W*$")
+_NO_FOLLOW_UPS_RE = re.compile(r"[\W_]*(?:none|nothing|n/?a|no follow[- ]?ups)\b[^\n]{0,40}", re.I)
 
 
 def follow_ups(result):

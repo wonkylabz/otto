@@ -1769,6 +1769,13 @@ class PriorRoundsNoteTests(unittest.TestCase):
         self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\n**Could not assess**\n- b\nPASS"),
                          "- a")
         self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\nVerdict: PASS."), "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\n**Verdict:** PASS"), "- a")
+        self.assertEqual(judging.follow_ups(
+            "## Follow-ups\nNone.\n\n**Could not assess** — nothing.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNo follow-ups.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone worth raising.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n**Naming**\n- x\n### wf.py\n- y\n\nPASS"),
+                         "**Naming**\n- x\n### wf.py\n- y")
         self.assertEqual(judging.follow_ups("the follow-ups are none\nPASS"), "")
         self.assertEqual(judging.follow_ups(None), "")
 
@@ -1783,14 +1790,20 @@ class PriorRoundsNoteTests(unittest.TestCase):
         self.assertNotIn("never fails the PR", said[0])
         self.assertIn("never fails the PR", said[1])
 
-    def test_a_rebased_away_commit_is_not_an_ancestor(self):
+    def test_only_a_plain_run_of_commits_is_a_fix_range(self):
         with mock.patch.object(workspace, "_run", return_value=(1, "", "")):
-            self.assertFalse(workspace.is_ancestor("/w", "abc"))
-        with mock.patch.object(workspace, "_run", return_value=(0, "", "")) as run:
-            self.assertTrue(workspace.is_ancestor("/w", "abc"))
-            self.assertFalse(workspace.is_ancestor("/w", "--flag"))
-            self.assertFalse(workspace.is_ancestor("/w", None))
-        run.assert_called_once()
+            self.assertFalse(workspace.linear_since("/w", "abc"))      # rebased away
+        with mock.patch.object(workspace, "_run", side_effect=[(0, "", ""), (0, "1\n", "")]):
+            self.assertFalse(workspace.linear_since("/w", "abc"))      # the base came in
+        with mock.patch.object(workspace, "_run", side_effect=[(0, "", ""), (0, "0\n", "")]):
+            self.assertTrue(workspace.linear_since("/w", "abc"))
+        with mock.patch.object(workspace, "_run") as run:
+            self.assertFalse(workspace.linear_since("/w", "--flag"))
+            self.assertFalse(workspace.linear_since("/w", None))
+        run.assert_not_called()
+
+    def test_a_pass_that_died_moves_no_baseline(self):
+        self.assertIn('if not out.get("is_error"):\n                    since =', workflow_src())
 
     def test_follow_ups_survive_every_way_out_of_the_loop(self):
         src = workflow_src()

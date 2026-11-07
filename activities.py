@@ -813,9 +813,9 @@ def _post_pr_capability(kind, payload):
              else {"checkout_error": ws["error"]} if ws else {})
     ws = ws if ws and ws.get("path") else None
     # A later review round reads only the fix. Needs the clone: the delta is a local diff.
-    # A rebased branch has lost that commit, so the round falls back to reading the whole PR.
+    # After a rebase or a merge from the base that diff is no longer the fix: read the whole PR.
     since = payload.get("since") if kind == "review" and ws else None
-    if since and not workspace.is_ancestor(ws["path"], since):
+    if since and not workspace.linear_since(ws["path"], since):
         since = None
     if since:
         extra["since"] = since
@@ -835,7 +835,8 @@ def _post_pr_capability(kind, payload):
                                  supervise_enforce=payload.get("supervise_enforce", True),
                                  # Earlier rounds' reports name whatever they name: "calendar
                                  # day" in a fix report stopped a re-review as a Calendar task.
-                                 external_text=[judging.prior_rounds_quoted(payload.get("prior"))],
+                                 external_text=[judging.prior_rounds_quoted(payload.get("prior")),
+                                                (ws or {}).get("path")],
                                  deny_tools=_mcp_denies(payload.get("wid")))
     finally:
         if ws:

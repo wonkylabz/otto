@@ -264,7 +264,9 @@ class PostPrMixin:
                     setattr(self, spec["attr"], {"state": "unavailable", "round": rnd})
                     return {"state": "unavailable", "rounds": rnd, cap_field: out.get(cap_field)}
                 cap_name = out.get(cap_field)
-                since = out.get("head") or since
+                # A pass that died partway read part of the PR, so it moves no baseline.
+                if not out.get("is_error"):
+                    since = out.get("head") or since
                 if out.get("follow_ups"):
                     later.append(out["follow_ups"])
                 judged = {"request": request, "result": out["result"], "repo": repo,
@@ -469,7 +471,8 @@ class PostPrMixin:
         crit = (outcome.get("critique") or "").strip()
         crit = f"\n\n{crit[:800]}" if crit else ""
         later = "\n\n".join(getattr(self, "_later", None) or []) if kind == "review" else ""
-        crit = crit + (f"\n\n**Left for later:**\n{later[:800]}" if later else "")
+        clip = " […clipped]" if len(later) > 800 else ""
+        crit = crit + (f"\n\n**Left for later:**\n{later[:800]}{clip}" if later else "")
         line = spec.get(outcome.get("state")) or spec["failed"]
         if outcome.get("state") == "fail" and (outcome.get("checks") or {}).get("state") == "fail":
             line = "❌ **Repo checks still failing**{fixes} — PR left draft for human review.{crit}"
