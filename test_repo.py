@@ -254,7 +254,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                 mock.patch.object(workspace, "post_plan"):
             workspace.finalize("wf-x", body="Body.", request=req)
             workspace.finalize("wf-x", body=None, request=req, existing_pr=True)
-        self.assertEqual(seen, ["Body.\n\nCloses #198", None])
+        self.assertEqual(seen, ["Closes #198\n\nBody.", None])
 
     def _finalize_activity(self, payload, dirty=True):
         got, drafted = {}, []
@@ -318,6 +318,17 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         got, _ = self._finalize_activity({"run_id": "web-abc", "title": "t"})
         self.assertTrue(got["close_issue"])
 
+    def test_a_long_pr_body_keeps_its_closing_line(self):
+        seen = []
+        ticket = {"kind": "github_issue", "repo": "wonkylabz/otto", "number": 20}
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("gh-issue-20", body="x" * 9000, issue=ticket)
+        self.assertTrue(seen[0].startswith("Closes #20\n\n"))   # survives the 4000 cut
+
     def test_a_close_is_skipped_when_the_caller_says_so(self):
         req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
         seen = []
@@ -345,7 +356,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                                asker_text="like the fix we did for issue 12")
             workspace.finalize("web-retry", body="B", request=delegated)
             workspace.finalize("wf-x-d1", body="B", request=delegated, asker_text=f"fix {url}")
-        self.assertEqual(seen, ["B", "B", "B\n\nCloses #12"])
+        self.assertEqual(seen, ["B", "B", "Closes #12\n\nB"])
         self.assertIn('"asker_text": self._asker_text', workflow_src())
 
     def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):
@@ -2875,6 +2886,23 @@ class PrTargetTests(unittest.TestCase):
         payload = src[i.start():i.start() + 1400]
         self.assertIn('"existing_pr": bool(self._pr_target.get("branch"))', payload)
         self.assertIn('"branch": self._pr_target.get("branch")', payload)
+
+    def test_a_retry_is_told_it_is_continuing_the_tickets_pr(self):
+        """A tree full of earlier work reads as a stale branch unless the run is told otherwise."""
+        src = workflow_src()
+        self.assertIn('"issue": params.get("reply_to")', src)
+        self.assertIn('request += RETRY_NOTE.format(number=self._pr_target.get("number"))', src)
+        self.assertLess(src.index("request += RETRY_NOTE"), src.index("await self._take_fast_lane("))
+        self.assertLess(src.index("request = strip_retry_note(request)"),
+                        src.index("request += RETRY_NOTE"))
+
+    def test_a_retried_request_drops_the_note_it_was_audited_with(self):
+        from wf_repo import RETRY_NOTE, strip_retry_note
+        once = "fix the board" + RETRY_NOTE.format(number=7)
+        self.assertEqual(strip_retry_note(once), "fix the board")
+        self.assertEqual(strip_retry_note(once + RETRY_NOTE.format(number=12)), "fix the board")
+        self.assertEqual(strip_retry_note("This is a retry of this ticket."),
+                         "This is a retry of this ticket.")
 
     def test_the_result_says_it_updated_a_pr_rather_than_opened_one(self):
         """Reporting "opened draft PR" after pushing to someone else's branch names a PR that
