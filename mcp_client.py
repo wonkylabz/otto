@@ -471,11 +471,11 @@ def connectors_named(request, pol=None, exclude=(), code_run=False):
 
     `exclude` is external DATA quoted into the request (a Slack trigger's post, #223; an earlier
     review round's report): it names whatever it names, so it is cut out before matching rather
-    than read as the operator asking. `code_run`: a run in a repo clone, where
+    than read as the operator asking. `code_run`: a run in a checkout, where
     `_PRODUCT_WORDS` describe the code."""
     text = request or ""
     for x in sorted((x for x in exclude or () if x), key=len, reverse=True):
-        text = text.replace(x, " ")
+        text = text.replace(x, " \0 ")        # never joins the words either side of it
     # Whitespace too: a phrase can wrap across lines in a ticket body.
     text = " ".join(text.lower().split())
     if not text:
@@ -483,12 +483,12 @@ def connectors_named(request, pol=None, exclude=(), code_run=False):
     out = []
     for name in connectors(pol):
         words = {w.lower() for w in _CONNECTOR_WORDS.get(name, ())}
-        if code_run:
-            words -= _PRODUCT_WORDS
         # "claude_ai_Google_Calendar" -> "google calendar"; the connector's own name is a word
         # people use ("check Notion", "post it to Slack").
         own = re.sub(r"^claude_ai_", "", name).replace("_", " ").lower()
         words.add(own)
+        if code_run:
+            words -= _PRODUCT_WORDS
         if any(re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", text)
                for w in words):
             out.append(name)
