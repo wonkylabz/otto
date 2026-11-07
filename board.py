@@ -617,28 +617,29 @@ def unshipped_done(cfg, repo, tickets, skip_label=None):
             and not any(_card_branch(h, c["number"]) for h in heads)]
 
 
-def card_merges(repo, since):
-    """URLs of PRs merged into `repo` at or after the local time `since` that delivered a ticket:
-    on a card's branch, or closing an issue. `[]` on any failure. Pure GitHub state, so
-    `factory.note_merge`'s per-URL guard keeps it idempotent."""
+def card_merges(repo, since, tickets):
+    """URLs of PRs merged into `repo` at or after the local time `since` that delivered one of
+    `tickets` (issue numbers): on its card branch, or closing it. None on any failure, because
+    the stall limit and DONE both act on this answer and no answer must not read as none. Pure
+    GitHub state, so `factory.note_merge`'s per-URL guard keeps it idempotent."""
     try:
         floor = datetime.datetime.fromisoformat(since).astimezone(datetime.timezone.utc)
     except (TypeError, ValueError):
-        return []
+        return None
     rc, out, err = _run(["gh", "pr", "list", "--repo", repo, "--state", "merged", "--json",
                          "url,headRefName,mergedAt,closingIssuesReferences,isCrossRepository",
                          "--limit", "1000"])
     if rc != 0:
         trace("BOARD", f"merged-PR lookup on {repo} failed: {err[:120]}")
-        return []
+        return None
     try:
         prs = json.loads(out or "[]")
         return [p["url"] for p in prs if not p.get("isCrossRepository")
-                and (re.match(r"otto/gh-issue-\d+(-|$)", p.get("headRefName") or "")
-                     or p.get("closingIssuesReferences"))
+                and (any(_card_branch(p.get("headRefName") or "", n) for n in tickets)
+                     or tickets & {i.get("number") for i in p.get("closingIssuesReferences") or []})
                 and datetime.datetime.fromisoformat(p["mergedAt"].replace("Z", "+00:00")) >= floor]
     except (AttributeError, KeyError, TypeError, ValueError):
-        return []
+        return None
 
 
 def reopen_blocked(cfg, card, note):

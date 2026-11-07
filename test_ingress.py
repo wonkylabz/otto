@@ -9366,7 +9366,7 @@ class FactoryModeTests(unittest.TestCase):
             os.remove(factory._path())
         self.addCleanup(lambda: os.path.exists(factory._path()) and os.remove(factory._path()))
         import board
-        no_gh = unittest.mock.patch.object(board, "_run", return_value=(1, "", "no gh in tests"))
+        no_gh = unittest.mock.patch.object(board, "_run", return_value=(0, "[]", ""))
         no_gh.start()
         self.addCleanup(no_gh.stop)
 
@@ -9485,6 +9485,7 @@ class FactoryModeTests(unittest.TestCase):
                     "columns": {"ready": "Ready", "active": "In Progress"}, "project": "me/7"}), \
                 unittest.mock.patch.object(board, "column_counts", return_value={}), \
                 unittest.mock.patch.object(config, "LOCAL_RUN_TIMEOUT_S", 2400.0), \
+                unittest.mock.patch.object(config, "EXEC_TIMEOUT_S", 9000.0), \
                 unittest.mock.patch.object(config, "LOCAL_WRAP_UP_AT", 0.75):
             brief = self.factory.gate()["params"]["doc"]
         self.assertIn("You have about 30 minutes", brief)
@@ -9532,14 +9533,27 @@ class FactoryModeTests(unittest.TestCase):
                 "closingIssuesReferences": [{"number": 7}]},
                {"url": "fork", "headRefName": "otto/gh-issue-9-o-r", "isCrossRepository": True,
                 "mergedAt": "2026-10-10T12:00:00Z"}]
-        since = "2026-10-05T10:00:00"
+        since, mine = "2026-10-05T10:00:00", {3, 4, 7}
         with unittest.mock.patch.object(board, "_run", return_value=(0, json.dumps(prs), "")):
-            self.assertEqual(board.card_merges("o/r", since), ["new", "closer"])
-            self.assertEqual(board.card_merges("o/r", None), [])
+            self.assertEqual(board.card_merges("o/r", since, mine), ["new", "closer"])
+            self.assertEqual(board.card_merges("o/r", since, {4}), ["new"])  # not this factory's
+            self.assertIsNone(board.card_merges("o/r", None, mine))
         with unittest.mock.patch.object(board, "_run", return_value=(1, "", "boom")):
-            self.assertEqual(board.card_merges("o/r", since), [])
+            self.assertIsNone(board.card_merges("o/r", since, mine))
         with unittest.mock.patch.object(board, "_run", return_value=(0, "not json", "")):
-            self.assertEqual(board.card_merges("o/r", since), [])
+            self.assertIsNone(board.card_merges("o/r", since, mine))
+
+    def test_an_unreadable_merge_list_never_stops_or_finishes_the_line(self):
+        import board
+        self._on(idle_sprints=3, merged=2, merged_seen=2, playtest_verdict="clean",
+                 playtest_merged=2)
+        with unittest.mock.patch.object(board, "card_merges", return_value=None), \
+                unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(self.factory, "_reopen_unshipped", return_value=[]):
+            self.assertIn("unreadable", self.factory.gate()["why"])
+            self.assertEqual(self.factory.after_sprint({"result": "FACTORY: DONE — x"})["state"],
+                             "continue")
+        self.assertTrue(self.factory.enabled())
 
     def test_a_reopened_ticket_stops_the_queue_for_the_pm(self):
         import board
