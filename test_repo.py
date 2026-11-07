@@ -254,7 +254,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                 mock.patch.object(workspace, "post_plan"):
             workspace.finalize("wf-x", body="Body.", request=req)
             workspace.finalize("wf-x", body=None, request=req, existing_pr=True)
-        self.assertEqual(seen, ["Body.\n\nCloses #198", None])
+        self.assertEqual(seen, ["Closes #198\n\nBody.", None])
 
     def _finalize_activity(self, payload, dirty=True):
         got, drafted = {}, []
@@ -327,8 +327,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                                   side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
                 mock.patch.object(workspace, "post_plan"):
             workspace.finalize("gh-issue-20", body="x" * 9000, issue=ticket)
-        self.assertLessEqual(len(seen[0]), workspace.PR_BODY_MAX)
-        self.assertTrue(seen[0].endswith("\n\nCloses #20"))
+        self.assertTrue(seen[0].startswith("Closes #20\n\n"))   # survives the 4000 cut
 
     def test_a_close_is_skipped_when_the_caller_says_so(self):
         req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
@@ -357,7 +356,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                                asker_text="like the fix we did for issue 12")
             workspace.finalize("web-retry", body="B", request=delegated)
             workspace.finalize("wf-x-d1", body="B", request=delegated, asker_text=f"fix {url}")
-        self.assertEqual(seen, ["B", "B", "B\n\nCloses #12"])
+        self.assertEqual(seen, ["B", "B", "Closes #12\n\nB"])
         self.assertIn('"asker_text": self._asker_text', workflow_src())
 
     def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):

@@ -548,7 +548,8 @@ def resolve_pr_target(payload: dict) -> dict:
     import workspace
     if payload.get("fresh"):
         import board
-        return board.open_retry_pr_for(payload.get("issue")) or {}
+        return board.open_retry_pr_for(payload.get("issue"),
+                                       update=payload.get("update", True)) or {}
     return workspace.pr_target(payload.get("repo"), payload.get("request")) or {}
 
 

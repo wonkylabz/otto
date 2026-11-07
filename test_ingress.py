@@ -10318,7 +10318,7 @@ class FactoryModeTests(unittest.TestCase):
                 unittest.mock.patch.object(workspace, "pr_target") as pt:
             self.assertEqual(activities.resolve_pr_target(
                 {"repo": "r", "request": "see PR #17", "fresh": True, "issue": issue}), target)
-            op.assert_called_once_with("o/r", 4)
+            op.assert_called_once_with("o/r", 4, update=True)
             self.assertFalse(pt.called)                 # the ticket's text picks nothing
             op.reset_mock()
             self.assertEqual(activities.resolve_pr_target(
@@ -10350,6 +10350,16 @@ class FactoryModeTests(unittest.TestCase):
         self.assertEqual(self._open_prs([pr])["number"], 12)
         self.assertEqual(self.gh[-1][:4], ["gh", "pr", "update-branch", "12"])
         self.assertIsNone(self._open_prs([pr], update=(1, "", "merge conflict")))
+        # Anything else keeps the PR: a rate limit is no reason to close it and rebuild.
+        self.assertEqual(self._open_prs([pr], update=(1, "", "HTTP 403"))["number"], 12)
+
+    def test_a_held_cards_pr_is_not_updated_before_the_gate(self):
+        import board
+        pr = {"number": 12, "url": "a", "headRefName": "otto/gh-issue-4-o-r"}
+        with unittest.mock.patch.object(board, "_run",
+                                        return_value=(0, json.dumps([pr]), "")) as run:
+            self.assertEqual(board.open_retry_pr("o/r", 4, update=False)["number"], 12)
+        run.assert_called_once()
 
     def test_open_retry_pr_rebuilds_only_a_conflicting_pr(self):
         pr = {"number": 12, "url": "a", "headRefName": "otto/gh-issue-4-o-r"}

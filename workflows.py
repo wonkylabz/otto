@@ -1164,7 +1164,7 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         if repo and not resume and not subtask:
             self._pr_target = await self._resolve_pr_target(
                 {"repo": repo, "request": request, "fresh": params.get("fresh_branch"),
-                 "issue": params.get("reply_to")})
+                 "issue": params.get("reply_to"), "update": approval != "ask"})
             if self._pr_target.get("retry"):
                 request += RETRY_NOTE.format(number=self._pr_target.get("number"))
 

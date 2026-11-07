@@ -530,14 +530,15 @@ def _card_branch(head, number):
     return head == base or head.startswith(base + "-")
 
 
-def open_retry_pr(repo, number):
+def open_retry_pr(repo, number, update=True):
     """The open Otto PR a re-run of card #number continues, as {number, url, branch, retry}, or
     None to start from the default branch.
 
     A re-run used to rebuild from scratch and close this PR, so one remaining review finding
     threw away every round already paid for. Only a PR that conflicts with the base is rebuilt:
     its merge would be refused anyway. UNKNOWN counts as usable, since GitHub computes it lazily
-    and a real conflict still fails the update. Never raises; any failure is None."""
+    and a real conflict still fails the update. `update=False` leaves the branch alone: a held
+    card's PR must not change before a human approves. Never raises; any failure is None."""
     ok, number = _valid_target(repo, number)
     if not ok:
         return None
@@ -560,21 +561,25 @@ def open_retry_pr(repo, number):
         trace("BOARD", f"#{number}: PR #{pr.get('number')} conflicts with the base — rebuilding")
         return None
     # A retry must build on what merged since: a ticket re-readied for a missing prerequisite
-    # would otherwise hit the same gap. A refused update is a conflict by another name.
-    rc, _o, err = _run(["gh", "pr", "update-branch", str(pr.get("number")), "--repo", repo])
+    # would otherwise hit the same gap. Only a conflict rebuilds. Any other refusal (a rate limit,
+    # a token missing `workflow` scope) continues on the stale branch, as a rebuild would close
+    # a mergeable PR over a problem that has nothing to do with it.
+    rc, _o, err = (_run(["gh", "pr", "update-branch", str(pr.get("number")), "--repo", repo])
+                   if update else (0, "", ""))
     if rc != 0:
-        trace("BOARD", f"#{number}: updating PR #{pr.get('number')} failed, rebuilding: {err[:120]}")
-        return None
+        trace("BOARD", f"#{number}: updating PR #{pr.get('number')} failed: {err[:120]}")
+        if "conflict" in err.lower():
+            return None
     trace("BOARD", f"#{number}: continuing on open PR #{pr.get('number')}")
     return {"number": pr.get("number"), "url": pr.get("url") or "",
             "branch": pr.get("headRefName"), "retry": True}
 
 
-def open_retry_pr_for(reply_to):
+def open_retry_pr_for(reply_to, update=True):
     """`open_retry_pr` for a run's reply target; None when it is not a board card."""
     if not isinstance(reply_to, dict) or reply_to.get("kind") != "github_issue":
         return None
-    return open_retry_pr(reply_to.get("repo"), reply_to.get("number"))
+    return open_retry_pr(reply_to.get("repo"), reply_to.get("number"), update=update)
 
 
 def unshipped_done(cfg, repo, tickets, skip_label=None):
