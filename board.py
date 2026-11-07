@@ -537,7 +537,7 @@ def open_retry_pr(repo, number):
     A re-run used to rebuild from scratch and close this PR, so one remaining review finding
     threw away every round already paid for. Only a PR that conflicts with the base is rebuilt:
     its merge would be refused anyway. UNKNOWN counts as usable, since GitHub computes it lazily
-    and a real conflict still comes back as `merge_failed`. Never raises; any failure is None."""
+    and a real conflict still fails the update. Never raises; any failure is None."""
     ok, number = _valid_target(repo, number)
     if not ok:
         return None
@@ -559,6 +559,12 @@ def open_retry_pr(repo, number):
     if pr.get("mergeable") == "CONFLICTING":
         trace("BOARD", f"#{number}: PR #{pr.get('number')} conflicts with the base — rebuilding")
         return None
+    # A retry must build on what merged since: a ticket re-readied for a missing prerequisite
+    # would otherwise hit the same gap. A refused update is a conflict by another name.
+    rc, _o, err = _run(["gh", "pr", "update-branch", str(pr.get("number")), "--repo", repo])
+    if rc != 0:
+        trace("BOARD", f"#{number}: updating PR #{pr.get('number')} failed, rebuilding: {err[:120]}")
+        return None
     trace("BOARD", f"#{number}: continuing on open PR #{pr.get('number')}")
     return {"number": pr.get("number"), "url": pr.get("url") or "",
             "branch": pr.get("headRefName"), "retry": True}
@@ -571,33 +577,34 @@ def open_retry_pr_for(reply_to):
     return open_retry_pr(reply_to.get("repo"), reply_to.get("number"))
 
 
-def unshipped_done(cfg, repo, skip_label=None):
-    """Done cards of `repo` whose issue was closed as completed with no merged PR behind it:
-    closing an issue moves its card to Done, so a ticket dropped with a plain `gh issue close`
-    read as shipped. `[]` on any failed read, because a partial answer would reopen real work.
-    Closed as "not planned" is an honest drop and stays. Stubs as `_parse_items_in`."""
+def unshipped_done(cfg, repo, tickets, skip_label=None):
+    """Done cards among `tickets` (issue numbers) whose issue was closed as completed with no
+    merged PR behind it: closing an issue moves its card to Done, so a ticket dropped with a plain
+    `gh issue close` read as shipped. None on any failed read: a partial answer would reopen real
+    work, and no answer must not read as none. Closed as "not planned" is an honest drop and
+    stays. Only the tickets a factory ran: a card it never touched may have shipped any way at
+    all. Stubs as `_parse_items_in`."""
     done = (cfg.get("columns") or {}).get("done")
     data = item_list(cfg)
     if not done or not data:
-        return []
-    held = {(i.get("content") or {}).get("number") for i in data.get("items") or []
-            if skip_label and skip_label in (i.get("labels") or [])}
+        return None
     cards = [c for c in _parse_items_in(data, cfg, done)
-             if (c.get("repo") or "").lower() == (repo or "").lower() and c["number"] not in held]
+             if (c.get("repo") or "").lower() == (repo or "").lower() and c["number"] in tickets]
     if not cards:
         return []
     rc, issues, _ = _run(["gh", "issue", "list", "--repo", repo, "--state", "closed",
-                          "--json", "number,stateReason", "--limit", "1000"])
+                          "--json", "number,stateReason,labels", "--limit", "1000"])
     rc2, prs, _ = _run(["gh", "pr", "list", "--repo", repo, "--state", "merged",
                         "--json", "headRefName,closingIssuesReferences", "--limit", "1000"])
     if rc or rc2:
-        return []
+        return None
     try:
         issues, prs = json.loads(issues or "[]"), json.loads(prs or "[]")
     except ValueError:
-        return []
+        return None
     completed = {i.get("number") for i in issues
-                 if (i.get("stateReason") or "COMPLETED").upper() == "COMPLETED"}
+                 if (i.get("stateReason") or "COMPLETED").upper() == "COMPLETED"
+                 and skip_label not in [x.get("name") for x in i.get("labels") or []]}
     closers = {i.get("number") for p in prs for i in p.get("closingIssuesReferences") or []}
     heads = [p.get("headRefName") or "" for p in prs]
     return [c for c in cards if c["number"] in completed and c["number"] not in closers
@@ -605,16 +612,21 @@ def unshipped_done(cfg, repo, skip_label=None):
 
 
 def reopen_blocked(cfg, card, note):
-    """Reopen `card`'s issue with `note` and move it to Blocked, where the PM reads it. True once
-    the issue is open again; a failed move leaves an open issue, which the sweep then skips."""
+    """Move `card` to Blocked, where the PM reads it, and reopen its issue with `note`. True once
+    it is in Blocked. The move comes first: an open issue left in Done is one the sweep can no
+    longer see, while a closed one in Blocked still reaches the PM. It repeats after the reopen,
+    which a project workflow may act on."""
+    meta = project_meta(cfg)
+    blocked = (cfg.get("columns") or {}).get("blocked")
+    if not meta or not set_status(cfg, meta, card.get("item_id"), blocked):
+        trace("BOARD", f"moving {card['repo']}#{card['number']} to {blocked} failed")
+        return False
     rc, _o, err = _run(["gh", "issue", "reopen", str(card["number"]), "--repo", card["repo"],
                         "--comment", note])
     if rc != 0:
         trace("BOARD", f"reopening {card['repo']}#{card['number']} failed: {err[:120]}")
-        return False
-    meta = project_meta(cfg)
-    if meta:
-        set_status(cfg, meta, card.get("item_id"), (cfg.get("columns") or {}).get("blocked"))
+    else:
+        set_status(cfg, meta, card.get("item_id"), blocked)
     return True
 
 

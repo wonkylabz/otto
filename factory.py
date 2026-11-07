@@ -128,8 +128,9 @@ end to end, never ask a question back.
    an unobservable or wrong criterion failed (e.g. "passes in CI"), fix that criterion in the
    issue text and move it back to "{ready}". Otherwise EITHER rewrite the
    issue so it is smaller and unambiguous and move it back to "{ready}", adding the label
-   `factory-retry-1` (or bump an existing `factory-retry-N`), OR — if it already carries
-   `factory-retry-2` — drop it with `gh issue close --reason "not planned"` and a one-line comment
+   `factory-retry-1` (or bump an existing `factory-retry-N`) and closing its PR if the smaller
+   ticket no longer matches what that PR built, OR — if it already carries `factory-retry-2` —
+   close its PR, then drop it with `gh issue close --reason "not planned"` and a one-line comment
    saying why. Closing it any other way reads as shipped, so Otto reopens it. If the work is still
    needed, write it as a new ticket buildable from the default branch.
 3. Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
@@ -913,15 +914,20 @@ _UNSHIPPED_NOTE = ("Reopened by Otto: this ticket was closed as completed, but n
 
 
 def _reopen_unshipped(s, bcfg):
-    """Send every card closed as completed with no merged code back to Blocked for the PM. Done
-    must mean the code merged, or the line and the DONE verdict both trust work that never
-    landed. Returns the issue numbers reopened."""
+    """Send every ticket this factory ran that closed as completed with no merged code back to
+    Blocked for the PM. Done must mean the code merged, or the line and the DONE verdict both
+    trust work that never landed. Returns the issue numbers found, even one that would not move,
+    or None when it could not tell."""
     import board
-    cards = board.unshipped_done(bcfg, s.get("slug"), skip_label=bcfg.get("hold_label"))
+    tickets = {int(m.group(1)) for m in map(_ISSUE_WID_RE.match, s.get("wids") or []) if m}
+    cards = board.unshipped_done(bcfg, s.get("slug"), tickets,
+                                 skip_label=bcfg.get("hold_label"))
+    if cards is None:
+        return None
     moved = [c["number"] for c in cards if board.reopen_blocked(bcfg, c, _UNSHIPPED_NOTE)]
     if moved:
         _mutate(lambda st: _event(st, "unshipped", ", ".join(f"#{n}" for n in moved)))
-    return moved
+    return [c["number"] for c in cards]
 
 def gate():
     """Decide whether this tick starts a sprint. Returns {go, why, ...}; with go=True it also
@@ -1064,11 +1070,12 @@ def after_sprint(payload):
         pause(nh["reason"], [payload.get("wid") or ""])
         return {"state": "paused", "reason": nh["reason"]}
     unshipped = _reopen_unshipped(s, board.load()) if word == "done" else []
-    if word == "done" and playtest_clean(s) and not unshipped:
+    if word == "done" and playtest_clean(s) and unshipped == []:
         disable("done", evidence)
         return {"state": "done"}
-    if unshipped:
-        _mutate(lambda st: _event(st, "done_refused", "a ticket was closed without merged code"))
+    if word == "done" and unshipped != []:
+        _mutate(lambda st: _event(st, "done_refused", "the board could not be checked"
+                                  if unshipped is None else "a ticket closed without merged code"))
     elif word == "done":
         # The PM's own check reads the tree; only the playtest USED it. Not idle either way:
         # the next sprint turns the defects into tickets.
