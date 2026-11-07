@@ -4703,7 +4703,7 @@ class LocalConnectorGapTests(unittest.TestCase):
         with mock.patch.object(activities, "_cap", lambda *_: cap), \
                 mock.patch.object(activities, "_mcp", lambda *_: ([], None)), \
                 mock.patch.object(activities, "_warm_conventions", lambda *_: None), \
-                mock.patch.object(activities, "_qa_checkout", lambda *_: None), \
+                mock.patch.object(activities, "_pr_checkout", lambda *_: None), \
                 mock.patch.object(activities.engine, "run_attempt", attempt):
             activities._post_pr_capability(kind, {"pr_url": "u", "repo": "r", "wid": "w",
                                                   "request": request, "prior": prior})

@@ -129,7 +129,9 @@ end to end, never ask a question back.
    issue so it is smaller and unambiguous and move it back to "{ready}", adding the label
    `factory-retry-1` (or bump an existing `factory-retry-N`), OR — if it already carries
    `factory-retry-2` — close it with a one-line comment saying why it was dropped.
-3. Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
+3. An open issue titled "Review follow-ups" is what a merged PR's review left for later: turn what
+   is worth doing into tickets, then close it (`--reason "not planned"` if nothing is).
+   Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
    Definition of Done and the Product section. Each must be one coherent PR, mergeable on top of
    the current default branch, and state its own acceptance criteria — including the tests it adds
    and that the test and lint commands under Commands pass LOCALLY. Every criterion must be checkable from a
