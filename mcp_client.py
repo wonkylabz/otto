@@ -443,13 +443,18 @@ def connectors(pol=None):
 # name the DESTINATION and nothing else — "email" and "docs" are absent for that reason.
 _CONNECTOR_WORDS = {
     "claude_ai_Atlassian": ("confluence", "jira"),
-    "claude_ai_Google_Calendar": ("gcal", "calendar"),
+    "claude_ai_Google_Calendar": ("gcal", "calendar", "my calendar", "your calendar"),
     "claude_ai_Google_Drive": ("gdrive", "google doc", "google docs", "google sheet",
                                "google sheets"),
 }
 
+# A connector word that is also what software gets built about. In a code run it names the product
+# ("a calendar quarter"), which moved factory tickets off local; only a phrase pointing at
+# somebody's own calendar still counts there. Everywhere else the guard stays biased to fire.
+_PRODUCT_WORDS = frozenset({"calendar"})
 
-def connectors_named(request, pol=None, exclude=()):
+
+def connectors_named(request, pol=None, exclude=(), code_run=False):
     """Connectors the REQUEST names, which the local backend therefore cannot serve.
 
     `unservable` asks the capability, and a capability that declares nothing answers nothing —
@@ -466,11 +471,13 @@ def connectors_named(request, pol=None, exclude=()):
 
     `exclude` is external DATA quoted into the request (a Slack trigger's post, #223; an earlier
     review round's report): it names whatever it names, so it is cut out before matching rather
-    than read as the operator asking."""
+    than read as the operator asking. `code_run`: a run in a checkout, where
+    `_PRODUCT_WORDS` describe the code."""
     text = request or ""
     for x in sorted((x for x in exclude or () if x), key=len, reverse=True):
-        text = text.replace(x, " ")
-    text = text.lower()
+        text = text.replace(x, " \0 ")        # never joins the words either side of it
+    # Whitespace too: a phrase can wrap across lines in a ticket body.
+    text = " ".join(text.lower().split())
     if not text:
         return []
     out = []
@@ -480,6 +487,8 @@ def connectors_named(request, pol=None, exclude=()):
         # people use ("check Notion", "post it to Slack").
         own = re.sub(r"^claude_ai_", "", name).replace("_", " ").lower()
         words.add(own)
+        if code_run:
+            words -= _PRODUCT_WORDS
         if any(re.search(r"(?<![a-z0-9])" + re.escape(w) + r"(?![a-z0-9])", text)
                for w in words):
             out.append(name)
