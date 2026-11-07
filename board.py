@@ -523,6 +523,118 @@ def add_label(repo, number, label):
     return rc == 0
 
 
+def _card_branch(head, number):
+    """Is `head` the `otto/<wid>` of any generation of card #number, legacy or repo-keyed? The
+    `-` keeps #4 off #41's branch."""
+    base = f"otto/{run_id(number)}"
+    return head == base or head.startswith(base + "-")
+
+
+def open_retry_pr(repo, number, update=True):
+    """The open Otto PR a re-run of card #number continues, as {number, url, branch, retry}, or
+    None to start from the default branch.
+
+    A re-run used to rebuild from scratch and close this PR, so one remaining review finding
+    threw away every round already paid for. Only a PR that conflicts with the base is rebuilt:
+    its merge would be refused anyway. UNKNOWN counts as usable, since GitHub computes it lazily
+    and a real conflict still fails the update. `update=False` leaves the branch alone: a held
+    card's PR must not change before a human approves. Never raises; any failure is None."""
+    ok, number = _valid_target(repo, number)
+    if not ok:
+        return None
+    rc, out, err = _run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--json",
+                         "number,url,headRefName,mergeable,isCrossRepository", "--limit", "200"])
+    if rc != 0:
+        trace("BOARD", f"open-PR lookup on {repo} failed: {err[:120]}")
+        return None
+    try:
+        prs = json.loads(out or "[]")
+    except ValueError:
+        return None
+    import workspace
+    ours = [p for p in prs if _card_branch(p.get("headRefName") or "", number)
+            and not p.get("isCrossRepository") and workspace.valid_branch(p.get("headRefName"))]
+    if not ours:
+        return None
+    pr = max(ours, key=lambda p: p.get("number") or 0)
+    if pr.get("mergeable") == "CONFLICTING":
+        trace("BOARD", f"#{number}: PR #{pr.get('number')} conflicts with the base — rebuilding")
+        return None
+    # A retry must build on what merged since: a ticket re-readied for a missing prerequisite
+    # would otherwise hit the same gap. Only a conflict rebuilds. Any other refusal (a rate limit,
+    # a token missing `workflow` scope) continues on the stale branch, as a rebuild would close
+    # a mergeable PR over a problem that has nothing to do with it.
+    rc, _o, err = (_run(["gh", "pr", "update-branch", str(pr.get("number")), "--repo", repo])
+                   if update else (0, "", ""))
+    if rc != 0:
+        trace("BOARD", f"#{number}: updating PR #{pr.get('number')} failed: {err[:120]}")
+        if "conflict" in err.lower():
+            return None
+    trace("BOARD", f"#{number}: continuing on open PR #{pr.get('number')}")
+    return {"number": pr.get("number"), "url": pr.get("url") or "",
+            "branch": pr.get("headRefName"), "retry": True}
+
+
+def open_retry_pr_for(reply_to, update=True):
+    """`open_retry_pr` for a run's reply target; None when it is not a board card."""
+    if not isinstance(reply_to, dict) or reply_to.get("kind") != "github_issue":
+        return None
+    return open_retry_pr(reply_to.get("repo"), reply_to.get("number"), update=update)
+
+
+def unshipped_done(cfg, repo, tickets, skip_label=None):
+    """Done cards among `tickets` (issue numbers) whose issue was closed as completed with no
+    merged PR behind it: closing an issue moves its card to Done, so a ticket dropped with a plain
+    `gh issue close` read as shipped. None on any failed read: a partial answer would reopen real
+    work, and no answer must not read as none. Closed as "not planned" is an honest drop and
+    stays. Only the tickets a factory ran: a card it never touched may have shipped any way at
+    all. Stubs as `_parse_items_in`."""
+    done = (cfg.get("columns") or {}).get("done")
+    data = item_list(cfg)
+    if not done or not data:
+        return None
+    cards = [c for c in _parse_items_in(data, cfg, done)
+             if (c.get("repo") or "").lower() == (repo or "").lower() and c["number"] in tickets]
+    if not cards:
+        return []
+    rc, issues, _ = _run(["gh", "issue", "list", "--repo", repo, "--state", "closed",
+                          "--json", "number,stateReason,labels", "--limit", "1000"])
+    rc2, prs, _ = _run(["gh", "pr", "list", "--repo", repo, "--state", "merged",
+                        "--json", "headRefName,closingIssuesReferences", "--limit", "1000"])
+    if rc or rc2:
+        return None
+    try:
+        issues, prs = json.loads(issues or "[]"), json.loads(prs or "[]")
+    except ValueError:
+        return None
+    completed = {i.get("number") for i in issues
+                 if (i.get("stateReason") or "COMPLETED").upper() == "COMPLETED"
+                 and skip_label not in [x.get("name") for x in i.get("labels") or []]}
+    closers = {i.get("number") for p in prs for i in p.get("closingIssuesReferences") or []}
+    heads = [p.get("headRefName") or "" for p in prs]
+    return [c for c in cards if c["number"] in completed and c["number"] not in closers
+            and not any(_card_branch(h, c["number"]) for h in heads)]
+
+
+def reopen_blocked(cfg, card, note):
+    """Move `card` to Blocked, where the PM reads it, and reopen its issue with `note`. True once
+    it is in Blocked. The move comes first: an open issue left in Done is one the sweep can no
+    longer see, while a closed one in Blocked still reaches the PM. It repeats after the reopen,
+    which a project workflow may act on."""
+    meta = project_meta(cfg)
+    blocked = (cfg.get("columns") or {}).get("blocked")
+    if not meta or not set_status(cfg, meta, card.get("item_id"), blocked):
+        trace("BOARD", f"moving {card['repo']}#{card['number']} to {blocked} failed")
+        return False
+    rc, _o, err = _run(["gh", "issue", "reopen", str(card["number"]), "--repo", card["repo"],
+                        "--comment", note])
+    if rc != 0:
+        trace("BOARD", f"reopening {card['repo']}#{card['number']} failed: {err[:120]}")
+    else:
+        set_status(cfg, meta, card.get("item_id"), blocked)
+    return True
+
+
 def close_superseded(repo, number, keep_branch, new_url):
     """Close every OTHER open Otto PR for board card #number — earlier generations of the same
     card (`otto/gh-issue-<n>…`), which a re-run's fresh PR replaces. Returns the closed PR
@@ -539,12 +651,10 @@ def close_superseded(repo, number, keep_branch, new_url):
         prs = json.loads(out or "[]")
     except ValueError:
         return []
-    # `otto/<wid>` of any generation, legacy or repo-keyed; the `-` keeps #4 off #41's branch.
-    base = f"otto/{run_id(number)}"
     closed = []
     for pr in prs:
         head = pr.get("headRefName") or ""
-        if head == keep_branch or not (head == base or head.startswith(base + "-")):
+        if head == keep_branch or not _card_branch(head, number):
             continue
         rc, _o, err = _run(["gh", "pr", "close", str(pr.get("number")), "--repo", repo,
                             "--comment", f"Superseded by {new_url} — a later run of #{number}."])

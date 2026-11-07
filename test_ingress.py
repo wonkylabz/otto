@@ -9459,6 +9459,33 @@ class FactoryModeTests(unittest.TestCase):
         self.assertEqual(st["sprint_n"], 1)
         self.assertIn(g["wid"], st["wids"])      # the sprint's own spend counts too
 
+    def test_a_ticket_closed_without_merged_code_refuses_done(self):
+        import board
+        self._on(playtest_verdict="clean", merged=1, playtest_merged=1)
+        with unittest.mock.patch.object(board, "unshipped_done", return_value=[{"number": 3}]), \
+                unittest.mock.patch.object(board, "reopen_blocked", return_value=False) as reopen:
+            got = self.factory.after_sprint({"result": "FACTORY: DONE — all merged"})
+        self.assertEqual(got["state"], "continue")      # refused even if the card would not move
+        self.assertTrue(reopen.called)
+        self.assertTrue(self.factory.enabled())
+        with unittest.mock.patch.object(board, "unshipped_done", return_value=None):
+            self.assertEqual(self.factory.after_sprint({"result": "FACTORY: DONE — x"})["state"],
+                             "continue")                # no answer is not a clean answer
+        self.assertIn("done_refused", [e["event"] for e in self.factory.load()["history"]])
+
+    def test_a_reopened_ticket_stops_the_queue_for_the_pm(self):
+        import board
+        self._on()
+        counts = [{"Ready": 2}, {"Ready": 2, "Blocked": 1}]
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value={
+                    "columns": {"ready": "Ready", "active": "In Progress", "blocked": "Blocked"},
+                    "project": "me/7"}), \
+                unittest.mock.patch.object(board, "column_counts", side_effect=counts), \
+                unittest.mock.patch.object(board, "unshipped_done", return_value=[{"number": 3}]), \
+                unittest.mock.patch.object(board, "reopen_blocked", return_value=True):
+            self.assertTrue(self.factory.gate()["go"])
+
     def test_after_sprint_counts_idle_and_done_stops(self):
         self._on(merged=0, merged_seen=0)
         self.assertEqual(self.factory.after_sprint({"result": "x\nFACTORY: CONTINUE"})["idle_sprints"], 1)
@@ -9468,7 +9495,8 @@ class FactoryModeTests(unittest.TestCase):
         self.factory.note_merge("2020-01-01T00:00:00", "https://github.com/me/game/pull/3")
         self.assertEqual(self.factory.load()["merged"], 1)
         self.factory.note_playtest("no defects worth a ticket\nPLAYTEST: CLEAN")
-        with unittest.mock.patch.object(self.factory, "disable") as dis:
+        with unittest.mock.patch.object(self.factory, "disable") as dis, \
+                unittest.mock.patch.object(self.factory, "_reopen_unshipped", return_value=[]):
             self.assertEqual(self.factory.after_sprint({"result": "FACTORY: DONE — all merged"}),
                              {"state": "done"})
         self.assertEqual(dis.call_args[0][0], "done")
@@ -9904,6 +9932,9 @@ class FactoryModeTests(unittest.TestCase):
 
     # --- the playtest -----------------------------------------------------------------
     def test_done_is_refused_until_the_current_tree_is_playtested_clean(self):
+        swept = unittest.mock.patch.object(self.factory, "_reopen_unshipped", return_value=[])
+        swept.start()
+        self.addCleanup(swept.stop)
         # Every ticket's QA proved its own criteria while the product shipped wrong rules and an
         # unreadable UI: DONE needs someone to have USED the tree being declared done.
         self._on(merged=2, merged_seen=2)
@@ -10277,6 +10308,137 @@ class FactoryModeTests(unittest.TestCase):
             out = activities.poll_board({})
         self.assertFalse(start.called)
         self.assertEqual(out["skipped"], [3])
+
+    def test_a_retry_continues_the_cards_own_open_pr(self):
+        import activities
+        import board
+        issue = {"kind": "github_issue", "repo": "o/r", "number": 4}
+        target = {"number": 9, "url": "u", "branch": "otto/gh-issue-4-o-r", "retry": True}
+        with unittest.mock.patch.object(board, "open_retry_pr", return_value=target) as op, \
+                unittest.mock.patch.object(workspace, "pr_target") as pt:
+            self.assertEqual(activities.resolve_pr_target(
+                {"repo": "r", "request": "see PR #17", "fresh": True, "issue": issue}), target)
+            op.assert_called_once_with("o/r", 4, update=True)
+            self.assertFalse(pt.called)                 # the ticket's text picks nothing
+            op.reset_mock()
+            self.assertEqual(activities.resolve_pr_target(
+                {"repo": "r", "fresh": True, "issue": {"kind": "slack"}}), {})
+            self.assertEqual(activities.resolve_pr_target({"repo": "r", "fresh": True}), {})
+            self.assertFalse(op.called)                 # not a board card
+
+    def _open_prs(self, prs, update=(0, "", "")):
+        import board
+        self.gh = []
+
+        def fake(argv, timeout=60):
+            self.gh.append(argv)
+            return update if argv[2] == "update-branch" else (0, json.dumps(prs), "")
+        with unittest.mock.patch.object(board, "_run", side_effect=fake):
+            return board.open_retry_pr("o/r", 4)
+
+    def test_open_retry_pr_takes_the_newest_generation(self):
+        got = self._open_prs([
+            {"number": 12, "url": "a", "headRefName": "otto/gh-issue-4-o-r", "mergeable": "MERGEABLE"},
+            {"number": 15, "url": "b", "headRefName": "otto/gh-issue-4-o-r-r1", "mergeable": "UNKNOWN"},
+            {"number": 16, "url": "c", "headRefName": "otto/gh-issue-41-o-r", "mergeable": "MERGEABLE"},
+        ])
+        self.assertEqual(got, {"number": 15, "url": "b", "branch": "otto/gh-issue-4-o-r-r1",
+                               "retry": True})
+
+    def test_a_retry_brings_in_what_merged_since(self):
+        pr = {"number": 12, "url": "a", "headRefName": "otto/gh-issue-4-o-r"}
+        self.assertEqual(self._open_prs([pr])["number"], 12)
+        self.assertEqual(self.gh[-1][:4], ["gh", "pr", "update-branch", "12"])
+        self.assertIsNone(self._open_prs([pr], update=(1, "", "merge conflict")))
+        # Anything else keeps the PR: a rate limit is no reason to close it and rebuild.
+        self.assertEqual(self._open_prs([pr], update=(1, "", "HTTP 403"))["number"], 12)
+
+    def test_a_held_cards_pr_is_not_updated_before_the_gate(self):
+        import board
+        pr = {"number": 12, "url": "a", "headRefName": "otto/gh-issue-4-o-r"}
+        with unittest.mock.patch.object(board, "_run",
+                                        return_value=(0, json.dumps([pr]), "")) as run:
+            self.assertEqual(board.open_retry_pr("o/r", 4, update=False)["number"], 12)
+        run.assert_called_once()
+
+    def test_open_retry_pr_rebuilds_only_a_conflicting_pr(self):
+        pr = {"number": 12, "url": "a", "headRefName": "otto/gh-issue-4-o-r"}
+        self.assertIsNone(self._open_prs([{**pr, "mergeable": "CONFLICTING"}]))
+        self.assertIsNone(self._open_prs([{**pr, "isCrossRepository": True}]))
+        self.assertIsNone(self._open_prs([]))
+
+    def test_open_retry_pr_fails_to_a_rebuild(self):
+        import board
+        with unittest.mock.patch.object(board, "_run", return_value=(1, "", "boom")):
+            self.assertIsNone(board.open_retry_pr("o/r", 4))
+        with unittest.mock.patch.object(board, "_run", return_value=(0, "not json", "")):
+            self.assertIsNone(board.open_retry_pr("o/r", 4))
+
+    def test_the_brief_keeps_a_retried_pr_open_and_drops_tickets_honestly(self):
+        import factory
+        self.assertIn("leave that PR OPEN", factory.SPRINT_BRIEF)
+        self.assertNotIn("CLOSE its open PR", factory.SPRINT_BRIEF)
+        self.assertIn('--reason "not planned"', factory.SPRINT_BRIEF)
+
+    def _unshipped(self, issues, prs, tickets=(3, 4, 5)):
+        import board
+        cfg = {"status_field": "Status", "columns": {"done": "Done", "blocked": "Blocked"}}
+        data = {"items": [
+            {"id": f"i{n}", "status": "Done",
+             "content": {"type": "Issue", "number": n, "repository": "o/r",
+                         "url": f"https://github.com/o/r/issues/{n}"}} for n in (3, 4, 5)]}
+
+        def fake(argv, timeout=60):
+            return 0, json.dumps(issues if argv[1] == "issue" else prs), ""
+        with unittest.mock.patch.object(board, "item_list", return_value=data), \
+                unittest.mock.patch.object(board, "_run", side_effect=fake):
+            cards = board.unshipped_done(cfg, "o/r", set(tickets), skip_label="hold")
+            return [c["number"] for c in cards]
+
+    def test_done_without_merged_code_is_flagged(self):
+        issues = [{"number": n, "stateReason": "COMPLETED"} for n in (3, 4, 5)]
+        prs = [{"headRefName": "otto/gh-issue-4-o-r-r1", "closingIssuesReferences": []},
+               {"headRefName": "feature", "closingIssuesReferences": [{"number": 5}]}]
+        self.assertEqual(self._unshipped(issues, prs), [3])
+
+    def test_an_honest_drop_and_a_held_card_stay_done(self):
+        issues = [{"number": 3, "stateReason": "NOT_PLANNED"},
+                  {"number": 4, "stateReason": "COMPLETED", "labels": [{"name": "hold"}]}]
+        self.assertEqual(self._unshipped(issues, []), [])
+
+    def test_a_card_the_factory_never_ran_is_left_alone(self):
+        issues = [{"number": 3, "stateReason": "COMPLETED"}]
+        self.assertEqual(self._unshipped(issues, [], tickets=(4,)), [])
+
+    def test_a_failed_read_is_unknown_never_none(self):
+        import board
+        cfg = {"status_field": "Status", "columns": {"done": "Done"}}
+        data = {"items": [{"id": "i", "status": "Done", "content": {
+            "type": "Issue", "number": 3, "repository": "o/r"}}]}
+
+        def fake(argv, timeout=60):
+            return (1, "", "boom") if argv[1] == "pr" else (0, "[]", "")
+        with unittest.mock.patch.object(board, "item_list", return_value=data), \
+                unittest.mock.patch.object(board, "_run", side_effect=fake):
+            self.assertIsNone(board.unshipped_done(cfg, "o/r", {3}))
+        with unittest.mock.patch.object(board, "item_list", return_value=None):
+            self.assertIsNone(board.unshipped_done(cfg, "o/r", {3}))
+
+    def test_reopening_a_card_blocks_it(self):
+        import board
+        cfg = {"columns": {"blocked": "Blocked"}}
+        card = {"number": 3, "repo": "o/r", "item_id": "i3"}
+        meta = unittest.mock.patch.object(board, "project_meta", return_value={"options": {}})
+        with unittest.mock.patch.object(board, "_run", return_value=(0, "", "")) as run, meta, \
+                unittest.mock.patch.object(board, "set_status", return_value=True) as move:
+            self.assertTrue(board.reopen_blocked(cfg, card, "why"))
+        self.assertEqual(run.call_args[0][0][:3], ["gh", "issue", "reopen"])
+        move.assert_called_with(cfg, {"options": {}}, "i3", "Blocked")
+        # A card that would not move stays visible to the next sweep: nothing is reopened.
+        with unittest.mock.patch.object(board, "_run") as run, meta, \
+                unittest.mock.patch.object(board, "set_status", return_value=False):
+            self.assertFalse(board.reopen_blocked(cfg, card, "why"))
+        run.assert_not_called()
 
     def test_a_fresh_branch_run_never_targets_a_pr_the_ticket_names(self):
         import activities

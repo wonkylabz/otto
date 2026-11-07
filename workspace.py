@@ -865,7 +865,9 @@ def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None,
         close = (issue_closing_line(issue, origin)
                  or closing_line(request, origin, asker_text))
         if close:
-            body = f"{body}\n\n{close}" if body else close
+            # First, not last: `gh pr create` keeps 4000 characters, and a long body lost the
+            # line or buried it in a cut-off fence, so a hand-merged ticket stayed open.
+            body = f"{close}\n\n{body}" if body else close
     out = _finalize(run_id, title=title, base_head=base_head, existing_pr=existing_pr,
                     branch=branch, body=body)
     post_plan(workspace_path(run_id), out.get("pr_url"), run_id, plan,
