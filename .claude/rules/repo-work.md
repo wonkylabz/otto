@@ -36,16 +36,17 @@
 
 ## Post-PR loops
 
-**Code review** — **default-on for every repo-mode PR** (`params.get("review", True)`): a PR is a PR whoever wrote it. Runs *before* QA; a fail skips QA. Bounded `MAX_REVIEW_ROUNDS=3`. Cap `code-reviewer` (`OTTO_REVIEW_CAP`).
+**Code review** — **default-on for every repo-mode PR** (`params.get("review", True)`). Runs *before* QA; a fail skips QA. Bounded `MAX_REVIEW_ROUNDS=3`. Cap `code-reviewer` (`OTTO_REVIEW_CAP`).
 
-**QA** (opt-in, repo-mode only) — judges pass/fail/inconclusive; FAIL re-provisions, re-runs, re-pushes, re-QAs. Bounded `MAX_QA_ROUNDS=2`. Opt-in = pre-authorized. Cap `qa-tester` (`OTTO_QA_CAP`).
+**QA** (opt-in, repo-mode only) — FAIL re-provisions, re-runs, re-pushes, re-QAs. Bounded `MAX_QA_ROUNDS=2`. Opt-in = pre-authorized. Cap `qa-tester` (`OTTO_QA_CAP`).
 
 Both loops are ONE parameterised body — `wf_postpr._run_fix_loop` over `_LOOPS`; every rule below binds each of them.
 
 - **The repo's declared suite runs BEFORE each round's reviewer, under `bwrap` or not at all** (`repo_checks`) — a FAIL skips the reviewer and steers the fix; a PASS is a judge FACT, never a verdict; undeclared is never shown as passed (`RepoChecksTests`).
 - **The check command never travels in a snapshot** — importing one would run a stranger's shell on this machine (`RepoChecksTests`).
-- **A post-PR round stamps `verdict_source` — its verdict is about the PR, not the capability** — a round correctly raising must-fix findings booked the reviewer as failing, and no round raises a needs-you card a human could accept (`ScorecardTests`).
-- **An errored fix round, or a dead review/QA activity, ENDS the loop inconclusive** (`WorkflowReviewLoopTests`) — re-judging the same diff reaches the same verdict, and an open PR is never a failed run.
+- **A post-PR round stamps `verdict_source` — its verdict is about the PR, not the capability** — a round raising must-fix findings booked the reviewer as failing (`ScorecardTests`).
+- **A later review round reads only the fix** (`prior_rounds_note(since=)`) — the rest goes under `## Follow-ups` (`PriorRoundsNoteTests`).
+- **An errored fix round, or a dead review/QA activity, ENDS the loop inconclusive** (`WorkflowReviewLoopTests`) — re-judging reaches the same verdict; an open PR is never a failed run.
 - **A post-PR round runs on the operator's backend; a local/Codex death gets ONE Claude re-run** (`WorkflowReviewLoopTests`) — one-shot loops, nothing else covers it. Not a dead activity; strict: local.
 - **A post-PR fix round checks out the PR's head branch, not `otto/<run_id>`** (`_fix_workspace`) — a run amending an existing PR never pushed its own; a round that can't provision goes inconclusive, not Failed.
 - **The PR's title, body and commit msg describe the CHANGE, never the run** (`_PR_BODY_RULE`; `pr_copy(summary_is_error=)`←the ladder's `is_error`) — an errored `result` is a stderr tail no prefix list catches; rounds APPEND (`PrBodyContractTests`, `PrCopyTests`).

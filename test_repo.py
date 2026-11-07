@@ -1746,6 +1746,93 @@ class PriorRoundsNoteTests(unittest.TestCase):
             # Still ends on the verdict contract the judge parses.
             self.assertIn("INCONCLUSIVE", req.rsplit("\n\n", 1)[-1])
 
+    def test_only_a_review_with_a_base_commit_is_scoped_to_the_fix(self):
+        scoped = engine.review_request("u", "r", "x", prior=self.PRIOR, since="abc", checkout="/w")
+        self.assertIn("`git diff abc HEAD`", scoped)
+        self.assertIn("## Follow-ups", scoped)
+        self.assertNotIn("should-fix on its own merits", scoped)
+        self.assertIn("`/w`", scoped)
+        whole = engine.review_request("u", "r", "x", prior=self.PRIOR)
+        self.assertIn("should-fix on its own merits", whole)
+        self.assertNotIn("git diff", whole)
+        self.assertIn("do not clone", whole)            # no clone: gh stays the only source
+        self.assertNotIn("git diff", engine.qa_review_request("u", "r", "x", prior=self.PRIOR))
+
+    def test_follow_ups_are_read_from_their_own_section(self):
+        import judging
+        self.assertEqual(judging.follow_ups("x\n\n## Follow-ups\n- a\n- b\n\n## Could not assess\n"
+                                            "- c\n\nPASS"), "- a\n- b")
+        self.assertEqual(judging.follow_ups("x\n### **Follow ups**\n- a\n\nCHANGES"), "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- n/a\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\n**Could not assess**\n- b\nPASS"),
+                         "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\nVerdict: PASS."), "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\n**Verdict:** PASS"), "- a")
+        self.assertEqual(judging.follow_ups(
+            "## Follow-ups\nNone.\n\n**Could not assess** — nothing.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNo follow-ups.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone worth raising.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n**Naming**\n- x\n### wf.py\n- y\n\nPASS"),
+                         "**Naming**\n- x\n### wf.py\n- y")
+        self.assertEqual(judging.follow_ups("the follow-ups are none\nPASS"), "")
+        self.assertEqual(judging.follow_ups(None), "")
+
+    def test_a_scoped_judge_is_told_follow_ups_never_fail(self):
+        import judging
+        said = []
+        with mock.patch.object(judging, "confirm_adverse",
+                               side_effect=lambda t, p, *a: said.append(p) or
+                               {"verdict": "pass", "critique": ""}):
+            judging.judge_review("x", "report")
+            judging.judge_review("x", "report", scoped=True)
+        self.assertNotIn("never fails the PR", said[0])
+        self.assertIn("never fails the PR", said[1])
+
+    def test_only_a_plain_run_of_commits_is_a_fix_range(self):
+        with mock.patch.object(workspace, "_run", return_value=(1, "", "")):
+            self.assertFalse(workspace.linear_since("/w", "abc"))      # rebased away
+        with mock.patch.object(workspace, "_run", side_effect=[(0, "", ""), (0, "1\n", "")]):
+            self.assertFalse(workspace.linear_since("/w", "abc"))      # the base came in
+        with mock.patch.object(workspace, "_run", side_effect=[(0, "", ""), (0, "0\n", "")]):
+            self.assertTrue(workspace.linear_since("/w", "abc"))
+        with mock.patch.object(workspace, "_run") as run:
+            self.assertFalse(workspace.linear_since("/w", "--flag"))
+            self.assertFalse(workspace.linear_since("/w", None))
+        run.assert_not_called()
+
+    def test_a_pass_that_died_moves_no_baseline(self):
+        self.assertIn('if not out.get("is_error"):\n                    since =', workflow_src())
+
+    def test_follow_ups_survive_every_way_out_of_the_loop(self):
+        src = workflow_src()
+        self.assertEqual(src.count('getattr(self, "_later", None)'), 2)
+        self.assertNotIn('"follow_ups": "', src)
+
+    def test_a_merged_prs_follow_ups_become_an_issue(self):
+        import board
+        with mock.patch.object(board, "_run", return_value=(0, "https://x/9\n", "")) as run:
+            self.assertEqual(board.file_follow_ups("https://github.com/o/r/pull/7", "- a"),
+                             "https://x/9")
+        self.assertEqual(run.call_args[0][0][:5], ["gh", "issue", "create", "--repo", "o/r"])
+        self.assertIn("Review follow-ups from #7", run.call_args[0][0])
+        with mock.patch.object(board, "_run") as run:
+            self.assertIsNone(board.file_follow_ups("https://github.com/o/r/pull/7", " "))
+            self.assertIsNone(board.file_follow_ups("nonsense", "- a"))
+        run.assert_not_called()
+        with mock.patch.object(board, "_run", return_value=(1, "", "no")):
+            self.assertIsNone(board.file_follow_ups("https://github.com/o/r/pull/7", "- a"))
+
+    def test_follow_ups_are_filed_only_after_the_merge(self):
+        src = workflow_src()
+        merged = src.index("Merged automatically")
+        self.assertGreater(src.index("file_follow_ups, {"), merged)
+        import worker
+        self.assertIn("file_follow_ups", [a.__name__ for a in worker.ACTIVITIES])
+        import factory
+        self.assertIn("Review follow-ups", factory.SPRINT_BRIEF)
+
     def test_a_long_round_is_cut_with_a_marker(self):
         req = engine.review_request("u", "r", "x", prior=[{"findings": "f" * 9000, "fix": "ok"}])
         self.assertIn("[CUT at 3000 of 9000 characters", req)

@@ -11,6 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Code review reruns only look at the fix.** After the first round, a review reads what changed
+  since the last one and raises only a must-fix on those lines. Anything else is listed as a
+  follow-up, and factory mode files those as an issue after the merge. Reviewers also read a clone
+  of the PR instead of fetching files one at a time. **Restart the worker** to pick this up.
+
 ### Fixed
 
 - **Your own chat messages now render markdown.** A message, or the ticket a board run started

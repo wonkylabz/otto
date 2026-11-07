@@ -557,6 +557,22 @@ def close_superseded(repo, number, keep_branch, new_url):
     return closed
 
 
+def file_follow_ups(pr_url, text):
+    """Open an issue holding what the review of `pr_url` left for later; its URL, or None.
+    The PM decides what becomes a ticket (`factory.SPRINT_BRIEF`). Never raises."""
+    import privacy
+    m = re.match(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", pr_url or "")
+    if not m or not (text or "").strip():
+        return None
+    rc, out, err = _run(["gh", "issue", "create", "--repo", m.group(1),
+                         "--title", f"Review follow-ups from #{m.group(2)}",
+                         "--body", privacy.redact(text)])
+    if rc != 0:
+        trace("BOARD", f"filing follow-ups on {m.group(1)} failed: {err[:120]}")
+        return None
+    return out.strip() or None
+
+
 def has_comment_marker(repo, number, marker):
     """True if the issue already has a comment containing `marker`. Used to make result delivery
     idempotent: a Temporal activity that timed out AFTER posting but before returning will be
