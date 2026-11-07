@@ -41,8 +41,8 @@ refactor a correctness-and-tests one. Do not nitpick — see **What not to flag*
    linked issue if referenced — the review judges the change against what it was meant to do.
 2. **Read enough context, from the same source as the diff.** A line fine in isolation can
    break an invariant ten lines above, so widen it — for a PR through the forge (`gh api`,
-   `gh pr diff`), and read local files ONLY when the diff itself is local. A checkout can be
-   on the wrong branch, dirty, or a different repo.
+   `gh pr diff`), and read local files ONLY when the diff itself is local or you were handed
+   a clone of the PR's head. Others can be stale.
 3. **Review across these lenses**, weighting by what the diff touches:
    - **Correctness** — logic errors, off-by-ones, unhandled edge cases and error paths,
      races, resource leaks, broken invariants.

@@ -47,7 +47,7 @@ Split: **interactive** (clarify, wait for approval) vs **unattended** (deliver t
 
 `board.py` — Projects v2 as an async queue. Ready→In Progress on pickup, result comment + move to Review/Done. **Moving to Ready is approval** (`hold` flips to `ask`). Config `data/board.json`.
 
-- **A re-readied card runs again as the next GENERATION** (`board.next_run_id`: `-r1`, `-r2`…) — one fixed id under REJECT_DUPLICATE left it in Ready forever; a running generation is never doubled, the reaper judges the latest (`FactoryModeTests`).
+- **A re-readied card runs again as the next GENERATION** (`board.next_run_id`: `-r1`, `-r2`…) — a fixed id left it in Ready forever; a running one is never doubled (`FactoryModeTests`).
 
 ## GitHub PR reviews
 
@@ -71,14 +71,16 @@ runs the stock read-only reviewer per PR, and parks the result in a chat thread
 
 `factory.py` — one repo + the board as a self-driving loop: a PM sprint readies tickets, the worker builds them, a PR passing review AND QA merges itself. State `data/factory.json`, schedule `factory-sprint`.
 
-- **Only the board poll ACTIVITY stamps `auto_merge`, and only on the factory repo's tickets** (`factory.apply`) — the flag merges unread code, so no client body or other ingress may set it (`FactoryModeTests`).
+- **Only the board poll ACTIVITY stamps `auto_merge`, and only on the factory repo's tickets** (`factory.apply`) — it merges unread code, so nothing else may set it (`FactoryModeTests`).
+- **A re-run continues the card's open PR; only a conflict rebuilds** (`board.open_retry_pr`) — a rebuild threw away paid rounds (`FactoryModeTests`).
+- **Done means merged** (`board.unshipped_done`) — closing an issue moves its card to Done; only `not planned` stays (`FactoryModeTests`).
 - **A skipped or inconclusive loop is never a pass** (`wf_postpr._auto_merge`) — merging needs review AND QA PASS; a refused merge is `merge_failed`, Blocked (`WorkflowAutoMergeTests`).
-- **Unmeasurable spend or an unreadable board starts nothing** (`factory.spent` → None, `board.column_counts` → None) — an empty-looking queue would start a sprint past the budget or the WIP cap (`FactoryModeTests`).
-- **DONE needs the CURRENT tree playtested clean** (`factory.playtest_clean`) — every ticket's QA proved its own criteria while the product shipped wrong rules and an unreadable UI; only a run that USED it can say done (`FactoryModeTests`).
-- **A factory run gets only the MCP servers the operator TICKED; the rest are DENIED** (`factory.mcp_allow_for`, keyed on the wid it owns) — an unattended, pre-approved run held the operator's mail, chat and home servers (`FactoryModeTests`).
-- **A Claude wall PAUSES the line, never stalls it** (`factory.pause`/`resume`) — a spent limit failed every sprint identically, so each counted idle and the factory stopped hours before the reset; a cheap probe resumes it and re-readies the walled cards (`FactoryModeTests`).
-- **A repo with code is ASSESSED, never scaffolded** (`factory._has_code` → `goals_text`) — a foundation ticket lays a Makefile and CI over a working toolchain; an unreadable tree refuses rather than guess "empty" (`FactoryModeTests`).
-- **Disable restores the board config enable changed, and every stop notifies** — an unattended loop that goes quiet reads as broken (`FactoryModeTests`).
+- **Unmeasurable spend or an unreadable board starts nothing** (`factory.spent` → None, `board.column_counts` → None) — an empty-looking queue would start a sprint past a limit (`FactoryModeTests`).
+- **DONE needs the CURRENT tree playtested clean** (`factory.playtest_clean`) — per-ticket QA shipped wrong rules and an unreadable UI; only a run that USED it can say done (`FactoryModeTests`).
+- **A factory run gets only the MCP servers the operator TICKED; the rest are DENIED** (`factory.mcp_allow_for`, keyed on the wid it owns) — an unattended run held the operator's mail and chat (`FactoryModeTests`).
+- **A Claude wall PAUSES the line, never stalls it** (`factory.pause`/`resume`) — walled sprints counted idle and stopped the factory before the reset; a cheap probe resumes it and re-readies them (`FactoryModeTests`).
+- **A repo with code is ASSESSED, never scaffolded** (`factory._has_code` → `goals_text`) — a foundation ticket lays a Makefile over a working toolchain; an unreadable tree refuses (`FactoryModeTests`).
+- **Disable restores the board config enable changed, and every stop notifies** — a quiet loop reads as broken (`FactoryModeTests`).
 
 ## Runbooks / scheduler
 

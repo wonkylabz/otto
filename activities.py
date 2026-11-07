@@ -495,8 +495,8 @@ def finalize_workspace(payload: dict) -> dict:
                              cap=payload.get("cap"), concerns=payload.get("concerns"))
     issue = payload.get("issue") or {}
     if out.get("pr_url") and not existing and issue.get("kind") == "github_issue":
-        # A re-run of a board card branches off the default branch, not the earlier run's PR
-        # (resolve_pr_target's `fresh`), so the PR it opens makes that one a duplicate.
+        # A re-run that could not continue the earlier PR (it conflicted, `board.open_retry_pr`)
+        # branched off the default, so the PR it opens makes that one a duplicate.
         # Closed only once this one exists: a re-run that dies first leaves the old one standing.
         import board
         board.close_superseded(issue.get("repo"), issue.get("number"), out.get("branch"),
@@ -543,12 +543,13 @@ def resolve_pr_target(payload: dict) -> dict:
     An activity, not workflow code, because it shells out to `gh`: the answer depends on live
     GitHub state and must be recorded once in history, not re-derived on every replay.
 
-    `fresh` (factory mode) always branches off the default branch: a factory ticket re-run after
-    its PR went stale must build on what has merged since, and pushing that rebuilt history onto
-    the old PR's branch is refused as a non-fast-forward — the work then never leaves the clone."""
+    `fresh` (factory mode) never targets a PR the ticket's TEXT names. The only target is the
+    card's own open PR (`issue`, its `github_issue` reply target), which a re-run continues."""
     import workspace
     if payload.get("fresh"):
-        return {}
+        import board
+        return board.open_retry_pr_for(payload.get("issue"),
+                                       update=payload.get("update", True)) or {}
     return workspace.pr_target(payload.get("repo"), payload.get("request")) or {}
 
 
@@ -770,9 +771,9 @@ _POST_PR = {
 }
 
 
-def _qa_checkout(payload):
-    """A throwaway clone of the PR's head branch for QA to run in, or None (QA then runs
-    without one, as before). Never raises: a missing checkout costs evidence, not the round."""
+def _pr_checkout(payload):
+    """A throwaway clone of the PR's head branch for a post-PR round, or an {error}. Never
+    raises: a missing checkout costs evidence, not the round."""
     import workspace
     run_id = f"{payload.get('wid') or 'qa'}-ws"
     from ui import trace
@@ -782,7 +783,7 @@ def _qa_checkout(payload):
             trace("QA", f"{payload.get('wid')}: no checkout — the PR's head branch did not resolve")
             return {"error": "the PR's head branch could not be resolved"}
         ws = workspace.provision(payload.get("repo"), run_id, from_branch=True, branch=branch)
-        return {"path": ws["path"], "run_id": run_id}
+        return {"path": ws["path"], "run_id": run_id, "head": ws.get("head")}
     except Exception as e:  # noqa: BLE001 - see docstring
         trace("QA", f"{payload.get('wid')}: no checkout — {str(e)[:200]}")
         return {"error": f"the PR branch could not be cloned: {str(e)[:200]}"}
@@ -792,6 +793,7 @@ def _post_pr_capability(kind, payload):
     """Run one post-PR loop's capability against an opened PR. PRE-AUTHORIZED: enabling the loop
     is the grant, so this runs without a gate. Returns the transcript + metadata, or
     {missing:True} if that loop's cap isn't registered/enabled."""
+    import workspace
     spec = _POST_PR[kind]
     want = getattr(config, spec["cap_setting"])
     cap = _cap(want)
@@ -804,12 +806,22 @@ def _post_pr_capability(kind, payload):
     # QA proves the PR by RUNNING it, so it gets a clone of the PR's head as its cwd — with
     # none it sat in Otto's checkout, where a clone elsewhere is refused and the registered
     # checkout is write-denied, so `make test` never ran and every PR went INCONCLUSIVE.
-    ws = _qa_checkout(payload) if kind == "qa" else None
+    # The reviewer gets one to read: fetching each file through `gh api` spent most of a round.
+    # A reviewer living in a project's own repo keeps that cwd: its skills and settings load from
+    # there, and an explicit cwd would override it.
+    ws = _pr_checkout(payload) if kind == "qa" or not getattr(cap, "cwd", None) else None
     # A failed checkout is SAID in the request, so QA reports it and the judge's critique names
     # the real cause rather than an unexplained INCONCLUSIVE.
     extra = ({"checkout": ws["path"]} if ws and ws.get("path")
              else {"checkout_error": ws["error"]} if ws else {})
     ws = ws if ws and ws.get("path") else None
+    # A later review round reads only the fix. Needs the clone: the delta is a local diff.
+    # After a rebase or a merge from the base that diff is no longer the fix: read the whole PR.
+    since = payload.get("since") if kind == "review" and ws else None
+    if since and not workspace.linear_since(ws["path"], since):
+        since = None
+    if since:
+        extra["since"] = since
     req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
                                            payload["request"], prior=payload.get("prior"),
                                            **extra)
@@ -818,16 +830,19 @@ def _post_pr_capability(kind, payload):
                                  extra_tools=mcp_tools,
                                  mcp_config_path=mcp_path, wid=payload.get("wid"),
                                  cwd=ws["path"] if ws else None,
+                                 # With the cwd it pins the run to this clone; alone, the run is
+                                 # pointed at the registered checkouts instead.
+                                 repo=payload.get("repo") if ws else None,
                                  local_disabled=bool(payload.get("local_disabled")),
                                  local_disabled_reason=payload.get("local_disabled_reason"),
                                  supervise_enforce=payload.get("supervise_enforce", True),
                                  # Earlier rounds' reports name whatever they name: "calendar
                                  # day" in a fix report stopped a re-review as a Calendar task.
-                                 external_text=[judging.prior_rounds_quoted(payload.get("prior"))],
+                                 external_text=[judging.prior_rounds_quoted(payload.get("prior")),
+                                                (ws or {}).get("path")],
                                  deny_tools=_mcp_denies(payload.get("wid")))
     finally:
         if ws:
-            import workspace
             workspace.cleanup(ws["run_id"])
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),
@@ -836,6 +851,8 @@ def _post_pr_capability(kind, payload):
             "fallback_from": att.get("fallback_from"),
             "fallback_reason": att.get("fallback_reason"),
             "fallback_detail": att.get("fallback_detail"),
+            "head": (ws or {}).get("head"), "scoped": bool(since),
+            "follow_ups": judging.follow_ups(att["result"]) if since else "",
             spec["cap_field"]: cap.name, spec["risk_field"]: cap.risk}
 
 
@@ -844,6 +861,8 @@ def _judge_post_pr(judge, payload):
     against the target repo's own CLAUDE.md conventions (both loops are repo-mode only).
     `checks` (the repo's own suite, as a fact) is passed only when present."""
     extra = {"checks": payload["checks"]} if payload.get("checks") else {}
+    if payload.get("scoped"):
+        extra["scoped"] = True
     return judge(payload["request"], payload["result"],
                  project=engine._resolve_project(None, payload.get("repo")), **extra)
 
@@ -1278,6 +1297,14 @@ def merge_pr(payload: dict) -> dict:
     if payload.get("factory"):
         factory.note_merge(payload["factory"], pr_url)     # idempotent per PR url
     return {"merged": True}
+
+
+@activity.defn
+def file_follow_ups(payload: dict) -> dict:
+    """Factory mode: keep what a merged PR's review left for later as an issue the next sprint
+    reads. Best-effort: {url} or {url: None}, never a failure of a PR that already merged."""
+    import board
+    return {"url": board.file_follow_ups(payload.get("pr_url"), payload.get("text"))}
 
 
 @activity.defn

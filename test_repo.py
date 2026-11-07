@@ -254,7 +254,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                 mock.patch.object(workspace, "post_plan"):
             workspace.finalize("wf-x", body="Body.", request=req)
             workspace.finalize("wf-x", body=None, request=req, existing_pr=True)
-        self.assertEqual(seen, ["Body.\n\nCloses #198", None])
+        self.assertEqual(seen, ["Closes #198\n\nBody.", None])
 
     def _finalize_activity(self, payload, dirty=True):
         got, drafted = {}, []
@@ -318,6 +318,17 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         got, _ = self._finalize_activity({"run_id": "web-abc", "title": "t"})
         self.assertTrue(got["close_issue"])
 
+    def test_a_long_pr_body_keeps_its_closing_line(self):
+        seen = []
+        ticket = {"kind": "github_issue", "repo": "wonkylabz/otto", "number": 20}
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("gh-issue-20", body="x" * 9000, issue=ticket)
+        self.assertTrue(seen[0].startswith("Closes #20\n\n"))   # survives the 4000 cut
+
     def test_a_close_is_skipped_when_the_caller_says_so(self):
         req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
         seen = []
@@ -345,7 +356,7 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
                                asker_text="like the fix we did for issue 12")
             workspace.finalize("web-retry", body="B", request=delegated)
             workspace.finalize("wf-x-d1", body="B", request=delegated, asker_text=f"fix {url}")
-        self.assertEqual(seen, ["B", "B", "B\n\nCloses #12"])
+        self.assertEqual(seen, ["B", "B", "Closes #12\n\nB"])
         self.assertIn('"asker_text": self._asker_text', workflow_src())
 
     def test_fix_rounds_and_resumes_draft_their_commit_from_their_own_result(self):
@@ -1746,6 +1757,103 @@ class PriorRoundsNoteTests(unittest.TestCase):
             # Still ends on the verdict contract the judge parses.
             self.assertIn("INCONCLUSIVE", req.rsplit("\n\n", 1)[-1])
 
+    def test_only_a_review_with_a_base_commit_is_scoped_to_the_fix(self):
+        scoped = engine.review_request("u", "r", "x", prior=self.PRIOR, since="abc", checkout="/w")
+        self.assertIn("`git diff abc HEAD`", scoped)
+        self.assertIn("## Follow-ups", scoped)
+        self.assertNotIn("should-fix on its own merits", scoped)
+        self.assertIn("`/w`", scoped)
+        whole = engine.review_request("u", "r", "x", prior=self.PRIOR)
+        self.assertIn("should-fix on its own merits", whole)
+        self.assertNotIn("git diff", whole)
+        self.assertIn("do not clone", whole)            # no clone: gh stays the only source
+        self.assertNotIn("git diff", engine.qa_review_request("u", "r", "x", prior=self.PRIOR))
+
+    def test_follow_ups_are_read_from_their_own_section(self):
+        import judging
+        self.assertEqual(judging.follow_ups("x\n\n## Follow-ups\n- a\n- b\n\n## Could not assess\n"
+                                            "- c\n\nPASS"), "- a\n- b")
+        self.assertEqual(judging.follow_ups("x\n### **Follow ups**\n- a\n\nCHANGES"), "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- n/a\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\n**Could not assess**\n- b\nPASS"),
+                         "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\nVerdict: PASS."), "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\n**Verdict:** PASS"), "- a")
+        self.assertEqual(judging.follow_ups(
+            "## Follow-ups\nNone.\n\n**Could not assess** — nothing.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNo follow-ups.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone worth raising.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n**Naming**\n- x\n### wf.py\n- y\n\nPASS"),
+                         "**Naming**\n- x\n### wf.py\n- y")
+        self.assertEqual(judging.follow_ups("the follow-ups are none\nPASS"), "")
+        self.assertEqual(judging.follow_ups(None), "")
+        # A real item is never read as the placeholder or as the section's end.
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone of the new helpers have tests.\nPASS"),
+                         "None of the new helpers have tests.")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n* Verdict parsing is untested\n- b\nPASS"),
+                         "* Verdict parsing is untested\n- b")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone \u2014 the diff is clean.\nPASS"), "")
+        # The singular, and a bold or plain label, open the section too.
+        self.assertEqual(judging.follow_ups("## Follow-up\n- a\nPASS"), "- a")
+        self.assertEqual(judging.follow_ups("x\n**Follow-ups:**\n- a\n\nPASS"), "- a")
+        self.assertEqual(judging.follow_ups("x\nFollow-ups:\n- a\n\nVerdict: PASS"), "- a")
+
+    def test_a_scoped_judge_is_told_follow_ups_never_fail(self):
+        import judging
+        said = []
+        with mock.patch.object(judging, "confirm_adverse",
+                               side_effect=lambda t, p, *a: said.append(p) or
+                               {"verdict": "pass", "critique": ""}):
+            judging.judge_review("x", "report")
+            judging.judge_review("x", "report", scoped=True)
+        self.assertNotIn("never fails the PR", said[0])
+        self.assertIn("never fails the PR", said[1])
+
+    def test_only_a_plain_run_of_commits_is_a_fix_range(self):
+        with mock.patch.object(workspace, "_run", return_value=(1, "", "")):
+            self.assertFalse(workspace.linear_since("/w", "abc"))      # rebased away
+        with mock.patch.object(workspace, "_run", side_effect=[(0, "", ""), (0, "1\n", "")]):
+            self.assertFalse(workspace.linear_since("/w", "abc"))      # the base came in
+        with mock.patch.object(workspace, "_run", side_effect=[(0, "", ""), (0, "0\n", "")]):
+            self.assertTrue(workspace.linear_since("/w", "abc"))
+        with mock.patch.object(workspace, "_run") as run:
+            self.assertFalse(workspace.linear_since("/w", "--flag"))
+            self.assertFalse(workspace.linear_since("/w", None))
+        run.assert_not_called()
+
+    def test_a_pass_that_died_moves_no_baseline(self):
+        self.assertIn('if not out.get("is_error"):\n                    since =', workflow_src())
+
+    def test_follow_ups_survive_every_way_out_of_the_loop(self):
+        src = workflow_src()
+        self.assertEqual(src.count('getattr(self, "_later", None)'), 2)
+        self.assertNotIn('"follow_ups": "', src)
+
+    def test_a_merged_prs_follow_ups_become_an_issue(self):
+        import board
+        with mock.patch.object(board, "_run", return_value=(0, "https://x/9\n", "")) as run:
+            self.assertEqual(board.file_follow_ups("https://github.com/o/r/pull/7", "- a"),
+                             "https://x/9")
+        self.assertEqual(run.call_args[0][0][:5], ["gh", "issue", "create", "--repo", "o/r"])
+        self.assertIn("Review follow-ups from #7", run.call_args[0][0])
+        with mock.patch.object(board, "_run") as run:
+            self.assertIsNone(board.file_follow_ups("https://github.com/o/r/pull/7", " "))
+            self.assertIsNone(board.file_follow_ups("nonsense", "- a"))
+        run.assert_not_called()
+        with mock.patch.object(board, "_run", return_value=(1, "", "no")):
+            self.assertIsNone(board.file_follow_ups("https://github.com/o/r/pull/7", "- a"))
+
+    def test_follow_ups_are_filed_only_after_the_merge(self):
+        src = workflow_src()
+        merged = src.index("Merged automatically")
+        self.assertGreater(src.index("file_follow_ups, {"), merged)
+        import worker
+        self.assertIn("file_follow_ups", [a.__name__ for a in worker.ACTIVITIES])
+        import factory
+        self.assertIn("Review follow-ups", factory.SPRINT_BRIEF)
+
     def test_a_long_round_is_cut_with_a_marker(self):
         req = engine.review_request("u", "r", "x", prior=[{"findings": "f" * 9000, "fix": "ok"}])
         self.assertIn("[CUT at 3000 of 9000 characters", req)
@@ -2875,6 +2983,23 @@ class PrTargetTests(unittest.TestCase):
         payload = src[i.start():i.start() + 1400]
         self.assertIn('"existing_pr": bool(self._pr_target.get("branch"))', payload)
         self.assertIn('"branch": self._pr_target.get("branch")', payload)
+
+    def test_a_retry_is_told_it_is_continuing_the_tickets_pr(self):
+        """A tree full of earlier work reads as a stale branch unless the run is told otherwise."""
+        src = workflow_src()
+        self.assertIn('"issue": params.get("reply_to")', src)
+        self.assertIn('request += RETRY_NOTE.format(number=self._pr_target.get("number"))', src)
+        self.assertLess(src.index("request += RETRY_NOTE"), src.index("await self._take_fast_lane("))
+        self.assertLess(src.index("request = strip_retry_note(request)"),
+                        src.index("request += RETRY_NOTE"))
+
+    def test_a_retried_request_drops_the_note_it_was_audited_with(self):
+        from wf_repo import RETRY_NOTE, strip_retry_note
+        once = "fix the board" + RETRY_NOTE.format(number=7)
+        self.assertEqual(strip_retry_note(once), "fix the board")
+        self.assertEqual(strip_retry_note(once + RETRY_NOTE.format(number=12)), "fix the board")
+        self.assertEqual(strip_retry_note("This is a retry of this ticket."),
+                         "This is a retry of this ticket.")
 
     def test_the_result_says_it_updated_a_pr_rather_than_opened_one(self):
         """Reporting "opened draft PR" after pushing to someone else's branch names a PR that

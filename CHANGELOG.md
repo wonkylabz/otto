@@ -11,8 +11,26 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- **A retried factory ticket continues its open PR instead of closing it and starting over.** Only
+  a PR that conflicts with the base is rebuilt. **Restart the worker** to pick this up.
+- **Code review reruns only look at the fix.** After the first round, a review reads what changed
+  since the last one and raises only a must-fix on those lines. Anything else is listed as a
+  follow-up, and factory mode files those as an issue after the merge. Reviewers also read a clone
+  of the PR instead of fetching files one at a time, except one set up in a project's own repo,
+  which keeps working there. **Restart the worker** to pick this up.
+
 ### Fixed
 
+- **Factory sprints are told how long they have.** A sprint unblocks first, writes tickets from
+  what it has read, and one that runs short reports what's left for the next.
+- **A PR you merge by hand counts for the factory**, so the line isn't read as idle.
+- **A factory ticket can no longer reach Done without merged code.** One closed as completed with
+  no merged PR is reopened and sent to Blocked, and it holds back the factory's done verdict. An
+  existing ticket like this will reappear once. Dropped tickets now close as "not planned".
+- **A board PR with a long description closes its ticket when merged.** The closing line was being
+  cut off, so a ticket stayed open after you merged its PR by hand.
 - **A code ticket about a calendar no longer moves off your local model.** In a repo run, only
   wording that points at someone's calendar counts, such as "my calendar" or "Google Calendar".
   Other runs behave as before. **Restart the worker** to pick this up.
