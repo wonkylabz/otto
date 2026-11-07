@@ -23,6 +23,7 @@ Design notes:
 The poll cadence is a Temporal Schedule (`reconcile_schedule`); the pure request-shaping
 (`issue_to_request`) and project-JSON parsing (`_parse_items`) are unit-tested.
 """
+import datetime
 import json
 import os
 import re
@@ -614,6 +615,31 @@ def unshipped_done(cfg, repo, tickets, skip_label=None):
     heads = [p.get("headRefName") or "" for p in prs]
     return [c for c in cards if c["number"] in completed and c["number"] not in closers
             and not any(_card_branch(h, c["number"]) for h in heads)]
+
+
+def card_merges(repo, since, tickets):
+    """URLs of PRs merged into `repo` at or after the local time `since` that delivered one of
+    `tickets` (issue numbers): on its card branch, or closing it. None on any failure, because
+    the stall limit and DONE both act on this answer and no answer must not read as none. Pure
+    GitHub state, so `factory.note_merge`'s per-URL guard keeps it idempotent."""
+    try:
+        floor = datetime.datetime.fromisoformat(since).astimezone(datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    rc, out, err = _run(["gh", "pr", "list", "--repo", repo, "--state", "merged", "--json",
+                         "url,headRefName,mergedAt,closingIssuesReferences,isCrossRepository",
+                         "--limit", "1000"])
+    if rc != 0:
+        trace("BOARD", f"merged-PR lookup on {repo} failed: {err[:120]}")
+        return None
+    try:
+        prs = json.loads(out or "[]")
+        return [p["url"] for p in prs if not p.get("isCrossRepository")
+                and (any(_card_branch(p.get("headRefName") or "", n) for n in tickets)
+                     or tickets & {i.get("number") for i in p.get("closingIssuesReferences") or []})
+                and datetime.datetime.fromisoformat(p["mergedAt"].replace("Z", "+00:00")) >= floor]
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
 
 
 def reopen_blocked(cfg, card, note):
