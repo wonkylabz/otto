@@ -4689,15 +4689,23 @@ class LocalConnectorGapTests(unittest.TestCase):
                         "email the team about the outage"):   # 'email' is deliberately not a word
             self.assertEqual(self.m.connectors_named(request), [], request)
 
-    def test_calendar_alone_is_a_product_word_not_the_connector(self):
+    def test_calendar_is_a_product_word_only_in_a_code_run(self):
         name = "claude_ai_Google_Calendar"
         with unittest.mock.patch.object(self.m, "connectors", lambda pol=None: {name: "Calendar"}):
-            for request in ("what is on my calendar tomorrow", "add it to Google Calendar",
-                            "check gcal for Friday", "send a calendar invite to the team"):
-                self.assertEqual(self.m.connectors_named(request), [name], request)
             for request in ("build a calendar view of the quarter", "a calendar quarter bucket",
                             "export the iCal calendar feed"):
-                self.assertEqual(self.m.connectors_named(request), [], request)
+                self.assertEqual(self.m.connectors_named(request, code_run=True), [], request)
+                self.assertEqual(self.m.connectors_named(request), [name], request)
+            for request in ("what is on my calendar tomorrow", "add it to Google Calendar",
+                            "check gcal for Friday", "check your calendar for Friday",
+                            "update my\ncalendar with the release"):
+                self.assertEqual(self.m.connectors_named(request, code_run=True), [name], request)
+            # A read cap has no ladder rung off local, so outside a repo the guard still fires.
+            self.assertEqual(self.m.connectors_named("what's on the calendar today"), [name])
+
+    def test_a_run_in_a_clone_is_the_code_run(self):
+        src = open("engine.py", encoding="utf-8").read()
+        self.assertIn("code_run=bool(repo and cwd)", src)
 
     def _review_door(self, kind, request, prior):
         """What `_post_pr_capability` hands `run_attempt`, read off the real activity."""
@@ -4723,7 +4731,7 @@ class LocalConnectorGapTests(unittest.TestCase):
         """A fix report saying "calendar day" reached the re-review's request, so strict mode
         stopped the review as a Google Calendar task."""
         self.m.connectors = lambda pol=None: {"claude_ai_Google_Calendar": "claude.ai Calendar"}
-        prior = [{"findings": "the table shows the UTC day", "fix": "use the gcal day"}]
+        prior = [{"findings": "the table shows the UTC day", "fix": "use the calendar day"}]
         for kind in ("review", "qa"):
             seen = self._review_door(kind, "scaffold the app", prior)
             self.assertTrue(self.m.connectors_named(seen["request"]), "fixture lost its word")

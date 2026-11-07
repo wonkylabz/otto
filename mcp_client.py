@@ -443,16 +443,18 @@ def connectors(pol=None):
 # name the DESTINATION and nothing else — "email" and "docs" are absent for that reason.
 _CONNECTOR_WORDS = {
     "claude_ai_Atlassian": ("confluence", "jira"),
-    # Never bare "calendar": it is a product noun too, and "calendar quarter" in a ticket moved
-    # a run off local. "Google calendar" is the connector's own name.
-    "claude_ai_Google_Calendar": ("gcal", "my calendar", "our calendar", "calendar invite",
-                                  "calendar invites"),
+    "claude_ai_Google_Calendar": ("gcal", "calendar", "my calendar", "your calendar"),
     "claude_ai_Google_Drive": ("gdrive", "google doc", "google docs", "google sheet",
                                "google sheets"),
 }
 
+# A connector word that is also what software gets built about. In a code run it names the product
+# ("a calendar quarter"), which moved factory tickets off local; only a phrase pointing at
+# somebody's own calendar still counts there. Everywhere else the guard stays biased to fire.
+_PRODUCT_WORDS = frozenset({"calendar"})
 
-def connectors_named(request, pol=None, exclude=()):
+
+def connectors_named(request, pol=None, exclude=(), code_run=False):
     """Connectors the REQUEST names, which the local backend therefore cannot serve.
 
     `unservable` asks the capability, and a capability that declares nothing answers nothing —
@@ -469,16 +471,20 @@ def connectors_named(request, pol=None, exclude=()):
 
     `exclude` is external DATA quoted into the request (a Slack trigger's post, #223; an earlier
     review round's report): it names whatever it names, so it is cut out before matching rather
-    than read as the operator asking."""
+    than read as the operator asking. `code_run`: a run in a repo clone, where
+    `_PRODUCT_WORDS` describe the code."""
     text = request or ""
     for x in sorted((x for x in exclude or () if x), key=len, reverse=True):
         text = text.replace(x, " ")
-    text = text.lower()
+    # Whitespace too: a phrase can wrap across lines in a ticket body.
+    text = " ".join(text.lower().split())
     if not text:
         return []
     out = []
     for name in connectors(pol):
         words = {w.lower() for w in _CONNECTOR_WORDS.get(name, ())}
+        if code_run:
+            words -= _PRODUCT_WORDS
         # "claude_ai_Google_Calendar" -> "google calendar"; the connector's own name is a word
         # people use ("check Notion", "post it to Slack").
         own = re.sub(r"^claude_ai_", "", name).replace("_", " ").lower()
