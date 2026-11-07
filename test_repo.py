@@ -318,6 +318,18 @@ class PrIssueAndCommitCopyTests(unittest.TestCase):
         got, _ = self._finalize_activity({"run_id": "web-abc", "title": "t"})
         self.assertTrue(got["close_issue"])
 
+    def test_a_long_pr_body_keeps_its_closing_line(self):
+        seen = []
+        ticket = {"kind": "github_issue", "repo": "wonkylabz/otto", "number": 20}
+        with mock.patch.object(workspace, "_git_origin",
+                               return_value="https://github.com/wonkylabz/otto.git"), \
+                mock.patch.object(workspace, "_finalize",
+                                  side_effect=lambda *a, **k: seen.append(k["body"]) or {}), \
+                mock.patch.object(workspace, "post_plan"):
+            workspace.finalize("gh-issue-20", body="x" * 9000, issue=ticket)
+        self.assertLessEqual(len(seen[0]), workspace.PR_BODY_MAX)
+        self.assertTrue(seen[0].endswith("\n\nCloses #20"))
+
     def test_a_close_is_skipped_when_the_caller_says_so(self):
         req = "Work on this ticket https://github.com/wonkylabz/otto/issues/198"
         seen = []
@@ -2875,6 +2887,13 @@ class PrTargetTests(unittest.TestCase):
         payload = src[i.start():i.start() + 1400]
         self.assertIn('"existing_pr": bool(self._pr_target.get("branch"))', payload)
         self.assertIn('"branch": self._pr_target.get("branch")', payload)
+
+    def test_a_retry_is_told_it_is_continuing_the_tickets_pr(self):
+        """A tree full of earlier work reads as a stale branch unless the run is told otherwise."""
+        src = workflow_src()
+        self.assertIn('"issue": params.get("reply_to")', src)
+        self.assertIn('request += RETRY_NOTE.format(number=self._pr_target.get("number"))', src)
+        self.assertLess(src.index("request += RETRY_NOTE"), src.index("await self._take_fast_lane("))
 
     def test_the_result_says_it_updated_a_pr_rather_than_opened_one(self):
         """Reporting "opened draft PR" after pushing to someone else's branch names a PR that

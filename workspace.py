@@ -347,6 +347,9 @@ def origin_slug(url):
     return m.group(1).lower() if m else None
 
 
+PR_BODY_MAX = 4000
+
+
 def issue_closing_line(issue, origin):
     """`Closes #N` for a `github_issue` reply target of the PR's own repo; else None. Pure."""
     if not isinstance(issue, dict) or issue.get("kind") != "github_issue":
@@ -865,7 +868,10 @@ def finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None,
         close = (issue_closing_line(issue, origin)
                  or closing_line(request, origin, asker_text))
         if close:
-            body = f"{body}\n\n{close}" if body else close
+            # Clipped first: `gh pr create` keeps only PR_BODY_MAX, and a long body cut the line
+            # off, so a hand-merged ticket stayed open.
+            room = PR_BODY_MAX - len(close) - 2
+            body = f"{body[:room]}\n\n{close}" if body else close
     out = _finalize(run_id, title=title, base_head=base_head, existing_pr=existing_pr,
                     branch=branch, body=body)
     post_plan(workspace_path(run_id), out.get("pr_url"), run_id, plan,
@@ -940,7 +946,7 @@ def _finalize(run_id, title=None, base_head=None, existing_pr=False, branch=None
         rc, out, perr = _run(
             ["gh", "pr", "create", "--draft", "--head", branch,
              "--title", (title or "Otto automated change")[:120],
-             "--body", (body or f"Automated change by Otto for: {(title or '').strip()[:200]}")[:4000]],
+             "--body", (body or f"Automated change by Otto for: {(title or '').strip()[:200]}")[:PR_BODY_MAX]],
             cwd=path)
         if rc == 0:
             m = re.search(r"https?://\S+", out)

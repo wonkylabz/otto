@@ -120,15 +120,18 @@ end to end, never ask a question back.
    before the merge (often a usage limit after the PR opened). Treat it exactly like a card in
    "{blocked}" — never wait for its PR to merge.
    A card labelled `{hold}` is a HUMAN's: never close its PR, re-ready, rewrite or close it.
-   A re-readied ticket is rebuilt from scratch on a fresh branch off the default branch, so when
-   you move one back to "{ready}", CLOSE its open PR with a one-line comment, and never point
-   the issue text at an old PR or tell it how to branch or push — the platform owns git.
+   A re-readied ticket continues on its open PR's branch, so when you move one back to "{ready}",
+   leave that PR OPEN and write what is still missing into the issue. Never tell it how to branch
+   or push — the platform owns git. Close the PR only when its approach is wrong and must be
+   rebuilt: closing it throws away the work. A PR that conflicts with the base is rebuilt for you.
    For each card in "{blocked}" or "{review}": read its last comment (why it failed). If its PR is open and only
    an unobservable or wrong criterion failed (e.g. "passes in CI"), fix that criterion in the
    issue text and move it back to "{ready}". Otherwise EITHER rewrite the
    issue so it is smaller and unambiguous and move it back to "{ready}", adding the label
    `factory-retry-1` (or bump an existing `factory-retry-N`), OR — if it already carries
-   `factory-retry-2` — close it with a one-line comment saying why it was dropped.
+   `factory-retry-2` — drop it with `gh issue close --reason "not planned"` and a one-line comment
+   saying why. Closing it any other way reads as shipped, so Otto reopens it. If the work is still
+   needed, write it as a new ticket buildable from the default branch.
 3. Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
    Definition of Done and the Product section. Each must be one coherent PR, mergeable on top of
    the current default branch, and state its own acceptance criteria — including the tests it adds
@@ -324,7 +327,7 @@ def apply(params, state):
     params.update({"repo": state["repo"], "repo_hint": None, "qa": True, "clarify": False,
                    "approval": "ask" if held else "auto", "auto_merge": not held,
                    "factory": state["started_at"],
-                   # Always off the default branch, never onto an older PR the ticket mentions
+                   # Never onto an older PR the ticket mentions, only its own open one
                    # (activities.resolve_pr_target).
                    "fresh_branch": True})
     if isinstance(params.get("reply_to"), dict):
@@ -905,6 +908,21 @@ def _blind(why):
 
 # --- the sprint gate (activities.factory_gate / factory_after_sprint) -----------------------
 
+_UNSHIPPED_NOTE = ("Reopened by Otto: this ticket was closed as completed, but no merged PR "
+                   "delivered it. The next sprint retries it, or closes it as \"not planned\".")
+
+
+def _reopen_unshipped(s, bcfg):
+    """Send every card closed as completed with no merged code back to Blocked for the PM. Done
+    must mean the code merged, or the line and the DONE verdict both trust work that never
+    landed. Returns the issue numbers reopened."""
+    import board
+    cards = board.unshipped_done(bcfg, s.get("slug"), skip_label=bcfg.get("hold_label"))
+    moved = [c["number"] for c in cards if board.reopen_blocked(bcfg, c, _UNSHIPPED_NOTE)]
+    if moved:
+        _mutate(lambda st: _event(st, "unshipped", ", ".join(f"#{n}" for n in moved)))
+    return moved
+
 def gate():
     """Decide whether this tick starts a sprint. Returns {go, why, ...}; with go=True it also
     carries the child workflow id and params. Stops the factory when a limit is reached."""
@@ -942,6 +960,11 @@ def gate():
     ready, active = (counts.get(cols.get(k), 0) for k in ("ready", "active"))
     if active:
         return {"go": False, "why": f"{active} ticket(s) in progress"}
+    if _reopen_unshipped(s, bcfg):
+        counts = board.column_counts(bcfg, repo=s.get("slug"), skip_label=bcfg.get("hold_label"))
+        if counts is None:
+            return _blind("board unreadable")
+        ready = counts.get(cols.get("ready"), 0)
     # A stuck card stops the line (`line_stopped`), so Ready cannot drain while one sits there:
     # that is exactly when a sprint must run — the PM is the one who unblocks it.
     if ready and not stuck_cards(counts, bcfg):
@@ -1031,6 +1054,7 @@ def after_sprint(payload):
     """Book a finished sprint: DONE stops the factory; otherwise count it idle when nothing
     merged since the previous one. An unparseable reply counts as CONTINUE — the budget and the
     idle limit bound it, and a false DONE would end the line on a model's slip."""
+    import board
     word, evidence = verdict(payload.get("result"))
     s = load()
     if not enabled(s):
@@ -1039,10 +1063,13 @@ def after_sprint(payload):
     if nh.get("reason") in WALL_REASONS:
         pause(nh["reason"], [payload.get("wid") or ""])
         return {"state": "paused", "reason": nh["reason"]}
-    if word == "done" and playtest_clean(s):
+    unshipped = _reopen_unshipped(s, board.load()) if word == "done" else []
+    if word == "done" and playtest_clean(s) and not unshipped:
         disable("done", evidence)
         return {"state": "done"}
-    if word == "done":
+    if unshipped:
+        _mutate(lambda st: _event(st, "done_refused", "a ticket was closed without merged code"))
+    elif word == "done":
         # The PM's own check reads the tree; only the playtest USED it. Not idle either way:
         # the next sprint turns the defects into tickets.
         _mutate(lambda st: _event(st, "done_refused", "the latest playtest is not clean (verdict: "
