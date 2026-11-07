@@ -82,6 +82,12 @@ You are running one SPRINT of an autonomous build loop ("factory mode") for the 
 `{slug}`, tracked on the GitHub Projects board `{project}`. Nobody is watching: do the sprint
 end to end, never ask a question back.
 
+You have about {minutes} minutes, and a sprint that runs out of time stops wherever it is. Do the
+steps in order, unblocking first. Write each ticket from what you have already read: never clone
+the repo or trace its code to perfect a ticket, because the worker does that. If time runs short,
+stop, report what is done and what is left, and end on FACTORY: CONTINUE; the next sprint picks
+up the rest.
+
 1. Read `{goals}` at the root of `{slug}` (e.g. `gh api repos/{slug}/contents/{goals} --jq .content
    | base64 -d`). It holds the product vision and its Definition of Done — the only source of
    what "finished" means. Read the repo's current tree and the PRs merged so far
@@ -909,6 +915,14 @@ def _blind(why):
 
 # --- the sprint gate (activities.factory_gate / factory_after_sprint) -----------------------
 
+def _count_hand_merges(s):
+    """Book the factory's PRs merged by hand. `note_merge` is otherwise reached only from Otto's
+    own merge, so a line a human was unblocking counted idle and its playtest went stale."""
+    import board
+    for url in board.card_merges(s.get("slug"), s.get("started_at")):
+        note_merge(s.get("started_at"), url)
+
+
 _UNSHIPPED_NOTE = ("Reopened by Otto: this ticket was closed as completed, but no merged PR "
                    "delivered it. The next sprint retries it, or closes it as \"not planned\".")
 
@@ -966,6 +980,7 @@ def gate():
     ready, active = (counts.get(cols.get(k), 0) for k in ("ready", "active"))
     if active:
         return {"go": False, "why": f"{active} ticket(s) in progress"}
+    _count_hand_merges(s)
     if _reopen_unshipped(s, bcfg):
         counts = board.column_counts(bcfg, repo=s.get("slug"), skip_label=bcfg.get("hold_label"))
         if counts is None:
@@ -989,7 +1004,9 @@ def gate():
         slug=s["slug"], project=board.project_spec(bcfg.get("project")), goals=GOALS_FILE,
         done=cols.get("done"), blocked=cols.get("blocked"), ready=cols.get("ready"),
         review=cols.get("review"), spec=SPEC_FILE, hold=bcfg.get("hold_label") or "hold",
-        max_tickets=s["max_tickets"])
+        max_tickets=s["max_tickets"],
+        # Where a local run starts being told to stop (`local_runtime._budget_used`).
+        minutes=int(config.LOCAL_RUN_TIMEOUT_S * config.LOCAL_WRAP_UP_AT / 60))
     params = {"request": f"Run factory sprint #{n} for {s['slug']}.",
               "cap_name": PM_CAP, "approval": "auto", "unattended": True, "scheduled": True,
               "doc": brief, "factory": s["started_at"],
