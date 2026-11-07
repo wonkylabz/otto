@@ -4723,7 +4723,7 @@ class LocalConnectorGapTests(unittest.TestCase):
         """A fix report saying "calendar day" reached the re-review's request, so strict mode
         stopped the review as a Google Calendar task."""
         self.m.connectors = lambda pol=None: {"claude_ai_Google_Calendar": "claude.ai Calendar"}
-        prior = [{"findings": "the table shows the UTC day", "fix": "use the calendar day"}]
+        prior = [{"findings": "the table shows the UTC day", "fix": "use the gcal day"}]
         for kind in ("review", "qa"):
             seen = self._review_door(kind, "scaffold the app", prior)
             self.assertTrue(self.m.connectors_named(seen["request"]), "fixture lost its word")
