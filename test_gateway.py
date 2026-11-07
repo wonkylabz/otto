@@ -4689,6 +4689,16 @@ class LocalConnectorGapTests(unittest.TestCase):
                         "email the team about the outage"):   # 'email' is deliberately not a word
             self.assertEqual(self.m.connectors_named(request), [], request)
 
+    def test_calendar_alone_is_a_product_word_not_the_connector(self):
+        name = "claude_ai_Google_Calendar"
+        with unittest.mock.patch.object(self.m, "connectors", lambda pol=None: {name: "Calendar"}):
+            for request in ("what is on my calendar tomorrow", "add it to Google Calendar",
+                            "check gcal for Friday", "send a calendar invite to the team"):
+                self.assertEqual(self.m.connectors_named(request), [name], request)
+            for request in ("build a calendar view of the quarter", "a calendar quarter bucket",
+                            "export the iCal calendar feed"):
+                self.assertEqual(self.m.connectors_named(request), [], request)
+
     def _review_door(self, kind, request, prior):
         """What `_post_pr_capability` hands `run_attempt`, read off the real activity."""
         import activities

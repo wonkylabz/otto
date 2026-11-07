@@ -443,7 +443,10 @@ def connectors(pol=None):
 # name the DESTINATION and nothing else — "email" and "docs" are absent for that reason.
 _CONNECTOR_WORDS = {
     "claude_ai_Atlassian": ("confluence", "jira"),
-    "claude_ai_Google_Calendar": ("gcal", "calendar"),
+    # Never bare "calendar": it is a product noun too, and "calendar quarter" in a ticket moved
+    # a run off local. "Google calendar" is the connector's own name.
+    "claude_ai_Google_Calendar": ("gcal", "my calendar", "our calendar", "calendar invite",
+                                  "calendar invites"),
     "claude_ai_Google_Drive": ("gdrive", "google doc", "google docs", "google sheet",
                                "google sheets"),
 }
