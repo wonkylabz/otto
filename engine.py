@@ -266,7 +266,7 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
         connector_blockers = mcp_client.unservable(cap)
         connector_blockers += [n for n in mcp_client.connectors_named(request,
                                                                        exclude=external_text,
-                                                                       code_run=bool(cwd))
+                                                                       code_run=workspace.is_clone(cwd))
                                if n not in connector_blockers]
         # The CODEX backend serves no MCP at all yet — not because it cannot (an
         # `mcp_tool_call` completes under the sandbox) but because the only channel for a

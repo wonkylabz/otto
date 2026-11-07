@@ -101,6 +101,16 @@ def workspace_path(run_id):
     return os.path.join(WORKSPACES, _safe(run_id))
 
 
+def is_clone(path):
+    """True when `path` lies inside one of Otto's own workspace clones — a project capability's
+    own checkout is not one, and must not be read as a code run."""
+    if not path:
+        return False
+    root = os.path.realpath(WORKSPACES)
+    real = os.path.realpath(path)
+    return real != root and real.startswith(root + os.sep)
+
+
 def _is_github(url):
     """Only attempt `gh pr create` against a GitHub remote — pure (unit-testable)."""
     return bool(url) and "github.com" in url

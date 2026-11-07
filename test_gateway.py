@@ -4713,7 +4713,20 @@ class LocalConnectorGapTests(unittest.TestCase):
 
     def test_a_run_in_a_clone_is_the_code_run(self):
         src = open("engine.py", encoding="utf-8").read()
-        self.assertIn("code_run=bool(cwd)", src)
+        self.assertIn("code_run=workspace.is_clone(cwd)", src)
+
+    def test_only_otto_s_own_clones_are_code_runs(self):
+        import tempfile
+        import workspace
+        with tempfile.TemporaryDirectory() as root, \
+                unittest.mock.patch.object(workspace, "WORKSPACES", root):
+            clone = os.path.join(root, "run-1", "src")
+            os.makedirs(clone)
+            self.assertTrue(workspace.is_clone(clone))
+            self.assertFalse(workspace.is_clone(root))
+            self.assertFalse(workspace.is_clone(root + "-sibling"))
+            self.assertFalse(workspace.is_clone(tempfile.gettempdir()))
+            self.assertFalse(workspace.is_clone(None))
 
     def _review_door(self, kind, request, prior):
         """What `_post_pr_capability` hands `run_attempt`, read off the real activity."""
