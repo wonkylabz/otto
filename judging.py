@@ -682,8 +682,9 @@ def prior_rounds_note(noun, prior, since=None):
     new_findings = (
         f"Review ONLY what changed since the last round: `git diff {since} HEAD`. Read the rest "
         "for context, but the whole PR was already reviewed. Raise a NEW finding only if it is "
-        "must-fix AND on a line that diff changed. List anything else worth doing under a "
-        "`## Follow-ups` heading: follow-ups are not findings and never change your verdict."
+        "must-fix AND caused by that diff, on a line it changed or one it broke. List anything "
+        "else worth doing under a `## Follow-ups` heading: follow-ups are not findings and "
+        "never change your verdict."
         if since else
         "Raise a NEW finding only if it is must-fix or should-fix on its own merits.")
     return (
@@ -697,18 +698,21 @@ def prior_rounds_note(noun, prior, since=None):
         + prior_rounds_quoted(prior))
 
 
-_FOLLOW_UPS_RE = re.compile(r"^#{1,6}\s*\**\s*follow[- ]?ups\b[^\n]*\n(.*?)(?=^#{1,6}\s|\Z)",
-                            re.I | re.M | re.S)
-_VERDICT_LINE_RE = re.compile(r"\n\s*\**(?:PASS|CHANGES|INCONCLUSIVE)\**\s*$")
+# Ends at the next heading, `#` or a bold line alone: the stock reviewer closes on one.
+_FOLLOW_UPS_RE = re.compile(r"^#{1,6}\s*\**\s*follow[- ]?ups\b[^\n]*\n"
+                            r"(.*?)(?=^#{1,6}\s|^\*\*[^\n]*\*\*\s*$|\Z)", re.I | re.M | re.S)
+_VERDICT_LINE_RE = re.compile(r"\n\W*(?:(?i:verdict):\s*)?(?:PASS|CHANGES|INCONCLUSIVE)\W*$")
+_NO_FOLLOW_UPS_RE = re.compile(r"[\W_]*(?:none|nothing|n/?a)[\W_]*", re.I)
 
 
 def follow_ups(result):
     """The text of a review's `## Follow-ups` section, without the verdict line that may end it;
-    "" when it has none. Pure."""
+    "" when it has none, or says it has none. Pure."""
     m = _FOLLOW_UPS_RE.search(result or "")
     if not m:
         return ""
-    return _VERDICT_LINE_RE.sub("", "\n" + m.group(1).rstrip()).strip()
+    text = _VERDICT_LINE_RE.sub("", "\n" + m.group(1).rstrip()).strip()
+    return "" if _NO_FOLLOW_UPS_RE.fullmatch(text) else text
 
 
 def qa_review_request(pr_url, repo, request, checkout=None, checkout_error=None,
@@ -789,7 +793,7 @@ _TRANSCRIPT_JUDGES = {
 
 
 _SCOPED_JUDGE = ("This is a follow-up round that read only the last fix: FAIL only for an earlier "
-                 "finding still unresolved, or a new must-fix on a line that fix changed. "
+                 "finding still unresolved, or a new must-fix caused by that fix. "
                  "Anything under Follow-ups is left for later and never fails the PR.\n")
 
 
@@ -840,8 +844,10 @@ def review_request(pr_url, repo, request, prior=None, checkout=None, checkout_er
     repo = f" in repo `{repo}`" if repo else ""
     source = (
         f"Your working directory `{checkout}` is a throwaway clone of this PR's head branch, "
-        "yours alone and fully up to date. Take the diff from `gh pr diff` / `gh pr view`, and "
-        "read everything else from this clone rather than fetching files one at a time with "
+        "yours alone and fully up to date. Take the PR's description from `gh pr view`"
+        + (", and the diff from the `git diff` above" if since and prior else
+           " and the diff from `gh pr diff`") +
+        ". Read everything else from this clone rather than fetching files one at a time with "
         "`gh api`. Never read any other checkout on this machine, and change nothing here.\n\n"
     ) if checkout else (
         "Fetch the diff with `gh pr diff` / `gh pr view` (and `gh api` for anything else about "

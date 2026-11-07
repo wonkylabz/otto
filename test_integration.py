@@ -6466,6 +6466,8 @@ class WorkflowQALoopTests(unittest.IsolatedAsyncioTestCase):
         # `otto/<run_id>`: a run amending an existing PR pushes to that PR's branch.
         self._orig_prb = workspace.pr_branch
         workspace.pr_branch = lambda repo, pr_url: "feature/someone-elses"
+        self.addCleanup(setattr, workspace, "is_ancestor", workspace.is_ancestor)
+        workspace.is_ancestor = lambda path, sha: True
 
     def tearDown(self):
         for n, fn in self._orig.items():
@@ -6828,6 +6830,8 @@ class WorkflowReviewLoopTests(unittest.IsolatedAsyncioTestCase):
         # `otto/<run_id>`: a run amending an existing PR pushes to that PR's branch.
         self._orig_prb = workspace.pr_branch
         workspace.pr_branch = lambda repo, pr_url: "feature/someone-elses"
+        self.addCleanup(setattr, workspace, "is_ancestor", workspace.is_ancestor)
+        workspace.is_ancestor = lambda path, sha: True
 
     def tearDown(self):
         for n, fn in self._orig.items():

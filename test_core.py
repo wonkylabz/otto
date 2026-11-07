@@ -1471,7 +1471,7 @@ class QARequestTests(unittest.TestCase):
             self.assertEqual(seen["cwd"], "/w/x")
             self.assertIn("`/w/x`", seen["req"])
 
-    def _review_round(self, provision, since="abc123", result="CHANGES"):
+    def _review_round(self, provision, since="abc123", result="CHANGES", ancestor=True):
         import activities
         import types
         import workspace
@@ -1483,6 +1483,7 @@ class QARequestTests(unittest.TestCase):
              mock.patch.object(workspace, "pr_branch", return_value="b"), \
              mock.patch.object(workspace, "provision", **provision), \
              mock.patch.object(workspace, "cleanup"), \
+             mock.patch.object(workspace, "is_ancestor", return_value=ancestor), \
              mock.patch.object(engine, "run_attempt",
                                side_effect=lambda req, c, **k: seen.update(k, req=req) or
                                {"workflow": "w", "result": result, "cost": 0}):
@@ -1498,12 +1499,20 @@ class QARequestTests(unittest.TestCase):
         self.assertIn("`git diff abc123 HEAD`", seen["req"])
         self.assertEqual((out["head"], out["scoped"], out["follow_ups"]),
                          ("def456", True, "- rename x"))
+        self.assertEqual(seen["repo"], "r")             # pinned to the clone it was handed
+
+    def test_a_rebased_branch_gets_a_whole_review(self):
+        out, seen = self._review_round({"return_value": {"path": "/w/x", "head": "def456"}},
+                                       ancestor=False)
+        self.assertNotIn("git diff", seen["req"])
+        self.assertFalse(out["scoped"])
 
     def test_without_a_clone_a_later_review_stays_whole(self):
         out, seen = self._review_round({"side_effect": ValueError("no clone")})
         self.assertNotIn("git diff", seen["req"])
         self.assertIn("gh pr diff", seen["req"])
         self.assertEqual((out["head"], out["scoped"], out["follow_ups"]), (None, False, ""))
+        self.assertIsNone(seen["repo"])
 
     def test_qa_reports_every_acceptance_criterion_with_its_evidence(self):
         # The judge reads only the report: a QA that checked everything but summarised by topic

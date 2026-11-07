@@ -111,6 +111,14 @@ def _git_origin(path):
     return out if rc == 0 and out else None
 
 
+def is_ancestor(path, sha):
+    """Is commit `sha` in the history of the clone's HEAD? False for a rebased-away or unknown
+    commit, or a value git would read as a flag."""
+    if not sha or str(sha).startswith("-"):
+        return False
+    return _run(["git", "-C", path, "merge-base", "--is-ancestor", str(sha), "HEAD"])[0] == 0
+
+
 def _current_branch(path):
     rc, out, _ = _run(["git", "-C", path, "branch", "--show-current"])
     return out if rc == 0 and out else None

@@ -792,6 +792,7 @@ def _post_pr_capability(kind, payload):
     """Run one post-PR loop's capability against an opened PR. PRE-AUTHORIZED: enabling the loop
     is the grant, so this runs without a gate. Returns the transcript + metadata, or
     {missing:True} if that loop's cap isn't registered/enabled."""
+    import workspace
     spec = _POST_PR[kind]
     want = getattr(config, spec["cap_setting"])
     cap = _cap(want)
@@ -812,7 +813,10 @@ def _post_pr_capability(kind, payload):
              else {"checkout_error": ws["error"]} if ws else {})
     ws = ws if ws and ws.get("path") else None
     # A later review round reads only the fix. Needs the clone: the delta is a local diff.
+    # A rebased branch has lost that commit, so the round falls back to reading the whole PR.
     since = payload.get("since") if kind == "review" and ws else None
+    if since and not workspace.is_ancestor(ws["path"], since):
+        since = None
     if since:
         extra["since"] = since
     req = getattr(engine, spec["request"])(payload["pr_url"], payload.get("repo"),
@@ -823,6 +827,9 @@ def _post_pr_capability(kind, payload):
                                  extra_tools=mcp_tools,
                                  mcp_config_path=mcp_path, wid=payload.get("wid"),
                                  cwd=ws["path"] if ws else None,
+                                 # With the cwd it pins the run to this clone; alone, the run is
+                                 # pointed at the registered checkouts instead.
+                                 repo=payload.get("repo") if ws else None,
                                  local_disabled=bool(payload.get("local_disabled")),
                                  local_disabled_reason=payload.get("local_disabled_reason"),
                                  supervise_enforce=payload.get("supervise_enforce", True),
@@ -832,7 +839,6 @@ def _post_pr_capability(kind, payload):
                                  deny_tools=_mcp_denies(payload.get("wid")))
     finally:
         if ws:
-            import workspace
             workspace.cleanup(ws["run_id"])
     return {"workflow": att["workflow"], "result": att["result"], "cost": att["cost"],
             "tokens": att.get("tokens"), "model": att.get("model"),

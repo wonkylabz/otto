@@ -184,7 +184,8 @@ class PostPrMixin:
             start_to_close_timeout=_EXEC_CEILING, heartbeat_timeout=_HEARTBEAT,
             retry_policy=_RETRY_EXEC)
 
-    async def _run_fix_loop(self, kind, request, cap, repo, pr_url, rounds=None, tag=""):
+    async def _run_fix_loop(self, kind, request, cap, repo, pr_url, rounds=None, tag="",
+                            since=None, prior=()):
         """Judge the opened PR with `kind`'s capability; on an adverse verdict, fold its findings
         into a fix on the SAME branch and re-judge. Returns {state, rounds, <cap_field>,
         critique?} where state is pass | fail | inconclusive | unavailable.
@@ -202,9 +203,10 @@ class PostPrMixin:
         cap_field, cap_name = spec["cap_field"], None
         # Each judging pass sees what earlier rounds raised and what the fixes did, or a cold
         # reviewer moves the goalposts and can demand the reverse of a fix it asked for.
-        prior = []
-        # The commit the last judging pass read, and what follow-up passes left for later.
-        since, later = None, []
+        prior = list(prior)
+        # What follow-up passes left for later, on the run so every way out of the loop keeps it.
+        # `since` is the commit the last judging pass read.
+        later = self.__dict__.setdefault("_later", [])
         for rnd in range(rounds + 1):    # round 0 = the initial pass; then up to `rounds` fix+redo
             setattr(self, spec["attr"], {"state": spec["source"], "round": rnd})
             # Patched: a history recorded before this command must still replay (`regress/fixtures/`).
@@ -291,7 +293,7 @@ class PostPrMixin:
             setattr(self, spec["attr"], {"state": verdict["verdict"], "round": rnd})
             if verdict["verdict"] == "pass":
                 return {"state": "pass", "rounds": rnd, cap_field: cap_name, "checks": checks,
-                        "follow_ups": "\n\n".join(later)}
+                        "head": since}
             critique = verdict.get("critique", "")
             if verdict["verdict"] == "inconclusive":
                 return {"state": "inconclusive", "rounds": rnd, cap_field: cap_name,
@@ -408,8 +410,12 @@ class PostPrMixin:
         if ((qa or {}).get("rounds") and request is not None
                 and workflow.patched("factory-rereview")):
             # Judge-only: a fix here would push commits QA never saw, so any finding is a human's.
-            again = await self._run_fix_loop("review", request, cap, repo, pr["pr_url"],
-                                             rounds=0, tag="re")
+            # Only QA's commits: the whole PR already passed, so a cold read moves the goalposts.
+            head = (review or {}).get("head")
+            again = await self._run_fix_loop(
+                "review", request, cap, repo, pr["pr_url"], rounds=0, tag="re", since=head,
+                prior=[{"findings": "The review passed.",
+                        "fix": "QA fix rounds pushed more commits."}] if head else ())
             if again.get("state") != "pass":
                 self._needs_human = {"reason": "merge_unreviewed",
                                      "detail": (again.get("critique") or "")[:500]}
@@ -424,11 +430,17 @@ class PostPrMixin:
             self._needs_human = {"reason": "merge_failed", "detail": out.get("error", "")}
             return False
         notes.append("\n\n_✅ Merged automatically (factory mode): review and QA both passed._")
-        # Patched: a history recorded before this command must still replay.
-        if (review or {}).get("follow_ups") and workflow.patched("review-follow-ups"):
-            await workflow.execute_activity(
-                file_follow_ups, {"pr_url": pr["pr_url"], "text": review["follow_ups"]},
-                start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+        # Patched: a history recorded before this command must still replay. The PR has merged,
+        # so nothing here may fail the run.
+        later = "\n\n".join(getattr(self, "_later", None) or [])
+        if later and workflow.patched("review-follow-ups"):
+            try:
+                await workflow.execute_activity(
+                    file_follow_ups, {"pr_url": pr["pr_url"], "text": later},
+                    start_to_close_timeout=timedelta(seconds=120), retry_policy=_RETRY)
+            except exceptions.ActivityError as e:
+                if isinstance(e.cause, exceptions.CancelledError):
+                    raise
         return True
 
     async def _run_review_loop(self, request, cap, repo, pr_url):
@@ -456,7 +468,7 @@ class PostPrMixin:
         fixes = f" after {rounds} fix round{'s' if rounds != 1 else ''}" if rounds else ""
         crit = (outcome.get("critique") or "").strip()
         crit = f"\n\n{crit[:800]}" if crit else ""
-        later = outcome.get("follow_ups")
+        later = "\n\n".join(getattr(self, "_later", None) or []) if kind == "review" else ""
         crit = crit + (f"\n\n**Left for later:**\n{later[:800]}" if later else "")
         line = spec.get(outcome.get("state")) or spec["failed"]
         if outcome.get("state") == "fail" and (outcome.get("checks") or {}).get("state") == "fail":

@@ -1764,6 +1764,11 @@ class PriorRoundsNoteTests(unittest.TestCase):
                                             "- c\n\nPASS"), "- a\n- b")
         self.assertEqual(judging.follow_ups("x\n### **Follow ups**\n- a\n\nCHANGES"), "- a")
         self.assertEqual(judging.follow_ups("## Follow-ups\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone.\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- n/a\n\nPASS"), "")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\n**Could not assess**\n- b\nPASS"),
+                         "- a")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n- a\n\nVerdict: PASS."), "- a")
         self.assertEqual(judging.follow_ups("the follow-ups are none\nPASS"), "")
         self.assertEqual(judging.follow_ups(None), "")
 
@@ -1777,6 +1782,20 @@ class PriorRoundsNoteTests(unittest.TestCase):
             judging.judge_review("x", "report", scoped=True)
         self.assertNotIn("never fails the PR", said[0])
         self.assertIn("never fails the PR", said[1])
+
+    def test_a_rebased_away_commit_is_not_an_ancestor(self):
+        with mock.patch.object(workspace, "_run", return_value=(1, "", "")):
+            self.assertFalse(workspace.is_ancestor("/w", "abc"))
+        with mock.patch.object(workspace, "_run", return_value=(0, "", "")) as run:
+            self.assertTrue(workspace.is_ancestor("/w", "abc"))
+            self.assertFalse(workspace.is_ancestor("/w", "--flag"))
+            self.assertFalse(workspace.is_ancestor("/w", None))
+        run.assert_called_once()
+
+    def test_follow_ups_survive_every_way_out_of_the_loop(self):
+        src = workflow_src()
+        self.assertEqual(src.count('getattr(self, "_later", None)'), 2)
+        self.assertNotIn('"follow_ups": "', src)
 
     def test_a_merged_prs_follow_ups_become_an_issue(self):
         import board
