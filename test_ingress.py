@@ -9500,16 +9500,41 @@ class FactoryModeTests(unittest.TestCase):
         self.assertEqual(self.factory.load()["merged"], 1)
         self.assertEqual(self.factory.after_sprint({"result": "FACTORY: CONTINUE"})["idle_sprints"], 0)
 
+    def test_a_hand_merge_before_the_stall_limit_keeps_the_line_running(self):
+        import board
+        self._on(idle_sprints=3, merged=2, merged_seen=2)
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value={
+                    "columns": {"ready": "Ready", "active": "In Progress"}, "project": "me/7"}), \
+                unittest.mock.patch.object(board, "column_counts", return_value={}), \
+                unittest.mock.patch.object(board, "card_merges", return_value=["u"]):
+            got = self.factory.gate()
+        self.assertTrue(got["go"])
+        self.assertTrue(self.factory.enabled())
+        self.assertTrue(got["playtest"])                # the merge just booked counts here too
+
+    def test_a_merge_during_the_sprint_blocks_done_on_a_stale_playtest(self):
+        import board
+        self._on(playtest_verdict="clean", merged=1, playtest_merged=1, merged_seen=1)
+        with unittest.mock.patch.object(board, "card_merges", return_value=["u"]), \
+                unittest.mock.patch.object(self.factory, "_reopen_unshipped", return_value=[]):
+            got = self.factory.after_sprint({"result": "FACTORY: DONE — all merged"})
+        self.assertEqual((got["state"], got["idle_sprints"]), ("continue", 0))
+
     def test_card_merges_keeps_otto_prs_from_this_factory(self):
         import board
         prs = [{"url": "new", "headRefName": "otto/gh-issue-4-o-r-r1",
                 "mergedAt": "2026-10-10T12:00:00Z"},
                {"url": "old", "headRefName": "otto/gh-issue-3-o-r",
                 "mergedAt": "2026-10-01T12:00:00Z"},
-               {"url": "other", "headRefName": "feature", "mergedAt": "2026-10-10T12:00:00Z"}]
+               {"url": "other", "headRefName": "feature", "mergedAt": "2026-10-10T12:00:00Z"},
+               {"url": "closer", "headRefName": "fix/x", "mergedAt": "2026-10-10T12:00:00Z",
+                "closingIssuesReferences": [{"number": 7}]},
+               {"url": "fork", "headRefName": "otto/gh-issue-9-o-r", "isCrossRepository": True,
+                "mergedAt": "2026-10-10T12:00:00Z"}]
         since = "2026-10-05T10:00:00"
         with unittest.mock.patch.object(board, "_run", return_value=(0, json.dumps(prs), "")):
-            self.assertEqual(board.card_merges("o/r", since), ["new"])
+            self.assertEqual(board.card_merges("o/r", since), ["new", "closer"])
             self.assertEqual(board.card_merges("o/r", None), [])
         with unittest.mock.patch.object(board, "_run", return_value=(1, "", "boom")):
             self.assertEqual(board.card_merges("o/r", since), [])

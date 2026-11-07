@@ -79,11 +79,11 @@ _VERDICT_RE = re.compile(r"^[\s*_`>#-]*FACTORY:\s*(DONE|CONTINUE)\b(.*)$", re.I)
 
 SPRINT_BRIEF = """\
 You are running one SPRINT of an autonomous build loop ("factory mode") for the GitHub repo
-`{slug}`, tracked on the GitHub Projects board `{project}`. Nobody is watching: do the sprint
-end to end, never ask a question back.
+`{slug}`, tracked on the GitHub Projects board `{project}`. Nobody is watching: never ask a
+question back.
 
-You have about {minutes} minutes, and a sprint that runs out of time stops wherever it is. Do the
-steps in order, unblocking first. Write each ticket from what you have already read: never clone
+You have about {minutes} minutes, and a sprint that runs out of time stops wherever it is. Unblock
+first, then ticket any playtest defects, then write new tickets. Write each ticket from what you have already read: never clone
 the repo or trace its code to perfect a ticket, because the worker does that. If time runs short,
 stop, report what is done and what is left, and end on FACTORY: CONTINUE; the next sprint picks
 up the rest.
@@ -919,8 +919,10 @@ def _count_hand_merges(s):
     """Book the factory's PRs merged by hand. `note_merge` is otherwise reached only from Otto's
     own merge, so a line a human was unblocking counted idle and its playtest went stale."""
     import board
+    booked = s.get("merged_prs") or []
     for url in board.card_merges(s.get("slug"), s.get("started_at")):
-        note_merge(s.get("started_at"), url)
+        if url not in booked:
+            note_merge(s.get("started_at"), url)
 
 
 _UNSHIPPED_NOTE = ("Reopened by Otto: this ticket was closed as completed, but no merged PR "
@@ -961,13 +963,17 @@ def gate():
     if held:
         return held
     s = load()
+    # Ahead of the stall limit: a human unblocking the line is exactly what it must not stop.
+    _count_hand_merges(s)
+    s = load()
     cost = spent(s)
     if cost is None:
         return _blind("spend unmeasurable")
     if cost >= float(s["budget_usd"] or 0):
         disable("budget", f"spent ${cost:.2f} of ${s['budget_usd']}")
         return {"go": False, "why": "budget"}
-    if int(s["idle_sprints"]) >= int(s["max_idle_sprints"]):
+    if (int(s["idle_sprints"]) >= int(s["max_idle_sprints"])
+            and int(s.get("merged") or 0) <= int(s.get("merged_seen") or 0)):
         disable("stalled", f"{s['idle_sprints']} sprints in a row merged nothing")
         return {"go": False, "why": "stalled"}
     bcfg = board.load()
@@ -980,7 +986,6 @@ def gate():
     ready, active = (counts.get(cols.get(k), 0) for k in ("ready", "active"))
     if active:
         return {"go": False, "why": f"{active} ticket(s) in progress"}
-    _count_hand_merges(s)
     if _reopen_unshipped(s, bcfg):
         counts = board.column_counts(bcfg, repo=s.get("slug"), skip_label=bcfg.get("hold_label"))
         if counts is None:
@@ -1086,6 +1091,9 @@ def after_sprint(payload):
     if nh.get("reason") in WALL_REASONS:
         pause(nh["reason"], [payload.get("wid") or ""])
         return {"state": "paused", "reason": nh["reason"]}
+    # A merge made while the sprint ran: DONE is judged, and idle counted, against the real tree.
+    _count_hand_merges(s)
+    s = load()
     unshipped = _reopen_unshipped(s, board.load()) if word == "done" else []
     if word == "done" and playtest_clean(s) and unshipped == []:
         disable("done", evidence)

@@ -618,21 +618,24 @@ def unshipped_done(cfg, repo, tickets, skip_label=None):
 
 
 def card_merges(repo, since):
-    """URLs of Otto's card PRs in `repo` merged at or after the local time `since`. `[]` on any
-    failure. Pure GitHub state, so `factory.note_merge`'s per-URL guard keeps it idempotent."""
+    """URLs of PRs merged into `repo` at or after the local time `since` that delivered a ticket:
+    on a card's branch, or closing an issue. `[]` on any failure. Pure GitHub state, so
+    `factory.note_merge`'s per-URL guard keeps it idempotent."""
     try:
         floor = datetime.datetime.fromisoformat(since).astimezone(datetime.timezone.utc)
     except (TypeError, ValueError):
         return []
     rc, out, err = _run(["gh", "pr", "list", "--repo", repo, "--state", "merged", "--json",
-                         "url,headRefName,mergedAt", "--limit", "1000"])
+                         "url,headRefName,mergedAt,closingIssuesReferences,isCrossRepository",
+                         "--limit", "1000"])
     if rc != 0:
         trace("BOARD", f"merged-PR lookup on {repo} failed: {err[:120]}")
         return []
     try:
         prs = json.loads(out or "[]")
-        return [p["url"] for p in prs
-                if re.match(r"otto/gh-issue-\d+(-|$)", p.get("headRefName") or "")
+        return [p["url"] for p in prs if not p.get("isCrossRepository")
+                and (re.match(r"otto/gh-issue-\d+(-|$)", p.get("headRefName") or "")
+                     or p.get("closingIssuesReferences"))
                 and datetime.datetime.fromisoformat(p["mergedAt"].replace("Z", "+00:00")) >= floor]
     except (AttributeError, KeyError, TypeError, ValueError):
         return []
