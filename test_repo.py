@@ -1778,6 +1778,16 @@ class PriorRoundsNoteTests(unittest.TestCase):
                          "**Naming**\n- x\n### wf.py\n- y")
         self.assertEqual(judging.follow_ups("the follow-ups are none\nPASS"), "")
         self.assertEqual(judging.follow_ups(None), "")
+        # A real item is never read as the placeholder or as the section's end.
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone of the new helpers have tests.\nPASS"),
+                         "None of the new helpers have tests.")
+        self.assertEqual(judging.follow_ups("## Follow-ups\n* Verdict parsing is untested\n- b\nPASS"),
+                         "* Verdict parsing is untested\n- b")
+        self.assertEqual(judging.follow_ups("## Follow-ups\nNone \u2014 the diff is clean.\nPASS"), "")
+        # The singular, and a bold or plain label, open the section too.
+        self.assertEqual(judging.follow_ups("## Follow-up\n- a\nPASS"), "- a")
+        self.assertEqual(judging.follow_ups("x\n**Follow-ups:**\n- a\n\nPASS"), "- a")
+        self.assertEqual(judging.follow_ups("x\nFollow-ups:\n- a\n\nVerdict: PASS"), "- a")
 
     def test_a_scoped_judge_is_told_follow_ups_never_fail(self):
         import judging

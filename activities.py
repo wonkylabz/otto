@@ -806,7 +806,9 @@ def _post_pr_capability(kind, payload):
     # none it sat in Otto's checkout, where a clone elsewhere is refused and the registered
     # checkout is write-denied, so `make test` never ran and every PR went INCONCLUSIVE.
     # The reviewer gets one to read: fetching each file through `gh api` spent most of a round.
-    ws = _pr_checkout(payload)
+    # A reviewer living in a project's own repo keeps that cwd: its skills and settings load from
+    # there, and an explicit cwd would override it.
+    ws = _pr_checkout(payload) if kind == "qa" or not getattr(cap, "cwd", None) else None
     # A failed checkout is SAID in the request, so QA reports it and the judge's critique names
     # the real cause rather than an unexplained INCONCLUSIVE.
     extra = ({"checkout": ws["path"]} if ws and ws.get("path")

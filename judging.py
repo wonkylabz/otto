@@ -698,13 +698,20 @@ def prior_rounds_note(noun, prior, since=None):
         + prior_rounds_quoted(prior))
 
 
-# Ends at a top-level heading or the sections a report closes on; sub-headings and bold labels
-# inside the section are how a reviewer groups its items.
-_FOLLOW_UPS_RE = re.compile(r"^#{1,6}\s*\**\s*follow[- ]?ups\b[^\n]*\n(.*?)"
-                            r"(?=^#{1,2}\s|^[#*\s]*(?:could not assess|verdict)\b|\Z)",
+# Opens on a heading, or a label alone on its line, in either number. Ends at a top-level heading
+# or the sections a report closes on — as a heading, a bold label or "Verdict:", never a list item
+# that merely starts with the word. Sub-headings and bold labels inside are how items are grouped.
+_FOLLOW_UPS_RE = re.compile(r"^(?:#{1,6}\s*\**\s*follow[- ]?ups?\b[^\n]*"
+                            r"|\**\s*follow[- ]?ups?\s*:?\s*\**\s*:?[ \t]*)\n(.*?)"
+                            r"(?=^#{1,2}\s|^(?:#{1,6}\s*\**|\*\*)\s*(?:could not assess|verdict)\b"
+                            r"|^(?:could not assess|verdict)\s*:|\Z)",
                             re.I | re.M | re.S)
 _VERDICT_LINE_RE = re.compile(r"\n\W*(?:PASS|CHANGES|INCONCLUSIVE)\W*$")
-_NO_FOLLOW_UPS_RE = re.compile(r"[\W_]*(?:none|nothing|n/?a|no follow[- ]?ups)\b[^\n]{0,40}", re.I)
+# Only a placeholder: "None." / "None found" / "None — clean", never "None of the helpers…".
+_NO_FOLLOW_UPS_RE = re.compile(
+    r"[\W_]*(?:none|nothing|n/?a|no follow[- ]?ups?)"
+    r"(?:\s+(?:found|noted|identified|needed|worth (?:raising|noting|filing)"
+    r"|to (?:report|add|note|file)))?(?:\s*[.,;:!\u2014\u2013-][^\n]{0,60})?\s*", re.I)
 
 
 def follow_ups(result):
