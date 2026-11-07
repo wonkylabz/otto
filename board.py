@@ -591,8 +591,10 @@ def unshipped_done(cfg, repo, tickets, skip_label=None):
     stays. Only the tickets a factory ran: a card it never touched may have shipped any way at
     all. Stubs as `_parse_items_in`."""
     done = (cfg.get("columns") or {}).get("done")
+    if not done:
+        return []                       # no Done column: nothing can sit there unshipped
     data = item_list(cfg)
-    if not done or not data:
+    if not data:
         return None
     cards = [c for c in _parse_items_in(data, cfg, done)
              if (c.get("repo") or "").lower() == (repo or "").lower() and c["number"] in tickets]

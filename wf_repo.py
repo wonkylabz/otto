@@ -9,6 +9,7 @@ Mixed into `OttoWorkflow`, and imported under `workflow.unsafe.imports_passed_th
 deterministic workflow code that must not be re-imported into the sandbox behind the class that
 inherits it.
 """
+import re
 from datetime import timedelta
 
 from temporalio import exceptions, workflow
@@ -20,6 +21,14 @@ from wf_runtime import _HEARTBEAT, _RETRY
 RETRY_NOTE = ("\n\nThis is a retry of this ticket. The working tree is the branch of its open "
               "PR #{number}, holding the earlier attempt: keep what works and finish what the "
               "ticket still asks for. Do not start over.")
+
+
+def strip_retry_note(request):
+    """The request without a RETRY_NOTE. The note rides into the audited request, so a Retry
+    from Needs-you hands it back: kept, it would claim an open PR this run may not have, or
+    say it twice."""
+    head, _, tail = RETRY_NOTE.partition("{number}")
+    return re.sub(re.escape(head) + r"\d+" + re.escape(tail), "", request or "")
 
 with workflow.unsafe.imports_passed_through():
     import error_classifier

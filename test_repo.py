@@ -2893,6 +2893,16 @@ class PrTargetTests(unittest.TestCase):
         self.assertIn('"issue": params.get("reply_to")', src)
         self.assertIn('request += RETRY_NOTE.format(number=self._pr_target.get("number"))', src)
         self.assertLess(src.index("request += RETRY_NOTE"), src.index("await self._take_fast_lane("))
+        self.assertLess(src.index("request = strip_retry_note(request)"),
+                        src.index("request += RETRY_NOTE"))
+
+    def test_a_retried_request_drops_the_note_it_was_audited_with(self):
+        from wf_repo import RETRY_NOTE, strip_retry_note
+        once = "fix the board" + RETRY_NOTE.format(number=7)
+        self.assertEqual(strip_retry_note(once), "fix the board")
+        self.assertEqual(strip_retry_note(once + RETRY_NOTE.format(number=12)), "fix the board")
+        self.assertEqual(strip_retry_note("This is a retry of this ticket."),
+                         "This is a retry of this ticket.")
 
     def test_the_result_says_it_updated_a_pr_rather_than_opened_one(self):
         """Reporting "opened draft PR" after pushing to someone else's branch names a PR that

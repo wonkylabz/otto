@@ -913,6 +913,12 @@ def _blind(why):
     return {"go": False, "why": why}
 
 
+def _saw(s):
+    """A tick that saw everything ends a blind streak."""
+    if s.get("blind_ticks"):
+        _mutate(lambda st: st.update(blind_ticks=0))
+
+
 # --- the sprint gate (activities.factory_gate / factory_after_sprint) -----------------------
 
 def _tickets(s):
@@ -990,13 +996,17 @@ def gate():
     counts = board.column_counts(bcfg, repo=s.get("slug"), skip_label=bcfg.get("hold_label"))
     if counts is None:
         return _blind("board unreadable")
-    if s.get("blind_ticks"):
-        _mutate(lambda st: st.update(blind_ticks=0))
     cols = bcfg.get("columns") or {}
     ready, active = (counts.get(cols.get(k), 0) for k in ("ready", "active"))
     if active:
+        _saw(s)
         return {"go": False, "why": f"{active} ticket(s) in progress"}
-    if _reopen_unshipped(s, bcfg):
+    # Unknown is not "nothing unshipped": a sprint would plan around tickets wrongly in Done.
+    unshipped = _reopen_unshipped(s, bcfg)
+    if unshipped is None:
+        return _blind("closed tickets unreadable")
+    _saw(s)
+    if unshipped:
         counts = board.column_counts(bcfg, repo=s.get("slug"), skip_label=bcfg.get("hold_label"))
         if counts is None:
             return _blind("board unreadable")
