@@ -495,8 +495,8 @@ def finalize_workspace(payload: dict) -> dict:
                              cap=payload.get("cap"), concerns=payload.get("concerns"))
     issue = payload.get("issue") or {}
     if out.get("pr_url") and not existing and issue.get("kind") == "github_issue":
-        # A re-run of a board card branches off the default branch, not the earlier run's PR
-        # (resolve_pr_target's `fresh`), so the PR it opens makes that one a duplicate.
+        # A re-run that could not continue the earlier PR (it conflicted, `board.open_retry_pr`)
+        # branched off the default, so the PR it opens makes that one a duplicate.
         # Closed only once this one exists: a re-run that dies first leaves the old one standing.
         import board
         board.close_superseded(issue.get("repo"), issue.get("number"), out.get("branch"),
@@ -543,12 +543,13 @@ def resolve_pr_target(payload: dict) -> dict:
     An activity, not workflow code, because it shells out to `gh`: the answer depends on live
     GitHub state and must be recorded once in history, not re-derived on every replay.
 
-    `fresh` (factory mode) always branches off the default branch: a factory ticket re-run after
-    its PR went stale must build on what has merged since, and pushing that rebuilt history onto
-    the old PR's branch is refused as a non-fast-forward — the work then never leaves the clone."""
+    `fresh` (factory mode) never targets a PR the ticket's TEXT names. The only target is the
+    card's own open PR (`issue`, its `github_issue` reply target), which a re-run continues."""
     import workspace
     if payload.get("fresh"):
-        return {}
+        import board
+        return board.open_retry_pr_for(payload.get("issue"),
+                                       update=payload.get("update", True)) or {}
     return workspace.pr_target(payload.get("repo"), payload.get("request")) or {}
 
 
