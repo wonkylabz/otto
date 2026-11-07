@@ -31,6 +31,9 @@ changelog that restates it is a second copy of `git log`.
   existing ticket like this will reappear once. Dropped tickets now close as "not planned".
 - **A board PR with a long description closes its ticket when merged.** The closing line was being
   cut off, so a ticket stayed open after you merged its PR by hand.
+- **A code ticket about a calendar no longer moves off your local model.** In a repo run, only
+  wording that points at someone's calendar counts, such as "my calendar" or "Google Calendar".
+  Other runs behave as before. **Restart the worker** to pick this up.
 - **Your own chat messages now render markdown.** A message, or the ticket a board run started
   from, showed as one flat block with its headings, lists and line breaks lost; it now renders
   the same way Otto's replies do. A browser refresh picks this up.

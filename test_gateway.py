@@ -4689,6 +4689,45 @@ class LocalConnectorGapTests(unittest.TestCase):
                         "email the team about the outage"):   # 'email' is deliberately not a word
             self.assertEqual(self.m.connectors_named(request), [], request)
 
+    def test_calendar_is_a_product_word_only_in_a_code_run(self):
+        name = "claude_ai_Google_Calendar"
+        with unittest.mock.patch.object(self.m, "connectors", lambda pol=None: {name: "Calendar"}):
+            for request in ("build a calendar view of the quarter", "a calendar quarter bucket",
+                            "export the iCal calendar feed"):
+                self.assertEqual(self.m.connectors_named(request, code_run=True), [], request)
+                self.assertEqual(self.m.connectors_named(request), [name], request)
+            for request in ("what is on my calendar tomorrow", "add it to Google Calendar",
+                            "check gcal for Friday", "check your calendar for Friday",
+                            "update my\ncalendar with the release"):
+                self.assertEqual(self.m.connectors_named(request, code_run=True), [name], request)
+            # Quoted data between two words must not join them into a phrase.
+            self.assertEqual(self.m.connectors_named("my <POST> calendar", exclude=["<POST>"],
+                                                     code_run=True), [])
+            # A read cap has no ladder rung off local, so outside a repo the guard still fires.
+            self.assertEqual(self.m.connectors_named("what's on the calendar today"), [name])
+
+    def test_a_connector_named_for_the_product_word_is_exempt_too(self):
+        name = "claude_ai_Calendar"
+        with unittest.mock.patch.object(self.m, "connectors", lambda pol=None: {name: "Calendar"}):
+            self.assertEqual(self.m.connectors_named("a calendar quarter", code_run=True), [])
+
+    def test_a_run_in_a_clone_is_the_code_run(self):
+        src = open("engine.py", encoding="utf-8").read()
+        self.assertIn("code_run=workspace.is_clone(cwd)", src)
+
+    def test_only_otto_s_own_clones_are_code_runs(self):
+        import tempfile
+        import workspace
+        with tempfile.TemporaryDirectory() as root, \
+                unittest.mock.patch.object(workspace, "WORKSPACES", root):
+            clone = os.path.join(root, "run-1", "src")
+            os.makedirs(clone)
+            self.assertTrue(workspace.is_clone(clone))
+            self.assertFalse(workspace.is_clone(root))
+            self.assertFalse(workspace.is_clone(root + "-sibling"))
+            self.assertFalse(workspace.is_clone(tempfile.gettempdir()))
+            self.assertFalse(workspace.is_clone(None))
+
     def _review_door(self, kind, request, prior):
         """What `_post_pr_capability` hands `run_attempt`, read off the real activity."""
         import activities
