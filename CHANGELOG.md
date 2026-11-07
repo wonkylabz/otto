@@ -18,6 +18,9 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- **Factory sprints are told how long they have.** A sprint unblocks first, writes tickets from
+  what it has read, and one that runs short reports what's left for the next.
+- **A PR you merge by hand counts for the factory**, so the line isn't read as idle.
 - **A factory ticket can no longer reach Done without merged code.** One closed as completed with
   no merged PR is reopened and sent to Blocked, and it holds back the factory's done verdict. An
   existing ticket like this will reappear once. Dropped tickets now close as "not planned".

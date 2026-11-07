@@ -79,8 +79,14 @@ _VERDICT_RE = re.compile(r"^[\s*_`>#-]*FACTORY:\s*(DONE|CONTINUE)\b(.*)$", re.I)
 
 SPRINT_BRIEF = """\
 You are running one SPRINT of an autonomous build loop ("factory mode") for the GitHub repo
-`{slug}`, tracked on the GitHub Projects board `{project}`. Nobody is watching: do the sprint
-end to end, never ask a question back.
+`{slug}`, tracked on the GitHub Projects board `{project}`. Nobody is watching: never ask a
+question back.
+
+You have about {minutes} minutes, and a sprint that runs out of time stops wherever it is. Unblock
+first, then ticket any playtest defects, then write new tickets. Write each ticket from what you have already read: never clone
+the repo or trace its code to perfect a ticket, because the worker does that. If time runs short,
+stop, report what is done and what is left, and end on FACTORY: CONTINUE; the next sprint picks
+up the rest.
 
 1. Read `{goals}` at the root of `{slug}` (e.g. `gh api repos/{slug}/contents/{goals} --jq .content
    | base64 -d`). It holds the product vision and its Definition of Done — the only source of
@@ -915,6 +921,26 @@ def _saw(s):
 
 # --- the sprint gate (activities.factory_gate / factory_after_sprint) -----------------------
 
+def _tickets(s):
+    """The issue numbers this factory ran."""
+    return {int(m.group(1)) for m in map(_ISSUE_WID_RE.match, s.get("wids") or []) if m}
+
+
+def _count_hand_merges(s):
+    """Book the factory's PRs merged by hand, or return False when GitHub would not say.
+    `note_merge` is otherwise reached only from Otto's own merge, so a line a human was unblocking
+    counted idle and its playtest went stale."""
+    import board
+    urls = board.card_merges(s.get("slug"), s.get("started_at"), _tickets(s))
+    if urls is None:
+        return False
+    booked = s.get("merged_prs") or []
+    for url in urls:
+        if url not in booked:
+            note_merge(s.get("started_at"), url)
+    return True
+
+
 _UNSHIPPED_NOTE = ("Reopened by Otto: this ticket was closed as completed, but no merged PR "
                    "delivered it. The next sprint retries it, or closes it as \"not planned\".")
 
@@ -925,8 +951,7 @@ def _reopen_unshipped(s, bcfg):
     trust work that never landed. Returns the issue numbers found, even one that would not move,
     or None when it could not tell."""
     import board
-    tickets = {int(m.group(1)) for m in map(_ISSUE_WID_RE.match, s.get("wids") or []) if m}
-    cards = board.unshipped_done(bcfg, s.get("slug"), tickets,
+    cards = board.unshipped_done(bcfg, s.get("slug"), _tickets(s),
                                  skip_label=bcfg.get("hold_label"))
     if cards is None:
         return None
@@ -953,13 +978,18 @@ def gate():
     if held:
         return held
     s = load()
+    # Ahead of the stall limit: a human unblocking the line is exactly what it must not stop.
+    if not _count_hand_merges(s):
+        return _blind("merged PRs unreadable")
+    s = load()
     cost = spent(s)
     if cost is None:
         return _blind("spend unmeasurable")
     if cost >= float(s["budget_usd"] or 0):
         disable("budget", f"spent ${cost:.2f} of ${s['budget_usd']}")
         return {"go": False, "why": "budget"}
-    if int(s["idle_sprints"]) >= int(s["max_idle_sprints"]):
+    if (int(s["idle_sprints"]) >= int(s["max_idle_sprints"])
+            and int(s.get("merged") or 0) <= int(s.get("merged_seen") or 0)):
         disable("stalled", f"{s['idle_sprints']} sprints in a row merged nothing")
         return {"go": False, "why": "stalled"}
     bcfg = board.load()
@@ -999,7 +1029,10 @@ def gate():
         slug=s["slug"], project=board.project_spec(bcfg.get("project")), goals=GOALS_FILE,
         done=cols.get("done"), blocked=cols.get("blocked"), ready=cols.get("ready"),
         review=cols.get("review"), spec=SPEC_FILE, hold=bcfg.get("hold_label") or "hold",
-        max_tickets=s["max_tickets"])
+        max_tickets=s["max_tickets"],
+        # Where a local run starts being told to stop (`local_runtime._budget_used`).
+        minutes=int(min(config.LOCAL_RUN_TIMEOUT_S, config.EXEC_TIMEOUT_S)
+                    * config.LOCAL_WRAP_UP_AT / 60))
     params = {"request": f"Run factory sprint #{n} for {s['slug']}.",
               "cap_name": PM_CAP, "approval": "auto", "unattended": True, "scheduled": True,
               "doc": brief, "factory": s["started_at"],
@@ -1079,7 +1112,12 @@ def after_sprint(payload):
     if nh.get("reason") in WALL_REASONS:
         pause(nh["reason"], [payload.get("wid") or ""])
         return {"state": "paused", "reason": nh["reason"]}
+    # A merge made while the sprint ran: DONE is judged, and idle counted, against the real tree.
+    counted = _count_hand_merges(s)
+    s = load()
     unshipped = _reopen_unshipped(s, board.load()) if word == "done" else []
+    if unshipped == [] and not counted:
+        unshipped = None
     if word == "done" and playtest_clean(s) and unshipped == []:
         disable("done", evidence)
         return {"state": "done"}

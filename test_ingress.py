@@ -9486,6 +9486,84 @@ class FactoryModeTests(unittest.TestCase):
                              "continue")                # no answer is not a clean answer
         self.assertIn("done_refused", [e["event"] for e in self.factory.load()["history"]])
 
+    def test_a_sprint_is_told_its_clock_and_how_to_stop_short(self):
+        import board
+        self._on()
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value={
+                    "columns": {"ready": "Ready", "active": "In Progress"}, "project": "me/7"}), \
+                unittest.mock.patch.object(board, "column_counts", return_value={}), \
+                unittest.mock.patch.object(config, "LOCAL_RUN_TIMEOUT_S", 2400.0), \
+                unittest.mock.patch.object(config, "EXEC_TIMEOUT_S", 9000.0), \
+                unittest.mock.patch.object(config, "LOCAL_WRAP_UP_AT", 0.75):
+            brief = self.factory.gate()["params"]["doc"]
+        self.assertIn("You have about 30 minutes", brief)
+        self.assertIn("end on FACTORY: CONTINUE", brief)
+
+    def test_a_hand_merge_counts_once_and_resets_idle(self):
+        import board
+        url = "https://github.com/me/game/pull/5"
+        self._on(idle_sprints=2)
+        with unittest.mock.patch.object(board, "card_merges", return_value=[url]):
+            self.factory._count_hand_merges(self.factory.load())
+            self.factory._count_hand_merges(self.factory.load())
+        self.assertEqual(self.factory.load()["merged"], 1)
+        self.assertEqual(self.factory.after_sprint({"result": "FACTORY: CONTINUE"})["idle_sprints"], 0)
+
+    def test_a_hand_merge_before_the_stall_limit_keeps_the_line_running(self):
+        import board
+        self._on(idle_sprints=3, merged=2, merged_seen=2)
+        with unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(board, "load", return_value={
+                    "columns": {"ready": "Ready", "active": "In Progress"}, "project": "me/7"}), \
+                unittest.mock.patch.object(board, "column_counts", return_value={}), \
+                unittest.mock.patch.object(board, "card_merges", return_value=["u"]):
+            got = self.factory.gate()
+        self.assertTrue(got["go"])
+        self.assertTrue(self.factory.enabled())
+        self.assertTrue(got["playtest"])                # the merge just booked counts here too
+
+    def test_a_merge_during_the_sprint_blocks_done_on_a_stale_playtest(self):
+        import board
+        self._on(playtest_verdict="clean", merged=1, playtest_merged=1, merged_seen=1)
+        with unittest.mock.patch.object(board, "card_merges", return_value=["u"]), \
+                unittest.mock.patch.object(self.factory, "_reopen_unshipped", return_value=[]):
+            got = self.factory.after_sprint({"result": "FACTORY: DONE — all merged"})
+        self.assertEqual((got["state"], got["idle_sprints"]), ("continue", 0))
+
+    def test_card_merges_keeps_otto_prs_from_this_factory(self):
+        import board
+        prs = [{"url": "new", "headRefName": "otto/gh-issue-4-o-r-r1",
+                "mergedAt": "2026-10-10T12:00:00Z"},
+               {"url": "old", "headRefName": "otto/gh-issue-3-o-r",
+                "mergedAt": "2026-10-01T12:00:00Z"},
+               {"url": "other", "headRefName": "feature", "mergedAt": "2026-10-10T12:00:00Z"},
+               {"url": "closer", "headRefName": "fix/x", "mergedAt": "2026-10-10T12:00:00Z",
+                "closingIssuesReferences": [{"number": 7}]},
+               {"url": "fork", "headRefName": "otto/gh-issue-9-o-r", "isCrossRepository": True,
+                "mergedAt": "2026-10-10T12:00:00Z"}]
+        since, mine = "2026-10-05T10:00:00", {3, 4, 7}
+        with unittest.mock.patch.object(board, "_run", return_value=(0, json.dumps(prs), "")):
+            self.assertEqual(board.card_merges("o/r", since, mine), ["new", "closer"])
+            self.assertEqual(board.card_merges("o/r", since, {4}), ["new"])  # not this factory's
+            self.assertIsNone(board.card_merges("o/r", None, mine))
+        with unittest.mock.patch.object(board, "_run", return_value=(1, "", "boom")):
+            self.assertIsNone(board.card_merges("o/r", since, mine))
+        with unittest.mock.patch.object(board, "_run", return_value=(0, "not json", "")):
+            self.assertIsNone(board.card_merges("o/r", since, mine))
+
+    def test_an_unreadable_merge_list_never_stops_or_finishes_the_line(self):
+        import board
+        self._on(idle_sprints=3, merged=2, merged_seen=2, playtest_verdict="clean",
+                 playtest_merged=2)
+        with unittest.mock.patch.object(board, "card_merges", return_value=None), \
+                unittest.mock.patch.object(self.factory, "spent", return_value=0.0), \
+                unittest.mock.patch.object(self.factory, "_reopen_unshipped", return_value=[]):
+            self.assertIn("unreadable", self.factory.gate()["why"])
+            self.assertEqual(self.factory.after_sprint({"result": "FACTORY: DONE — x"})["state"],
+                             "continue")
+        self.assertTrue(self.factory.enabled())
+
     def test_a_reopened_ticket_stops_the_queue_for_the_pm(self):
         import board
         self._on()
