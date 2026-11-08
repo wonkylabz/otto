@@ -1433,7 +1433,8 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     # `gc_sessions` (not gc_transcripts): this runtime's sweep also collects the stored
     # session files a local resume reads back.
     sink = claude_cli.open_transcript(transcript, {
-        "type": "otto-meta", "prompt": prompt, "model": m.get("model"),
+        "type": "otto-meta", "prompt": prompt, "system_context": system_context,
+        "model": m.get("model"),
         "cwd": cwd, "at": time.time(), "runtime": "local",
         # WHICH CLASS of model this endpoint serves: this runtime dispatches
         # both a laptop vLLM and a vendor API, and `runtime: local` alone

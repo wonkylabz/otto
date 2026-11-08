@@ -9472,6 +9472,31 @@ class FactoryModeTests(unittest.TestCase):
         self.assertEqual(st["sprint_n"], 1)
         self.assertIn(g["wid"], st["wids"])      # the sprint's own spend counts too
 
+    def test_a_ticket_is_reopened_only_once(self):
+        """Closed as completed again after the sweep reopened it is a decision, often a human's
+        ("superseded by #25"): reopening it every tick would overrule it forever."""
+        import board
+        asked = []
+
+        def unshipped(cfg, repo, tickets, skip_label=None):
+            asked.append(set(tickets))
+            return [{"number": n} for n in sorted(tickets) if n in (3, 4)]
+        with unittest.mock.patch.object(board, "unshipped_done", side_effect=unshipped), \
+                unittest.mock.patch.object(board, "reopen_blocked", return_value=True) as reopen:
+            s = self._on(wids=["gh-issue-3-me-game", "gh-issue-4-me-game"])
+            self.assertEqual(self.factory._reopen_unshipped(s, {}), [3, 4])
+            self.assertEqual(self.factory._reopen_unshipped(self.factory.load(), {}), [])
+            self.assertEqual(reopen.call_count, 2)
+            self.assertEqual(asked[-1], set())
+            # A sweep from before the list existed is read back off the history.
+            s = self._on(wids=["gh-issue-3-me-game"], history=[
+                {"at": "2026-10-11T10:00:00", "event": "unshipped", "detail": "#3"}])
+            self.assertEqual(self.factory._reopen_unshipped(s, {}), [])
+            # ...but only this factory's: an earlier one's sweep says nothing about this repo.
+            s = self._on(wids=["gh-issue-3-me-game"], history=[
+                {"at": "2020-01-01T00:00:00", "event": "unshipped", "detail": "#3"}])
+            self.assertEqual(self.factory._reopen_unshipped(s, {}), [3])
+
     def test_a_ticket_closed_without_merged_code_refuses_done(self):
         import board
         self._on(playtest_verdict="clean", merged=1, playtest_merged=1)

@@ -69,6 +69,7 @@ _DEFAULTS = {
     "walls_seen_at": "",     # audit watermark: walls at or before this are already handled
     "blind_ticks": 0,        # consecutive ticks that could not read spend or the board
     "merged_prs": [],        # PR urls already counted in `merged` (a retried merge counts once)
+    "reopened": [],          # tickets the unshipped sweep reopened: never twice (`_reopen_unshipped`)
     "mcp_allow": [],         # MCP servers the factory's runs may use; every other one is denied
     "playtest_merged": -1,   # `merged` when the product was last playtested (-1 = never)
     "playtest_verdict": "",  # "clean" | "defects" | "" (unparseable or never)
@@ -762,7 +763,8 @@ def enable(form):
             s.update({"started_at": _now(), "sprint_n": 0, "idle_sprints": 0, "merged": 0,
                       "merged_seen": 0, "wids": [], "human_wids": [], "prev_board": bcfg, "paused": None,
                       "walls_seen_at": "", "playtest_merged": -1, "playtest_verdict": "",
-                      "blind_ticks": 0, "merged_prs": [], "held": {"since": _now()}})
+                      "blind_ticks": 0, "merged_prs": [], "reopened": [],
+                      "held": {"since": _now()}})
         s["enabled"], s["status"] = True, "running"
         _event(s, "enabled", f"{slug}, budget ${cfg['budget_usd']}, wip {cfg['wip']}, "
                              f"{GOALS_FILE} {goals}")
@@ -947,19 +949,34 @@ _UNSHIPPED_NOTE = ("Reopened by Otto: this ticket was closed as completed, but n
                    "delivered it. The next sprint retries it, or closes it as \"not planned\".")
 
 
+def _reopened(s):
+    """Tickets this factory's sweep already reopened: the stored list, plus the history's
+    `unshipped` events since it started (a sweep that ran before the list existed)."""
+    seen = {int(n) for n in s.get("reopened") or []}
+    for e in s.get("history") or []:
+        if e.get("event") == "unshipped" and (e.get("at") or "") >= (s.get("started_at") or ""):
+            seen |= {int(n) for n in re.findall(r"#(\d+)", e.get("detail") or "")}
+    return seen
+
+
 def _reopen_unshipped(s, bcfg):
     """Send every ticket this factory ran that closed as completed with no merged code back to
     Blocked for the PM. Done must mean the code merged, or the line and the DONE verdict both
-    trust work that never landed. Returns the issue numbers found, even one that would not move,
-    or None when it could not tell."""
+    trust work that never landed. Only ONCE per ticket: closed as completed again after that is
+    a decision (a human's "superseded by #25"), and reopening it would overrule it every tick.
+    Returns the issue numbers found, even one that would not move, or None when it could not
+    tell."""
     import board
-    cards = board.unshipped_done(bcfg, s.get("slug"), _tickets(s),
+    cards = board.unshipped_done(bcfg, s.get("slug"), _tickets(s) - _reopened(s),
                                  skip_label=bcfg.get("hold_label"))
     if cards is None:
         return None
     moved = [c["number"] for c in cards if board.reopen_blocked(bcfg, c, _UNSHIPPED_NOTE)]
     if moved:
-        _mutate(lambda st: _event(st, "unshipped", ", ".join(f"#{n}" for n in moved)))
+        def _fn(st):
+            st["reopened"] = sorted({*(st.get("reopened") or []), *moved})
+            _event(st, "unshipped", ", ".join(f"#{n}" for n in moved))
+        _mutate(_fn)
     return [c["number"] for c in cards]
 
 def gate():

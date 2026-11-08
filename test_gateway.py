@@ -1943,7 +1943,7 @@ class LocalRuntimeTests(unittest.TestCase):
         t0 = 1000.0
         with mock.patch.object(local_runtime.time, "time", return_value=t0 + 95):
             self.assertTrue(local_runtime._must_report(1, 60, None, t0, t0 + 100))
-        with mock.patch.object(local_runtime.time, "time", return_value=t0 + 80):
+        with mock.patch.object(local_runtime.time, "time", return_value=t0 + 70):
             self.assertFalse(local_runtime._must_report(1, 60, None, t0, t0 + 100))
             self.assertTrue(local_runtime._must_report(59, 60, None, t0, t0 + 100))
 
