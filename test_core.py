@@ -4272,6 +4272,19 @@ class SystemContextTranscriptTests(unittest.TestCase):
         self.assertIn('"prompt": prompt', meta)
         self.assertIn('"system_context": system_context', meta)
 
+    def test_a_forced_report_leaves_a_fifth_of_the_clock(self):
+        """At 0.9 a review's forced answer over a 1.4M-token context outran the deadline."""
+        import config
+        self.assertLessEqual(config.LOCAL_FORCE_REPORT_AT, 0.8)
+        self.assertGreater(config.LOCAL_FORCE_REPORT_AT, config.LOCAL_WRAP_UP_AT)
+
+    def test_the_local_runtime_records_it_too(self):
+        """The approved plan reaches a local run through it as well, so its transcript could not
+        say whether a factory sprint was given its clock."""
+        src = open("local_runtime.py").read()
+        meta = src[src.index('"type": "otto-meta"'):][:200]
+        self.assertIn('"prompt": prompt, "system_context": system_context', meta)
+
 
 class ResumeGroundingTests(unittest.TestCase):
     """A resume picks its branch from what the CHAT recorded, never from what the message asks

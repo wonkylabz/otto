@@ -1070,7 +1070,9 @@ LOCAL_WRAP_UP_AT = float(os.environ.get("OTTO_LOCAL_WRAP_UP_AT", "0.75"))
 # "(timed out)". So it is ENFORCED: this many turns after the wrap-up, or once the clock
 # passes LOCAL_FORCE_REPORT_AT, every later turn is offered no tools and must answer.
 LOCAL_WRAP_UP_GRACE_TURNS = int(os.environ.get("OTTO_LOCAL_WRAP_UP_GRACE_TURNS", "3"))
-LOCAL_FORCE_REPORT_AT = float(os.environ.get("OTTO_LOCAL_FORCE_REPORT_AT", "0.9"))
+# 0.8, not 0.9: a forced answer over a context of a million tokens or more can take minutes on a
+# local model, and at 0.9 a review timed out inside it with every finding lost.
+LOCAL_FORCE_REPORT_AT = float(os.environ.get("OTTO_LOCAL_FORCE_REPORT_AT", "0.8"))
 WRAP_UP_MESSAGE = (
     "[Otto run budget] You have used {used} of this run's budget. Stop gathering now and "
     "write your final report from what you already have. Name anything you did not get to "
