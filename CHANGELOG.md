@@ -14,7 +14,8 @@ changelog that restates it is a second copy of `git log`.
 ### Fixed
 
 - **The factory reopens a ticket closed without merged code only once.** If it is closed as
-  completed again, for example as superseded by another ticket, it now stays closed.
+  completed again, for example as superseded by another ticket, it now stays closed. It still
+  holds back the factory's done verdict until it is closed as "not planned".
 - **A run on a local model has more time left for its final answer.** It is now made to answer
   at 80% of its time limit instead of 90%, so a long review is less likely to time out with
   nothing reported. Set `OTTO_LOCAL_FORCE_REPORT_AT` to change this.

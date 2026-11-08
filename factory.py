@@ -962,16 +962,19 @@ def _reopened(s):
 def _reopen_unshipped(s, bcfg):
     """Send every ticket this factory ran that closed as completed with no merged code back to
     Blocked for the PM. Done must mean the code merged, or the line and the DONE verdict both
-    trust work that never landed. Only ONCE per ticket: closed as completed again after that is
-    a decision (a human's "superseded by #25"), and reopening it would overrule it every tick.
+    trust work that never landed. REOPENED only once per ticket: closed as completed again after
+    that is a decision (a human's "superseded by #25"), and reopening it would overrule it every
+    tick. Still RETURNED every time, so DONE stays refused until it closes as "not planned".
     Returns the issue numbers found, even one that would not move, or None when it could not
     tell."""
     import board
-    cards = board.unshipped_done(bcfg, s.get("slug"), _tickets(s) - _reopened(s),
+    cards = board.unshipped_done(bcfg, s.get("slug"), _tickets(s),
                                  skip_label=bcfg.get("hold_label"))
     if cards is None:
         return None
-    moved = [c["number"] for c in cards if board.reopen_blocked(bcfg, c, _UNSHIPPED_NOTE)]
+    done = _reopened(s)
+    moved = [c["number"] for c in cards if c["number"] not in done
+             and board.reopen_blocked(bcfg, c, _UNSHIPPED_NOTE)]
     if moved:
         def _fn(st):
             st["reopened"] = sorted({*(st.get("reopened") or []), *moved})
