@@ -14,7 +14,7 @@ changelog that restates it is a second copy of `git log`.
 ### Fixed
 
 - **A chat's message count is no longer cut off** when it carries a workstream chip; the chip
-  shortens instead.
+  shortens instead. A board card's workstream suggestion keeps its dismiss × when the title is long.
 
 ### Changed
 

@@ -74,7 +74,8 @@
 .wsmeta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px;font-size:12.5px;color:var(--dim)}
 .hlabel.hws{cursor:pointer}
 .bchip.wssug{border-style:dashed;border-color:var(--accent-line);display:inline-flex;gap:6px;max-width:18em}
-.bchip.wssug a{color:var(--accent);font-weight:600;text-decoration:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bchip.wssug a{color:var(--accent);font-weight:600;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bchip.wssug a[data-wsno]{flex:none}
 .histitem .bchip.wssug{font-size:11px;padding:0 6px;flex:0 1 auto;min-width:0;max-width:72%}
 /* The board page's title is its view switch. Same heading type, so they must read as TABS, not one
    title: a divider between them and an accent underline under the active view. */
