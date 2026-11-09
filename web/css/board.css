@@ -54,7 +54,7 @@
 .bchip.ws{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-line);font-weight:600;text-decoration:none;cursor:pointer;max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wsbar{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:6px 10px;border:1px solid var(--line);border-radius:8px}
 .wsbar span{flex:1}
-.hlabel.hws{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-line);max-width:72%;flex:0 0 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hlabel.hws{color:var(--accent);background:var(--accent-soft);border-color:var(--accent-line);max-width:72%;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wsrefs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px}
 .wslist{list-style:none;margin:0;padding:0;border-left:2px solid var(--line)}
 .wsitem{padding:8px 0 12px 14px}
@@ -75,7 +75,8 @@
 .hlabel.hws{cursor:pointer}
 .bchip.wssug{border-style:dashed;border-color:var(--accent-line);display:inline-flex;gap:6px;max-width:18em}
 .bchip.wssug a{color:var(--accent);font-weight:600;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.histitem .bchip.wssug{font-size:11px;padding:0 6px;flex:0 0 auto;max-width:72%}
+.bchip.wssug a[data-wsno]{flex:none}
+.histitem .bchip.wssug{font-size:11px;padding:0 6px;flex:0 1 auto;min-width:0;max-width:72%}
 /* The board page's title is its view switch. Same heading type, so they must read as TABS, not one
    title: a divider between them and an accent underline under the active view. */
 .viewswitch{display:flex;align-items:baseline}
