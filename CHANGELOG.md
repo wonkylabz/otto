@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-09
+
 ### Fixed
 
 - **A chat's message count is no longer cut off** when it carries a workstream chip; the chip
@@ -685,7 +687,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/wonkylabz/otto/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/wonkylabz/otto/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/wonkylabz/otto/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/wonkylabz/otto/compare/v0.10.0...v0.11.0
