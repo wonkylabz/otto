@@ -663,6 +663,39 @@ class SnapshotWiringTests(unittest.TestCase):
         self.assertNotEqual(config.setting("max_attempts"), 4)
 
 
+class SnapshotSectionPickTests(unittest.TestCase):
+    """Export can carry only some sections; an import leaves the absent ones untouched."""
+
+    def test_every_section_has_a_picker_label(self):
+        import snapshot
+        self.assertEqual(set(snapshot.SECTIONS), set(snapshot.LABELS))
+
+    def test_a_partial_export_carries_only_the_picked_sections(self):
+        import snapshot
+        test_support.redirect_live_state()
+        snap = snapshot.export(["runbooks", "event_rules"])
+        self.assertEqual({"runbooks", "event_rules"}, set(snap["sections"]))
+        self.assertEqual(set(snapshot.SECTIONS), set(snapshot.export()["sections"]))
+        for bad in (["nope"], []):
+            with self.assertRaises(ValueError):
+                snapshot.export(bad)
+
+    def test_replacing_from_a_partial_snapshot_removes_nothing_it_lacks(self):
+        import snapshot
+        test_support.redirect_live_state()
+        config.save_settings({"max_attempts": 4})
+        plan = snapshot.preview(snapshot.export(["runbooks"]), "replace")
+        self.assertEqual([], [c for c in plan["changes"] if c["section"] != "runbooks"])
+
+    def test_the_ui_asks_which_sections_and_the_route_reads_them(self):
+        import server
+        src, srv = ui_src(), inspect.getsource(server)
+        self.assertIn('"/api/profile/sections"', src)
+        self.assertIn('"?sections="', src)
+        self.assertIn('"/api/profile/sections"', srv)
+        self.assertIn('get("sections")', srv)
+
+
 class SnapshotStoreClassificationTests(unittest.TestCase):
     """One source of truth for what a snapshot carries: every data/ store is EXPORTED or RUNTIME.
     Rides `_DATA_STORES`, which `LiveStoreIsolationTests` ratchets against the source."""
@@ -2549,6 +2582,47 @@ class WorkstreamTests(unittest.TestCase):
 
     def _ws(self, cid):
         return (chats.get(cid) or {}).get("workstream_id")
+
+    def test_create_files_the_picked_chats_and_refuses_an_empty_one(self):
+        chats.append_run("a", f"work on {self.ISSUE}", "done", title="A")
+        chats.append_run("b", "unrelated", "done", title="B")
+        self.assertIsNone(workstreams.create("X", []), "a workstream with no chat is dropped by gc")
+        self.assertIsNone(workstreams.create("", ["a"]))
+        self.assertIsNone(workstreams.create("X", ["a", "ghost"]))
+        wsid = workstreams.create("Retry work", ["a", "b"])
+        self.assertEqual(wsid, self._ws("a"))
+        self.assertEqual(wsid, self._ws("b"))
+        ws = workstreams.get(wsid)
+        self.assertEqual((ws["title"], ws["chats"]), ("Retry work", 2))
+        self.assertIn("acme/api#12", ws["refs"])
+
+    def test_the_view_creates_and_deletes(self):
+        import server
+        src = ui_src()
+        self.assertIn('"/api/workstreams/create"', src)
+        self.assertIn("+ Add workstream", src)
+        self.assertIn("data-wsdel", src)
+        self.assertIn("/api/workstreams/create", server._POST_ROUTES)
+
+    def test_clear_keeps_pinned_and_running_chats(self):
+        chats.append_run("a", "x", "done", title="A")
+        chats.append_run("p", "x", "done", title="P")
+        chats.set_pinned("p", True)
+        chats.start_run("r", "x", run_id="wf-live")
+        self.assertEqual(chats.delete_unpinned(), 1)
+        self.assertEqual(sorted(c["id"] for c in chats.list_summaries()), ["p", "r"])
+        self.assertIn('"/api/chats/clear"', ui_src())
+
+    def test_the_chat_list_searches_titles_and_message_text(self):
+        chats.append_run("a", "deploy the bedrock stack", "done", title="Infra")
+        chats.append_run("b", "what is 50% of 10_000", "5000", title="Math")
+        ids = lambda q: [c["id"] for c in chats.list_summaries(q)]
+        self.assertEqual(ids("BEDROCK"), ["a"], "message text, case-insensitive")
+        self.assertEqual(ids("math"), ["b"])
+        self.assertEqual(ids("50%"), ["b"], "a LIKE wildcard in the query is literal")
+        self.assertEqual(ids("_"), ["b"])
+        self.assertEqual(sorted(ids("")), ["a", "b"])
+        self.assertIn('getJSON("/api/chats?q="', ui_src())
 
     def test_two_chats_naming_one_ticket_are_grouped_under_the_oldest_title(self):
         chats.append_run("a", f"work on {self.ISSUE}", "done", title="Fix the retry bug")

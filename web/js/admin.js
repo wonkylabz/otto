@@ -1305,7 +1305,7 @@ function renderAdmin(data, models, el, settings){
         <input type="file" id="bundle-file" accept="application/json,.json" hidden>
         <span class="bundlemsg" id="bundle-msg"></span>
         <div class="sharelbl"><b>Snapshot</b><span>Everything configured here — settings, models + endpoints, repos, jobs, ingresses. Secret-free; an import previews every change first.</span></div>
-        <button class="addbtn" id="export-snapshot" title="Everything configured here — settings, models + endpoints, repos, jobs, ingresses. Secret-free.">⤓ Export</button>
+        <button class="addbtn" id="export-snapshot" title="Everything configured here, or only the stores you pick — settings, models, repos, jobs, events… Secret-free.">⤓ Export</button>
         <button class="addbtn" id="import-snapshot" title="Previews every change first. Ingresses, rules and crons arrive switched off.">⤒ Import</button>
         <input type="file" id="snapshot-file" accept="application/json,.json" hidden>
         <span class="bundlemsg" id="snapshot-msg"></span>

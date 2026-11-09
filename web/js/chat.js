@@ -435,19 +435,19 @@ async function reattachRun(){
   if(!activeChat || !activeChat.run_id) return false;
   const wid=activeChat.run_id;
   const sess=activeChat.cap ? {id:activeChat.session_id, cap:activeChat.cap} : null;
-  buildPipe(); setNode("INGRESS","done","resumed");
+  buildPipe(); setNode("INGRESS","done","reconnected");
   const content=enoMsg();
   if(sess){
     // DECOMPOSE/ROUTER are left unpainted here (not pre-set done) so watchLoop's first poll paints
     // them from the workflow's own stage timestamps (st.times) — pre-painting them "done" right now
     // would anchor their timer at this reattach moment instead of when they actually ran (issue #117).
-    content.innerHTML=`<p>Resuming <code>${esc(sess.cap.name)}</code> <span class="badge ${sess.cap.risk}">${sess.cap.risk}</span>…</p>`;
+    content.innerHTML=`<p>Still working — <code>${esc(sess.cap.name)}</code> <span class="badge ${sess.cap.risk}">${sess.cap.risk}</span>…</p>`;
   } else {
     setNode("DECOMPOSE","active","planning…");      // cap not yet known — still planning, or a swarm
   }
-  showThinking(content,"Resuming…");
+  showThinking(content,"Still running…");
   busy=true; syncSendBtn();          // run_id is already on activeChat — this reattaches as stoppable
-  // quietPick keeps watchLoop's first poll from overwriting the "Resuming…" line above with its
+  // quietPick keeps watchLoop's first poll from overwriting the "Still working" line above with its
   // usual "I'll use X" message; it still paints DECOMPOSE/ROUTER/pick itself (see comment above).
   watchLoop(wid, activeChat.id, content, sess, sess?{quietPick:true}:{});
   return true;
@@ -488,6 +488,21 @@ document.getElementById("chatnotif").addEventListener("click",e=>{
    two "show more" controls on one screen that step by different amounts read as two features. */
 const HIST_PAGE=20;
 let histShown=HIST_PAGE;
+/* The sidebar search: the server matches titles, caps, workstreams AND message text. */
+let histQ="", histQTimer=null;
+function setHistQuery(q){
+  histQ=(q||"").trim(); histShown=HIST_PAGE;
+  loadChatList();
+}
+(()=>{
+  const box=document.getElementById("hist-q");
+  box.addEventListener("input",()=>{ clearTimeout(histQTimer); histQTimer=setTimeout(()=>setHistQuery(box.value),250); });
+  document.getElementById("clear-chats").addEventListener("click",async()=>{
+    if(!await askConfirm("Delete every chat? Pinned chats and chats with a task still running are kept. This can't be undone.",{ok:"Delete chats",danger:true})) return;
+    if(!await postOr("/api/chats/clear",{},"clearing chats")) return;
+    if(activeChat&&!activeChat.pinned&&!activeChat.run_id) newChat(); else loadChatList();
+  });
+})();
 
 /* Collapsed/expanded state of the chat list is per-browser, so it survives a reload but is
    never a server setting. Same idiom as the theme pick and the Events/Memory sections. */
@@ -510,7 +525,8 @@ async function loadChatList(){
   const el=document.getElementById("histlist"); if(!el) return;
   // A failed read used to paint an EMPTY chat list, which reads as "my chats are gone".
   let data;
-  try { data=await getJSON("/api/chats"); }
+  const q=histQ;
+  try { data=await (q?getJSON("/api/chats?q="+encodeURIComponent(q)):getJSON("/api/chats")); }
   catch(e){
     // The error replaces the list, so the "unchanged" guard below must not match it on recovery.
     delete el.dataset.sig;
@@ -519,9 +535,13 @@ async function loadChatList(){
   const items=data.chats||[];
   const present=new Set(items.map(c=>c.id));
   const running=new Set(items.filter(c=>c.run_id).map(c=>c.id));
-  if(prevRunning) for(const id of prevRunning)   // run gone but chat still there = it finished
-    if(!running.has(id) && present.has(id) && !(activeChat && activeChat.id===id)) pushFinished(items.find(c=>c.id===id));
-  prevRunning=running;
+  if(q!==histQ) return;               // the search changed while this one was loading
+  // A filtered list hides chats, so finish detection waits until the search is cleared.
+  if(!q){
+    if(prevRunning) for(const id of prevRunning)   // run gone but chat still there = it finished
+      if(!running.has(id) && present.has(id) && !(activeChat && activeChat.id===id)) pushFinished(items.find(c=>c.id===id));
+    prevRunning=running;
+  }
   // Rebuild only when the list (or active selection) actually changed. The background poll
   // calls this on an interval, so this guard keeps it from flickering the sidebar or jumping
   // its scroll position while you're reading — "light poll + preserve selection".
@@ -529,7 +549,7 @@ async function loadChatList(){
   // working (the poll re-renders only when something actually changed).
   // histShown rides in the signature: "show more" re-renders through this same guard, and
   // without it the click would be swallowed as an unchanged poll.
-  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title,c.ws_suggest&&c.ws_suggest.id]), activeChat&&activeChat.id, histShown]);
+  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title,c.ws_suggest&&c.ws_suggest.id]), activeChat&&activeChat.id, histShown, q]);
   if(el.dataset.sig===sig) return;
   el.dataset.sig=sig;
   const keepScroll=el.scrollTop;
@@ -542,7 +562,7 @@ async function loadChatList(){
       <button class="hpin ${c.pinned?'on':''}" data-pinchat="${esc(c.id)}" data-pinned="${c.pinned?1:0}" title="${c.pinned?'unpin':'pin'}"><svg viewBox="0 0 24 24" fill="${c.pinned?'currentColor':'none'}" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg></button>
       <button class="hdel" data-delchat="${esc(c.id)}" title="delete">&times;</button>
     </div>`).join("")+(rest>0?`<button class="histmore" id="hist-more" title="${rest} older chat${rest===1?'':'s'} not shown">Show ${Math.min(HIST_PAGE,rest)} more (${rest} older)</button>`:"")
-    : `<p class="memempty" style="padding:8px 10px">No past chats yet.</p>`;
+    : `<p class="memempty" style="padding:8px 10px">${q?`No chat matches “${esc(q)}”.`:"No past chats yet."}</p>`;
   el.scrollTop=keepScroll;
   const more=document.getElementById("hist-more");
   if(more) more.addEventListener("click",()=>{ histShown+=HIST_PAGE; loadChatList(); });
@@ -1093,7 +1113,7 @@ async function continueTemporal(text, atts){
   setNode("DECOMPOSE","done","—");                     // resume reuses the bound cap — no planning
   setNode("ROUTER","done","continuing: "+sess.cap.name); addPick(sess.cap);
   setNode("CLARIFY","done","—");
-  const content=enoMsg(); showThinking(content,"Resuming "+sess.cap.name+"…");
+  const content=enoMsg(); showThinking(content,"Continuing with "+sess.cap.name+"…");
 
   // The session's last reply, so the server's handoff classifier can resolve references
   // ("that" = the ticket the cap just offered). Without it, plain resume semantics apply.

@@ -89,13 +89,17 @@
     border: 1px solid var(--line); border-radius: var(--r-sm); padding: 4px 9px; cursor: pointer; }
   .histhead button:hover { border-color: var(--accent); }
   .histlist { overflow-y: auto; padding: 0 8px 14px; flex: 1; min-height: 0; }
+  .histsearch { display: flex; padding: 0 10px 10px; }
+  .histsearch input { flex: 1; min-width: 0; font: 13px var(--sans); color: var(--text); background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--r-sm); padding: 5px 8px; }
+  .histsearch input:focus { outline: none; border-color: var(--accent); }
   /* Collapsed, the chat list keeps a narrow rail rather than disappearing: a sidebar with no
      on-screen edge needs its reopen control to live somewhere else, and there is nowhere else
      in this view that reads as "the chat list". The rail is the toggle. */
   .chatview.histcollapsed { --hist-w: 34px; }
   .histcollapsed .histhead { padding: 16px 0 11px; justify-content: center; }
-  .histcollapsed .histhead > span:not(.hacts), .histcollapsed .histhead #new-chat,
-  .histcollapsed .histlist { display: none; }
+  .histcollapsed .histhead > span:not(.hacts), .histcollapsed .histhead #new-chat, .histcollapsed .histhead #clear-chats,
+  .histcollapsed .histlist, .histcollapsed .histsearch { display: none; }
   .histhead .hacts { display: flex; align-items: center; gap: 6px; }
   .histhead .histtoggle { border-color: transparent; padding: 3px; line-height: 0; color: var(--dim); }
   .histhead .histtoggle:hover { color: var(--accent); border-color: var(--line); }
@@ -450,6 +454,7 @@
     font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none;
     color: var(--text); cursor: pointer; }
   .modepick input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+  .modepick.snappick { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 12px; }
   .disclist.dim { opacity: .45; }
   .disclist.dim .discrow { cursor: default; }
   .sessionbar { display: flex; align-items: center; gap: 9px; font-size: 12px;

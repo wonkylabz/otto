@@ -7794,7 +7794,8 @@ class UiAssetLayoutTests(unittest.TestCase):
     # their own script rather than growing board.js.
     # -> 14_992 for the home-screen install: the manifest link, the apple-touch-icon (iOS reads
     # neither the manifest's icons nor an SVG) and theme-color. Head tags belong in the shell.
-    INDEX_MAX = 14_992
+    # -> 15_295 for the chat-list search box and Clear: sidebar controls, so the shell is where it lives.
+    INDEX_MAX = 15_295
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:
@@ -7876,7 +7877,8 @@ class UiAssetLayoutTests(unittest.TestCase):
     # "since" date; the bytes are its CSS and the markup that dates the counters.
     # -> 127656 for Knowledge file upload: a drop zone (click/keyboard/drag states) and the
     # picked-file chips; the native file input is unstyleable, so it is hidden behind them.
-    ASSET_MAX = 127656
+    # -> 128230 for the chat-list search box and the snapshot export's section picker.
+    ASSET_MAX = 128230
 
     def _assets(self):
         out = {}

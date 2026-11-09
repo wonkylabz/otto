@@ -11,8 +11,20 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Search and clear the chat list.** A search box above the chats matches titles, capabilities,
+  workstreams and message text. **Clear** deletes every chat except pinned ones and ones with a
+  task still running.
+- **Create and delete workstreams from the Workstreams view.** **+ Add workstream** names one and
+  picks its chats; the × on a row deletes it. Its chats are kept.
+- **Export only part of a snapshot.** Export now asks which stores to include (jobs, events,
+  models…), all ticked by default. Importing a partial snapshot leaves the stores it lacks alone.
+
 ### Fixed
 
+- **Returning to a chat whose task is still running no longer says "Resuming…"**, which read as
+  if the task had paused. It now says the task is still working.
 - **The factory reopens a ticket closed without merged code only once.** If it is closed as
   completed again, for example as superseded by another ticket, it now stays closed. It still
   holds back the factory's done verdict until it is closed as "not planned".

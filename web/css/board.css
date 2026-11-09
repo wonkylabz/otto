@@ -68,6 +68,9 @@
 .wsrows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .wsrow{padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer}
 .wsrow:hover,.wsrow:focus{border-color:var(--accent);outline:none}
+.wsadd{border:0;padding:0;justify-content:flex-end}
+.wsdel{margin-left:auto;background:none;border:0;color:var(--dim);font-size:16px;line-height:1;cursor:pointer;padding:0 4px}
+.wsdel:hover{color:var(--danger)}
 .wsmeta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px;font-size:12.5px;color:var(--dim)}
 .hlabel.hws{cursor:pointer}
 .bchip.wssug{border-style:dashed;border-color:var(--accent-line);display:inline-flex;gap:6px;max-width:18em}
