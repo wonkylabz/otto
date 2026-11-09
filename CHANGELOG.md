@@ -11,6 +11,15 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A chat's message count is no longer cut off** when it carries a workstream chip; the chip
+  shortens instead.
+
+### Changed
+
+- **The header shows only the version** — the "agentic ops · live backend" tagline is gone.
+
 ## [0.12.0] - 2026-11-09
 
 ### Added
