@@ -2609,7 +2609,7 @@ class WorkstreamTests(unittest.TestCase):
         chats.append_run("p", "x", "done", title="P")
         chats.set_pinned("p", True)
         chats.start_run("r", "x", run_id="wf-live")
-        self.assertEqual(chats.delete_unpinned(), 1)
+        self.assertEqual(chats.delete_unpinned(), ["a"])
         self.assertEqual(sorted(c["id"] for c in chats.list_summaries()), ["p", "r"])
         self.assertIn('"/api/chats/clear"', ui_src())
 

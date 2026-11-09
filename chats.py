@@ -535,14 +535,14 @@ def find_reattach(request):
 
 def delete_unpinned():
     """The sidebar's Clear: every chat that is neither pinned nor running. A running chat keeps
-    its in-flight workflow's only on-screen handle. Returns how many went."""
+    its in-flight workflow's only on-screen handle. Returns the deleted ids."""
     with _conn() as conn, storage.tx(conn):
         ids = [r["id"] for r in conn.execute(
             "SELECT id FROM chats WHERE pinned = 0 AND (run_id IS NULL OR run_id = '')")]
         conn.executemany("DELETE FROM messages WHERE chat_id = ?", [(c,) for c in ids])
         conn.executemany("DELETE FROM chats WHERE id = ?", [(c,) for c in ids])
         workstreams.gc(conn)
-    return len(ids)
+    return ids
 
 
 def delete(cid):

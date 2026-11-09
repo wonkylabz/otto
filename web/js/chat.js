@@ -499,8 +499,9 @@ function setHistQuery(q){
   box.addEventListener("input",()=>{ clearTimeout(histQTimer); histQTimer=setTimeout(()=>setHistQuery(box.value),250); });
   document.getElementById("clear-chats").addEventListener("click",async()=>{
     if(!await askConfirm("Delete every chat? Pinned chats and chats with a task still running are kept. This can't be undone.",{ok:"Delete chats",danger:true})) return;
-    if(!await postOr("/api/chats/clear",{},"clearing chats")) return;
-    if(activeChat&&!activeChat.pinned&&!activeChat.run_id) newChat(); else loadChatList();
+    let out;
+    try { out=await postJSON("/api/chats/clear",{}); } catch(e){ toast("clearing chats failed: "+e.message); return; }
+    if(activeChat&&(out.deleted||[]).includes(activeChat.id)) newChat(); else loadChatList();
   });
 })();
 
@@ -541,6 +542,9 @@ async function loadChatList(){
     if(prevRunning) for(const id of prevRunning)   // run gone but chat still there = it finished
       if(!running.has(id) && present.has(id) && !(activeChat && activeChat.id===id)) pushFinished(items.find(c=>c.id===id));
     prevRunning=running;
+    // A deleted chat leaves the finished rail too, or its row links to nothing.
+    const kept=finishedChats.filter(c=>present.has(c.id));
+    if(kept.length!==finishedChats.length){ finishedChats=kept; renderChatNotif(); }
   }
   // Rebuild only when the list (or active selection) actually changed. The background poll
   // calls this on an interval, so this guard keeps it from flickering the sidebar or jumping
