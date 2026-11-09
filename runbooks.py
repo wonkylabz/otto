@@ -250,6 +250,7 @@ def normalize(rb):
                 ". Give it a default, make it optional, or remove the cron.")
     return {"name": name, "request": request, "cap": str(rb.get("cap") or "").strip(),
             "cron": cron, "auto_approve": bool(rb.get("auto_approve", False)),
+            "reuse_chat": bool(rb.get("reuse_chat", False)),
             "slack": slack, "params": params, "doc": doc, "steps": steps}
 
 

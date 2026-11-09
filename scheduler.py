@@ -99,12 +99,13 @@ def _args(rid, rb, values=None, unattended=True):
     `chat_key` is the runbook's chat PREFIX, and `chat_per_run` makes every firing open its OWN
     thread under it (`chat-<rid>-<run>`, minted by the workflow from its own id — a schedule's args
     are frozen, so the key cannot be minted here). One thread appended forever made a job's
-    sidebar entry an ever-growing log where last week's answer sat above today's."""
+    sidebar entry an ever-growing log where last week's answer sat above today's.
+    `reuse_chat` (default off) opts a job back into one shared thread."""
     r = runbooks.render(rb, values)
     args = {"request": r["request"], "scheduled": unattended,
             "unattended": unattended,
             "auto_approve": bool(rb.get("auto_approve")),
-            "chat_key": f"chat-{rid}", "chat_per_run": True,
+            "chat_key": f"chat-{rid}", "chat_per_run": not rb.get("reuse_chat"),
             "chat_title": (rb.get("name") or r["request"])[:80],
             # One label, not both: "scheduled-job" is what every existing scheduled chat is
             # already tagged with and what the sidebar filters on — re-tagging them all as

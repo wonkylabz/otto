@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- Jobs have a **Re-use one chat for every run** option (off by default). When on, every run of that job lands in the same chat instead of opening a new one.
+
+### Fixed
+
+- A link at the end of a sentence in a reply no longer includes the trailing period or comma, so it opens the right page.
+
 ## [0.12.1] - 2026-11-09
 
 ### Fixed

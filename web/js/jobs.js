@@ -367,6 +367,8 @@ function showJobForm(job){
     </div>
     <label style="flex-direction:row;align-items:center;gap:9px;margin-top:4px">
       <input type="checkbox" id="jf-auto"> <span class="warn">auto-approve writes (run mutating capabilities unattended)</span></label>
+    <label style="flex-direction:row;align-items:center;gap:9px;margin-top:4px" title="Off: every run opens its own chat. On: every run appends to one shared chat.">
+      <input type="checkbox" id="jf-reuse"> <span>re-use one chat for every run</span></label>
 
     <label style="margin-top:12px">Deliver the result to Slack</label>
     <span class="sub" style="margin:-2px 0 4px;font-size:12px">Where the run posts its answer — a channel (<code>#events</code>, <code>C0BAQSJHFSP</code>) or a user id to DM someone. Leave empty and the result reaches the audit log only. A run that answers <code>NO_REPLY</code> stays silent, so "only if you find something" works.</span>
@@ -384,6 +386,7 @@ function showJobForm(job){
     document.getElementById("jf-doc").value=job.doc||"";
     document.getElementById("jf-slack").value=job.slack||"";
     document.getElementById("jf-auto").checked=!!job.auto_approve;
+    document.getElementById("jf-reuse").checked=!!job.reuse_chat;
     if(job.cap) document.getElementById("jf-cap").value=job.cap;
     (job.params||[]).forEach(p=>pbox.insertAdjacentHTML("beforeend", paramRow(p)));
     (job.steps||[]).forEach(s=>sbox.insertAdjacentHTML("beforeend", stepRow(s, caps)));
@@ -418,6 +421,7 @@ function showJobForm(job){
     const payload={
       name:val("jf-name"), request:val("jf-req"), cap:document.getElementById("jf-cap").value,
       cron:val("jf-cron"), auto_approve:document.getElementById("jf-auto").checked,
+      reuse_chat:document.getElementById("jf-reuse").checked,
       slack:val("jf-slack"),
       doc:document.getElementById("jf-doc").value, params, steps,
     };
