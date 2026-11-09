@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-10
+
 ### Added
 
 - Jobs have a **Re-use one chat for every run** option (off by default). When on, every run of that job lands in the same chat instead of opening a new one.
@@ -695,7 +697,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/wonkylabz/otto/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/wonkylabz/otto/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/wonkylabz/otto/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/wonkylabz/otto/compare/v0.11.0...v0.11.1
