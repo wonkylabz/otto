@@ -53,13 +53,34 @@ function setSnapMsg(text, bad){
   m.textContent=text; m.className="bundlemsg"+(bad?" bad":" ok");
 }
 
+/* Export ALL, or only the stores ticked: an import leaves a section the file lacks untouched. */
 async function exportSnapshot(){
-  let data;
-  try { data=await (await fetch("/api/profile/export")).json(); }
-  catch(e){ setSnapMsg("export failed: "+e.message, true); return; }
-  downloadJSON(data, "otto-snapshot.json");
-  const n=Object.values(data.sections||{}).reduce((t,s)=>t+Object.keys(s||{}).length,0);
-  setSnapMsg(`exported ${n} item(s) across ${Object.keys(data.sections||{}).length} stores → otto-snapshot.json`);
+  const body=openFormModal("<b>Export snapshot</b><br>everything, or only what you pick");
+  body.innerHTML=spinHTML();
+  let secs;
+  try { secs=(await getJSON("/api/profile/sections")).sections||[]; }
+  catch(e){ body.innerHTML=`<p class="err">Couldn't load the sections (${esc(e.message)}).</p>`; return; }
+  body.innerHTML=`<div class="aform">
+    <div class="modepick"><label class="moderow"><input type="checkbox" id="snap-all" checked> <b>All</b></label></div>
+    <div class="modepick snappick">${secs.map(s=>`<label class="moderow"><input type="checkbox" value="${esc(s.id)}" checked> ${esc(s.label)}</label>`).join("")}</div>
+    <div class="ferr" id="snap-exp-err"></div>
+    <div class="factions"><button class="btn approve" id="snap-exp-go">Export</button><button class="btn decline" id="snap-exp-cancel">Cancel</button></div></div>`;
+  const all=body.querySelector("#snap-all"), boxes=[...body.querySelectorAll(".snappick input")], err=body.querySelector("#snap-exp-err");
+  all.addEventListener("change",()=>boxes.forEach(b=>{ b.checked=all.checked; }));
+  boxes.forEach(b=>b.addEventListener("change",()=>{ all.checked=boxes.every(x=>x.checked); }));
+  body.querySelector("#snap-exp-cancel").addEventListener("click",closeFormModal);
+  body.querySelector("#snap-exp-go").addEventListener("click",async()=>{
+    const ids=boxes.filter(b=>b.checked).map(b=>b.value);
+    if(!ids.length){ err.textContent="Pick at least one."; return; }
+    const whole=ids.length===boxes.length;
+    let data;
+    try { data=await getJSON("/api/profile/export"+(whole?"":"?sections="+encodeURIComponent(ids.join(",")))); }
+    catch(e){ err.textContent="export failed: "+e.message; return; }
+    closeFormModal();
+    downloadJSON(data, "otto-snapshot.json");
+    const n=Object.values(data.sections||{}).reduce((t,s)=>t+Object.keys(s||{}).length,0);
+    setSnapMsg(`exported ${n} item(s) across ${Object.keys(data.sections||{}).length} stores → otto-snapshot.json`);
+  });
 }
 
 function snapValue(v){

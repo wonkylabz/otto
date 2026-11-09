@@ -153,19 +153,32 @@ def _chat(row, messages):
     }
 
 
-def list_summaries():
+def _like(q):
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def list_summaries(q=None):
     """Lightweight list for the sidebar — no message bodies, newest first. The message count is
-    a SQL aggregate, so this never reads a single message body."""
+    a SQL aggregate, so this never reads a single message body. `q` keeps only the chats whose
+    title, capability, workstream or any message holds it (case-insensitive substring)."""
+    q = (q or "").strip()
+    where, args = "", ()
+    if q:
+        where = ("WHERE c.title LIKE ?1 ESCAPE '\\' OR c.cap LIKE ?1 ESCAPE '\\' "
+                 "OR w.title LIKE ?1 ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages m "
+                 "WHERE m.chat_id = c.id AND m.text LIKE ?1 ESCAPE '\\')")
+        args = (_like(q),)
     with _conn() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT c.id, c.title, c.updated, c.cap, c.labels, c.run_id, c.pinned,
                    (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS n,
                    w.title AS ws_title, w.id AS ws_id
             FROM chats c LEFT JOIN workstreams w ON w.id = c.workstream_id
+            {where}
             -- Pinned chats float to the top; within each group, newest first (`seq` breaks the
             -- tie when two saves land in the same second).
             ORDER BY c.pinned DESC, c.updated DESC, c.seq DESC
-        """).fetchall()
+        """, args).fetchall()
     return [{"id": r["id"], "title": r["title"] or "", "updated": r["updated"],
              "messages": r["n"], "cap": (_decode(r["cap"]) or {}).get("name"),
              "labels": _decode(r["labels"]) or [], "run_id": r["run_id"],
@@ -518,6 +531,18 @@ def find_reattach(request):
         if awaiting:
             hits.append(r["id"])
     return hits[0] if len(hits) == 1 else None
+
+
+def delete_unpinned():
+    """The sidebar's Clear: every chat that is neither pinned nor running. A running chat keeps
+    its in-flight workflow's only on-screen handle. Returns the deleted ids."""
+    with _conn() as conn, storage.tx(conn):
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM chats WHERE pinned = 0 AND (run_id IS NULL OR run_id = '')")]
+        conn.executemany("DELETE FROM messages WHERE chat_id = ?", [(c,) for c in ids])
+        conn.executemany("DELETE FROM chats WHERE id = ?", [(c,) for c in ids])
+        workstreams.gc(conn)
+    return ids
 
 
 def delete(cid):

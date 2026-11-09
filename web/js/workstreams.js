@@ -70,18 +70,25 @@ async function renderWorkstreamsView(el, silent){
   if(silent && sig===_wsViewSig && el.querySelector(".viewswitch")){ loadBoardHealth(); return; }
   _wsViewSig=sig;
   const row=w=>`<li class="wsrow" data-wstl="${esc(w.id)}" tabindex="0" role="button">
-    <div class="wshead"><b>${esc(w.title)}</b>${w.running?`<span class="bchip stage">${w.running} running</span>`:""}</div>
+    <div class="wshead"><b>${esc(w.title)}</b>${w.running?`<span class="bchip stage">${w.running} running</span>`:""}<button class="wsdel" data-wsdel="${esc(w.id)}" data-wstitle="${esc(w.title)}" title="delete this workstream — its chats are kept, only the grouping goes">&times;</button></div>
     <div class="wsmeta">${w.chats} chat${w.chats===1?"":"s"} · last activity ${esc(shortWhen(w.updated))}${(w.refs||[]).map(r=>`<span class="bchip">${esc(r)}</span>`).join("")}</div>
   </li>`;
   el.innerHTML=boardHead("Every chat about one ticket or PR, grouped — including runs the board no longer shows.")+
+    `<div class="wsbar wsadd"><button class="addbtn addnew" id="ws-add" title="group chats you pick under a new workstream">+ Add workstream</button></div>`+
     (list.length?`<ul class="wsrows">${list.map(row).join("")}</ul>`
     :`<p class="memempty">No workstreams yet. File a run's chat with <b>+ Workstream</b> on its card in Swarm board, or link the same issue or PR from two chats and they group by themselves.</p>`);
   loadBoardHealth();
   wireBoardHead(el);
+  el.querySelector("#ws-add").addEventListener("click",()=>createWorkstream(()=>{ _wsViewSig=null; loadBoard(); }));
+  el.querySelectorAll("[data-wsdel]").forEach(b=>b.addEventListener("click",async e=>{
+    e.stopPropagation();
+    if(!await askConfirm(`Delete the workstream “${b.dataset.wstitle}”? Its chats are kept, and won't be regrouped automatically.`,{ok:"Delete",danger:true})) return;
+    if(await postOr("/api/workstreams/delete",{id:b.dataset.wsdel},"deleting that workstream")){ if(BOARD_WS===b.dataset.wsdel) BOARD_WS=null; _wsViewSig=null; loadBoard(); }
+  }));
   el.querySelectorAll("[data-wstl]").forEach(r=>{
-    const go=()=>openWorkstream(r.dataset.wstl);
+    const go=e=>{ if(e&&e.target.closest("[data-wsdel]")) return; openWorkstream(r.dataset.wstl); };
     r.addEventListener("click",go);
-    r.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); go(); } });
+    r.addEventListener("keydown",e=>{ if(e.target===r&&(e.key==="Enter"||e.key===" ")){ e.preventDefault(); go(); } });
   });
 }
 
@@ -167,4 +174,41 @@ async function assignWorkstream(chatId, current, then){
   body.querySelector("#ws-cancel").addEventListener("click",closeFormModal);
   const out=body.querySelector("#ws-out");
   if(out) out.addEventListener("click",()=>send({}));
+}
+
+/* A new workstream is named AND given its chats in one step: gc drops a workstream no chat is in. */
+async function createWorkstream(then){
+  const body=openFormModal("<b>Add workstream</b><br>group the chats about one piece of work");
+  body.innerHTML=`<div class="aform">
+    <label for="ws-new-name">Name</label>
+    <input type="text" id="ws-new-name" placeholder="e.g. #480 — retry on Slack">
+    <label for="ws-new-q">Chats</label>
+    <input type="search" id="ws-new-q" placeholder="Search chats" autocomplete="off">
+    <div class="modepick wspick" id="ws-new-list">${spinHTML()}</div>
+    <div class="ferr" id="ws-new-err"></div>
+    <div class="factions"><button class="btn approve" id="ws-new-save">Create</button><button class="btn decline" id="ws-new-cancel">Cancel</button></div>
+  </div>`;
+  const name=body.querySelector("#ws-new-name"), q=body.querySelector("#ws-new-q"),
+        box=body.querySelector("#ws-new-list"), err=body.querySelector("#ws-new-err");
+  const picked=new Set();
+  let timer=null, seq=0;
+  const load=async()=>{
+    const mine=++seq;
+    let rows;
+    try { rows=(await getJSON("/api/chats"+(q.value.trim()?"?q="+encodeURIComponent(q.value.trim()):""))).chats||[]; }
+    catch(e){ box.innerHTML=`<p class="err">Couldn't load chats (${esc(e.message)}).</p>`; return; }
+    if(mine!==seq) return;
+    box.innerHTML=rows.length?rows.map(c=>`<label class="moderow"><input type="checkbox" value="${esc(c.id)}"${picked.has(c.id)?" checked":""}>
+      <span class="wsname">${esc(c.title||"Untitled")}</span><span class="wsn">${c.workstream?"&#9776; "+esc(c.workstream.title):""}</span></label>`).join("")
+      :`<p class="sub">No chat matches.</p>`;
+    box.querySelectorAll("input").forEach(i=>i.addEventListener("change",()=>{ i.checked?picked.add(i.value):picked.delete(i.value); }));
+  };
+  q.addEventListener("input",()=>{ clearTimeout(timer); timer=setTimeout(load,250); });
+  load(); name.focus();
+  body.querySelector("#ws-new-save").addEventListener("click",async()=>{
+    if(!name.value.trim()){ err.textContent="Name the workstream."; name.focus(); return; }
+    if(!picked.size){ err.textContent="Pick at least one chat — a workstream with none is dropped."; return; }
+    if(await postForm("/api/workstreams/create",{title:name.value.trim(), chat_ids:[...picked]}, err)){ closeFormModal(); if(then) then(); }
+  });
+  body.querySelector("#ws-new-cancel").addEventListener("click",closeFormModal);
 }

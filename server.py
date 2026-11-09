@@ -1795,9 +1795,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(_board_health()))
         elif self.path == "/api/bundle/export":
             self._send(200, json.dumps(policy.export_bundle(), indent=2))
-        elif self.path == "/api/profile/export":
-            # The full config snapshot (#166), secret-free. profile.py is the CLI twin.
-            self._send(200, json.dumps(snapshot.export(), indent=2))
+        elif self.path == "/api/profile/sections":
+            self._send(200, json.dumps({"sections": [{"id": k, "label": snapshot.LABELS.get(k, k)}
+                                                     for k in snapshot.SECTIONS]}))
+        elif self.path == "/api/profile/export" or self.path.startswith("/api/profile/export?"):
+            # The config snapshot (#166), secret-free; `?sections=a,b` exports only those.
+            raw = (parse_qs(urlparse(self.path).query).get("sections") or [None])[0]
+            try:
+                snap = snapshot.export([x for x in raw.split(",") if x] if raw is not None else None)
+            except ValueError as e:
+                self._send(400, json.dumps({"error": str(e)}))
+            else:
+                self._send(200, json.dumps(snap, indent=2))
         elif self.path == "/api/event-rules":
             self._send(200, json.dumps({
                 "rules": events.load_rules(),
@@ -1895,8 +1904,8 @@ class Handler(BaseHTTPRequestHandler):
             # Allowlisted git repos a task can be run against in an isolated workspace (#57).
             self._send(200, json.dumps({"repos": [
                 {"name": r["name"], "origin": r["origin"]} for r in workspace.git_repos()]}))
-        elif self.path == "/api/chats":
-            rows = chats.list_summaries()
+        elif self.path == "/api/chats" or self.path.startswith("/api/chats?"):
+            rows = chats.list_summaries((parse_qs(urlparse(self.path).query).get("q") or [""])[0])
             hints = workstreams.suggest([c["id"] for c in rows if not c["workstream"]])
             for c in rows:
                 c["ws_suggest"] = hints.get(c["id"])
@@ -2852,6 +2861,10 @@ class Handler(BaseHTTPRequestHandler):
         """POST /api/chats/pin"""
         self._send(200, json.dumps({"pinned": chats.set_pinned(body.get("id"), body.get("pinned"))}))
 
+    def _post_chats_clear(self, body):
+        """POST /api/chats/clear — deletes every chat except pinned and running ones."""
+        self._send(200, json.dumps({"deleted": chats.delete_unpinned()}))
+
     def _post_chats_delete(self, body):
         """POST /api/chats/delete"""
         cid = body.get("id")
@@ -2879,6 +2892,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "no such chat or workstream"}))
             return
         self._send(200, json.dumps({"workstream_id": got or None}))
+
+    def _post_workstreams_create(self, body):
+        """POST /api/workstreams/create — {title, chat_ids}: a workstream is never empty."""
+        wsid = workstreams.create(body.get("title"), body.get("chat_ids") or [])
+        if not wsid:
+            self._send(400, json.dumps({"error": "a name and at least one existing chat are required"}))
+            return
+        self._send(200, json.dumps({"id": wsid}))
 
     def _post_workstreams_rename(self, body):
         """POST /api/workstreams/rename"""
@@ -3379,6 +3400,7 @@ _POST_ROUTES = {
     "/api/capability/add": Handler._post_capability_add,
     "/api/capability/edit": Handler._post_capability_edit,
     "/api/capability/remove": Handler._post_capability_remove,
+    "/api/chats/clear": Handler._post_chats_clear,
     "/api/chats/delete": Handler._post_chats_delete,
     "/api/chats/pin": Handler._post_chats_pin,
     "/api/chats/save": Handler._post_chats_save,
@@ -3444,6 +3466,7 @@ _POST_ROUTES = {
     "/api/wf/signal": Handler._post_wf_signal,
     "/api/wf/terminate": Handler._post_wf_terminate,
     "/api/workstreams/assign": Handler._post_workstreams_assign,
+    "/api/workstreams/create": Handler._post_workstreams_create,
     "/api/workstreams/delete": Handler._post_workstreams_delete,
     "/api/workstreams/rename": Handler._post_workstreams_rename,
 }

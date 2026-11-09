@@ -715,6 +715,15 @@ SECTIONS = {
     "board": _Board(),
 }
 
+# What the export picker calls each section, in SECTIONS order (`SnapshotSectionPickTests`).
+LABELS = {
+    "settings": "Runtime settings", "capabilities": "Capabilities", "mcp_servers": "MCP servers",
+    "policy": "Capability policy", "models": "Models + endpoints", "behaviors": "Behaviors",
+    "knowledge": "Knowledge", "projects": "Repos", "runbooks": "Jobs", "slack": "Slack",
+    "slack_triggers": "Slack triggers", "event_rules": "Events", "pr_review": "PR reviews",
+    "board": "GitHub board",
+}
+
 
 # --- export / preview / apply ------------------------------------------------------------
 
@@ -722,9 +731,16 @@ def _ctx():
     return {"lost": [], "warnings": [], "status": []}
 
 
-def export():
+def export(only=None):
+    """The snapshot, or just the sections named in `only`. An absent section is left untouched by
+    an import, even under replace, so a partial export never wipes what it doesn't carry."""
+    if only is not None:
+        unknown = set(only) - set(SECTIONS)
+        if unknown or not only:
+            raise ValueError("unknown or no section: " + ", ".join(sorted(unknown)))
     ctx = _ctx()
-    sections = {name: sec.export(ctx) for name, sec in SECTIONS.items()}
+    sections = {name: sec.export(ctx) for name, sec in SECTIONS.items()
+                if only is None or name in only}
     snap = {
         "otto_profile": VERSION,
         "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),

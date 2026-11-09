@@ -282,6 +282,23 @@ def assign(cid, wsid=None, title=None):
     return wsid or ""
 
 
+def create(title, cids):
+    """A new workstream named `title` holding `cids` — never empty, since `gc` drops a workstream
+    no chat belongs to. Returns its id, or None for no title, no chats or an unknown chat."""
+    title = (title or "").strip()
+    cids = list(dict.fromkeys(c for c in (cids or []) if c))
+    if not title or not cids:
+        return None
+    with _conn() as conn, storage.tx(conn):
+        if conn.execute(f"SELECT COUNT(*) FROM chats WHERE id IN ({','.join('?' * len(cids))})",
+                        cids).fetchone()[0] != len(cids):
+            return None
+        wsid = _create(conn, title, set().union(*(chat_refs(conn, c) for c in cids)))
+        conn.executemany("UPDATE chats SET workstream_id = ? WHERE id = ?", [(wsid, c) for c in cids])
+        gc(conn)
+    return wsid
+
+
 def rename(wsid, title):
     title = (title or "").strip()[:80]
     if not title:
