@@ -37,7 +37,8 @@ function renderMD(src){
       // rm src/*.log *.tmp, stay literal. A < can only be the <strong> of ***x***: src is escaped.
       .replace(/(^|[^*\p{L}\p{N}_])\*([\p{L}\p{N}<\uE000\uE001](?:[^*]*[^*\s])?)\*(?![\p{L}\p{N}_*])/gu, "$1<em>$2</em>")
       .replace(/\[([^\]]+)\]\((https?:[^)\s\uE000\uE001]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      .replace(/(^|\s)(https?:\/\/[^\s<\uE000\uE001]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+      // A bare URL never ENDS on punctuation: "see https://x/905." linked the period.
+      .replace(/(^|\s)(https?:\/\/[^\s<\uE000\uE001]*[^\s<\uE000\uE001.,;:!?)\]'"*_])/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
       .replace(/\uE001(\d+)\uE001/g, (_,n)=>spans[+n]);
   };
   let html = "", list = null;

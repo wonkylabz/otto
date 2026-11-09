@@ -427,6 +427,23 @@ class RunbookSlackDeliveryTests(unittest.TestCase):
         self.assertIn("channel", str(cm.exception))
 
 
+class RunbookReuseChatTests(unittest.TestCase):
+    def test_every_run_opens_its_own_chat_by_default(self):
+        rb = runbooks.normalize({"name": "n", "request": "do it"})
+        self.assertIs(rb["reuse_chat"], False)
+        args = scheduler._args("rb-c", rb)
+        self.assertEqual(args["chat_key"], "chat-rb-c")
+        self.assertTrue(args["chat_per_run"])
+
+    def test_reuse_chat_puts_every_run_in_one_thread(self):
+        # No per-run suffix: the workflow keeps the bare `chat-<rid>` key for every firing.
+        rb = runbooks.normalize({"name": "n", "request": "do it", "reuse_chat": True})
+        self.assertIs(rb["reuse_chat"], True)
+        args = scheduler._args("rb-c", rb)
+        self.assertEqual(args["chat_key"], "chat-rb-c")
+        self.assertFalse(args["chat_per_run"])
+
+
 class RunbookStoreTests(unittest.TestCase):
     def setUp(self):
         self._orig = runbooks._STORE
@@ -7581,6 +7598,20 @@ class RenderMdListTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
+
+    def test_a_bare_url_never_ends_on_trailing_punctuation(self):
+        # User-observed: "I opened the issue: https://…/issues/905. It's on board #6" linked
+        # the period, so the link 404'd.
+        if not self.node:
+            self.skipTest("node not available")
+        a = '<a href="{0}" target="_blank" rel="noopener">{0}</a>'
+        u = "https://github.com/o/r/issues/905"
+        for tail in (".", ",", ";", ":", "!", "?", ")"):
+            self.assertEqual(self._render(f"(see {u}{tail} next"),
+                             f"<p>(see {a.format(u)}{tail} next</p>")
+        q = "https://a.b/c?x=1&amp;y=2"
+        self.assertEqual(self._render("x https://a.b/c?x=1&y=2"), f"<p>x {a.format(q)}</p>")
+        self.assertEqual(self._render("x https://a.b/c/"), f"<p>x {a.format('https://a.b/c/')}</p>")
 
     def test_a_fence_in_a_CRLF_ticket_survives(self):
         if not self.node:
