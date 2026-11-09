@@ -2613,6 +2613,13 @@ class WorkstreamTests(unittest.TestCase):
         self.assertEqual(sorted(c["id"] for c in chats.list_summaries()), ["p", "r"])
         self.assertIn('"/api/chats/clear"', ui_src())
 
+    def test_opening_a_chat_does_not_save_it(self):
+        """A save stamps `updated`, the sidebar's sort key: render() on open must not schedule
+        one unless the tallies actually changed, or a click bumps the chat to the top."""
+        src = ui_src()
+        body = src[src.index("function render(){"):][:900]
+        self.assertLess(body.index("return;"), body.index("setTimeout(persistChat"))
+
     def test_the_chat_list_searches_titles_and_message_text(self):
         chats.append_run("a", "deploy the bedrock stack", "done", title="Infra")
         chats.append_run("b", "what is 50% of 10_000", "5000", title="Math")

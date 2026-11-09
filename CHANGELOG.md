@@ -25,6 +25,7 @@ changelog that restates it is a second copy of `git log`.
 
 - **Returning to a chat whose task is still running no longer says "Resuming…"**, which read as
   if the task had paused. It now says the task is still working.
+- **Opening a chat no longer moves it to the top of the list.** Only new activity in a chat does.
 - **The factory reopens a ticket closed without merged code only once.** If it is closed as
   completed again, for example as superseded by another ticket, it now stays closed. It still
   holds back the factory's done verdict until it is closed as "not planned".

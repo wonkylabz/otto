@@ -94,7 +94,11 @@ function render(){
   document.getElementById("led-appr").textContent=led.appr;
   document.getElementById("led-cost").textContent="$"+led.cost.toFixed(2);
   // Tallies are per-chat: stash onto the active chat and save so they survive a switch/reload.
-  if(activeChat){ activeChat.stats={runs:led.runs, appr:led.appr, cost:led.cost};
+  // Only a CHANGE saves: a save stamps `updated`, so merely opening a chat bumped it to the top.
+  if(activeChat){
+    const st={runs:led.runs, appr:led.appr, cost:led.cost}, was=activeChat.stats||{};
+    if(st.runs===(was.runs||0) && st.appr===(was.appr||0) && st.cost===(was.cost||0)) return;
+    activeChat.stats=st;
     clearTimeout(chatSaveTimer); chatSaveTimer=setTimeout(persistChat, 600); }
 }
 
