@@ -1325,6 +1325,7 @@ class HttpApiTests(unittest.TestCase):
         for key in ("now", "prev", "attention", "fail_sources", "tiers", "stages", "changes"):
             self.assertIn(key, r)
         self.assertIn("estop", r["health"])
+        self.assertEqual(set(r["data_health"]), {"findings", "errors"})
         st, r = _get(self.base, "/api/insights?days=;drop")
         self.assertEqual((st, r["window"]["days"]), (200, 7))
 

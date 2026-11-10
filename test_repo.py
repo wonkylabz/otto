@@ -2611,6 +2611,30 @@ class DataHealthTests(unittest.TestCase):
             self.assertEqual([(f["check"], f["subject"]) for f in self.dh._models()],
                              [("dangling_model_pin", "code-reviewer")])
 
+    def test_changes_only_stays_quiet_on_a_clean_store_and_speaks_on_drift(self):
+        """A standing drift is a bug nobody else will report, so the weekly cron must print it."""
+        import contextlib
+        import io
+        import insights
+
+        def run(findings):
+            out = io.StringIO()
+            with mock.patch.object(insights, "ledger_rows", return_value=([], None)), \
+                    mock.patch.object(insights.audit, "iter_audit_entries", return_value=[]), \
+                    mock.patch.object(self.dh, "report",
+                                      return_value={"findings": findings, "errors": []}), \
+                    contextlib.redirect_stdout(out):
+                insights.main(["--changes-only"])
+            return out.getvalue()
+        self.assertEqual(run([]), "")
+        self.assertIn("ref_sprawl: W — 38 refs", run([self.dh._finding("ref_sprawl", "W", "38 refs")]))
+
+    def test_the_audit_tab_renders_findings_in_a_data_tab_and_escapes_them(self):
+        src = test_support.ui_src()
+        self.assertIn('["data","Data",dhn,data]', src)
+        self.assertIn("esc(f.subject)", src)
+        self.assertIn("data health finding", src)
+
     def test_a_raising_check_is_reported_never_fatal(self):
         with mock.patch.object(self.dh, "CHECKS", (("boom", lambda: 1 / 0),
                                                    ("ok", lambda: [self.dh._finding("c", "s", "d")]))):
