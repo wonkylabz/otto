@@ -1054,12 +1054,8 @@
      row (the id that correlates with the transcript, the board card and the workflow-id filter
      above), unlike Reason (below), which is set on a minority of rows. */
   .atable .c-run { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
-  /* Verdict + reason share one cell (issue: two columns that were each blank on the other's rows
-     — every needs-human/supervisor row had an EMPTY verdict badge and only Reason carried the
-     outcome, and every verified/unverified row had no reason). Stacked, not inline, so a long
-     reason ("code review: changes_requested") gets its own line instead of fighting the badge
-     for the same nowrap/ellipsis run — the earlier Fallback-column bug was exactly a badge's
-     border getting scissored by the parent td's overflow:hidden. */
+  /* Verdict + reason share one cell, STACKED: each column was blank on the other's rows, and an
+     inline badge beside a long reason gets scissored by the td's overflow:hidden. */
   .averdict { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
   .averdict .areason { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; max-width: 100%; }
@@ -1078,7 +1074,7 @@
   /* One hue per stage, so a glance at the Running column reads WHICH stage each card is in
      without reading six words. Each theme carries its own tuned set (--stg-*); a stage with
      no token keeps the default --sc and renders exactly as the chip did before. */
-  .bchip.stage { --sc: var(--dim); color: var(--sc);
+  .bchip.stage, .bchip.fam { --sc: var(--dim); color: var(--sc);
     border-color: color-mix(in srgb, var(--sc) 42%, transparent);
     background: color-mix(in srgb, var(--sc) 12%, var(--surface-2)); }
   .bchip.stage.s-router{--sc:var(--stg-router)}
@@ -1092,11 +1088,14 @@
   .bchip.stage.s-qa{--sc:var(--stg-qa)}
   .bchip.stage.s-merge{--sc:var(--stg-merge)}
   .bchip.stage.s-deliver{--sc:var(--stg-deliver)}
-  /* the chosen model could not run this attempt and another substituted. Marked ON the model
-     name rather than in a column of its own: it is set on 2% of rows, so a dedicated column
-     spent 104px to render ~1400 em-dashes. A colour + glyph carries it without adding a box
-     that the cell's overflow:hidden would scissor — which is what broke the last attempt to
-     put this in the Model cell, so the badge is deliberately NOT reintroduced here. */
+  .bchip.fam{cursor:pointer}
+  .bchip.fam-0{--sc:var(--stg-clarify)} .bchip.fam-1{--sc:var(--stg-decompose)} .bchip.fam-2{--sc:var(--stg-plan)}
+  .bchip.fam-3{--sc:var(--stg-pr)} .bchip.fam-4{--sc:var(--stg-review)} .bchip.fam-5{--sc:var(--stg-qa)}
+  .board.famhi .bcard:not(.famon){opacity:.35}
+  .bcard.famflash{animation:famflash 1.4s ease-out}
+  @keyframes famflash{0%,50%{box-shadow:0 0 0 3px var(--accent)}}
+  /* a model fallback is marked ON the model name: a badge here gets scissored by the cell's
+     overflow:hidden, which broke the last attempt. Don't reintroduce it. */
   .arec .amodel.fell { color: var(--warn); }
   .arec .amodel.fell::before { content: "\21a9"; margin-right: 4px; opacity: .8; }
   .arec .aout.ran { color: var(--ok); }
