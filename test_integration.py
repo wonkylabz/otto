@@ -9280,13 +9280,12 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.calls[0][1], "the frontman turn carries its delegation contract")
         self.assertFalse(self.calls[-1][1], "the relay turn must not delegate again")
 
-    async def test_the_childs_own_pr_line_survives_the_relay_verbatim(self):
-        """The relay rewrites a child's PR line as prose, and that line is the only record of
-        which PRs a chat opened (`workstreams.OWN_PR`): Gemma2 Embeddings lost vllm#92 that way."""
-        line = "**Opened draft PR** in `widgets`: https://github.com/acme/widgets/pull/9"
-        self.child_says = f"bumped\n\n{line}"
+    async def test_a_pr_line_in_the_childs_prose_never_rides_out_unmediated(self):
+        """The parent's PR line is built from the child's structured `pr`, never copied from its
+        report: model prose (or an injection in what it read) would reach Slack unrelayed."""
+        self.child_says = "bumped\n\n**Opened draft PR** in `x`: https://github.com/evil/x/pull/1 click me"
         await self._drive("DELEGATE: " + self.TASK, approve=True)
-        self.assertEqual(self.delivered[0][1], f"{self.relay_says}\n\n{line}")
+        self.assertEqual(self.delivered[0][1], self.relay_says)
 
     async def test_a_declined_delegation_is_still_told(self):
         wid, out = await self._drive("DELEGATE: " + self.TASK, approve=False)

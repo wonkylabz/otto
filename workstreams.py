@@ -32,9 +32,17 @@ _GH = re.compile(r"https?://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)"
 _JIRA = re.compile(r"https?://[\w.-]+\.atlassian\.net/browse/([A-Z][A-Z0-9]+-\d+)")
 # The whole line around a PR a run itself opened or pushed to: the markers `wf_repo`/`workflows`
 # append (`**Opened draft PR**`, `**Updated PR**`/`**Updated PR #N**`, `(opened by the capability`).
+_PR_URL = r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+"
 OWN_PR = re.compile(
-    r"^[^\n]*?(?:\*\*Opened draft PR\*\*|\*\*Updated PR(?: #\d+)?\*\*|\(opened by the capability[^)]*\))"
-    r"[^\n]*?(https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+)[^\n]*", re.M)
+    r"^[^\n]*?(?:\*\*Opened draft PR\*\*|\*\*Updated PR(?: #\d+)?\*\*|\(opened by the capability[^)]*\)"
+    rf"|\*\*PR from the handed-off task\*\*)[^\n]*?({_PR_URL})[^\n]*", re.M)
+
+
+def handoff_pr_line(res):
+    """The line a fronting run appends for its delegated child's PR. Built from the child's
+    STRUCTURED `pr` (set by the PR step, never the model), so injected prose can't ride out."""
+    url = ((res.get("pr") or {}).get("pr_url") or "") if isinstance(res, dict) else ""
+    return f"**PR from the handed-off task**: {url}" if re.fullmatch(_PR_URL, url) else None
 
 
 def _conn():

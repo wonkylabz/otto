@@ -2663,6 +2663,13 @@ class WorkstreamTests(unittest.TestCase):
         self.assertEqual([m.group(1) for m in workstreams.OWN_PR.finditer(
             f"x\n{line}https://github.com/x/y/pull/7\n")], ["https://github.com/x/y/pull/7"])
 
+    def test_the_handoff_pr_line_is_built_from_data_and_counts_as_otto_opened(self):
+        url = "https://github.com/acme/api/pull/40"
+        line = workstreams.handoff_pr_line({"pr": {"pr_url": url}})
+        self.assertEqual([m.group(1) for m in workstreams.OWN_PR.finditer(f"relayed\n\n{line}")], [url])
+        for bad in ({"pr": {"pr_url": url + " x"}}, {"pr": None}, {}, "boom", None):
+            self.assertIsNone(workstreams.handoff_pr_line(bad))
+
     def test_a_workstreams_refs_shrink_with_its_chats(self):
         """A grow-only union kept every stale ref, and each pulled more chats in (ITP LiteLLM: 38)."""
         chats.append_run("a", f"do {self.ISSUE}", "ok")
