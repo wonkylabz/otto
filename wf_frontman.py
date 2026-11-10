@@ -17,6 +17,7 @@ from wf_runtime import _EXEC_CEILING, _HEARTBEAT, _RETRY_EXEC, _failure_detail
 with workflow.unsafe.imports_passed_through():
     import config
     import contracts
+    import workstreams
     from activities import run_capability
 
 
@@ -122,6 +123,11 @@ class FrontmanMixin:
         if (not text or text == "(no output)" or rout.get("is_error")
                 or config.is_no_reply(text)):
             text = contracts.relay_fallback(outcome)
+        # The child's own PR lines ride out VERBATIM: the relay rewrites them as prose, and a chat
+        # learns which PRs it opened only from these lines (`workstreams.OWN_PR`).
+        own = [m.group(0).strip() for m in workstreams.OWN_PR.finditer(report or "")]
+        if own := [ln for ln in dict.fromkeys(own) if ln not in text]:
+            text += "\n\n" + "\n\n".join(own)
         await self._audit_attempt(
             {"wid": rout.get("workflow") or wid, "request": relay, "name": cap["name"],
              "result": text, "cost": rout.get("cost", 0), "attempt": attempt + 1,

@@ -3497,6 +3497,7 @@ def main():
     # test suite and every tool does before `setUpModule` re-points PROJECTS_FILE at a temp dir.
     # At import scope it migrated the live store as a side effect of `import server`.
     registry.backfill_project_urls()
+    workstreams.rebuild()   # a tightened ref rule also clears what the old one stored
     # Temporal is REQUIRED to serve (the direct run path was removed — issue #278). Module
     # import stays soft so the stdlib-only test run can still import handlers.
     if not TEMPORAL_OK:

@@ -2642,7 +2642,7 @@ class WorkstreamTests(unittest.TestCase):
         self.assertEqual([i["id"] for i in ws["items"]], ["a", "b"], "timeline is oldest first")
 
     def test_the_pr_otto_opened_links_a_later_chat_but_a_cited_issue_does_not(self):
-        chats.append_run("a", f"work on {self.ISSUE}", f"opened {self.PR}")
+        chats.append_run("a", f"work on {self.ISSUE}", f"done\n\n**Opened draft PR** in `api`: {self.PR}")
         chats.append_run("b", f"review {self.PR}", "LGTM")
         self.assertIsNotNone(self._ws("b"))
         self.assertEqual(self._ws("a"), self._ws("b"))
@@ -2650,6 +2650,35 @@ class WorkstreamTests(unittest.TestCase):
         chats.append_run("c", "summarise the week", "see https://github.com/acme/api/issues/99")
         chats.append_run("d", "what is https://github.com/acme/api/issues/99 about?", "...")
         self.assertIsNone(self._ws("d"))
+
+    def test_a_pr_named_in_prose_is_cited_not_opened(self):
+        """A daily summary listing the day's PRs gave one chat 28 refs, and research citing
+        upstream PRs filed it with strangers (2026-11-10). Only the workflow's own PR line counts."""
+        chats.append_run("a", "daily summary", f"Today: merged {self.PR} and https://github.com/x/y/pull/7")
+        chats.append_run("b", f"review {self.PR}", "LGTM")
+        self.assertIsNone(self._ws("b"))
+        with chats._conn() as conn:
+            self.assertEqual(workstreams.chat_refs(conn, "a"), set())
+        line = "**Updated PR #7** in `y` (the request named it, so this ran on its branch `b`): "
+        self.assertEqual([m.group(1) for m in workstreams.OWN_PR.finditer(
+            f"x\n{line}https://github.com/x/y/pull/7\n")], ["https://github.com/x/y/pull/7"])
+
+    def test_a_workstreams_refs_shrink_with_its_chats(self):
+        """A grow-only union kept every stale ref, and each pulled more chats in (ITP LiteLLM: 38)."""
+        chats.append_run("a", f"do {self.ISSUE}", "ok")
+        chats.append_run("b", f"redo {self.ISSUE}", "ok")
+        chats.append_run("c", "unrelated https://github.com/acme/api/issues/5", "ok")
+        wsid = self._ws("a")
+        workstreams.assign("c", wsid)
+        self.assertIn("acme/api#5", workstreams.get(wsid)["refs"])
+        workstreams.assign("c")                                   # taken out again
+        self.assertNotIn("acme/api#5", workstreams.get(wsid)["refs"])
+        # A stale stored union (the old rule) is cleared by the startup rebuild.
+        with chats._conn() as conn:
+            conn.execute("UPDATE workstreams SET refs = ? WHERE id = ?", ('["stale/x#1"]', wsid))
+            conn.commit()
+        workstreams.rebuild()
+        self.assertEqual(workstreams.get(wsid)["refs"], sorted(workstreams.refs_of(self.ISSUE)))
 
     def test_a_side_question_in_a_filed_chat_does_not_widen_its_workstream(self):
         # A link pasted mid-conversation is not the chat's subject: merged into the workstream's

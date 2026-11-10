@@ -23,6 +23,7 @@ import policy
 import privacy
 import registry
 import storage
+import workstreams
 from ui import trace
 
 
@@ -539,14 +540,10 @@ def stage_timings(entries):
     return {"stages": out, "runs": runs}
 
 
-_GH_PR_URL = r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+"
-# Anchored to the exact markers workflows.py appends around a PR *this run itself* opened or
-# pushed to (`**Opened draft PR**`/`**Updated PR**`/`(opened by the capability`) — a bare URL
-# mention has no anchor and is never matched, since a run's own report routinely cites an
-# unrelated PR as context (e.g. "blocked on #451/PR #452") without having opened it.
-_PR_URL_RE = re.compile(
-    r"(?:\*\*Opened draft PR\*\*|\*\*Updated PR\*\*|\(opened by the capability[^)]*\))"
-    rf"[^\n]*?({_GH_PR_URL})")
+# Anchored to the markers the workflow appends around a PR *this run itself* opened or pushed
+# to — a bare URL mention is never matched, since a run's own report routinely cites an
+# unrelated PR as context. ONE pattern, shared with workstreams (`workstreams.OWN_PR`).
+_PR_URL_RE = workstreams.OWN_PR
 
 
 def pr_url_from_run(wid):
