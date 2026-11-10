@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- Data health findings have a **Fix** button in the Audit tab's Data tab (remove a stale model pin, detach a chat, re-derive labels, delete an empty workstream), so they no longer need code or a hand-edited store.
+
+### Fixed
+
+- A model pin left behind by a renamed capability is reported as **orphaned** instead of "model not in the pool", which pointed at a capability that runs fine. A chat taken out of workstreams no longer reports too many refs, since it can't spread them.
+
 ## [0.14.0] - 2026-11-10
 
 ### Added

@@ -2645,12 +2645,62 @@ class DataHealthTests(unittest.TestCase):
         self.assertEqual(got, {"chat_refs_drift", "ref_sprawl", "dangling_membership",
                                "empty_workstream", "workstream_refs_drift"})
 
-    def test_a_model_pin_naming_no_pool_entry_fires(self):
+    def _pins(self, cap_exec, installed=("code-reviewer",)):
         import gateway
-        with mock.patch.object(gateway, "load", return_value={
-                "dangling": {"cap_exec": {"code-reviewer": "Old Opus"}, "cap_local_exec": {}}}):
+        import registry
+        cfg = {"pool": [{"name": "Opus"}], "cap_exec": cap_exec, "cap_local_exec": {},
+               "dangling": {"cap_exec": {}, "cap_local_exec": {}}}
+        caps = [mock.Mock() for _ in installed]
+        for c, n in zip(caps, installed):
+            c.name = n
+        return mock.patch.object(gateway, "load", return_value=cfg), \
+            mock.patch.object(registry, "load", return_value=caps)
+
+    def test_a_model_pin_naming_no_pool_entry_fires(self):
+        a, b = self._pins({"code-reviewer": "Old Opus"})
+        with a, b:
             self.assertEqual([(f["check"], f["subject"]) for f in self.dh._models()],
                              [("dangling_model_pin", "code-reviewer")])
+
+    def test_a_pin_on_a_cap_that_is_not_installed_is_orphaned_not_dangling(self):
+        """2026-11-11: a renamed plugin left 4 pins under old cap names; reported as "model not in
+        the pool", which sent the operator to caps that ran fine, and Admin could not clear them."""
+        a, b = self._pins({"old-plugin:cap": "Old Opus", "code-reviewer": "Opus"})
+        with a, b:
+            self.assertEqual([(f["check"], f["subject"], f["fix"]) for f in self.dh._models()],
+                             [("orphaned_model_pin", "old-plugin:cap", "Remove pin")])
+
+    def test_fix_takes_only_a_key_and_applies_the_action_the_check_picked(self):
+        import gateway
+        a, b = self._pins({"old-plugin:cap": "Old Opus"})
+        with a, b, mock.patch.object(gateway, "set_cap_exec") as clear:
+            self.assertFalse(self.dh.fix("orphaned_model_pin:cap_exec:nope"))
+            self.assertFalse(self.dh.fix(None))
+            clear.assert_not_called()
+            self.assertTrue(self.dh.fix("orphaned_model_pin:cap_exec:old-plugin:cap"))
+            clear.assert_called_once_with("old-plugin:cap", None)
+            self.assertNotIn("_apply", json.dumps(self.dh.report()))
+
+    def test_detaching_a_sprawling_chat_resolves_it(self):
+        """A job's old shared thread holds one PR per run; detached, none of them can spread."""
+        issues = " ".join(f"https://github.com/acme/api/issues/{n}" for n in range(12))
+        chats.append_run("a", f"triage {issues}", "ok", title="A")
+        self.assertEqual(self._checks(), [("ref_sprawl", "chat: A")])
+        key = next(f["key"] for f in self.dh._workstreams())
+        self.assertTrue(self.dh.fix(key))
+        with chats._conn() as conn:
+            self.assertEqual(conn.execute("SELECT workstream_id FROM chats").fetchone()[0], "")
+        self.assertEqual(self._checks(), [])
+
+    def test_a_drifted_workstream_is_repaired_by_its_fix(self):
+        chats.append_run("a", "work on https://github.com/acme/api/issues/1", "ok", title="A")
+        chats.append_run("b", "redo https://github.com/acme/api/issues/1", "ok", title="B")
+        with chats._conn() as conn:
+            conn.execute("UPDATE workstreams SET refs = '[\"x/y#1\"]'")
+            conn.commit()
+        key = next(f["key"] for f in self.dh._workstreams() if f["check"] == "workstream_refs_drift")
+        self.assertTrue(self.dh.fix(key))
+        self.assertEqual(self._checks(), [])
 
     def test_changes_only_stays_quiet_on_a_clean_store_and_speaks_on_drift(self):
         """A standing drift is a bug nobody else will report, so the weekly cron must print it."""
@@ -2675,6 +2725,8 @@ class DataHealthTests(unittest.TestCase):
         self.assertIn('["data","Data",dhn,data]', src)
         self.assertIn("esc(f.subject)", src)
         self.assertIn("data health finding", src)
+        self.assertIn('postJSON("/api/data-health/fix",{key:b.dataset.dhfix})', src)
+        self.assertIn('"/api/data-health/fix": Handler._post_data_health_fix', pathlib.Path("server.py").read_text())
 
     def test_a_raising_check_is_reported_never_fatal(self):
         with mock.patch.object(self.dh, "CHECKS", (("boom", lambda: 1 / 0),
@@ -3602,7 +3654,7 @@ class PreviewModelTierTests(unittest.TestCase):
         self.assertIn('"model": preview.get("model")', open("activities.py").read())
         self.assertIn('"plan_model": self._plan_model', workflow_src())
         # server._wf_state's gate block is a WHITELIST — absent here, the browser never sees it.
-        self.assertIn('"plan_model": st.get("plan_model")', open("server.py").read())
+        self.assertIn('"plan_model": st.get("plan_model")', pathlib.Path("server.py").read_text())
         ui = ui_src()
         self.assertIn("written by", ui)
 
