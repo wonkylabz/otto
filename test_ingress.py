@@ -6238,6 +6238,58 @@ class BoardGatePlanTests(unittest.TestCase):
         self.assertIn('[data-plan]', ui, "nothing on the card opens the full plan")
 
 
+class BoardFanOutFamilyTests(unittest.TestCase):
+    """A swarm or a Slack delegate fans one request out into several cards, often in different
+    columns; a bare "sub-task" chip on the children (and nothing on `-dN` or the parent) left no
+    way to tell which card was the main one. The family chip runs here, in node, on real ids."""
+
+    def _chips(self, items):
+        ui = ui_src()
+        start = ui.index("const famOf=")
+        body = ui[start:ui.index("  const card=it=>{", start)]
+        js = ("const esc=s=>String(s);const data={items:%s};const byId={};"
+              "data.items.forEach(it=>byId[it.id]=it);%s"
+              "console.log(JSON.stringify(data.items.map(famChip)));") % (json.dumps(items), body)
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_parent_and_children_share_a_tag_and_a_hue(self):
+        parent, c1, c2, other = self._chips([
+            {"id": "web-2bd1a194", "status": "RUNNING"},
+            {"id": "web-2bd1a194-s1", "status": "COMPLETED"},
+            {"id": "web-2bd1a194-s2", "status": "RUNNING"},
+            {"id": "web-99990000", "status": "RUNNING"}])
+        self.assertIn("2 sub-tasks (1 done)", parent)
+        self.assertIn("sub-task 1/2", c1)
+        self.assertIn("sub-task 2/2", c2)
+        hue = re.search(r"fam-\d", parent).group()
+        for c in (parent, c1, c2):
+            self.assertIn("a194", c)
+            self.assertIn(hue, c)
+            self.assertIn('data-famchip="web-2bd1a194"', c)
+        self.assertEqual(other, "", "a run that never fanned out gets no family chip")
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_slack_delegate_is_marked_too(self):
+        parent, child = self._chips([{"id": "slack-C1-17.5", "status": "RUNNING"},
+                                     {"id": "slack-C1-17.5-d1", "status": "RUNNING"}])
+        self.assertIn("delegated", parent)
+        self.assertIn("delegate", child)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_child_whose_parent_scrolled_off_still_names_it(self):
+        (child,) = self._chips([{"id": "wf-ab12cd-0007-s3", "status": "RUNNING"}])
+        self.assertIn("sub-task 3/3", child)
+        self.assertIn("not on the board", child)
+
+    def test_cards_carry_the_family_for_the_hover_highlight(self):
+        ui = ui_src()
+        self.assertIn('data-fam="${esc(famRoot(it))}"', ui)
+        self.assertIn("wireFamilies(el);", ui)
+
+
 class BoardStageChipTests(unittest.TestCase):
     """`phase` collapses everything before the first attempt to a bare "running", so a card sat
     unchanged through routing, a 15-minute plan preview and the gate — a working run reads as a

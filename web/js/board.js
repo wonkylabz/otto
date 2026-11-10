@@ -185,6 +185,26 @@ async function loadBoard(silent){
     if(!m) return `<span class="bchip ticket">&#127915; ${esc(r)}</span>`;
     return `<a class="bchip ticket" href="https://github.com/${esc(m[1])}/${esc(m[2])}/issues/${m[3]}" target="_blank" rel="noopener" title="${esc(r)} — the issue/PR this run belongs to">&#127915; ${esc(m[2])}#${m[3]}</a>`;
   }).join('')+(refs.length>2?`<span class="bchip" title="${esc(refs.slice(2).join(', '))}">+${refs.length-2}</span>`:'');
+  // A fan-out child is "<parent>-sN" (swarm) or "<parent>-dN" (Slack delegate): the id IS the link.
+  const famOf=id=>{ const m=/^(.+)-([sd])(\d+)$/.exec(id||""); return m?{parent:m[1],kind:m[2],n:+m[3]}:null; };
+  const kids={};
+  (data.items||[]).forEach(it=>{ const f=famOf(it.id); if(f) (kids[f.parent]=kids[f.parent]||[]).push(it); });
+  const famRoot=it=>{ const f=famOf(it.id); return f?f.parent:(kids[it.id]?it.id:null); };
+  const famChip=it=>{
+    const f=famOf(it.id), root=famRoot(it);
+    if(!root) return '';
+    const tag=root.replace(/[^a-z0-9]/gi,'').slice(-4);
+    let h=0; for(const c of root) h=(h*31+c.charCodeAt(0))|0;
+    const cls=`bchip fam fam-${Math.abs(h)%6}`, sibs=kids[root]||[];
+    if(!f){
+      const done=sibs.filter(k=>k.status==="COMPLETED"&&!k._needs).length;
+      const what=sibs.every(k=>famOf(k.id).kind==='d')?'delegated':`${sibs.length} sub-task${sibs.length>1?'s':''} (${done} done)`;
+      return `<span class="${cls}" data-famchip="${esc(root)}" title="parent run ${esc(root)} — hover to light up its sub-tasks, click to jump to the first: ${esc(sibs.map(k=>k.id).join(', '))}">&#8649; ${esc(tag)} · ${what}</span>`;
+    }
+    const total=sibs.filter(k=>famOf(k.id).kind===f.kind).length;
+    const what=f.kind==='d'?'delegate':`sub-task ${f.n}/${Math.max(total,f.n)}`;
+    return `<span class="${cls}" data-famchip="${esc(root)}" title="${what} of run ${esc(root)} — ${byId[root]?'click to jump to it':'parent is not on the board right now'}">&#8627; ${esc(tag)} · ${what}</span>`;
+  };
   const card=it=>{
     const failed=it.status!=="COMPLETED" && it.status!=="RUNNING";
     const risk=it.risk?`<span class="badge ${esc(it.risk)}">${esc(it.risk)}</span>`:"";
@@ -200,7 +220,6 @@ async function loadBoard(silent){
     const live=it.status==="RUNNING" && !it._needs && !/awaiting/.test(it.phase||"");
     const askApprove=/awaiting approval/.test(it.phase||"");
     const askClarify=/awaiting clarification/.test(it.phase||"");
-    const isSub=/-s\d+$/.test(it.id||"");          // a swarm child workflow (parent-id + -sN)
     const repo=it.repo?`<span class="bchip" title="ran in an isolated clone of this repo">&#9095; ${esc(it.repo)}</span>`:'';
     // Execution model of the newest attempt (from the transcript meta). Long served ids like
     // "google/gemma-4-26B-A4B-it" keep only their basename; a "local ·" / "hosted ·" prefix
@@ -248,13 +267,13 @@ async function loadBoard(silent){
     const truncated=(it.outcome||"").endsWith("…");
     const statusCls=it.verified===true?'ok':(failed?'bad':(it._needs?'warn':''));
     const wsc=it.workstream?wsChip(it.workstream):wsSuggestChip(it.chat_key, it.ws_suggest, true);
-    const chips=[needs,advisory,stage,ticketChips(it.tickets),wsc,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',isSub?'<span class="bchip">sub-task</span>':'',inplace,archived].filter(Boolean).join('');
+    const chips=[needs,advisory,stage,ticketChips(it.tickets),wsc,model,repo,it.scheduled?'<span class="bchip">scheduled</span>':'',famChip(it),inplace,archived].filter(Boolean).join('');
     // A tone per column for the card's left rail, and `fresh` only on a card this tab has not
     // painted before: the board REBUILDS on every change, so an entrance on every card would
     // replay the whole board each time one run moved.
     const tone=it._needs?'t-needs':askApprove||askClarify?'t-wait':live?'t-live':it.verified===true?'t-ok':'t-done';
     const fresh=BOARD_SEEN.size&&!BOARD_SEEN.has(it.id)?' fresh':'';
-    return `<div class="bcard ${tone}${fresh} ${failed?'failed':''}" data-run="${esc(it.id)}">
+    return `<div class="bcard ${tone}${fresh} ${failed?'failed':''}" data-run="${esc(it.id)}"${famRoot(it)?` data-fam="${esc(famRoot(it))}"`:''}>
       <div class="btop"><span class="bcap">${esc(it.cap||'—')}</span>${risk}</div>
       <div class="bstatus${live?' live':''}"><span class="bdot ${statusCls}"></span>${esc(sub)}${live?'<span class="bell"><i>.</i><i>.</i><i>.</i></span>':''}</div>
       <div class="bchips">${chips}</div>
@@ -290,6 +309,7 @@ async function loadBoard(silent){
   loadBoardHealth();
   wireBoardHead(el);
   wireWorkstreams(el, ()=>loadBoard());
+  wireFamilies(el);
   el.querySelectorAll("[data-plan]").forEach(x=>x.addEventListener("click",e=>{ e.preventDefault(); openPlanModal(byId[x.dataset.plan]); }));
   el.querySelectorAll("[data-approve]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.approve,true,b.dataset.rev)));
   el.querySelectorAll("[data-deny]").forEach(b=>b.addEventListener("click",()=>boardSignal(b.dataset.deny,false,b.dataset.rev)));
@@ -425,6 +445,24 @@ async function needsYouRetry(id,btn){
   catch(e){ toast("Couldn't retry: "+e.message); if(btn){ btn.disabled=false; btn.textContent="Retry"; } return; }
   if(btn){ const c=btn.closest(".bcard"); if(c) c.remove(); }
   loadBoard(true);   // repaint: the retried run appears under Running with its new id
+}
+// Parent and children often sit in different columns, so hovering a family chip dims every other card.
+function wireFamilies(el){
+  const board=el.querySelector(".board"); if(!board) return;
+  const members=root=>[...board.querySelectorAll(".bcard[data-fam]")].filter(c=>c.dataset.fam===root);
+  board.querySelectorAll("[data-famchip]").forEach(ch=>{
+    const root=ch.dataset.famchip;
+    ch.addEventListener("mouseenter",()=>{ board.classList.add("famhi"); members(root).forEach(c=>c.classList.add("famon")); });
+    ch.addEventListener("mouseleave",()=>{ board.classList.remove("famhi"); members(root).forEach(c=>c.classList.remove("famon")); });
+    ch.addEventListener("click",e=>{
+      e.preventDefault();
+      const own=ch.closest(".bcard"), fam=members(root);
+      const target=own&&own.dataset.run===root?fam.find(c=>c!==own):byData(board,"data-run",root,".bcard");
+      if(!target) return;
+      target.scrollIntoView({block:"center",behavior:"smooth"});
+      target.classList.remove("famflash"); void target.offsetWidth; target.classList.add("famflash");
+    });
+  });
 }
 async function boardTerminate(id,btn){
   if(!await askConfirm("Terminate this run? It stops immediately — no cleanup, no result — and the card disappears. This can't be undone (you can Retry the same request later from the audit trail).",{ok:"Terminate",danger:true})) return;

@@ -14,6 +14,7 @@ changelog that restates it is a second copy of `git log`.
 ### Added
 
 - Data health findings have a **Fix** button in the Audit tab's Data tab (remove a stale model pin, detach a chat, re-derive labels, delete an empty workstream), so they no longer need code or a hand-edited store.
+- Board cards that a request fanned out into (swarm sub-tasks and Slack delegates) now carry a **family chip** shared with their parent: a short tag, one colour, and "sub-task 2/3" or "3 sub-tasks (1 done)". Hovering it dims every card outside the family; clicking it jumps to the parent.
 
 ### Fixed
 
