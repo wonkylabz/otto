@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-10
+
 ### Added
 
 - The Audit tab's Health section has a **Data** tab, and `insights.py` ends with a data health report. It flags stored data that no longer matches what it is built from (workstream and chat labels, missing workstreams, model picks pointing at removed models), the kind of bug that never fails a run.
@@ -707,7 +709,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/wonkylabz/otto/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/wonkylabz/otto/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/wonkylabz/otto/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/wonkylabz/otto/compare/v0.11.1...v0.12.0
