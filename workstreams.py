@@ -35,14 +35,23 @@ _JIRA = re.compile(r"https?://[\w.-]+\.atlassian\.net/browse/([A-Z][A-Z0-9]+-\d+
 _PR_URL = r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+"
 OWN_PR = re.compile(
     r"^[^\n]*?(?:\*\*Opened draft PR\*\*|\*\*Updated PR(?: #\d+)?\*\*|\(opened by the capability[^)]*\)"
-    rf"|\*\*PR from the handed-off task\*\*)[^\n]*?({_PR_URL})[^\n]*", re.M)
+    rf"|\*\*PR for this request\*\*)[^\n]*?({_PR_URL})[^\n]*", re.M)
 
 
 def handoff_pr_line(res):
-    """The line a fronting run appends for its delegated child's PR. Built from the child's
+    """The line a parent (frontman, swarm) appends for a child's PR. Built from the child's
     STRUCTURED `pr` (set by the PR step, never the model), so injected prose can't ride out."""
     url = ((res.get("pr") or {}).get("pr_url") or "") if isinstance(res, dict) else ""
-    return f"**PR from the handed-off task**: {url}" if re.fullmatch(_PR_URL, url) else None
+    return f"**PR for this request**: {url}" if re.fullmatch(_PR_URL, url) else None
+
+
+def with_child_prs(text, results):
+    """`text` plus one PR line per child that opened one: a model-written relay or merge
+    rewrites the child's own line as prose, and that line is the chat's only record of it."""
+    for line in dict.fromkeys(filter(None, map(handoff_pr_line, results))):
+        if line not in text:
+            text += "\n\n" + line
+    return text
 
 
 def _conn():

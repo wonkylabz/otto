@@ -2663,6 +2663,18 @@ class WorkstreamTests(unittest.TestCase):
         self.assertEqual([m.group(1) for m in workstreams.OWN_PR.finditer(
             f"x\n{line}https://github.com/x/y/pull/7\n")], ["https://github.com/x/y/pull/7"])
 
+    def test_each_childs_structured_pr_is_appended_once_and_failures_are_skipped(self):
+        """A frontman relay and a swarm merge are model prose; without these lines a multi-repo
+        swarm's chat recorded none of the PRs it opened."""
+        a, b = "https://github.com/acme/api/pull/1", "https://github.com/acme/web/pull/2"
+        got = workstreams.with_child_prs("merged", [{"pr": {"pr_url": a}}, RuntimeError("x"),
+                                                    {"pr": {"pr_url": b}}, {"pr": {"pr_url": a}}])
+        self.assertEqual([m.group(1) for m in workstreams.OWN_PR.finditer(got)], [a, b])
+        self.assertEqual(workstreams.with_child_prs(got, [{"pr": {"pr_url": a}}]), got)
+        src = test_support.workflow_src()
+        self.assertIn("workstreams.with_child_prs(text, [res])", src)        # frontman relay
+        self.assertIn("workstreams.with_child_prs(result, results)", src)    # swarm merge
+
     def test_the_handoff_pr_line_is_built_from_data_and_counts_as_otto_opened(self):
         url = "https://github.com/acme/api/pull/40"
         line = workstreams.handoff_pr_line({"pr": {"pr_url": url}})

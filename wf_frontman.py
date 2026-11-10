@@ -125,8 +125,7 @@ class FrontmanMixin:
             text = contracts.relay_fallback(outcome)
         # The relay rewrites the child's PR line as prose, and a chat learns which PRs it opened
         # only from such lines (`workstreams.OWN_PR`) — so the parent writes one, from data.
-        if (line := workstreams.handoff_pr_line(res)) and line not in text:
-            text += "\n\n" + line
+        text = workstreams.with_child_prs(text, [res])
         await self._audit_attempt(
             {"wid": rout.get("workflow") or wid, "request": relay, "name": cap["name"],
              "result": text, "cost": rout.get("cost", 0), "attempt": attempt + 1,
