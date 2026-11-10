@@ -192,7 +192,7 @@ function wireInsights(){
   box.querySelectorAll("[data-dhfix]").forEach(b=>b.addEventListener("click",async()=>{
     b.disabled=true;
     let d; try { d=await postJSON("/api/data-health/fix",{key:b.dataset.dhfix}); }
-    catch(e){ toast("fix failed: "+e.message); b.disabled=false; return; }
+    catch(e){ toast("fix failed: "+e.message); loadInsights(true); return; }   // a stale row re-reads
     AU_INSIGHT.data.data_health=d.data_health; box.innerHTML=renderInsights(AU_INSIGHT.data); wireInsights();
   }));
   const all=box.querySelector("[data-iall]");

@@ -2726,6 +2726,7 @@ class DataHealthTests(unittest.TestCase):
         self.assertIn("esc(f.subject)", src)
         self.assertIn("data health finding", src)
         self.assertIn('postJSON("/api/data-health/fix",{key:b.dataset.dhfix})', src)
+        self.assertIn('toast("fix failed: "+e.message); loadInsights(true)', src)
         self.assertIn('"/api/data-health/fix": Handler._post_data_health_fix', pathlib.Path("server.py").read_text())
 
     def test_a_raising_check_is_reported_never_fatal(self):

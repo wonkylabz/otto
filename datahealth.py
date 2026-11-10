@@ -93,7 +93,8 @@ def _models():
             clear = lambda cap=cap, setter=setter: getattr(gateway, setter)(cap, None)
             if cap not in caps:
                 out.append(_finding("orphaned_model_pin", cap,
-                                    f"{kind} pins '{m}' for a capability that is not installed",
+                                    f"{kind} pins '{m}' for a capability not installed, or in a switched-off "
+                                    "plugin or unregistered repo (removing it loses that pick)",
                                     "Remove pin", f"{kind}:{cap}", clear))
             elif m not in pool:
                 out.append(_finding("dangling_model_pin", cap,
