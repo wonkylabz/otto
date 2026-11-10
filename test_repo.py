@@ -1679,25 +1679,36 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.ws.attribute(ch, ['{"file_path": "/r/infra/main.tf"}']), ch)
         self.assertEqual(self.ws.attribute(ch, None), ch)                # no transcript: kept
 
-    def test_run_actions_reads_only_the_runs_own_tool_calls(self):
+    def test_run_actions_reads_tool_calls_cwd_and_descendants_never_prose(self):
+        """A plan step or swarm child runs in the parent's window with no snapshot of its own,
+        and a project cap edits its OWN checkout by relative path — both must count."""
         import claude_cli
         tmp = tempfile.mkdtemp(prefix="otto-tr-")
         self.addCleanup(shutil.rmtree, tmp, True)
-        lines = {"w-a1.jsonl": [{"type": "otto-meta", "prompt": "/r/infra"},
+        lines = {"w-a1.jsonl": [{"type": "otto-meta", "prompt": "/r/x", "cwd": "/r/proj"},
                                 {"type": "assistant", "message": {"content": [
-                                    {"type": "text", "text": "/r/infra"},
+                                    {"type": "text", "text": "/r/x"},
                                     {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}}],
-                 "w-a2.jsonl": [{"type": "item.completed",
+                 "w-a2.jsonl": [{"type": "otto-meta", "cwd": None},
+                                {"type": "item.completed",
                                  "item": {"type": "command_execution", "command": "pwd"}}],
+                 "w-s1-a1.jsonl": [{"type": "assistant", "message": {"content": [
+                     {"type": "tool_use", "name": "Bash", "input": {"command": "child"}}]}}],
                  "w-d1-a1.jsonl": [{"type": "assistant", "message": {"content": [
-                     {"type": "tool_use", "name": "Bash", "input": {"command": "child"}}]}}]}
+                     {"type": "tool_use", "name": "Bash", "input": {"command": "delegated"}}]}}],
+                 "w-plan.jsonl": [{"type": "assistant", "message": {"content": [
+                     {"type": "tool_use", "name": "Bash", "input": {"command": "preview"}}]}}],
+                 "wx-a1.jsonl": [{"type": "assistant", "message": {"content": [
+                     {"type": "tool_use", "name": "Bash", "input": {"command": "other"}}]}}]}
         for name, evs in lines.items():
             with open(os.path.join(tmp, name), "w") as f:
                 f.write("\n".join(json.dumps(e) for e in evs) + "\nnot json\n")
         with mock.patch.object(claude_cli, "TRANSCRIPTS", tmp):
             got = self.ws.run_actions("w")
             self.assertIsNone(self.ws.run_actions("nope"))
-        self.assertEqual(sorted(got), ['"pwd"', '{"command": "ls"}'])
+        self.assertEqual(sorted(got), ['"/r/proj"', '"pwd"', '{"command": "child"}', '{"command": "ls"}'])
+        self.assertEqual(self.ws.attribute([{"name": "p", "path": "/r/proj"}], got),
+                         [{"name": "p", "path": "/r/proj"}])
 
     @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
     def test_snapshot_activity_refreshes_before_it_snapshots(self):

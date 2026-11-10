@@ -1028,7 +1028,10 @@ def diff(before, after):
 
 def _tool_inputs(event):
     """The tool-call inputs in one transcript event: Claude and local share stream-json
-    `tool_use` blocks; Codex emits `command_execution`/`file_change` items."""
+    `tool_use` blocks; Codex emits `command_execution`/`file_change` items. The meta line's
+    `cwd` counts too — a relative-path edit there never spells the repo's path."""
+    if event.get("type") == "otto-meta":
+        return [json.dumps(event["cwd"])] if event.get("cwd") else []
     if event.get("type") == "assistant":
         return [json.dumps(b.get("input")) for b in (event.get("message") or {}).get("content") or []
                 if isinstance(b, dict) and b.get("type") == "tool_use"]
@@ -1039,11 +1042,15 @@ def _tool_inputs(event):
 
 
 def run_actions(wid):
-    """Every tool-call input the run's OWN attempts made; None if it left no transcript."""
+    """Every tool-call input the run and its subtasks made (plan steps and swarm children run in
+    its window with no snapshot of their own); None if it left no transcript. Not the parent's:
+    the plan preview (it ran before the baseline) and a delegated `-dN` child (own guard)."""
     import claude_cli
     if not wid:
         return None
-    paths = glob.glob(os.path.join(claude_cli.TRANSCRIPTS, f"{glob.escape(wid)}-a*.jsonl"))
+    pre = os.path.join(claude_cli.TRANSCRIPTS, f"{wid}-")
+    paths = [p for p in glob.glob(glob.escape(pre) + "*.jsonl")
+             if not re.match(r"d\d+-|plan\.jsonl$", p[len(pre):])]
     if not paths:
         return None
     out = []
