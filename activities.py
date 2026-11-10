@@ -594,7 +594,8 @@ def snapshot_repos(payload: dict) -> dict:
 def detect_repo_changes(payload: dict) -> dict:
     """Compare the live checkouts against a pre-run snapshot; audit + return any that changed."""
     import workspace
-    changed = workspace.diff(payload.get("before") or {}, workspace.snapshot())
+    changed = workspace.attribute(workspace.diff(payload.get("before") or {}, workspace.snapshot()),
+                                  workspace.run_actions(payload.get("wid")))
     if changed:
         engine.audit_repo_changes(payload.get("wid"), payload.get("request", ""), changed)
     return {"changed": changed}

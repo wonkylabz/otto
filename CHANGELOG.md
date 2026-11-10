@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- The **edited live checkout** warning no longer blames a run for commits you made yourself in that repo while it was running. A repo is flagged only if the run's own commands touched it.
+
 ## [0.13.0] - 2026-11-10
 
 ### Added
