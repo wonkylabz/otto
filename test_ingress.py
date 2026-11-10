@@ -6284,6 +6284,15 @@ class BoardFanOutFamilyTests(unittest.TestCase):
         self.assertIn("sub-task 3/3", child)
         self.assertIn("not on the board", child)
 
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_the_denominator_survives_a_sibling_scrolling_off(self):
+        parent, c2, c3 = self._chips([{"id": "web-aa-1", "status": "RUNNING"},
+                                      {"id": "web-aa-1-s2", "status": "RUNNING"},
+                                      {"id": "web-aa-1-s3", "status": "RUNNING"}])
+        self.assertIn("3 sub-tasks", parent)
+        self.assertIn("sub-task 2/3", c2)
+        self.assertIn("sub-task 3/3", c3)
+
     def test_cards_carry_the_family_for_the_hover_highlight(self):
         ui = ui_src()
         self.assertIn('data-fam="${esc(famRoot(it))}"', ui)

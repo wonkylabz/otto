@@ -196,14 +196,15 @@ async function loadBoard(silent){
     const tag=root.replace(/[^a-z0-9]/gi,'').slice(-4);
     let h=0; for(const c of root) h=(h*31+c.charCodeAt(0))|0;
     const cls=`bchip fam fam-${Math.abs(h)%6}`, sibs=kids[root]||[];
+    // Highest N seen, not a count: a sibling that scrolled out of the window still exists.
+    const swarm=Math.max(0,...sibs.map(k=>famOf(k.id)).filter(x=>x.kind==='s').map(x=>x.n));
     if(!f){
       const done=sibs.filter(k=>k.status==="COMPLETED"&&!k._needs).length;
-      const what=sibs.every(k=>famOf(k.id).kind==='d')?'delegated':`${sibs.length} sub-task${sibs.length>1?'s':''} (${done} done)`;
-      return `<span class="${cls}" data-famchip="${esc(root)}" title="parent run ${esc(root)} — hover to light up its sub-tasks, click to jump to the first: ${esc(sibs.map(k=>k.id).join(', '))}">&#8649; ${esc(tag)} · ${what}</span>`;
+      const what=swarm?`${swarm} sub-task${swarm>1?'s':''} (${done} done)`:'delegated';
+      return `<span class="${cls}" role="button" tabindex="0" data-famchip="${esc(root)}" title="parent run ${esc(root)} — hover to light up its sub-tasks, click to jump to the first: ${esc(sibs.map(k=>k.id).join(', '))}">&#8649; ${esc(tag)} · ${what}</span>`;
     }
-    const total=sibs.filter(k=>famOf(k.id).kind===f.kind).length;
-    const what=f.kind==='d'?'delegate':`sub-task ${f.n}/${Math.max(total,f.n)}`;
-    return `<span class="${cls}" data-famchip="${esc(root)}" title="${what} of run ${esc(root)} — ${byId[root]?'click to jump to it':'parent is not on the board right now'}">&#8627; ${esc(tag)} · ${what}</span>`;
+    const what=f.kind==='d'?'delegate':`sub-task ${f.n}/${swarm}`;
+    return `<span class="${cls}" role="button" tabindex="0" data-famchip="${esc(root)}" title="${what} of run ${esc(root)} — ${byId[root]?'click to jump to it':'parent is not on the board right now'}">&#8627; ${esc(tag)} · ${what}</span>`;
   };
   const card=it=>{
     const failed=it.status!=="COMPLETED" && it.status!=="RUNNING";
@@ -454,14 +455,16 @@ function wireFamilies(el){
     const root=ch.dataset.famchip;
     ch.addEventListener("mouseenter",()=>{ board.classList.add("famhi"); members(root).forEach(c=>c.classList.add("famon")); });
     ch.addEventListener("mouseleave",()=>{ board.classList.remove("famhi"); members(root).forEach(c=>c.classList.remove("famon")); });
-    ch.addEventListener("click",e=>{
+    const jump=e=>{
       e.preventDefault();
       const own=ch.closest(".bcard"), fam=members(root);
       const target=own&&own.dataset.run===root?fam.find(c=>c!==own):byData(board,"data-run",root,".bcard");
-      if(!target) return;
+      if(!target) return toast("That run isn't shown on the board right now (scrolled out of the window or filtered out).");
       target.scrollIntoView({block:"center",behavior:"smooth"});
       target.classList.remove("famflash"); void target.offsetWidth; target.classList.add("famflash");
-    });
+    };
+    ch.addEventListener("click",jump);
+    ch.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" ") jump(e); });
   });
 }
 async function boardTerminate(id,btn){
