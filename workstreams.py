@@ -250,9 +250,12 @@ def suggest(cids):
 
 
 def gc(conn):
-    """Drop workstreams no chat belongs to any more (a trim, a delete or a detach emptied it)."""
+    """Drop workstreams no chat belongs to any more, and re-derive the rest: every chat delete or
+    trim ends here, and a deleted chat's refs otherwise kept auto-attaching new chats."""
     conn.execute("DELETE FROM workstreams WHERE id NOT IN "
                  "(SELECT workstream_id FROM chats WHERE workstream_id IS NOT NULL)")
+    for (wsid,) in conn.execute("SELECT id FROM workstreams").fetchall():
+        _refresh_refs(conn, wsid, touch=False)
 
 
 def _summary(r):

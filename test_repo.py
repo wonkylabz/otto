@@ -2692,6 +2692,10 @@ class WorkstreamTests(unittest.TestCase):
         self.assertIn("acme/api#5", workstreams.get(wsid)["refs"])
         workstreams.assign("c")                                   # taken out again
         self.assertNotIn("acme/api#5", workstreams.get(wsid)["refs"])
+        chats.append_run("d", f"again {self.ISSUE} https://github.com/acme/api/issues/6", "ok")
+        self.assertIn("acme/api#6", workstreams.get(wsid)["refs"])
+        chats.delete("d")                                         # a delete shrinks them too
+        self.assertNotIn("acme/api#6", workstreams.get(wsid)["refs"])
         # A stale stored union (the old rule) is cleared by the startup rebuild.
         with chats._conn() as conn:
             conn.execute("UPDATE workstreams SET refs = ? WHERE id = ?", ('["stale/x#1"]', wsid))
