@@ -43,6 +43,7 @@ import estop
 import events
 import factory
 import gateway
+import datahealth
 import insights
 import knowledge
 import local_runtime
@@ -1242,6 +1243,7 @@ def _insights(days):
         unhealthy = []
     r["health"] = {"unhealthy_models": unhealthy, "down": gateway.stats().get("down") or {},
                    "estop": estop.status()}
+    r["data_health"] = datahealth.report()
     return r
 
 

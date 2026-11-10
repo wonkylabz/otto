@@ -137,7 +137,7 @@ asked for `auto_approve`.
 The weekly health check is NOT a runbook: a run is read-denied Otto's own `data/` (the trail
 included), and its reply is delivered even in a quiet week. Suggest the operator's own cron
 instead — `./.venv/bin/python insights.py --since 7d --changes-only` prints nothing when nothing
-moved — or the Audit tab's Health section.
+moved and the stores show no drift (a data health finding is a standing bug, so it prints) — or the Audit tab's Health section.
 
 ### 7. Events (webhooks and Slack triggers)
 

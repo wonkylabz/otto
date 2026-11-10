@@ -119,6 +119,8 @@ function renderInsights(r){
   if(h.estop&&h.estop.engaged) warns.push(`<span class="hwarn bad">● Global pause is ON — nothing new starts</span>`);
   (h.unhealthy_models||[]).forEach(m=>{ const uses=[...(m.phases||[]),...(m.caps||[])];
     warns.push(`<span class="hwarn bad" title="${esc(m.detail||'')}">● ${esc(m.name||m.model||'a model')} last failed${uses.length?' · used by '+esc(uses.join(', ')):''}</span>`); });
+  const dh=r.data_health||{findings:[],errors:[]}, dhn=(dh.findings||[]).length+(dh.errors||[]).length;
+  if(dhn) warns.push(`<span class="hwarn bad" title="stored data that no longer matches what it is derived from — see the Data tab">● ${dhn} data health finding${dhn===1?'':'s'}</span>`);
   Object.entries(h.down||{}).forEach(([m,s])=>warns.push(`<span class="hwarn" title="skipped until the cooldown ends">○ ${esc(m)} marked down for ${Math.ceil(s/60)}m</span>`));
   // The five biggest moves; the rest wait behind a tooltip rather than stretching the card.
   const ch=r.changes||[], chMore=ch.length>5?`<li class="dim" title="${esc(ch.slice(5).join("\n"))}">+${ch.length-5} more</li>`:'';
@@ -144,6 +146,9 @@ function renderInsights(r){
       `<tr><td>${esc(s.stage.toLowerCase())}</td><td class="num">${s.runs}${s.open?` <span class="dim" title="still open on the last row written">+${s.open}</span>`:''}</td><td class="num">${auMs(s.p50_ms)}</td><td class="num">${auMs(s.p90_ms)}</td></tr>`));
   const caps=tbl([["Capability"],["Judged",1],["Pass",1],["Overruled",1],["Escalated",1],["Avg $",1]], (r.caps||[]).filter(c=>c.runs).map(c=>
       `<tr><td title="${esc(c.capability)}">${esc(c.name)}</td><td class="num">${c.runs}</td><td class="num${c.pass_rate!=null&&c.pass_rate<.7?' bad':''}">${auPct(c.pass_rate)}</td><td class="num" title="failed runs a human accepted — a judge problem, not a capability problem">${c.accepted||0}</td><td class="num">${auPct(c.escalation_rate)}</td><td class="num">${c.avg_cost_usd!=null?c.avg_cost_usd.toFixed(2):'—'}</td></tr>`));
+  const data=tbl([["Check"],["Subject"],["Detail"]], [...(dh.findings||[]).map(f=>
+      `<tr><td>${esc(f.check.replace(/_/g," "))}</td><td title="${esc(f.subject)}">${esc(f.subject)}</td><td>${esc(f.detail)}</td></tr>`),
+    ...(dh.errors||[]).map(e=>`<tr><td>${esc(e.check)}</td><td>—</td><td class="bad">could not run: ${esc(e.error)}</td></tr>`)]);
   const ledgerNote=r.ledger_covers?`<p class="sub">Tier-call ledger holds calls since ${esc(shortWhen(r.ledger_covers))}.</p>`:'';
   // One breakdown at a time behind tabs: five stacked collapsibles read as five more sections of
   // the page, all the same weight as the trail below them.
@@ -151,7 +156,8 @@ function renderInsights(r){
     ["judges","Judges",(r.fail_sources||[]).length,judges],
     ["caps","Capabilities",(r.caps||[]).filter(c=>c.runs).length,caps],
     ["stages","Stages",((r.stages||{}).stages||[]).length,stages],
-    ["tiers","Tier calls",(r.tiers||[]).length,ledgerNote+tiers]];
+    ["tiers","Tier calls",(r.tiers||[]).length,ledgerNote+tiers],
+    ["data","Data",dhn,data]];
   const cur=tabs.find(t=>t[0]===INSIGHT_TAB)||tabs[0];
   const meta=`attempt p50 <b>${auDur(n.attempt_p50_s)||'—'}</b> · p90 <b>${auDur(n.attempt_p90_s)||'—'}</b> · <b>${n.fallbacks??0}</b> fallback${n.fallbacks===1?'':'s'}`;
   return `<div class="hhead"><h2>Health</h2>

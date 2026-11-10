@@ -26,6 +26,12 @@ The same report is the Audit tab's Health section (`/api/insights?days=7`). Its 
 list is the place to start: a cause that rose, a pass rate that fell, humans overruling the judge
 more often. Only then pick runs to dig into.
 
+The same output ends with **Data health** (`datahealth.py`; the Audit tab's Data tab): stored data
+that no longer matches what it is derived from — workstream/chat refs, membership, model pins.
+These bugs fail no run and write no audit row, so the trail can't show them. Treat every finding
+as a lead: name the rule that produced the stored value, then fix that rule, not the row. A new
+derived store deserves a recompute-and-compare check there.
+
 ## Where the evidence lives
 
 | Source | Contents | Format |
