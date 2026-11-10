@@ -10,8 +10,8 @@ after `board_retention_h`, and a workstream outlives that. NULL = eligible for a
 the user took the chat out (never re-attached automatically), anything else = a workstream id.
 
 Auto-attach keys on REFS — canonical ids of the issue/PR/ticket URLs a chat names
-(`o/r#12`, `jira:ABC-12`): every ref the OPENING request links, and only the PRs an Otto reply
-links (it opened them), since neither a reply citing related work nor a side question is that work. A bare
+(`o/r#12`, `jira:ABC-12`): every ref the OPENING request links, and the PRs Otto opened or
+updated, since neither a reply citing related work nor a side question is that work. A bare
 `#12` is a mention, never a ref — the same reading `workspace.closing_line` gives it.
 
 "Otto opened it" is read off the PR lines the WORKFLOW writes (`OWN_PR`), never a URL in the
