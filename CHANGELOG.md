@@ -15,6 +15,10 @@ changelog that restates it is a second copy of `git log`.
 
 - The Audit tab's Health section has a **Data** tab, and `insights.py` ends with a data health report. It flags stored data that no longer matches what it is built from (workstream and chat labels, missing workstreams, model picks pointing at removed models), the kind of bug that never fails a run.
 
+### Fixed
+
+- The **edited live checkout** warning no longer blames a run for commits you made yourself in that repo while it was running. A repo is flagged only if the run's own commands touched it.
+
 ## [0.13.0] - 2026-11-10
 
 ### Added
