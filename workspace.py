@@ -10,6 +10,7 @@ repo is cloned from its LOCAL path (fast, offline), but its `origin` is repointe
 path's real `origin` remote so the push + PR land on the actual host (e.g. GitHub). Each run
 gets its own workspace keyed on the workflow id, so concurrent swarm sub-tasks never collide.
 """
+import glob
 import json
 import os
 import re
@@ -1023,3 +1024,56 @@ def diff(before, after):
                             "from": (was.get("head") or "")[:8], "to": (now.get("head") or "")[:8],
                             "dirty": now.get("dirty")})
     return changed
+
+
+def _tool_inputs(event):
+    """The tool-call inputs in one transcript event: Claude and local share stream-json
+    `tool_use` blocks; Codex emits `command_execution`/`file_change` items."""
+    if event.get("type") == "assistant":
+        return [json.dumps(b.get("input")) for b in (event.get("message") or {}).get("content") or []
+                if isinstance(b, dict) and b.get("type") == "tool_use"]
+    item = event.get("item")
+    if isinstance(item, dict) and item.get("type") in ("command_execution", "file_change"):
+        return [json.dumps(item.get("command") or item.get("changes"))]
+    return []
+
+
+def run_actions(wid):
+    """Every tool-call input the run's OWN attempts made; None if it left no transcript."""
+    import claude_cli
+    if not wid:
+        return None
+    paths = glob.glob(os.path.join(claude_cli.TRANSCRIPTS, f"{glob.escape(wid)}-a*.jsonl"))
+    if not paths:
+        return None
+    out = []
+    for p in paths:
+        try:
+            with open(p) as f:
+                for line in f:
+                    try:
+                        out += _tool_inputs(json.loads(line))
+                    except (ValueError, AttributeError):
+                        continue
+        except OSError:
+            return None
+    return out
+
+
+def _path_forms(path):
+    forms = {path, os.path.realpath(path)}
+    home = os.path.expanduser("~")
+    forms |= {"~" + f[len(home):] for f in list(forms) if f.startswith(home + os.sep)}
+    forms |= {"$HOME" + f[1:] for f in list(forms) if f.startswith("~")}
+    return forms
+
+
+def attribute(changed, actions):
+    """Keep only the repos the run's own tool calls named — a live checkout is also the
+    operator's workspace, so their commit during the run is not the run's. PURE. No transcript
+    (`actions` None) or no path = unattributable: kept."""
+    if actions is None:
+        return changed
+    text = "\n".join(actions)
+    return [c for c in changed if not c.get("path") or any(
+        re.search(re.escape(f) + r"(?![\w.-])", text) for f in _path_forms(c["path"]))]
