@@ -19,6 +19,7 @@ import re
 import sys
 
 import audit
+import datahealth
 
 # Rows that are a normal day's work, not something a person should look at.
 _ROUTINE = {"ran", "plan_preview"}
@@ -305,9 +306,12 @@ def main(argv=None):
     a = ap.parse_args(argv)
     calls, oldest = ledger_rows(a.since)
     r = report(audit.iter_audit_entries(), calls, days=a.since, ledger_oldest=oldest)
-    if a.changes_only and not r["changes"]:
+    r["data_health"] = dh = datahealth.report()
+    dirty = dh["findings"] or dh["errors"]
+    if a.changes_only and not r["changes"] and not dirty:
         return 0
-    sys.stdout.write((json.dumps(r, indent=2) if a.json else render_text(r)) + "\n")
+    text = render_text(r) + ("\n\n" + datahealth.render_text(dh) if dirty or not a.changes_only else "")
+    sys.stdout.write((json.dumps(r, indent=2) if a.json else text) + "\n")
     return 0
 
 

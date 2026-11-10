@@ -2564,6 +2564,62 @@ class BoardCardTicketTests(unittest.TestCase):
         self.assertIn("ticketChips(it.tickets)", test_support.ui_src())
 
 
+class DataHealthTests(unittest.TestCase):
+    """Store invariants (datahealth.py): each check must FIRE on the drift it names — a check
+    that reads green on a broken store is worse than none (2026-11-10: a 38-ref workstream)."""
+
+    def setUp(self):
+        import datahealth
+        self.dh = datahealth
+        self._orig = chats._DB
+        self._tmp = tempfile.mkdtemp(prefix="otto-dh-")
+        chats._DB = os.path.join(self._tmp, "otto.db")
+
+    def tearDown(self):
+        chats._DB = self._orig
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _checks(self):
+        return sorted({(f["check"], f["subject"]) for f in self.dh._workstreams()})
+
+    def test_a_consistent_store_reads_clean(self):
+        chats.append_run("a", "work on https://github.com/acme/api/issues/1", "ok", title="A")
+        chats.append_run("b", "redo https://github.com/acme/api/issues/1", "ok", title="B")
+        self.assertIsNotNone((chats.get("a") or {}).get("workstream_id"))
+        self.assertEqual(self._checks(), [])
+
+    def test_each_drift_fires(self):
+        issues = " ".join(f"https://github.com/acme/api/issues/{n}" for n in range(12))
+        chats.append_run("a", f"triage {issues}", "ok", title="A")
+        chats.append_run("b", "redo https://github.com/acme/api/issues/1", "ok", title="B")
+        wsid = chats.get("a")["workstream_id"]
+        with chats._conn() as conn:
+            conn.execute("UPDATE workstreams SET refs = ? WHERE id = ?", ('["x/y#1"]', wsid))
+            conn.execute("UPDATE chats SET refs = ? WHERE id = ?", ('[]', "b"))
+            conn.execute("INSERT INTO workstreams (id, title, refs, created, updated) "
+                         "VALUES ('ws-empty', 'Empty', '[]', '', '')")
+            conn.execute("UPDATE chats SET workstream_id = 'ws-gone' WHERE id = 'b'")
+            conn.commit()
+        got = {c for c, _ in self._checks()}
+        self.assertEqual(got, {"chat_refs_drift", "ref_sprawl", "dangling_membership",
+                               "empty_workstream", "workstream_refs_drift"})
+
+    def test_a_model_pin_naming_no_pool_entry_fires(self):
+        import gateway
+        with mock.patch.object(gateway, "load", return_value={
+                "dangling": {"cap_exec": {"code-reviewer": "Old Opus"}, "cap_local_exec": {}}}):
+            self.assertEqual([(f["check"], f["subject"]) for f in self.dh._models()],
+                             [("dangling_model_pin", "code-reviewer")])
+
+    def test_a_raising_check_is_reported_never_fatal(self):
+        with mock.patch.object(self.dh, "CHECKS", (("boom", lambda: 1 / 0),
+                                                   ("ok", lambda: [self.dh._finding("c", "s", "d")]))):
+            r = self.dh.report()
+        self.assertEqual([f["check"] for f in r["findings"]], ["c"])
+        self.assertEqual(r["errors"][0]["check"], "boom")
+        self.assertIn("could not run", self.dh.render_text(r))
+
+
 class WorkstreamTests(unittest.TestCase):
     """Workstreams group every chat about one ticket/PR (workstreams.py). Display-only, so what
     these pin is the grouping itself: who joins, who must NOT, and that it survives the writers."""
