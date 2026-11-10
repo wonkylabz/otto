@@ -146,9 +146,9 @@ function renderInsights(r){
       `<tr><td>${esc(s.stage.toLowerCase())}</td><td class="num">${s.runs}${s.open?` <span class="dim" title="still open on the last row written">+${s.open}</span>`:''}</td><td class="num">${auMs(s.p50_ms)}</td><td class="num">${auMs(s.p90_ms)}</td></tr>`));
   const caps=tbl([["Capability"],["Judged",1],["Pass",1],["Overruled",1],["Escalated",1],["Avg $",1]], (r.caps||[]).filter(c=>c.runs).map(c=>
       `<tr><td title="${esc(c.capability)}">${esc(c.name)}</td><td class="num">${c.runs}</td><td class="num${c.pass_rate!=null&&c.pass_rate<.7?' bad':''}">${auPct(c.pass_rate)}</td><td class="num" title="failed runs a human accepted — a judge problem, not a capability problem">${c.accepted||0}</td><td class="num">${auPct(c.escalation_rate)}</td><td class="num">${c.avg_cost_usd!=null?c.avg_cost_usd.toFixed(2):'—'}</td></tr>`));
-  const data=tbl([["Check"],["Subject"],["Detail"]], [...(dh.findings||[]).map(f=>
-      `<tr><td>${esc(f.check.replace(/_/g," "))}</td><td title="${esc(f.subject)}">${esc(f.subject)}</td><td>${esc(f.detail)}</td></tr>`),
-    ...(dh.errors||[]).map(e=>`<tr><td>${esc(e.check)}</td><td>—</td><td class="bad">could not run: ${esc(e.error)}</td></tr>`)]);
+  const data=tbl([["Check"],["Subject"],["Detail"],["Fix"]], [...(dh.findings||[]).map(f=>
+      `<tr><td>${esc(f.check.replace(/_/g," "))}</td><td title="${esc(f.subject)}">${esc(f.subject)}</td><td>${esc(f.detail)}</td><td>${f.fix?`<button class="addbtn" data-dhfix="${esc(f.key)}">${esc(f.fix)}</button>`:''}</td></tr>`),
+    ...(dh.errors||[]).map(e=>`<tr><td>${esc(e.check)}</td><td>—</td><td class="bad">could not run: ${esc(e.error)}</td><td></td></tr>`)]);
   const ledgerNote=r.ledger_covers?`<p class="sub">Tier-call ledger holds calls since ${esc(shortWhen(r.ledger_covers))}.</p>`:'';
   // One breakdown at a time behind tabs: five stacked collapsibles read as five more sections of
   // the page, all the same weight as the trail below them.
@@ -187,6 +187,13 @@ function wireInsights(){
   const rf=box.querySelector("#ins-refresh"); if(rf) rf.addEventListener("click",()=>loadInsights(true));
   box.querySelectorAll("[data-itab]").forEach(b=>b.addEventListener("click",()=>{
     INSIGHT_TAB=b.dataset.itab; INSIGHT_ALL=false; box.innerHTML=renderInsights(AU_INSIGHT.data); wireInsights();
+  }));
+  // A fix posts the finding's KEY only; the server re-checks and picks the action.
+  box.querySelectorAll("[data-dhfix]").forEach(b=>b.addEventListener("click",async()=>{
+    b.disabled=true;
+    let d; try { d=await postJSON("/api/data-health/fix",{key:b.dataset.dhfix}); }
+    catch(e){ toast("fix failed: "+e.message); loadInsights(true); return; }   // a stale row re-reads
+    AU_INSIGHT.data.data_health=d.data_health; box.innerHTML=renderInsights(AU_INSIGHT.data); wireInsights();
   }));
   const all=box.querySelector("[data-iall]");
   if(all) all.addEventListener("click",()=>{ INSIGHT_ALL=!INSIGHT_ALL; box.innerHTML=renderInsights(AU_INSIGHT.data); wireInsights(); });

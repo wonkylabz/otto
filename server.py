@@ -2886,6 +2886,14 @@ class Handler(BaseHTTPRequestHandler):
         chats.delete(cid)
         self._send(200, json.dumps({"ok": True}))
 
+    def _post_data_health_fix(self, body):
+        """POST /api/data-health/fix — {key} and nothing else: `datahealth.fix` re-runs the checks
+        and applies the action IT picked for that finding, so the client names no action or target."""
+        if not datahealth.fix(body.get("key")):
+            self._send(409, json.dumps({"error": "that finding is no longer present"}))
+            return
+        self._send(200, json.dumps({"ok": True, "data_health": datahealth.report()}))
+
     def _post_workstreams_assign(self, body):
         """POST /api/workstreams/assign — {chat_id, workstream_id | title | neither (take out)}"""
         got = workstreams.assign(body.get("chat_id"), body.get("workstream_id") or None,
@@ -3467,6 +3475,7 @@ _POST_ROUTES = {
     "/api/submit": Handler._post_submit,
     "/api/wf/signal": Handler._post_wf_signal,
     "/api/wf/terminate": Handler._post_wf_terminate,
+    "/api/data-health/fix": Handler._post_data_health_fix,
     "/api/workstreams/assign": Handler._post_workstreams_assign,
     "/api/workstreams/create": Handler._post_workstreams_create,
     "/api/workstreams/delete": Handler._post_workstreams_delete,
