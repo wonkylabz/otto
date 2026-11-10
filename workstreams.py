@@ -10,9 +10,14 @@ after `board_retention_h`, and a workstream outlives that. NULL = eligible for a
 the user took the chat out (never re-attached automatically), anything else = a workstream id.
 
 Auto-attach keys on REFS — canonical ids of the issue/PR/ticket URLs a chat names
-(`o/r#12`, `jira:ABC-12`): every ref the OPENING request links, and only the PRs an Otto reply
-links (it opened them), since neither a reply citing related work nor a side question is that work. A bare
+(`o/r#12`, `jira:ABC-12`): every ref the OPENING request links, and the PRs Otto opened or
+updated, since neither a reply citing related work nor a side question is that work. A bare
 `#12` is a mention, never a ref — the same reading `workspace.closing_line` gives it.
+
+"Otto opened it" is read off the PR lines the WORKFLOW writes (`OWN_PR`), never a URL in the
+model's prose: a daily summary listing the day's PRs, or research citing upstream ones, gave one
+chat 28 refs. A workstream's refs are DERIVED from its chats (`_refresh_refs`); a grow-only union
+kept every stale ref forever, and each one pulled more unrelated chats in.
 """
 import datetime
 import json
@@ -25,6 +30,28 @@ import storage
 
 _GH = re.compile(r"https?://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)", re.I)
 _JIRA = re.compile(r"https?://[\w.-]+\.atlassian\.net/browse/([A-Z][A-Z0-9]+-\d+)")
+# The whole line around a PR a run itself opened or pushed to: the markers `wf_repo`/`workflows`
+# append (`**Opened draft PR**`, `**Updated PR**`/`**Updated PR #N**`, `(opened by the capability`).
+_PR_URL = r"https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+"
+OWN_PR = re.compile(
+    r"^[^\n]*?(?:\*\*Opened draft PR\*\*|\*\*Updated PR(?: #\d+)?\*\*|\(opened by the capability[^)]*\)"
+    rf"|\*\*PR for this request\*\*)[^\n]*?({_PR_URL})[^\n]*", re.M)
+
+
+def handoff_pr_line(res):
+    """The line a parent (frontman, swarm) appends for a child's PR. Built from the child's
+    STRUCTURED `pr` (set by the PR step, never the model), so injected prose can't ride out."""
+    url = ((res.get("pr") or {}).get("pr_url") or "") if isinstance(res, dict) else ""
+    return f"**PR for this request**: {url}" if re.fullmatch(_PR_URL, url) else None
+
+
+def with_child_prs(text, results):
+    """`text` plus one PR line per child that opened one: a model-written relay or merge
+    rewrites the child's own line as prose, and that line is the chat's only record of it."""
+    for line in dict.fromkeys(filter(None, map(handoff_pr_line, results))):
+        if line not in text:
+            text += "\n\n" + line
+    return text
 
 
 def _conn():
@@ -58,7 +85,7 @@ def chat_refs(conn, cid):
     refs = refs_of(first["text"]) if first else set()
     for r in conn.execute("SELECT text FROM messages WHERE chat_id = ? AND role = 'otto' "
                           "AND text LIKE '%/pull/%'", (cid,)):
-        refs |= refs_of(r["text"], prs_only=True)
+        refs |= refs_of("\n".join(m.group(1) for m in OWN_PR.finditer(r["text"] or "")), prs_only=True)
     return refs
 
 
@@ -96,13 +123,34 @@ def _load(value):
         return set()
 
 
-def _merge_refs(conn, wsid, refs):
-    row = conn.execute("SELECT refs FROM workstreams WHERE id = ?", (wsid,)).fetchone()
-    if row is None:
+def _set_chat_refs(conn, cid):
+    refs = chat_refs(conn, cid)
+    conn.execute("UPDATE chats SET refs = ? WHERE id = ?", (json.dumps(sorted(refs)), cid))
+    return refs
+
+
+def _refresh_refs(conn, wsid, touch=True):
+    """A workstream's refs = the union of its chats' stored refs, so a chat leaving or a ref
+    rule tightening shrinks them too."""
+    if not wsid:
         return
-    merged = _load(row["refs"]) | refs
-    conn.execute("UPDATE workstreams SET refs = ?, updated = ? WHERE id = ?",
-                 (json.dumps(sorted(merged)), _now(), wsid))
+    refs = set().union(*(_load(r["refs"]) for r in conn.execute(
+        "SELECT refs FROM chats WHERE workstream_id = ?", (wsid,))))
+    if touch:
+        conn.execute("UPDATE workstreams SET refs = ?, updated = ? WHERE id = ?",
+                     (json.dumps(sorted(refs)), _now(), wsid))
+    else:
+        conn.execute("UPDATE workstreams SET refs = ? WHERE id = ?", (json.dumps(sorted(refs)), wsid))
+
+
+def rebuild():
+    """Re-derive every chat's and workstream's refs under the CURRENT rules — run at startup, so
+    a tightened rule also clears what the old one stored. Membership is never changed."""
+    with _conn() as conn, storage.tx(conn):
+        for (cid,) in conn.execute("SELECT id FROM chats").fetchall():
+            _set_chat_refs(conn, cid)
+        for (wsid,) in conn.execute("SELECT id FROM workstreams").fetchall():
+            _refresh_refs(conn, wsid, touch=False)
 
 
 def _create(conn, title, refs=()):
@@ -119,13 +167,11 @@ def attach(conn, cid):
     row = conn.execute("SELECT workstream_id FROM chats WHERE id = ?", (cid,)).fetchone()
     if row is None:
         return
-    refs = chat_refs(conn, cid)
-    conn.execute("UPDATE chats SET refs = ? WHERE id = ?", (json.dumps(sorted(refs)), cid))
+    refs = _set_chat_refs(conn, cid)
     current = row["workstream_id"]
-    if current == "" or not refs:
-        return
     if current:
-        _merge_refs(conn, current, refs)
+        _refresh_refs(conn, current)
+    if current is not None or not refs:
         return
     hits = [r["id"] for r in conn.execute("SELECT id, refs FROM workstreams")
             if _load(r["refs"]) & refs]
@@ -133,7 +179,7 @@ def attach(conn, cid):
         return                      # ambiguous: two workstreams claim it — a human decides
     if hits:
         conn.execute("UPDATE chats SET workstream_id = ? WHERE id = ?", (hits[0], cid))
-        _merge_refs(conn, hits[0], refs)
+        _refresh_refs(conn, hits[0])
         return
     peers = [r for r in conn.execute("SELECT id, title, refs FROM chats WHERE id != ? AND "
                                      "workstream_id IS NULL ORDER BY created, seq", (cid,))
@@ -204,9 +250,12 @@ def suggest(cids):
 
 
 def gc(conn):
-    """Drop workstreams no chat belongs to any more (a trim, a delete or a detach emptied it)."""
+    """Drop workstreams no chat belongs to any more, and re-derive the rest: every chat delete or
+    trim ends here, and a deleted chat's refs otherwise kept auto-attaching new chats."""
     conn.execute("DELETE FROM workstreams WHERE id NOT IN "
                  "(SELECT workstream_id FROM chats WHERE workstream_id IS NOT NULL)")
+    for (wsid,) in conn.execute("SELECT id FROM workstreams").fetchall():
+        _refresh_refs(conn, wsid, touch=False)
 
 
 def _summary(r):
@@ -251,7 +300,7 @@ def get(wsid):
             prs = set()
             for m in conn.execute("SELECT text FROM messages WHERE chat_id = ? AND role = 'otto' "
                                   "AND text LIKE '%/pull/%'", (c["id"],)):
-                prs |= {u for u in re.findall(r"https?://github\.com/[\w.-]+/[\w.-]+/pull/\d+", m["text"])}
+                prs |= {o.group(1) for o in OWN_PR.finditer(m["text"] or "")}
             stats = json.loads(c["stats"]) if c["stats"] else {}
             items.append({"id": c["id"], "title": c["title"], "created": c["created"],
                           "updated": c["updated"], "cap": (json.loads(c["cap"]) or {}).get("name")
@@ -269,15 +318,18 @@ def assign(cid, wsid=None, title=None):
     Taking it out stores `''`, so auto-attach never puts it straight back. Returns the chat's
     workstream id ('' when detached), or None when either id is unknown."""
     with _conn() as conn, storage.tx(conn):
-        if conn.execute("SELECT 1 FROM chats WHERE id = ?", (cid,)).fetchone() is None:
+        row = conn.execute("SELECT workstream_id FROM chats WHERE id = ?", (cid,)).fetchone()
+        if row is None:
             return None
         if title:
-            wsid = _create(conn, title, chat_refs(conn, cid))
-        elif wsid:
-            if conn.execute("SELECT 1 FROM workstreams WHERE id = ?", (wsid,)).fetchone() is None:
-                return None
-            _merge_refs(conn, wsid, chat_refs(conn, cid))
+            wsid = _create(conn, title)
+        elif wsid and conn.execute("SELECT 1 FROM workstreams WHERE id = ?",
+                                   (wsid,)).fetchone() is None:
+            return None
+        _set_chat_refs(conn, cid)
         conn.execute("UPDATE chats SET workstream_id = ? WHERE id = ?", (wsid or "", cid))
+        _refresh_refs(conn, row["workstream_id"])
+        _refresh_refs(conn, wsid)
         gc(conn)
     return wsid or ""
 
@@ -293,8 +345,14 @@ def create(title, cids):
         if conn.execute(f"SELECT COUNT(*) FROM chats WHERE id IN ({','.join('?' * len(cids))})",
                         cids).fetchone()[0] != len(cids):
             return None
-        wsid = _create(conn, title, set().union(*(chat_refs(conn, c) for c in cids)))
+        old = {r["workstream_id"] for r in conn.execute(
+            f"SELECT workstream_id FROM chats WHERE id IN ({','.join('?' * len(cids))})", cids)}
+        wsid = _create(conn, title)
+        for c in cids:
+            _set_chat_refs(conn, c)
         conn.executemany("UPDATE chats SET workstream_id = ? WHERE id = ?", [(wsid, c) for c in cids])
+        for w in old | {wsid}:
+            _refresh_refs(conn, w)
         gc(conn)
     return wsid
 

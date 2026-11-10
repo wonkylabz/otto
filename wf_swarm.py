@@ -16,6 +16,7 @@ from temporalio import workflow
 from wf_runtime import _NEEDS_HUMAN_BANNER, _RETRY, _failure_detail
 
 with workflow.unsafe.imports_passed_through():
+    import workstreams
     from activities import deliver_result, finalize_terminal, merge_results
 
 
@@ -84,6 +85,7 @@ class SwarmMixin:
         order = [c["repo"] for c in self._children if c.get("repo")]
         if len(order) >= 2:
             result += "\n\n**Merge order:** " + " → ".join(order)
+        result = workstreams.with_child_prs(result, results)
 
         cap = {"name": "swarm", "kind": "swarm", "risk": "read"}
         self._cap = cap

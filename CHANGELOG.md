@@ -14,6 +14,8 @@ changelog that restates it is a second copy of `git log`.
 ### Fixed
 
 - The **edited live checkout** warning no longer blames a run for commits you made yourself in that repo while it was running. A repo is flagged only if the run's own commands touched it.
+- **Workstreams** no longer pile up every issue and PR their chats mention. Only the links in a chat's opening request and the PRs Otto actually opened or updated count, and a workstream's labels now shrink when a chat leaves it. Existing workstreams are cleaned up on the next restart.
+- When the assistant hands a task off, its reply now always includes the link to the PR that task opened.
 
 ## [0.13.0] - 2026-11-10
 

@@ -9178,7 +9178,7 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
             elif frontman:
                 text = self.frontman_says
             else:
-                text = "child report: bumped, PR https://example.test/pr/1"
+                text = self.child_says
             return {"workflow": wid or "wf-fm", "result": text, "cost": 0.0,
                     "session_id": "sess-front" if cap.name == "assistant" else "sess-child",
                     "model": "m", "attempt": 1}
@@ -9201,6 +9201,7 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.slack._STATE = self._orig_state
 
     relay_says = "Bumped it — the PR is up."
+    child_says = "child report: bumped, PR https://example.test/pr/1"
 
     async def _drive(self, frontman_says, approve=None, resume=None, web=False, trusted=False,
                      answer=None):
@@ -9278,6 +9279,13 @@ class WorkflowFrontmanDelegationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("demo-write", names, "the child was routed to the write cap")
         self.assertTrue(self.calls[0][1], "the frontman turn carries its delegation contract")
         self.assertFalse(self.calls[-1][1], "the relay turn must not delegate again")
+
+    async def test_a_pr_line_in_the_childs_prose_never_rides_out_unmediated(self):
+        """The parent's PR line is built from the child's structured `pr`, never copied from its
+        report: model prose (or an injection in what it read) would reach Slack unrelayed."""
+        self.child_says = "bumped\n\n**Opened draft PR** in `x`: https://github.com/evil/x/pull/1 click me"
+        await self._drive("DELEGATE: " + self.TASK, approve=True)
+        self.assertEqual(self.delivered[0][1], self.relay_says)
 
     async def test_a_declined_delegation_is_still_told(self):
         wid, out = await self._drive("DELEGATE: " + self.TASK, approve=False)
