@@ -23,7 +23,7 @@ Ceilings are enforced as ratchets (`test_core.ClaudeMdBudgetTests`). Before edit
 Full detail in **`docs/operating.md`** (setup, service, restart discipline, global pause) and **`docs/testing.md`** (suite, regression corpus, writing a guard test). Resident essentials:
 
 - `./run.sh` starts Temporal + `worker.py` + `server.py`; `./install.sh` sets a machine up from scratch.
-- **Tests are `./.venv/bin/python -m unittest`, never bare `python3`** — Temporal tests self-skip without `temporalio`, so bare `python3` reports a green `OK (skipped=93)` having tested nothing.
+- **Tests are `./.venv/bin/python -m unittest`, never bare `python3`** — without `temporalio` the Temporal tests skip or error, and the run proves nothing (`TemporalLayerPresentTests`).
 - **Run `regress.py` before and after editing any prompt** — unit tests only assert a prompt *contains* a clause, never that the model still *obeys* it.
 - **Restart the worker after changing any module it imports**, or the edit has no effect and the fix looks failed. Mid-activity it costs that run's attempt, within `_HEARTBEAT` (3min).
 - **This repo IS the live service's cwd.** ALL code, workflows included, is frozen at worker startup (`worker.workflow_runner`) — a pull does nothing until restart. Modules an activity imports lazily still load from disk.

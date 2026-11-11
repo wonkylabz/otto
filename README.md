@@ -160,7 +160,7 @@ model that can't serve a run falls back to Claude unless you make that illegal
 ## Contributing
 
 ```bash
-./.venv/bin/python -m unittest -v      # never bare python3 — the Temporal tests self-skip
+./.venv/bin/python -m unittest -v      # never bare python3 — it has no temporalio
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, the regression corpus and the two

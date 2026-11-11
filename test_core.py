@@ -37,6 +37,18 @@ from test_support import setUpModule  # noqa: F401 - unittest calls it per modul
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
+class TemporalLayerPresentTests(unittest.TestCase):
+    """Temporal is the only production path. Without `temporalio` its tests skip or die on
+    import, and this is the one failure in that noise that names the fix."""
+
+    def test_temporalio_is_importable(self):
+        try:
+            import temporalio  # noqa: F401
+        except ImportError:
+            self.fail("temporalio is not importable, so the Temporal tests in this run skipped or "
+                      "errored on import. Run the suite with ./.venv/bin/python -m unittest")
+
+
 class AuthoredPlanTests(unittest.TestCase):
     """engine.run_plan executing a graph a HUMAN wrote rather than one plan_steps invented."""
 
@@ -3920,7 +3932,6 @@ class RuleEnforcementTests(unittest.TestCase):
         "CLAUDE.md:Run ids never collide across processes",
         "CLAUDE.md:Run regress.py before and after editing any prompt",
         "CLAUDE.md:Runtime settings store",
-        "CLAUDE.md:Tests are ./.venv/bin/python -m unittest, never bare python3",
         "CLAUDE.md:This repo IS the live service's cwd.",
         # --- engine-core.md (2) ---
         "engine-core.md:One store alias, engine._DB (=config.DB_PATH)",

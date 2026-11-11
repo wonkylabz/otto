@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Running the test suite without `temporalio` (a bare `python3`) now includes one failure that names the command to use, and the docs no longer claim that run comes back green.
+
 ## [0.15.0] - 2026-11-11
 
 ### Added
