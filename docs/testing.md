@@ -4,9 +4,10 @@
 
 `./.venv/bin/python -m unittest -v`
 
-**Use the venv interpreter, not bare `python3`.** Temporal tests self-skip when `temporalio`
-isn't importable, and Temporal is the only production path — so bare `python3` reports a green
-`OK (skipped=93)` having tested nothing.
+**Use the venv interpreter, not bare `python3`.** Temporal is the only production path and its
+tests need `temporalio`: without it some self-skip and the rest error on import, so the run is
+red and proves nothing. `test_core.TemporalLayerPresentTests` is the one failure in that output
+that names the fix.
 
 The suite spends no tokens. Its one network call is the Temporal SDK fetching the ephemeral
 test-server binary on first use; `OTTO_TEST_SERVER_DIR` points that download at a directory of

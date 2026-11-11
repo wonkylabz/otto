@@ -19,9 +19,9 @@ on a Claude **subscription** via `claude -p` — no API key required. Linux and 
 ./.venv/bin/python -m unittest
 ```
 
-**Use the venv interpreter, never bare `python3`.** The Temporal tests self-skip when
-`temporalio` isn't importable, and Temporal is the only production run path — so bare
-`python3` prints a green `OK (skipped=93)` having tested nothing. This trips everybody once.
+**Use the venv interpreter, never bare `python3`.** Temporal is the only production run path
+and its tests need `temporalio`: without it some self-skip and the rest error on import, and
+`TemporalLayerPresentTests` fails naming this command. This trips everybody once.
 
 No test spends a token, and the only network call in the suite is the Temporal SDK fetching its
 ephemeral test-server binary the first time you run it (~84MB, then cached in your temp dir).

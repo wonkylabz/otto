@@ -239,6 +239,6 @@ reports whether the helper actually resolves anything — every way it can fail 
 ```
 
 Covers the pure logic (cron, risk classification, routing-invocation, gateway resolution) plus
-the Temporal workflow path — no Claude calls or network. Use the venv interpreter: under a bare
-`python3` the Temporal tests self-skip and the suite still reports `OK`. [testing.md](testing.md)
+the Temporal workflow path — no Claude calls or network. Use the venv interpreter: a bare
+`python3` has no `temporalio`, so the Temporal tests skip or error. [testing.md](testing.md)
 has the regression corpus and how to write a guard test.
