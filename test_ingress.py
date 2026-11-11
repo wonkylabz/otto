@@ -6033,6 +6033,17 @@ class MascotStateTests(unittest.TestCase):
         self.assertIn("mascotEvict(1)", forget[:600],
                       "forgetting a single fact no longer reaches him")
 
+    def test_a_reaction_to_a_hidden_tab_is_held_until_someone_is_looking(self):
+        """A run takes minutes and the dab three seconds, so it played to a backgrounded tab and
+        was over before anyone came back: the celebration read as never firing. The hold must
+        come BEFORE the react slot is written, and the return must replay it."""
+        ui = self._ui()
+        react = ui[ui.index("function mascotReact("):]
+        react = react[:react.index("\n}\n")]
+        self.assertLess(react.index("if(document.hidden){ MOOD.missed="), react.index("MOOD.react="))
+        back = ui[ui.index("mascotHiddenAt=Date.now(); return; }"):]
+        self.assertIn("mascotReact(...r)", back[:400])
+
 
 class PollerBackoffTests(unittest.TestCase):
     """Six module-level `setInterval`s polled `/api/*` at a fixed rate for the life of the tab,

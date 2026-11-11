@@ -281,7 +281,11 @@ function mascotTurn(stage, sub){
   MOOD.quietSince=Date.now();
   applyMood();
 }
+/* A reaction played to a hidden tab is played to nobody: its window is seconds and a run is
+   minutes, so the dab was over before anyone came back. Held, and played on the way back. */
 function mascotReact(state, say, sub, ms){
+  if(document.hidden){ MOOD.missed=[state, say, sub, ms]; return; }
+  MOOD.missed=null;
   ms=ms||2200;
   MOOD.react={state, say, sub:sub||""};
   MOOD.quietSince=Date.now();
@@ -358,6 +362,7 @@ let mascotHiddenAt=0;
 if(mFig) setTimeout(()=>{ if(mFig.wave) mFig.wave(); }, 900);
 document.addEventListener("visibilitychange", ()=>{
   if(document.hidden){ mascotHiddenAt=Date.now(); return; }
+  if(MOOD.missed){ const r=MOOD.missed; setTimeout(()=>{ if(MOOD.missed===r) mascotReact(...r); }, 400); }
   if(mascotHiddenAt && Date.now()-mascotHiddenAt>=MASCOT_AWAY_MS && mFig && mFig.wave) setTimeout(()=>mFig.wave(), 400);
 });
 // Drag him anywhere; double-click sends him home. Both grips move the same dock.
