@@ -111,6 +111,7 @@ Legacy `data/schedules.json` migrates under its ORIGINAL id (`scheduler.migrate_
 
 - **Every `/api/*` route needs the install token** (`api_auth`: header, or a SESSION cookie) — a run's shell omits or FORGES `Origin`, so `_csrf_ok` alone let it release the pause. Only `/api/events/` and `/api/gate/` carry their own credential (`ApiTokenAuthTests`).
 - Mutating POSTs are also origin-checked (`_csrf_ok`), behind the SameSite cookie; absent `Origin` = allowed.
+- **`server.Handler`'s POST routes live in `srv_*.py` mixins, which read a server global as `_srv().X`** — tests replace `server._wf_start`, and `python server.py` is `__main__`, so a bound name or an unaliased import reads a second copy (`ServerSourceReaderTests`).
 - **A web route that starts a run is gated in `_wf_start`, not by path** (`server.Paused` -> 409) — the dispatcher's allowlist named submit/continue only, so `/api/needs-you/retry` started a run under the stop, pre-authorized, and dismissed its own card (`EstopWebStartTests`).
 - **An identity lookup caches only a RESOLVED answer and rate-limits the failure** (`slack.whoami`, `pr_review.viewer`) — caching the miss goes deaf until a restart, retrying it costs 15-30s a panel load, and the window stays under the poll interval (`PrReviewViewerCacheTests`).
 - **A SKIP schedule bounds its execution** (`config.POLL_TIMEOUT_FACTOR`) — a workflow task failing forever never closes the run, so `ScheduleOverlapPolicy.SKIP` skips every later fire and the ingress goes deaf until a hand terminate (`PollScheduleExecutionTimeoutTests`).

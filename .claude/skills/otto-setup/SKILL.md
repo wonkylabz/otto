@@ -43,8 +43,8 @@ api /api/health                                  # GET
 api /api/settings '{"settings":{"max_attempts":3}}'   # POST when a body is given
 ```
 
-Before you POST to a route for the first time, read its handler in `server.py` (`_post_<route>`,
-routed from `_POST_ROUTES`) for the exact body. Several routes **replace a whole list**: GET it,
+Before you POST to a route for the first time, read its handler (`_post_<route>` in `srv_*.py`,
+routed from `server.py`'s `_POST_ROUTES`) for the exact body. Several routes **replace a whole list**: GET it,
 change your item, POST the full list back. `/api/event-rules` and `/api/slack-triggers` are two.
 
 ## The conversation

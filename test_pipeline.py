@@ -41,6 +41,7 @@ except Exception:  # noqa: BLE001
 
 import test_support
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
+from test_support import server_src, _SRV_MODULES
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
@@ -2182,8 +2183,7 @@ class GateStateForwardingTests(unittest.TestCase):
     delivery.AUDIENCE grep test: catch the forgotten registration, not the logic."""
 
     def _gate_branch(self):
-        with open(os.path.join(os.path.dirname(__file__), "server.py"), encoding="utf-8") as f:
-            src = f.read()
+        src = server_src()
         i = src.index('"state": "awaiting_approval"')
         return src[i:src.index("}", i)]
 
@@ -2655,7 +2655,7 @@ class ProjectCapHomeRepoTests(unittest.TestCase):
     def test_every_trusted_cap_dict_is_built_by_ref(self):
         import re
         hand = re.compile(r'"risk": \w+\.risk\}')
-        for f in ("activities.py", "runbooks.py", "server.py"):
+        for f in ("activities.py", "runbooks.py", "server.py", *_SRV_MODULES):
             with open(f) as fh:
                 self.assertEqual(hand.findall(fh.read()), [], f"{f} hand-builds a cap dict")
 
@@ -4029,7 +4029,7 @@ class PlanVisibilityTests(unittest.TestCase):
         self.assertIn('setNode("PLAN","active",planDetail', ui)
         # the server has to label it, or the client is inferring a phase the workflow calls
         # "running" — and the two spellings of the label have to be the same string.
-        self.assertIn('_PROGRESS_PART_PLAN = "Planning"', open("server.py").read())
+        self.assertIn('_PROGRESS_PART_PLAN = "Planning"', server_src())
         self.assertIn('const PLAN_PART="Planning"', ui)
 
     def test_a_transcript_without_kind_still_reads_as_local(self):

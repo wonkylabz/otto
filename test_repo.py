@@ -43,6 +43,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
+from test_support import server_src
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
@@ -688,8 +689,7 @@ class SnapshotSectionPickTests(unittest.TestCase):
         self.assertEqual([], [c for c in plan["changes"] if c["section"] != "runbooks"])
 
     def test_the_ui_asks_which_sections_and_the_route_reads_them(self):
-        import server
-        src, srv = ui_src(), inspect.getsource(server)
+        src, srv = ui_src(), server_src()
         self.assertIn('"/api/profile/sections"', src)
         self.assertIn('"?sections="', src)
         self.assertIn('"/api/profile/sections"', srv)
@@ -1772,7 +1772,7 @@ class ChatGitIdentityForwardingTests(unittest.TestCase):
         # The client is not the authority: an omitted repo must reach chats.git_identity, not just
         # skip provisioning. Grepped because the Temporal branch of /api/continue can't be driven
         # from a unit test, and the failure is silent (a resume that returns `(no output)`).
-        src = self._src("server.py")
+        src = server_src()
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
         branch = src[i:src.index("wid = ", i)]        # the whole branch, not a fixed-size window
         self.assertIn("chats.git_identity(", branch,
@@ -2600,7 +2600,7 @@ class BoardCardTicketTests(unittest.TestCase):
         self.assertEqual(workstreams.card_tickets("gh-issue-7", set(), ["acme/api"]), [])
 
     def test_board_feeds_tickets_to_the_card_and_the_ui_renders_them(self):
-        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")).read()
+        src = server_src()
         self.assertIn('e["tickets"] = workstreams.card_tickets(', src)
         self.assertIn("ticketChips(it.tickets)", test_support.ui_src())
 
@@ -2727,7 +2727,7 @@ class DataHealthTests(unittest.TestCase):
         self.assertIn("data health finding", src)
         self.assertIn('postJSON("/api/data-health/fix",{key:b.dataset.dhfix})', src)
         self.assertIn('toast("fix failed: "+e.message); loadInsights(true)', src)
-        self.assertIn('"/api/data-health/fix": Handler._post_data_health_fix', pathlib.Path("server.py").read_text())
+        self.assertIn('"/api/data-health/fix": Handler._post_data_health_fix', server_src())
 
     def test_a_raising_check_is_reported_never_fatal(self):
         with mock.patch.object(self.dh, "CHECKS", (("boom", lambda: 1 / 0),
@@ -3655,7 +3655,7 @@ class PreviewModelTierTests(unittest.TestCase):
         self.assertIn('"model": preview.get("model")', open("activities.py").read())
         self.assertIn('"plan_model": self._plan_model', workflow_src())
         # server._wf_state's gate block is a WHITELIST — absent here, the browser never sees it.
-        self.assertIn('"plan_model": st.get("plan_model")', pathlib.Path("server.py").read_text())
+        self.assertIn('"plan_model": st.get("plan_model")', server_src())
         ui = ui_src()
         self.assertIn("written by", ui)
 
@@ -3906,8 +3906,7 @@ class RepoUrlRegistrationTests(unittest.TestCase):
         """It WRITES `data/projects.json`, and importing `server` is what the suite and every
         tool does BEFORE `setUpModule` re-points PROJECTS_FILE at a temp dir. At import scope it
         migrated the live store just by being imported."""
-        with open("server.py") as f:
-            src = f.read()
+        src = server_src()
         head, _, tail = src.partition("def main():")
         self.assertNotIn("backfill_project_urls()", head)
         self.assertIn("backfill_project_urls()", tail)

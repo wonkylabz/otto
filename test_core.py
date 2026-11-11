@@ -34,6 +34,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
+from test_support import server_src
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
@@ -1353,10 +1354,9 @@ class AdminBadgeSourcesTests(unittest.TestCase):
         return ui_src()
 
     def test_the_poll_reads_every_source_the_health_endpoint_publishes(self):
-        with open(os.path.join(os.path.dirname(__file__), "server.py"), encoding="utf-8") as f:
-            server_src = f.read()
-        i = server_src.index('elif self.path == "/api/health"')
-        payload = server_src[i:server_src.index("elif", i + 10)]
+        srv_text = server_src()
+        i = srv_text.index('elif self.path == "/api/health"')
+        payload = srv_text[i:srv_text.index("elif", i + 10)]
         poll = re.search(r"async function pollAdminBadge\(\).*?\n}", self._html(), re.S).group(0)
         for key in ("mcp", "models"):
             self.assertIn(f'"{key}": {{"unhealthy"', payload,
@@ -1988,10 +1988,9 @@ class VersioningTests(unittest.TestCase):
     def test_the_running_version_reaches_the_operator(self):
         """The number is only worth keeping if the operator can see which one is serving them:
         `/api/health` carries it, and the UI paints it beside the wordmark."""
-        with open(os.path.join(self.ROOT, "server.py"), encoding="utf-8") as f:
-            self.assertIn('"version": config.VERSION', f.read(),
-                          "/api/health stopped serving the version — the UI chip goes blank and "
-                          "'which build is this?' becomes unanswerable from the browser")
+        self.assertIn('"version": config.VERSION', server_src(),
+                      "/api/health stopped serving the version — the UI chip goes blank and "
+                      "'which build is this?' becomes unanswerable from the browser")
         ui = ui_src()
         self.assertIn('id="ver"', ui, "the header lost its version chip")
         self.assertIn("function applyVersion(", ui, "the version painter is gone")
@@ -2388,7 +2387,7 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
     def test_api_continue_validates_and_forwards_the_effort_pick(self):
         # Same grep-shaped guard as the model override, for the same reason: the Temporal branch
         # of /api/continue can't be driven from a unit test.
-        src = self._src("server.py")
+        src = server_src()
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
         branch = src[i:i + 2400]
         self.assertIn('params["effort"] = effort', branch,
@@ -2399,7 +2398,7 @@ class ComposerOverrideForwardingTests(unittest.TestCase):
     def test_api_continue_validates_and_forwards_the_override(self):
         # Grepped for the same reason as the git-identity fallback: the Temporal branch of
         # /api/continue can't be driven from a unit test.
-        src = self._src("server.py")
+        src = server_src()
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
         branch = src[i:i + 1200]
         self.assertIn('params["model_override"] = model_override', branch,
@@ -2501,7 +2500,7 @@ class ResumeModelRebindTests(unittest.TestCase):
             return f.read()
 
     def test_api_continue_rebinds_a_cross_backend_pick(self):
-        src = self._src("server.py")
+        src = server_src()
         i = src.index('params = {"request": body["message"], "resume": body["session_id"]')
         branch = src[i:i + 2000]
         self.assertIn("local_runtime.session_backend(", branch,
@@ -2796,8 +2795,7 @@ class OnboardingTests(unittest.TestCase):
         self.assertIn("max_attempts", out["applied"])
 
     def test_a_finished_install_is_not_probed_on_every_page_load(self):
-        import server
-        src = inspect.getsource(server)
+        src = server_src()
         block = src[src.index('self.path.startswith("/api/onboarding?")'):][:600]
         self.assertIn('st["auto_open"] or "warm=1"', block)
         self.assertIn("/api/onboarding?warm=1", ui_src())
@@ -2966,7 +2964,7 @@ class OnboardingTests(unittest.TestCase):
                 t.join(2)
         self.assertEqual(len(ran), 3, "both Slack identities and the gh login were warmed")
         self.assertNotIn("_warm_onboarding_caches", inspect.getsource(server.main), "never at boot")
-        get = inspect.getsource(server)[inspect.getsource(server).index('startswith("/api/onboarding?")'):][:900]
+        get = server_src()[server_src().index('startswith("/api/onboarding?")'):][:900]
         self.assertNotIn("mcp=True", get, "a GET must never spawn MCP servers")
 
     def test_a_failed_reask_keeps_the_resolved_login(self):
@@ -4180,7 +4178,7 @@ class AutoApproveToggleTests(unittest.TestCase):
                           f"{marker} drops the approval toggle")
 
     def test_the_server_maps_a_boolean_and_never_takes_approval_from_the_body(self):
-        src = self._src("server.py")
+        src = server_src()
         # Anchored on the mapping, not its indentation — pinning leading spaces re-breaks
         # this whenever a handler moves (it did, when the POST chain became a dispatch table).
         pairs = re.findall(r'if body\.get\("auto_approve"\):\s*\n\s*params\["approval"\] = "auto"', src)
@@ -4637,7 +4635,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 95879 -> 96130: an approved plan engages repo-mode the request didn't.
     # 96130 -> 96627: workstreams — the two ways a chat silently falls out of one.
     # 96627 -> 96830: a workstream chat's refs are its subject, not every link it ever saw.
-    MAX_RULES_BYTES = 96830   # fetched tier — bounded, but looser; it is not always loaded
+    # 96830 -> 97084: the server split's seam rule (route mixins read server globals through
+    # `_srv()`), which is what keeps the split's guards and patches meaning anything.
+    MAX_RULES_BYTES = 97084   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

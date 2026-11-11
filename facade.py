@@ -31,3 +31,10 @@ def eng():
     """The live `engine` module. Read attributes OFF it — that is what keeps a patch visible."""
     import engine
     return engine
+
+
+def srv():
+    """The live `server` module, for the route mixins split out of it (`srv_*.py`). Same contract
+    as `eng()`: read attributes OFF it, so a test replacing `server._wf_start` stays visible."""
+    import server
+    return server

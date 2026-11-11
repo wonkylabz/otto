@@ -63,6 +63,7 @@ except Exception:  # noqa: BLE001
 import test_memory
 import test_support
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
+from test_support import server_src, _SRV_MODULES
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
@@ -4143,7 +4144,7 @@ class ModelKindTests(unittest.TestCase):
 
     def test_the_api_hands_the_ui_the_kinds_and_the_host_list_it_pre_selects_from(self):
         # The UI guesses from the SERVER's list, so the two sides cannot disagree.
-        src = open("server.py").read()
+        src = server_src()
         self.assertIn('"kinds": list(gateway.KINDS)', src)
         self.assertIn('"hosted_hosts": list(gateway.HOSTED_HOSTS)', src)
         ui = ui_src()
@@ -5066,7 +5067,7 @@ class McpCredentialsAndNamingTests(unittest.TestCase):
         self.assertFalse(policy.mcp_confirmed(policy.mcp_defs()["srv"]))
 
     def test_the_trail_tells_an_edit_from_a_first_registration(self):
-        src = self._src("server.py")
+        src = server_src()
         i = src.index("def _post_mcp_add(")
         body = src[i:src.index("\n    def ", i + 10)]
         self.assertIn('audit_mcp_change("edit" if existed else "add"', body,
@@ -5186,8 +5187,7 @@ class McpActivationTests(unittest.TestCase):
     def test_the_endpoints_go_through_the_gated_writer(self):
         """`_post_mcp_add` writing `policy.save_mcp_defs` directly is exactly the bug, and it
         reads as harmless — this is the guard that a later edit can't quietly restore it."""
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")) as fh:
-            src = fh.read()
+        src = server_src()
         add = src.split("def _post_mcp_add(")[1].split("\n    def ")[0]
         self.assertIn("policy.add_mcp_def(", add)
         self.assertNotIn("save_mcp_defs", add)
@@ -5655,7 +5655,7 @@ class McpHealthTests(unittest.TestCase):
         # The MCP health check must stay OFF /api/policy: the Admin panel's spinner waits on that
         # request, so a refresh there is a multi-second blank panel on the first open of each hour.
         # The client refreshes health separately, after painting.
-        src = open("server.py", encoding="utf-8").read()
+        src = server_src()
         body = src[src.index('elif self.path == "/api/policy":'):]
         body = body[:body.index("else:")]
         self.assertIn("policy.all_mcps(POLICY)", body)
@@ -9032,7 +9032,8 @@ class OpenAiParamDialectTests(unittest.TestCase):
         separately; a fifth would 400 identically, and only against an OpenAI endpoint nobody in
         CI has. Grep-based on purpose — it is the property, not a behaviour."""
         offenders = []
-        for mod in ("local_runtime.py", "doctor.py", "server.py", "engine.py", "supervisor.py"):
+        for mod in ("local_runtime.py", "doctor.py", "server.py", *_SRV_MODULES, "engine.py",
+                    "supervisor.py"):
             with open(mod, encoding="utf-8") as fh:
                 for n, line in enumerate(fh, 1):
                     # Dict-KEY syntax only (`"max_tokens": …` or `body["max_tokens"]`), not any
@@ -11698,7 +11699,7 @@ class FastLaneReviewRoundOneTests(unittest.TestCase):
         self.assertIn("_write_gate_note(cap) if fast_lane is None else None", src)
 
     def test_listing_tools_by_GET_never_spawns_a_server(self):
-        src = inspect.getsource(server.Handler)
+        src = server_src()
         i = src.index('elif self.path.startswith("/api/mcp/tools")')
         get_branch = src[i:src.index("elif", i + 10)]
         self.assertIn("spawn=False", get_branch)

@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- The web server's POST routes moved out of `server.py` into four modules by area (runs, integrations, memory, admin). No route or behaviour changed; the service needs its usual restart after updating.
+
 ## [0.15.0] - 2026-11-11
 
 ### Added
