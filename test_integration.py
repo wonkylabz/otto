@@ -4888,13 +4888,13 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ran, [registry.WORKER_NAME])                # the worker actually executed
         self.assertEqual(self.skips, [])
 
-    async def _worker_run(self, reply_to):
+    async def _worker_run(self, reply_to, said="implemented it"):
         """The same misroute-to-worker run, delivered somewhere. Returns (out, delivered_text)."""
         assistant, worker = registry._general_assistant(), registry._general_worker()
         self.activities._caps = [assistant, worker]
         engine.plan = lambda request, caps, project_root=None: assistant
         engine.run_attempt = lambda request, cap, **k: {
-            "workflow": k.get("wid") or "wf-fresh", "result": "implemented it", "cost": 0.0,
+            "workflow": k.get("wid") or "wf-fresh", "result": said, "cost": 0.0,
             "session_id": "s", "model": "m", "attempt": k.get("attempt", 1)}
         sent = []
         orig = delivery.deliver
@@ -4930,6 +4930,17 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
         out, sent = await self._worker_run({"kind": "github_issue", "repo": "o/r", "number": 4})
         self.assertIn("No isolated workspace was engaged", sent)
         self.assertEqual(sent, out["result"])
+
+    async def test_a_silent_run_is_delivered_bare_so_a_run_note_cannot_break_the_silence(self):
+        """A job that found nothing answers NO_REPLY and its Slack target hears nothing.
+
+        Measured (sched-rb-fe7f7335-2026-11-11T03:00:00Z): an hourly watcher routed to the worker
+        got the no-workspace note appended, the result stopped being the sentinel, and delivery
+        posted it to a colleague's DM on every fire. The record still keeps the note."""
+        out, sent = await self._worker_run({"kind": "slack_post", "channel": "U7"},
+                                           said=config.NO_REPLY)
+        self.assertTrue(config.is_no_reply(sent), repr(sent))
+        self.assertIn("No isolated workspace was engaged", out["result"])
 
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
