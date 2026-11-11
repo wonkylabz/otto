@@ -107,13 +107,14 @@ function showFactoryForm(){
     const btn=document.getElementById("ff-save");
     if(!document.getElementById("ff-seed").value.trim()){
       document.getElementById("ff-err").textContent="write the seed — the idea the factory builds"; return; }
-    btn.disabled=true;
+    const label=btn.textContent;
+    btn.disabled=true; btn.innerHTML='<span class="spin"></span>Saving…';
     const body={repo:val("ff-repo")||s.repo, seed:document.getElementById("ff-seed").value,
       budget_usd:+val("ff-budget")||0, wip:+val("ff-wip")||1, sprint_every_s:+val("ff-every")||1800,
       max_idle_sprints:+val("ff-idle")||3, max_tickets:+val("ff-tickets")||5,
       mcp_allow:[...f.querySelectorAll(".ff-mcp:checked")].map(c=>c.value)};
     const ok=await postForm("/api/factory/enable", body, document.getElementById("ff-err"));
-    btn.disabled=false;
+    btn.disabled=false; btn.textContent=label;
     if(ok){ closeFormModal(); loadFactory(); }
   };
 }
