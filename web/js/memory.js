@@ -239,6 +239,16 @@ function wireGC(){
   }));
 }
 
+/* What Otto dreams about while he sleeps (mascot.js). ONE read per nap, never a poller, and it
+   lives here because this file owns /api/memory - the mascot block is guarded against opening
+   requests of its own. A failed read is an empty night, not an error on screen. */
+async function memoryDreams(){
+  let d; try { d=await getJSON("/api/memory"); } catch(e){ return []; }
+  const out=[];
+  (d.events||[]).forEach(e=>(e.facts||[]).forEach(f=>out.push(factText(f))));
+  return out;
+}
+
 async function loadMemory(){
   const el=document.getElementById("memoryview");
   el.innerHTML=spinHTML();

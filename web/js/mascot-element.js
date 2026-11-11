@@ -10,12 +10,14 @@
  *
  * Attributes
  *   state  idle | thinking | planning | working | evicting | success | dab | shrug | error |
- *          sleeping
+ *          sleeping | reading | juggling | grilling | fluting
+ *          (the last four are what he does with an idle minute - mascot.js picks them)
  *          (default idle)
  *   size   px width of the mascot (height follows the 4:5 ratio)    (default 200)
  *   color  ink color (any CSS color)                               (default #2b2b2b)
  *   speed  animation speed multiplier, 0.5 = half speed            (default 1)
  *   shadow "off" to hide the hover shadow
+ *   dream  text he is dreaming; drawn as a thought balloon in his own line (sleeping only)
  *
  * JS:  otto.state = 'thinking'      // or otto.setAttribute('state', 'thinking')
  *      otto.blink()                 // one-off blink
@@ -26,7 +28,7 @@
  */
 (function () {
   const STATES = ['idle', 'thinking', 'planning', 'working', 'evicting', 'success', 'dab', 'shrug',
-                  'error', 'sleeping'];
+                  'error', 'sleeping', 'reading', 'juggling', 'grilling', 'fluting'];
 
   const SVG = `
 <svg class="otto" viewBox="0 0 240 300" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -45,6 +47,8 @@
     <path class="ink i6" d="M 130 98 L 214 98"></path>
   </g>
   <g class="figure">
+    <path class="neck" d="M 114 128 L 113 146"></path>
+    <path class="neck" d="M 129 130 L 130 146"></path>
     <g class="noggin">
       <g class="face">
         <g class="antenna">
@@ -53,6 +57,7 @@
           <path class="glint" d="M 117 22 L 120 20"></path>
         </g>
         <path class="head" d="M 75 72 C 75 62, 81 56, 91 56 L 151 55 C 161 55, 167 61, 168 71 L 168 112 C 168 122, 162 128, 152 128 L 90 128 C 80 128, 74 122, 74 112 Z"></path>
+        <path class="dabside" d="M 98 57 C 96 78, 96 106, 98 127"></path>
         <path class="hatch head-hatch" d="M 84 122 C 82 106, 82 84, 85 62"></path>
         <g class="skull">
           <path class="skull-rim" d="M 78 63 C 99 70, 145 70, 166 63 C 145 56, 99 56, 78 63 Z"></path>
@@ -65,8 +70,6 @@
         <g class="eye eye-r"><rect x="134" y="76" width="9" height="26" rx="4.5"></rect></g>
       </g>
     </g>
-    <path class="neck" d="M 114 128 L 113 146"></path>
-    <path class="neck" d="M 129 130 L 130 146"></path>
     <path class="torso" d="M 84 158 C 84 150, 90 145, 100 144 L 142 144 C 152 145, 158 150, 158 158 L 156 216 C 155 224, 149 228, 140 228 L 102 228 C 93 228, 87 224, 86 216 Z"></path>
     <ellipse class="core" cx="121" cy="188" rx="26" ry="26"></ellipse>
     <ellipse class="core-inner" cx="121" cy="188" rx="21" ry="21"></ellipse>
@@ -170,24 +173,20 @@
     </g>
     <g class="dabarms">
       <g class="dabarm dabarm-l">
+        <path class="dabseg" d="M 79 152 L 43 130 L 38 138 L 73 160 Z"></path>
+        <path class="dabseg" d="M 43 130 L 7 107 L 2 116 L 38 138 Z"></path>
+        <path class="dabseg dabhand" d="M 7 107 C 3 101, -6 97, -10 102 C -13 108, -5 115, 2 116 Z"></path>
         <circle class="joint" cx="76" cy="156" r="10"></circle>
-        <path d="M 73 151 L 183 87"></path>
-        <path d="M 79 161 L 189 97"></path>
-        <circle class="joint" cx="186" cy="92" r="8"></circle>
-        <path d="M 184 87 L 110 121"></path>
-        <path d="M 188 97 L 114 131"></path>
-        <path class="dabhand" d="M 110 121 C 104 121, 100 125, 102 131"></path>
-        <path class="dabhand" d="M 114 131 C 108 132, 104 130, 103 125"></path>
+        <circle class="joint" cx="40" cy="134" r="7"></circle>
       </g>
       <g class="dabarm dabarm-r">
+        <path class="dabseg" d="M 168 161 L 202 147 L 198 137 L 164 151 Z"></path>
         <circle class="joint" cx="166" cy="156" r="10"></circle>
-        <path d="M 173 150 L 205 105"></path>
-        <path d="M 162 161 L 194 116"></path>
-        <circle class="joint" cx="200" cy="111" r="7"></circle>
-        <path d="M 204 106 L 231 68"></path>
-        <path d="M 195 116 L 222 78"></path>
-        <path class="dabhand" d="M 231 68 C 234 61, 231 56, 225 57"></path>
-        <path class="dabhand" d="M 222 78 C 217 74, 217 68, 221 64"></path>
+        <g class="dabfore">
+          <path class="dabseg" d="M 203 137 L 144 100 L 138 110 L 197 147 Z"></path>
+          <path class="dabseg dabhand" d="M 143 101 C 139 94, 130 90, 126 96 C 123 102, 130 108, 138 109 Z"></path>
+          <circle class="joint" cx="200" cy="142" r="8"></circle>
+        </g>
       </g>
     </g>
     <g class="egrab">
@@ -214,6 +213,56 @@
       <path class="port" d="M 96 220 L 144 220"></path>
       <path class="port" d="M 78 220 L 88 220"></path>
     </g>
+    <g class="hob hob-read">
+      <path class="hseg" d="M 71 154 L 59 188 L 69 192 L 81 158 Z"></path><path class="hseg" d="M 161 158 L 173 192 L 183 188 L 171 154 Z"></path>
+      <circle class="joint" cx="76" cy="156" r="10"></circle><circle class="joint" cx="166" cy="156" r="10"></circle>
+      <path class="hseg" d="M 121 208 L 80 199 L 80 163 L 121 172 Z"></path>
+      <path class="hseg" d="M 121 208 L 162 199 L 162 163 L 121 172 Z"></path>
+      <path class="hline" d="M 131 181 L 151 177"></path>
+      <path class="hline" d="M 131 189 L 144 186"></path>
+      <path class="pageflip" d="M 121 172 L 157 158"></path>
+      <path class="hseg" d="M 62 195 L 84 202 L 88 192 L 66 185 Z"></path><path class="hseg" d="M 176 185 L 154 192 L 158 202 L 180 195 Z"></path>
+      <circle class="joint" cx="64" cy="190" r="7"></circle><circle class="joint" cx="178" cy="190" r="7"></circle><circle class="joint" cx="86" cy="197" r="6"></circle><circle class="joint" cx="156" cy="197" r="6"></circle>
+    </g>
+    <g class="hob hob-jug">
+      <g class="jball jb1"><circle cx="28" cy="170" r="7"></circle></g>
+      <g class="jball jb2"><circle cx="28" cy="170" r="7"></circle></g>
+      <g class="jball jb3"><circle cx="28" cy="170" r="7"></circle></g>
+    </g>
+    <g class="hob hob-grill">
+      <path class="hseg" d="M 162 159 L 186 185 L 194 179 L 170 153 Z"></path>
+      <circle class="joint" cx="166" cy="156" r="10"></circle>
+      <g class="grillfore">
+        <path class="hline spat" d="M 213 192 L 243 200"></path>
+        <path class="hseg" d="M 242 196 L 262 201 L 260 208 L 240 203 Z"></path>
+        <path class="hseg" d="M 188 187 L 211 197 L 215 187 L 192 177 Z"></path>
+        <circle class="joint" cx="190" cy="182" r="7"></circle><circle class="joint" cx="213" cy="192" r="6"></circle>
+      </g>
+    </g>
+    <g class="hob hob-flute">
+      <g class="flutekit">
+        <path class="hseg" d="M 71 154 L 59 184 L 69 188 L 81 158 Z"></path><path class="hseg" d="M 161 158 L 173 196 L 183 192 L 171 154 Z"></path>
+        <path class="hseg ftube" d="M 115 121 L 122 214 L 130 214 L 123 121 Z"></path>
+        <circle class="fhole" cx="121" cy="150" r="1.6"></circle><circle class="fhole" cx="123" cy="177" r="1.6"></circle><circle class="fhole" cx="125" cy="203" r="1.6"></circle>
+        <path class="hseg" d="M 66 191 L 122 169 L 118 159 L 62 181 Z"></path><path class="hseg" d="M 178 189 L 125 185 L 125 195 L 178 199 Z"></path>
+        <circle class="joint" cx="64" cy="186" r="7"></circle><circle class="joint" cx="178" cy="194" r="7"></circle><circle class="joint" cx="120" cy="164" r="6"></circle><circle class="joint" cx="125" cy="190" r="6"></circle>
+      </g>
+      <circle class="joint" cx="76" cy="156" r="10"></circle><circle class="joint" cx="166" cy="156" r="10"></circle>
+      <g class="sour sour1"><circle class="fhole" cx="146" cy="214" r="5.5"></circle><path class="hline" d="M 151 214 L 151 190 L 160 196 L 154 202"></path></g>
+      <g class="sour sour2"><circle class="fhole" cx="146" cy="214" r="5.5"></circle><path class="hline" d="M 151 214 L 151 190 L 160 196 L 154 202"></path></g>
+    </g>
+  </g>
+  <g class="grillset">
+    <path class="hline smoke s1" d="M 188 196 C 183 188, 193 182, 188 173"></path>
+    <path class="hline smoke s2" d="M 204 192 C 199 184, 209 178, 204 169"></path>
+    <path class="hline smoke s3" d="M 220 196 C 215 188, 225 182, 220 173"></path>
+    <path class="hline" d="M 184 232 L 177 270"></path>
+    <path class="hline" d="M 222 232 L 229 270"></path>
+    <path class="hline" d="M 181 252 L 225 252"></path>
+    <path class="hseg" d="M 171 214 C 172 240, 234 240, 235 214 Z"></path>
+    <path class="hline grate" d="M 167 214 L 239 214"></path>
+    <rect class="hseg" x="214" y="205" width="17" height="7" rx="3.5"></rect>
+    <g class="patty"><ellipse class="hseg" cx="197" cy="209" rx="9" ry="4"></ellipse></g>
   </g>
   <g class="binset">
     <g class="bin">
@@ -409,7 +458,8 @@
    bones pivoting at the shoulder, and a dab is defined by the FOLD - one elbow thrown out
    sideways with the forearm coming back across the face. A straight arm swung to the same
    angle reads as pointing at his own head. This pair is drawn in the finished pose, so the
-   throw is one rotation per arm about its own shoulder, ending at zero. */
+   throw ends at zero; the folded forearm pivots on its own ELBOW, so he starts with a straight
+   arm and folds on the way up. Segments are FILLED: outlined, the head showed through them. */
 .dabarms { opacity: 0; }
 /* The folded arms. Same reason .tarms, .dabarms and .egrab exist: the everyday arm is a rigid
    pair of bones pivoting at the shoulder, and a fold is two bends per arm - swinging the
@@ -431,8 +481,9 @@
 .xarm path { stroke-width: 2.2; }
 .xarm .xfore { fill: var(--otto-paper); stroke-width: 2.2; }
 .xarm .xhand { stroke-width: 1.6; opacity: .8; }
-.dabarm path { stroke-width: 2.2; }
-.dabarm .dabhand { stroke-width: 2; }
+.dabarm .dabseg { stroke-width: 2.2; fill: var(--otto-paper); }
+.dabside { opacity: 0; stroke-width: 2; }
+.dabfore { transform-box: view-box; transform-origin: 200px 142px; }
 .dabarm { transform-box: view-box; }
 .dabarm-l { transform-origin: 76px 156px; }
 .dabarm-r { transform-origin: 166px 156px; }
@@ -635,56 +686,74 @@
    new position - a body drops before it hits the pose. */
 @keyframes otto-dab-hit {
   0%        { transform: translateY(0) rotate(0deg); }
-  22%       { transform: translateY(7px) rotate(-2deg); }
-  46%       { transform: translateY(-11px) rotate(11deg); }
-  70%       { transform: translateY(-1px) rotate(6deg); }
-  100%      { transform: translateY(-3px) rotate(8deg); } }
+  22%       { transform: translateY(7px) rotate(2deg); }
+  46%       { transform: translateY(-11px) rotate(-11deg); }
+  70%       { transform: translateY(-1px) rotate(-6deg); }
+  100%      { transform: translateY(-3px) rotate(-8deg); } }
 @keyframes otto-dab-hold {
-  0%, 100%  { transform: translateY(-3px) rotate(8deg); }
-  50%       { transform: translateY(-9px) rotate(8deg); } }
-/* The bow. He does not turn to look at the throw - he drops his face into the crook of the
-   folded arm, which is the whole tell of a dab: what the viewer sees is the top of the head
-   and nothing of the face. So the head pitches hard forward on the NECK and sinks into the
-   shoulders, and the folded forearm crosses what is left of the face.
-   Tried and rejected: squashing the head flat to fake looking straight down. A box head at
-   40% height stops being a head and reads as a pill, and it lands exactly where the forearm
-   already is - two parallel bars and no character. A pitch keeps his proportions. */
+  0%, 100%  { transform: translateY(-3px) rotate(-8deg); }
+  50%       { transform: translateY(-9px) rotate(-8deg); } }
+/* The duck. The face goes INTO the crook of the folded arm, so the head tips toward that
+   elbow - away from the throw - and sinks into the shoulders until the forearm lies across
+   the eye line. Tipping it toward the straight arm instead (tried) parks the head between
+   the two arms and the pose reads as a tangle. */
 @keyframes otto-dab-head {
   0%        { transform: rotate(0deg); }
-  22%       { transform: rotate(-6deg); }
-  52%       { transform: rotate(32deg); }
-  70%, 100% { transform: rotate(28deg); } }
-/* A little foreshortening on top of the pitch, and he settles down into his shoulders. */
+  22%       { transform: rotate(-5deg); }
+  52%       { transform: rotate(24deg); }
+  70%, 100% { transform: rotate(20deg); } }
+@keyframes otto-dab-neck {
+  0%        { transform: rotate(0deg); }
+  22%       { transform: rotate(-2deg); }
+  52%       { transform: rotate(12deg); }
+  70%, 100% { transform: rotate(10deg); } }
 @keyframes otto-dab-face {
   0%        { transform: translateY(0) scaleY(1); }
   22%       { transform: translateY(-2px) scaleY(1.02); }
-  52%       { transform: translateY(7px) scaleY(.78); }
-  70%, 100% { transform: translateY(6px) scaleY(.8); } }
-/* The stalk is on top of a head that is now half as tall, so it rides the squash and undoes
-   it: without the counter-scale the antenna foreshortens into a stub, and mounted outside the
-   bow it simply floats above him. Kept near-upright on purpose - a rotated stalk inside a
-   non-uniform scale comes out skewed, not tilted. */
+  52%       { transform: translateY(9px) scaleY(.88); }
+  70%, 100% { transform: translateY(8px) scaleY(.9); } }
+/* The stalk rides the squash and undoes it, or it foreshortens into a stub. */
 @keyframes otto-dab-antenna {
   0%        { transform: scaleY(1) rotate(0deg); }
-  22%       { transform: scaleY(1) rotate(5deg); }
-  52%       { transform: scaleY(1.28) rotate(-4deg); }
-  70%, 100% { transform: scaleY(1.25) rotate(-3deg); } }
-/* The detail swap rides the SAME clock as the turn. Switched by a static rule instead, the
-   far eye and the near ear are already gone on frame one - a full-width face missing an eye,
-   which reads as a rendering bug rather than as a head about to move. */
+  22%       { transform: scaleY(1) rotate(6deg); }
+  52%       { transform: scaleY(1.13) rotate(-10deg); }
+  70%, 100% { transform: scaleY(1.11) rotate(-4deg); } }
+/* The TURN. He looks down and aside into the elbow, so the box head shows a corner: a seam
+   splits off its near side, the near ear rides onto that side, the far ear goes behind, and
+   the eyes slide toward the elbow and narrow. All on the duck's clock - switched by a static
+   rule the far ear is gone on frame one, which reads as a rendering bug. */
 @keyframes otto-dab-swap {
-  0%, 26%   { opacity: 1; }
-  38%, 100% { opacity: 0; } }
-/* Both arms wind back a few degrees first, then swing past the pose and settle into it. */
+  0%, 30%   { opacity: 1; }
+  44%, 100% { opacity: 0; } }
+@keyframes otto-dab-side {
+  0%, 30%   { opacity: 0; }
+  52%, 100% { opacity: 1; } }
+@keyframes otto-dab-ear {
+  0%, 22%   { transform: translate(0, 0); }
+  52%, 100% { transform: translate(23px, 3px); } }
+@keyframes otto-dab-eye-l {
+  0%, 22%   { transform: translate(0, 0) scaleX(1); }
+  52%       { transform: translate(27px, 9px) scaleX(.85); }
+  70%, 100% { transform: translate(25px, 8px) scaleX(.85); } }
+@keyframes otto-dab-eye-r {
+  0%, 22%   { transform: translate(0, 0) scaleX(1); }
+  52%       { transform: translate(20px, 9px) scaleX(.65); }
+  70%, 100% { transform: translate(18px, 8px) scaleX(.65); } }
+/* Both arms hang straight, wind back a few degrees, then swing OUT and up past the pose and
+   settle into it. The folded forearm starts in line with its upper arm and folds as it rises. */
 @keyframes otto-dab-arm-l {
-  0%        { transform: rotate(118deg); }
-  22%       { transform: rotate(126deg); }
-  52%       { transform: rotate(-8deg); }
+  0%        { transform: rotate(-122deg); }
+  22%       { transform: rotate(-130deg); }
+  52%       { transform: rotate(8deg); }
+  70%, 100% { transform: rotate(0deg); } }
+@keyframes otto-dab-fore {
+  0%, 22%   { transform: rotate(132deg); }
+  52%       { transform: rotate(-9deg); }
   70%, 100% { transform: rotate(0deg); } }
 @keyframes otto-dab-arm-r {
-  0%        { transform: rotate(140deg); }
-  22%       { transform: rotate(148deg); }
-  52%       { transform: rotate(-10deg); }
+  0%        { transform: rotate(106deg); }
+  22%       { transform: rotate(113deg); }
+  52%       { transform: rotate(-7deg); }
   70%, 100% { transform: rotate(0deg); } }
 :host([state="dab"]) .figure { transform-box: view-box; transform-origin: 121px 226px;
   animation: otto-dab-hit calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both, otto-dab-hold calc(3.6s / var(--otto-speed)) ease-in-out infinite calc(.85s / var(--otto-speed)); }
@@ -693,13 +762,18 @@
 :host([state="dab"]) .noggin { animation: otto-dab-head calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
 :host([state="dab"]) .face { animation: otto-dab-face calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
 :host([state="dab"]) .dabarm-l { animation: otto-dab-arm-l calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
+:host([state="dab"]) .dabfore { animation: otto-dab-fore calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
 :host([state="dab"]) .dabarm-r { animation: otto-dab-arm-r calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
-/* The eyes go with the bow - they are pointing at the floor, behind his own forearm - and
-   they fade on the SAME clock as the pitch: dropped by a static rule they are gone on frame
-   one, an upright face with no eyes, which reads as a rendering bug. The strokes are told not
-   to squash with the foreshortening, or the horizontal lines come out thinner. */
+/* Strokes are told not to squash with the foreshortening, or horizontals come out thinner. */
 :host([state="dab"]) .noggin * { vector-effect: non-scaling-stroke; }
-:host([state="dab"]) .eye { animation: otto-dab-swap calc(.85s / var(--otto-speed)) linear 1 both; }
+:host([state="dab"]) .eye-l { animation: otto-dab-eye-l calc(.85s / var(--otto-speed)) ease-out 1 both; }
+:host([state="dab"]) .eye-r { animation: otto-dab-eye-r calc(.85s / var(--otto-speed)) ease-out 1 both; }
+:host([state="dab"]) .ear-l { animation: otto-dab-ear calc(.85s / var(--otto-speed)) ease-out 1 both; }
+:host([state="dab"]) .ear-r { animation: otto-dab-swap calc(.85s / var(--otto-speed)) linear 1 both; }
+/* The neck is drawn BEHIND the head and leans after it: static, its two lines stood proud of
+   a head that had tipped off them, and he read as decapitated. */
+:host([state="dab"]) .neck { transform-box: view-box; transform-origin: 121px 146px; animation: otto-dab-neck calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
+:host([state="dab"]) .dabside { animation: otto-dab-side calc(.85s / var(--otto-speed)) linear 1 both; }
 :host([state="dab"]) .antenna { animation: otto-dab-antenna calc(.85s / var(--otto-speed)) cubic-bezier(.3, 1.5, .5, 1) 1 both; }
 :host([state="dab"]) .spark path { animation: otto-flash calc(.85s / var(--otto-speed)) ease-out 1 both; animation-delay: calc(.3s / var(--otto-speed)); }
 
@@ -764,6 +838,145 @@
 :host([state="shrug"]) .query path,
 :host([state="shrug"]) .query .qdot { animation: otto-query calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
 
+/* --- hobbies --------------------------------------------------------
+   What he does with an idle minute. Each is its own pair of arms for the same reason the dab
+   has one - a rigid everyday arm cannot hold a book - and each prop is hidden by default, so
+   a state that forgets to switch one off cannot leak it. */
+.hob, .grillset { opacity: 0; }
+.hseg { stroke-width: 2.2; fill: var(--otto-paper); }
+.hline { stroke-width: 2; }
+.fhole { fill: var(--otto-ink); stroke: none; }
+.hob *, .grillset * { transform-box: view-box; }
+
+/* reading: eyes down on the page, tracking a line and snapping back; a page turns over. */
+@keyframes otto-read-eyes {
+  0%        { transform: translate(-4px, 6px) scaleY(.7); }
+  42%       { transform: translate(4px, 6px) scaleY(.7); }
+  46%       { transform: translate(-4px, 7px) scaleY(.7); }
+  88%       { transform: translate(4px, 7px) scaleY(.7); }
+  92%, 100% { transform: translate(-4px, 6px) scaleY(.7); } }
+@keyframes otto-pageflip {
+  0%, 80%   { transform: scaleX(1); opacity: 0; }
+  82%       { transform: scaleX(1); opacity: 1; }
+  96%       { transform: scaleX(-1); opacity: 1; }
+  100%      { transform: scaleX(-1); opacity: 0; } }
+.pageflip { stroke-width: 2; transform-origin: 121px 172px; opacity: 0; }
+:host([state="reading"]) .arm { opacity: 0; }
+:host([state="reading"]) .hob-read { opacity: 1; }
+:host([state="reading"]) .figure, :host([state="reading"]) .shadow { animation-duration: calc(5s / var(--otto-speed)); }
+:host([state="reading"]) .face { transform: translateY(4px); }
+:host([state="reading"]) .eye { animation: otto-read-eyes calc(4s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="reading"]) .pageflip { animation: otto-pageflip calc(8s / var(--otto-speed)) ease-in-out infinite; }
+
+/* juggling: X runs at a constant speed and Y decelerates to the top, which is all a parabola
+   is - one ball on one curved keyframe path comes out as a triangle. Three balls a third of a
+   cycle apart on the shrug's palms-up arms. */
+@keyframes otto-jug-x { 0% { transform: translateX(0); } 100% { transform: translateX(186px); } }
+@keyframes otto-jug-y {
+  0%, 100%  { transform: translateY(0); animation-timing-function: cubic-bezier(.2, .6, .5, 1); }
+  50%       { transform: translateY(-158px); animation-timing-function: cubic-bezier(.5, 0, .8, .4); } }
+@keyframes otto-jug-arm-l { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(-7deg); } }
+@keyframes otto-jug-arm-r { 0%, 100% { transform: rotate(7deg); } 50% { transform: rotate(0deg); } }
+@keyframes otto-jug-head { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+.jball circle { fill: var(--otto-paper); stroke: var(--otto-accent); stroke-width: 2.2; }
+:host([state="juggling"]) .arm { opacity: 0; }
+:host([state="juggling"]) .shrugarms, :host([state="juggling"]) .hob-jug { opacity: 1; }
+:host([state="juggling"]) .jball { animation: otto-jug-x calc(1.2s / var(--otto-speed)) linear infinite alternate; }
+:host([state="juggling"]) .jball circle { animation: otto-jug-y calc(1.2s / var(--otto-speed)) infinite; }
+:host([state="juggling"]) .jb2, :host([state="juggling"]) .jb2 circle { animation-delay: calc(-.8s / var(--otto-speed)); }
+:host([state="juggling"]) .jb3, :host([state="juggling"]) .jb3 circle { animation-delay: calc(-1.6s / var(--otto-speed)); }
+:host([state="juggling"]) .shrugarm-l { animation: otto-jug-arm-l calc(.8s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="juggling"]) .shrugarm-r { animation: otto-jug-arm-r calc(.8s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="juggling"]) .noggin { animation: otto-jug-head calc(2.4s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="juggling"]) .eye { animation: none; transform: translateY(-6px); }
+
+/* grilling: he steps aside for the grill exactly as planning does for the board, and the
+   patty leaves the grate on the same clock as the spatula that flips it. */
+@keyframes otto-grill-flip {
+  0%, 58%   { transform: rotate(0deg); }
+  66%       { transform: rotate(7deg); }
+  74%       { transform: rotate(-20deg); }
+  88%, 100% { transform: rotate(0deg); } }
+@keyframes otto-patty {
+  0%, 68%   { transform: translateY(0) rotate(0deg); }
+  80%       { transform: translateY(-46px) rotate(200deg); }
+  92%, 100% { transform: translateY(0) rotate(360deg); } }
+@keyframes otto-smoke {
+  0%        { opacity: 0; transform: translateY(6px); }
+  35%       { opacity: .7; }
+  100%      { opacity: 0; transform: translateY(-20px); } }
+.grillfore { transform-origin: 190px 182px; }
+.patty { transform-origin: 197px 209px; }
+.grillset .grate { stroke-width: 2.6; }
+.spat { stroke-width: 2.6; }
+:host([state="grilling"]) .figure { animation: otto-float-aside calc(4.4s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="grilling"]) .shadow { animation: otto-shadow-aside calc(4.4s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="grilling"]) .arm-r { opacity: 0; }
+:host([state="grilling"]) .hob-grill, :host([state="grilling"]) .grillset { opacity: 1; }
+:host([state="grilling"]) .eye { animation: none; transform: translate(5px, 4px) scaleY(.8); }
+:host([state="grilling"]) .grillfore { animation: otto-grill-flip calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="grilling"]) .patty { animation: otto-patty calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="grilling"]) .smoke { animation: otto-smoke calc(2.4s / var(--otto-speed)) ease-out infinite; }
+:host([state="grilling"]) .s2 { animation-delay: calc(.8s / var(--otto-speed)); }
+:host([state="grilling"]) .s3 { animation-delay: calc(1.6s / var(--otto-speed)); }
+
+/* fluting: one 9s story on one clock - he plays, two notes fall out of the end instead of
+   floating up, he takes it away from his face, fumes at it, sighs, and tries again. The lowering is a
+   TRANSLATE no bigger than the shoulder joint: rotated, the upper arms left their sockets. Every
+   part reads the same percentages, or the scowl arrives before the note that earned it. */
+@keyframes otto-flute-body {
+  0%, 46%   { transform: translate(0, 0); }
+  12%, 34%  { transform: translate(0, -5px); }
+  52%       { transform: translate(-4px, 0) rotate(-2deg); }
+  56%       { transform: translate(4px, 0) rotate(2deg); }
+  60%       { transform: translate(-3px, 0) rotate(-1.5deg); }
+  64%       { transform: translate(3px, 0) rotate(1deg); }
+  68%, 84%  { transform: translate(0, 0); }
+  92%       { transform: translate(0, 5px); }
+  100%      { transform: translate(0, 0); } }
+@keyframes otto-flute-kit {
+  0%, 46%   { transform: translate(0, 0); }
+  10%, 22%, 34% { transform: translate(0, -1.5px); }
+  16%, 28%, 40% { transform: translate(0, 1.5px); }
+  52%, 88%  { transform: translate(0, 9px); }
+  100%      { transform: translate(0, 0); } }
+@keyframes otto-flute-eye-l {
+  0%, 44%   { transform: translateY(3px) scaleY(.35) scaleX(1.5); }
+  50%, 84%  { transform: translate(3px, 4px) rotate(16deg) scaleY(.4) scaleX(1.7); }
+  92%, 100% { transform: translateY(3px) scaleY(.35) scaleX(1.5); } }
+@keyframes otto-flute-eye-r {
+  0%, 44%   { transform: translateY(3px) scaleY(.35) scaleX(1.5); }
+  50%, 84%  { transform: translate(3px, 4px) rotate(-16deg) scaleY(.4) scaleX(1.7); }
+  92%, 100% { transform: translateY(3px) scaleY(.35) scaleX(1.5); } }
+@keyframes otto-flute-antenna {
+  0%, 46%   { transform: rotate(0deg); }
+  52%, 84%  { transform: rotate(26deg); }
+  100%      { transform: rotate(0deg); } }
+@keyframes otto-sour1 {
+  0%, 14%   { opacity: 0; transform: translate(-12px, 0) rotate(0deg); }
+  18%, 26%  { opacity: 1; }
+  34%, 100% { opacity: 0; transform: translate(36px, 40px) rotate(55deg); } }
+@keyframes otto-sour2 {
+  0%, 28%   { opacity: 0; transform: translate(-12px, 0) rotate(0deg); }
+  32%, 40%  { opacity: 1; }
+  48%, 100% { opacity: 0; transform: translate(46px, 34px) rotate(-50deg); } }
+@keyframes otto-flute-fume {
+  0%, 50%, 70%, 100% { opacity: 0; }
+  54%, 64%  { opacity: .9; } }
+.ftube, .sour .hline { stroke: var(--otto-accent); }
+.sour .fhole { fill: var(--otto-accent); }
+.sour { opacity: 0; transform-origin: 150px 204px; }
+:host([state="fluting"]) .arm { opacity: 0; }
+:host([state="fluting"]) .hob-flute { opacity: 1; }
+:host([state="fluting"]) .figure { transform-box: view-box; transform-origin: 121px 226px; animation: otto-flute-body calc(9s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="fluting"]) .flutekit { animation: otto-flute-kit calc(9s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="fluting"]) .eye-l { animation: otto-flute-eye-l calc(9s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="fluting"]) .eye-r { animation: otto-flute-eye-r calc(9s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="fluting"]) .antenna { animation: otto-flute-antenna calc(9s / var(--otto-speed)) ease-in-out infinite; }
+:host([state="fluting"]) .sour1 { animation: otto-sour1 calc(9s / var(--otto-speed)) ease-in infinite; }
+:host([state="fluting"]) .sour2 { animation: otto-sour2 calc(9s / var(--otto-speed)) ease-in infinite; }
+:host([state="fluting"]) .spark path { animation: otto-flute-fume calc(9s / var(--otto-speed)) linear infinite; }
+
 /* --- error --------------------------------------------------------- */
 :host([state="error"]) .figure { animation: otto-shake calc(.5s / var(--otto-speed)) ease-in-out 2 both, otto-float calc(3.6s / var(--otto-speed)) ease-in-out infinite calc(1s / var(--otto-speed)); }
 :host([state="error"]) .eye { animation: none; transform: scaleY(.28) scaleX(1.8); }
@@ -785,6 +998,25 @@
    state writer. Accent-filled, so they wear the active palette like the antenna does. */
 .hearts .heart { fill: var(--otto-accent); stroke: none; opacity: 0; transform-box: fill-box; transform-origin: center; }
 
+/* The dream. A thought balloon in HIS line and paper, tied to his head by the same three
+   rising dots thinking uses - so it reads as part of the drawing, not as an app panel parked
+   over him. Uneven corner radii and a degree of tilt are the hand-drawn wobble; the Zs move
+   to his other side because they sit exactly where the dots rise. Spans the dock (8px left of him). */
+@keyframes otto-dream-in { 0% { opacity: 0; transform: translateY(6px) rotate(-1deg) scale(.94); } 100% { opacity: 1; transform: rotate(-1deg); } }
+.dream { display: none; position: absolute; left: -8px; bottom: calc(100% - 2px); width: 190px; box-sizing: border-box;
+  padding: 8px 12px 9px; cursor: pointer; background: var(--otto-paper); color: var(--otto-ink);
+  border: 1.4px solid var(--otto-ink); border-radius: 22px 28px 20px 30px / 26px 20px 28px 22px;
+  font-style: italic; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; transform: rotate(-1deg); transform-origin: 50% 100%; }
+.dream::before { content: "dreaming of\\2026"; display: block; font-style: normal; font-size: 9.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--otto-accent); margin-bottom: 2px; }
+:host { position: relative; }
+:host([dream]) .dream { display: block; animation: otto-dream-in .5s ease-out both; }
+:host([dream-below]) .dream { bottom: auto; top: 100%; }
+:host([dream]:not([dream-below])) .zzz { transform: translateX(-150px); }
+:host([dream]:not([dream-below])) .think-dots circle { animation: otto-dots calc(3.6s / var(--otto-speed)) ease-in-out infinite; }
+:host([dream]) .think-dots circle:nth-child(2) { animation-delay: calc(.4s / var(--otto-speed)); }
+:host([dream]) .think-dots circle:nth-child(3) { animation-delay: calc(.8s / var(--otto-speed)); }
+
 :host([shadow="off"]) .shadow { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -793,7 +1025,7 @@
 }`;
 
   class OttoMascot extends HTMLElement {
-    static get observedAttributes() { return ['size', 'color', 'speed', 'state']; }
+    static get observedAttributes() { return ['size', 'color', 'speed', 'state', 'dream']; }
 
     constructor() {
       super();
@@ -802,6 +1034,9 @@
       style.textContent = CSS;
       root.append(style);
       root.innerHTML += SVG;
+      this._dream = document.createElement('div');
+      this._dream.className = 'dream';
+      root.append(this._dream);
       this._blinkTimer = null;
     }
 
@@ -817,6 +1052,7 @@
     }
 
     _sync() {
+      this._dream.textContent = this.getAttribute('dream') || '';
       const size = this.getAttribute('size');
       if (size) this.style.width = /^\d+$/.test(size) ? size + 'px' : size;
       const color = this.getAttribute('color');

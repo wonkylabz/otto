@@ -5386,6 +5386,33 @@ class MascotStateTests(unittest.TestCase):
             self.assertGreaterEqual(len(line.split()), 2,
                                     f"that is a one-word label, not speech: {line!r}")
 
+    def test_every_idle_hobby_is_a_state_the_element_draws(self):
+        """A hobby the element has no rules for renders as plain idle with the everyday arms -
+        nothing errors, the rotation just silently has a dead slot in it."""
+        ui = self._ui()
+        i = ui.index("const MASCOT_HOBBIES=[")
+        hobbies = re.findall(r'"([a-z]+)"', ui[i:ui.index("];", i)])
+        self.assertGreaterEqual(len(hobbies), 4, "the hobby list has drifted out of the regex")
+        j = ui.index("const STATES = [")
+        states = set(re.findall(r"'([a-z]+)'", ui[j:ui.index("];", j)]))
+        for h in hobbies:
+            self.assertIn(h, states, f"{h!r} is not a state the element accepts")
+            self.assertIn(f':host([state="{h}"])', ui, f"{h!r} has no pose in the element's CSS")
+
+    def test_a_dream_never_covers_the_pause_and_reads_memory_once_per_nap(self):
+        """The paused bubble tells the operator why nothing starts, so a dream must not replace
+        it; and the dream's facts are one read per nap - re-read on every 20s mood tick it is
+        the fourth poller the block is guarded against."""
+        ui = self._ui()
+        block = ui[ui.index("function resolveMood()"):ui.index("function mascotDream()")]
+        self.assertLess(block.index("if(MOOD.paused) return"), block.index("mascotDream()"),
+                        "the pause no longer outranks the dream")
+        dream = ui[ui.index("function mascotDream()"):ui.index("function applyMood()")]
+        self.assertIn("!DREAM.facts && !DREAM.loading", dream,
+                      "the dream re-reads memory on every mood tick")
+        self.assertIn('if(m.state!=="sleeping" || MOOD.paused) DREAM.since=0;', ui,
+                      "an empty memory re-arms the read on every tick of the same nap")
+
     def test_he_is_mounted_outside_the_view_container(self):
         """Every tab is a view swap inside <main>. Mounted in one, he would restart his
         animation on each switch and be absent from seven of the eight tabs - the one thing
