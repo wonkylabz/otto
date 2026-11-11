@@ -13,6 +13,8 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
+- The mascot's dab is redrawn as an actual dab: one arm thrown straight out, the other folded across a face turned into the elbow.
+- The mascot fills an idle minute: after 40s of quiet he reads, juggles, grills and fails at the flute in turn, and once asleep he dreams — a thought bubble showing one stored memory at a time (click it to open Memory). Note the dream puts memory text in the corner of every tab; hide him in Admin → Appearance if you share your screen.
 - Data health findings have a **Fix** button in the Audit tab's Data tab (remove a stale model pin, detach a chat, re-derive labels, delete an empty workstream), so they no longer need code or a hand-edited store.
 - Board cards that a request fanned out into (swarm sub-tasks and Slack delegates) now carry a **family chip** shared with their parent: a short tag, one colour, and "sub-task 2/3" or "3 sub-tasks (1 done)". Hovering it dims every card outside the family; clicking it jumps to the parent.
 

@@ -21,6 +21,13 @@
    --stg-* chip tokens, so the corner and the Running column say the same thing in the same
    colour. */
 const MASCOT_KEY="otto.mascot", MASCOT_POS_KEY="otto.mascot.pos", MASCOT_HOME_KEY="otto.mascot.home", MASCOT_IDLE_SLEEP_MS=240000;
+/* An idle minute is not an empty one: after MASCOT_HOBBY_AFTER_MS of quiet he takes up each
+   hobby in turn until he falls asleep. Which one is a pure function of the clock - never a
+   random pick - because every poller re-resolves the mood, and a pick that changed per call
+   would restart him mid-juggle on each tick. */
+const MASCOT_HOBBIES=["reading","juggling","grilling","fluting"];
+const MASCOT_HOBBY_AFTER_MS=40000, MASCOT_HOBBY_MS=50000, MASCOT_DREAM_MS=20000, MASCOT_DREAM_CUT=120;
+const DREAM={facts:null, loading:false, since:0};
 const MASCOT_EDGE=14;      // the gap he keeps from any viewport edge, wherever he is dropped
 const MASCOT_STAGE={
   INGRESS:  ["thinking", "let me read that\u2026"],
@@ -113,6 +120,9 @@ function mascotPlace(){
   d.style.left=Math.round(x)+"px"; d.style.top=Math.round(y)+"px"; d.style.bottom="auto";
   // No room for a bubble above his head up there - put it under him and flip the tail.
   d.classList.toggle("below", y < 120);
+  // The dream balloon is drawn by the element, which cannot see the dock: told HERE, on every
+  // placement, or a drag while he sleeps leaves it on the side he was dropped away from.
+  const fg=document.getElementById("mascot-fig"); if(fg) fg.toggleAttribute("dream-below", y < 120);
   mascotLayout();
 }
 /* Whether the two surfaces that reach his DEFAULT corner should give up space for him. Read
@@ -197,9 +207,40 @@ function resolveMood(){
   // question. The error pose (shake, scowl, arms folded) told the reader something BROKE,
   // which is the wrong thing to make someone feel before they have read the card.
   if(f.needs) return {state:"shrug", say:"something needs a look", sub:f.sub};
-  return (Date.now()-MOOD.quietSince > MASCOT_IDLE_SLEEP_MS)
-    ? {state:"sleeping", say:"", sub:"", quiet:true}
-    : {state:"idle", say:"", sub:"", quiet:true};
+  const quiet=Date.now()-MOOD.quietSince;
+  if(quiet > MASCOT_IDLE_SLEEP_MS){
+    // Still QUIET: the dream is drawn by the element, the status bubble stays shut.
+    const m={state:"sleeping", say:"", sub:"", quiet:true};
+    m.dream=mascotDream();
+    return m;
+  }
+  // Not under reduced motion: a hobby IS its motion, and the element stills every animation
+  // there - the grill's step-aside included, which leaves him standing inside his own grill.
+  if(quiet > MASCOT_HOBBY_AFTER_MS && !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)){
+    // Seeded by when the quiet began, so each lull opens on a different hobby.
+    const n=MASCOT_HOBBIES.length, slot=Math.floor((quiet-MASCOT_HOBBY_AFTER_MS)/MASCOT_HOBBY_MS);
+    return {state:MASCOT_HOBBIES[(Math.floor(MOOD.quietSince/1000)+slot)%n], say:"", sub:"", quiet:true};
+  }
+  return {state:"idle", say:"", sub:"", quiet:true};
+}
+/* He dreams about what he remembers: one stored fact at a time, a new one every
+   MASCOT_DREAM_MS. The facts are read ONCE per nap (memoryDreams) and the one on show is the
+   clock's, for the same idempotence reason as the hobbies. Never while PAUSED - that bubble
+   is telling the operator why nothing starts, and a dream over it hides the one thing to read. */
+function mascotDream(){
+  if(!DREAM.since){ DREAM.since=Date.now(); DREAM.facts=null; }
+  if(!DREAM.facts && !DREAM.loading && typeof memoryDreams==="function"){
+    DREAM.loading=true;
+    memoryDreams().then(f=>{
+      // Shuffled once per nap: newest-first would dream the same three facts every night.
+      for(let i=f.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [f[i],f[j]]=[f[j],f[i]]; }
+      DREAM.facts=f; DREAM.loading=false; applyMood();
+    });
+  }
+  const f=DREAM.facts;
+  if(!f || !f.length) return "";
+  const t=f[Math.floor((Date.now()-DREAM.since)/MASCOT_DREAM_MS)%f.length];
+  return t.length>MASCOT_DREAM_CUT ? t.slice(0,MASCOT_DREAM_CUT).replace(/[ ,;:-]+$/,"")+"\u2026" : t;
 }
 /* The single writer. Idempotent on purpose - every poller re-resolves on its own tick, and
    re-setting `state` would restart a CSS animation mid-swing (a permanently stuttering robot
@@ -211,7 +252,8 @@ function applyMood(){
                      document.body.classList.remove("mascot-reserve"); return; }
   d.hidden=false; document.body.classList.add("mascot-on");
   if(!d.style.left) mascotPlace();      // first paint: fractions -> pixels
-  const m=resolveMood(), sig=[m.state,m.say,m.sub,m.quiet].join("|");
+  const m=resolveMood(), sig=[m.state,m.say,m.sub,m.quiet,m.dream].join("|");
+  if(m.state!=="sleeping" || MOOD.paused) DREAM.since=0;   // awake: the next nap reads memory afresh
   if(sig===MASCOT_SIG) return;
   MASCOT_SIG=sig;
   const fig=document.getElementById("mascot-fig");
@@ -222,7 +264,11 @@ function applyMood(){
   if(fig) fig.setAttribute("state", m.state);
   // Nothing is happening: he stays, the panel goes. A bubble reading "ready" over the chat
   // list is a permanent obstruction carrying no information.
-  const bub=document.getElementById("mascot-bubble"); if(bub) bub.hidden=!!m.quiet;
+  const bub=document.getElementById("mascot-bubble");
+  if(bub) bub.hidden=!!m.quiet;
+  // The dream is drawn BY the element, in his own line and paper - the status bubble is the
+  // app's voice, and a memory in it read as Otto reporting something.
+  if(fig){ if(m.dream) fig.setAttribute("dream", m.dream); else fig.removeAttribute("dream"); }
   const say=document.getElementById("mascot-say"); if(say) say.textContent=m.say;
   const sub=document.getElementById("mascot-sub");
   if(sub){ sub.textContent=m.sub||""; sub.hidden=!m.sub; }
@@ -298,7 +344,12 @@ if(mBubble) mBubble.addEventListener("click", e=>{
   // He is reporting on something that isn't on screen - take the human to it.
   if(!MOOD.turn && (MOOD.fleet||{}).sub) activateTab("board");
 });
-if(mFig) mFig.addEventListener("click", ()=>{ if(mFig.blink) mFig.blink(); if(mFig.hearts) mFig.hearts(); });
+if(mFig) mFig.addEventListener("click", e=>{
+  if(MASCOT_DRAGGED){ MASCOT_DRAGGED=false; return; }
+  // A click on the dream itself goes to what he is dreaming about.
+  if(e.composedPath().some(n=>n.classList && n.classList.contains("dream"))){ activateTab("memory"); return; }
+  if(mFig.blink) mFig.blink(); if(mFig.hearts) mFig.hearts();
+});
 /* Hello, and welcome back. Gestures, not moods - they never touch MOOD or the state attribute
    (applyMood is his one writer), and wave() itself refuses anything but idle (asleep, he stays asleep), so a
    greeting can never interrupt him mid-plan. "Back" means away long enough to have left. */
