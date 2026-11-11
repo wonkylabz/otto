@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- The regression corpus now covers the repo-conventions judge: a pair of cases checks that a convention the request asked to break fails the run, and that the same output passes with no repo rules in view.
+
 ## [0.15.0] - 2026-11-11
 
 ### Added
