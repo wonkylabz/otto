@@ -120,6 +120,9 @@ function mascotPlace(){
   d.style.left=Math.round(x)+"px"; d.style.top=Math.round(y)+"px"; d.style.bottom="auto";
   // No room for a bubble above his head up there - put it under him and flip the tail.
   d.classList.toggle("below", y < 120);
+  // The dream balloon is drawn by the element, which cannot see the dock: told HERE, on every
+  // placement, or a drag while he sleeps leaves it on the side he was dropped away from.
+  const fg=document.getElementById("mascot-fig"); if(fg) fg.toggleAttribute("dream-below", y < 120);
   mascotLayout();
 }
 /* Whether the two surfaces that reach his DEFAULT corner should give up space for him. Read
@@ -211,7 +214,9 @@ function resolveMood(){
     m.dream=mascotDream();
     return m;
   }
-  if(quiet > MASCOT_HOBBY_AFTER_MS){
+  // Not under reduced motion: a hobby IS its motion, and the element stills every animation
+  // there - the grill's step-aside included, which leaves him standing inside his own grill.
+  if(quiet > MASCOT_HOBBY_AFTER_MS && !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)){
     // Seeded by when the quiet began, so each lull opens on a different hobby.
     const n=MASCOT_HOBBIES.length, slot=Math.floor((quiet-MASCOT_HOBBY_AFTER_MS)/MASCOT_HOBBY_MS);
     return {state:MASCOT_HOBBIES[(Math.floor(MOOD.quietSince/1000)+slot)%n], say:"", sub:"", quiet:true};
@@ -262,10 +267,8 @@ function applyMood(){
   const bub=document.getElementById("mascot-bubble");
   if(bub) bub.hidden=!!m.quiet;
   // The dream is drawn BY the element, in his own line and paper - the status bubble is the
-  // app's voice, and a memory in it read as Otto reporting something. `below` rides along
-  // because only the dock knows there is no room above his head.
-  if(fig){ if(m.dream) fig.setAttribute("dream", m.dream); else fig.removeAttribute("dream");
-           fig.toggleAttribute("dream-below", d.classList.contains("below")); }
+  // app's voice, and a memory in it read as Otto reporting something.
+  if(fig){ if(m.dream) fig.setAttribute("dream", m.dream); else fig.removeAttribute("dream"); }
   const say=document.getElementById("mascot-say"); if(say) say.textContent=m.say;
   const sub=document.getElementById("mascot-sub");
   if(sub){ sub.textContent=m.sub||""; sub.hidden=!m.sub; }
