@@ -6,10 +6,9 @@ itself would reach out to is stubbed:
   * HTTP API (route -> clarify -> run -> audit) driven over a real ephemeral socket,
     with `engine._claude` and `gateway.complete` stubbed. Stdlib-only.
   * The Temporal workflow's signal path (clarification + approve/deny) on an isolated
-    in-memory task queue. Self-skips when temporalio isn't installed, so the suite stays
-    install-free.
+    in-memory task queue. Needs temporalio, so run it from the venv.
 
-    python3 -m unittest test_integration -v
+    ./.venv/bin/python -m unittest test_integration -v
 """
 import inspect
 import json

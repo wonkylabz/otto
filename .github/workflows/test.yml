@@ -41,8 +41,8 @@ jobs:
           path: ${{ github.workspace }}/.temporal-test-server
           key: temporal-test-server-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
       - run: pip install -r requirements.txt
-      # Temporal tests self-skip without `temporalio`, so a missing install would go GREEN
-      # having tested nothing — the same trap as running the suite under a bare python3.
+      # Without `temporalio` the Temporal tests skip or error on import; fail here, in one
+      # readable line, rather than in the middle of that output.
       - run: python -c "import temporalio, sys; print('temporalio', temporalio.__file__)"
       - run: python -m unittest
 
