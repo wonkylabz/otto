@@ -21,6 +21,7 @@ changelog that restates it is a second copy of `git log`.
 
 ### Fixed
 
+- The mascot's dab (and any other one-off reaction) is held when a run finishes in a background tab and plays when you come back, instead of playing to nobody.
 - A job that had nothing to report no longer posts to its Slack destination when the run picked up a footer note (for example the general worker's "no isolated workspace" warning): the silence stands and the note stays on the run's record.
 - A model pin left behind by a renamed capability is reported as **orphaned** instead of "model not in the pool", which pointed at a capability that runs fine. A chat taken out of workstreams no longer reports too many refs, since it can't spread them.
 
