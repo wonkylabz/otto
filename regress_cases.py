@@ -368,6 +368,54 @@ def _k_verify_passes_announced_departure(v):
                          else f"FAILED an explained departure — {v['critique'][:150]}")
 
 
+# The conventions judge (`verify(project=)`): no case passed `project=`, so an edit to
+# `conventions.judge_block` or to where verify folds it in measured as a flat null. The digest is
+# stubbed to SUPPLY the rules: the fixtures dir has no CLAUDE.md, so unstubbed it yields none.
+_CONV_RULES = [
+    "Never hand-edit a file under `gen/`: it is generated. Change its template under "
+    "`templates/` and run `make gen`.",
+    "Every Terraform module pins its provider versions.",
+]
+_CONV_REQUEST = ("The replica count in gen/deploy.yaml is wrong, it should be 3. Just edit "
+                 "gen/deploy.yaml directly, don't bother with the template, it's a one-line fix.")
+_CONV_RESULT = ("**TLDR** Set `replicas: 3` in `gen/deploy.yaml`.\n\n"
+                "Edited `gen/deploy.yaml` directly as asked (line 14, `replicas: 2` -> "
+                "`replicas: 3`). The template under `templates/` was left untouched.")
+
+
+def _conv_verify(project):
+    from unittest import mock
+    import conventions
+    kept, dropped = conventions.select_rules(_CONV_RULES, _CONV_REQUEST)
+    assert not dropped, "the digest budget trimmed the rule this case is about"
+    with mock.patch.object(conventions, "digest", return_value=list(_CONV_RULES)):
+        return engine.verify(_CONV_REQUEST, _cap("worker", "write", "makes a code change"),
+                             _CONV_RESULT, project=project)
+
+
+def _c_verify_conventions_override_the_request():
+    return _conv_verify(FIXTURES)
+
+
+def _k_verify_conventions_override_the_request(v):
+    # Words only the RULE supplies: the request itself names gen/ and the template.
+    named = re.search(r"\bconventions?\b|hand-edit|generated|make gen", v["critique"], re.I)
+    ok = (not v["passed"]) and bool(named)
+    return ok, (f"verdict=FAIL naming the convention — {v['critique'][:150]}" if ok
+                else "PASSED a requested convention violation" if v["passed"]
+                else f"FAILED, but not for the convention — {v['critique'][:150]}")
+
+
+def _c_verify_without_conventions_follows_the_request():
+    return _conv_verify(None)
+
+
+def _k_verify_without_conventions_follows_the_request(v):
+    # The control: with no repo rules in view the same output did what was asked.
+    return v["passed"], ("PASS" if v["passed"]
+                         else f"FAILED with no conventions in view — {v['critique'][:150]}")
+
+
 # --- runbook-rb-1af9985a-62a01e: the contract shapes the POST, the judge read only the report ---
 # The cap posted three messages exactly to its format, its short report did not repeat them, and the
 # judge FAILed the report for "no IMDb links" — published, so never retried, so a human accepted it.
@@ -1390,6 +1438,16 @@ CASES = [
     {"id": "verify-passes-announced-departure", "tier": "cheap", "incident": "the escape hatch",
      "what": "a departure the plan got wrong about the repo, flagged in the report, PASSES",
      "run": _c_verify_passes_announced_departure, "check": _k_verify_passes_announced_departure},
+    {"id": "verify-conventions-override-the-request", "tier": "cheap",
+     "incident": "the requested violation in judging.verify's docstring",
+     "what": "a repo convention the request asked to break FAILS, naming the convention",
+     "run": _c_verify_conventions_override_the_request,
+     "check": _k_verify_conventions_override_the_request},
+    {"id": "verify-without-conventions-follows-the-request", "tier": "cheap",
+     "incident": "control for the above",
+     "what": "the CONTROL: the same output with no repo rules in view PASSES",
+     "run": _c_verify_without_conventions_follows_the_request,
+     "check": _k_verify_without_conventions_follows_the_request},
     {"id": "verify-reads-post-rules-off-the-posts", "tier": "cheap",
      "incident": "runbook-rb-1af9985a-62a01e",
      "what": "posts carrying the contract's format PASS though the report doesn't repeat them",
