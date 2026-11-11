@@ -331,6 +331,22 @@ def ui_src():
     return _UI_TAG.sub(inline, doc)
 
 
+_SRV_MODULES = ("srv_runs.py", "srv_ingress.py", "srv_memory.py", "srv_admin.py")
+
+
+def server_src():
+    """The HTTP server's code as ONE document: `server.py` followed by every route mixin
+    `Handler` is composed from. Same reason as `workflow_src()`: ~40 guards grep or `ast.parse`
+    the server, and pointed at `server.py` alone they stop covering whatever moved and still pass.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    parts = []
+    for name in ("server.py",) + _SRV_MODULES:
+        with open(os.path.join(root, name), encoding="utf-8") as fh:
+            parts.append(fh.read())
+    return "\n".join(parts)
+
+
 _WF_MODULES = ("wf_runtime.py", "wf_repo.py", "wf_postpr.py", "wf_swarm.py", "wf_frontman.py")
 
 

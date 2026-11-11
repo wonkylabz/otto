@@ -54,6 +54,7 @@ except Exception:  # noqa: BLE001
     _HAS_TEMPORAL = False
 
 from test_support import setUpModule  # noqa: F401 - unittest calls it per module
+from test_support import server_src
 from test_support import (_Cap, _FAKE_MCP_SERVER, _cap_stub, _fake_embed, _patched_registry_dirs, _storage_hammer, ui_src, workflow_src)  # noqa: F401
 
 
@@ -4868,7 +4869,7 @@ class EstopCoverageTests(unittest.TestCase):
         self.assertLess(src.index("estop.blocked"), src.index("start_workflow"),
                         "the check must land BEFORE the workflow is started")
         # And nothing may reach start_workflow in server.py around it.
-        body = inspect.getsource(server).replace(src, "")
+        body = server_src().replace(src, "")
         self.assertNotIn("start_workflow(OttoWorkflow", body,
                          "server.py must start OttoWorkflow only through _wf_start")
 
@@ -4971,6 +4972,86 @@ class EstopCoverageTests(unittest.TestCase):
         self.assertIn("estop_check", [a.__name__ for a in worker.ACTIVITIES])
 
 
+class ServerSourceReaderTests(unittest.TestCase):
+    """`server.Handler` is one class at runtime and five files on disk: `server.py` plus the
+    `srv_*.py` route mixins. Same two hazards as the `OttoWorkflow` split: a guard grepping
+    `server.py` alone stops covering what moved, and a mixin binding a server global at import
+    stops seeing the tests (and, under `python server.py`, the running module) replace it."""
+
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+
+    def _file(self, name):
+        with open(os.path.join(self.ROOT, name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_no_test_reads_server_py_directly(self):
+        offenders = []
+        for name in sorted(glob.glob(os.path.join(self.ROOT, "test_*.py"))):
+            src = self._file(os.path.basename(name))
+            for call in ast.walk(ast.parse(src)):
+                if not (isinstance(call, ast.Call) and call.args):
+                    continue
+                fn = getattr(call.func, "id", None) or getattr(call.func, "attr", None)
+                if fn not in ("open", "read_text", "_src", "_read", "Path", "getsource"):
+                    continue
+                arg = ast.get_source_segment(src, call.args[0]) or ""
+                if (fn in ("open", "read_text", "_src", "_read", "Path") and '"server.py"' in arg) \
+                        or (fn == "getsource" and arg in ("server", "server.Handler")):
+                    offenders.append("%s:%d" % (os.path.basename(name), call.lineno))
+        self.assertEqual(offenders, [], "these read server.py alone and so miss the route mixins; "
+                                        "use test_support.server_src()")
+
+    def test_server_src_holds_every_module_the_handler_is_built_from(self):
+        import server
+        import test_support
+        built = {os.path.basename(sys.modules[c.__module__].__file__)
+                 for c in server.Handler.__mro__ if c.__module__.startswith("srv_")}
+        self.assertTrue(built, "Handler no longer has route mixins: retire server_src()")
+        self.assertEqual(built, set(test_support._SRV_MODULES))
+
+    def test_a_mixin_reaches_server_globals_only_through_the_live_module(self):
+        import test_support
+        top = set()
+
+        def collect(stmts):          # module scope, through `if tc.OK:` and friends
+            for node in stmts:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    top.add(node.name)
+                elif isinstance(node, ast.Assign):
+                    top.update(t.id for t in node.targets if isinstance(t, ast.Name))
+                elif isinstance(node, (ast.If, ast.Try)):
+                    collect(node.body + node.orelse)
+        collect(ast.parse(self._file("server.py")).body)
+        self.assertLessEqual({"_wf_start", "CAPS", "TEMPORAL_OK", "Paused"}, top)
+        offenders = []
+        for name in test_support._SRV_MODULES:
+            tree = ast.parse(self._file(name))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "server":
+                    offenders.append(f"{name}:{node.lineno}: from server import")
+                elif isinstance(node, ast.Import) and any(a.name == "server" for a in node.names):
+                    offenders.append(f"{name}:{node.lineno}: import server")
+                elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in top:
+                    offenders.append(f"{name}:{node.lineno}: bare {node.id}")
+        self.assertEqual(offenders, [], "read it as _srv().NAME at call time")
+
+    def test_no_mixin_starts_a_workflow_itself(self):
+        """The pause's web guard is `server._wf_start`. The estop guards grep server.py for a
+        literal start call, which a mixin spelling it `_srv().OttoWorkflow` would walk past."""
+        import test_support
+        for name in test_support._SRV_MODULES:
+            self.assertNotIn("start_workflow(", self._file(name),
+                             f"{name} must start a run only through _srv()._wf_start")
+
+    def test_the_running_script_is_aliased_before_the_mixins_import(self):
+        """`python server.py` is `__main__`; without the alias `facade.srv()` imports a SECOND
+        copy of the module, and the mixins read its globals instead of the live ones."""
+        src = self._file("server.py")
+        alias = src.index('sys.modules.setdefault("server", sys.modules[__name__])')
+        self.assertLess(alias, src.index("\nfrom srv_"))
+        self.assertNotIn("\nfrom srv_", src[:alias])
+
+
 class PostDispatchTests(unittest.TestCase):
     """`do_POST` was a 52-branch `elif self.path == ...` chain — 193 branches in one function,
     the highest in the repo. A route's POSITION in it was load-bearing (an exact match had to
@@ -4990,14 +5071,14 @@ class PostDispatchTests(unittest.TestCase):
     def test_every_post_handler_is_reachable_from_the_table(self):
         """An orphaned `_post_*` is a DEAD ENDPOINT: the method exists, reads correct, and
         404s in production. The `elif` chain made this impossible; a table does not."""
-        src = self._src("server.py")
+        src = server_src()
         defined = set(re.findall(r"def (_post_\w+)\(self, body\)", src))
         wired = set(re.findall(r"Handler\.(_post_\w+)", src))
         self.assertEqual(set(), defined - wired, "handler defined but never routed")
         self.assertEqual(set(), wired - defined, "route points at a missing handler")
 
     def test_no_route_is_served_twice(self):
-        src = self._src("server.py")
+        src = server_src()
         exact = re.findall(r'^    "(/api/[^"]+)": Handler\._post_\w+,$', src, re.M)
         self.assertEqual(sorted(set(exact)), sorted(exact), "duplicate key in _POST_ROUTES")
 
@@ -5014,7 +5095,7 @@ class PostDispatchTests(unittest.TestCase):
         """The real backstop: 51 of 80 routes are named in NO test, so the UI is the only thing
         exercising them. A route the page calls with nothing to serve it is a 404 in the
         browser and nowhere else."""
-        srv, html = self._src("server.py"), ui_src()
+        srv, html = server_src(), ui_src()
         exact = set(re.findall(r'^    "(/api/[^"]+)": Handler\._post_\w+,$', srv, re.M))
         prefixes = [p for p, _ in re.findall(r'^    \("(/api/[^"]+)", Handler\.(_post_\w+)\),$',
                                              srv, re.M)]
@@ -5034,8 +5115,7 @@ class PostDispatchTests(unittest.TestCase):
         method, never another `elif`."""
         BR = (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With,
               ast.BoolOp, ast.IfExp, ast.comprehension, ast.Assert, ast.Match)
-        with open(os.path.join(self.ROOT, "server.py")) as fh:
-            tree = ast.parse(fh.read())
+        tree = ast.parse(server_src())
         cls = next(n for n in ast.walk(tree)
                    if isinstance(n, ast.ClassDef) and n.name == "Handler")
         fn = next(m for m in cls.body if getattr(m, "name", "") == "do_POST")
@@ -5498,7 +5578,7 @@ class MascotStateTests(unittest.TestCase):
 
     @staticmethod
     def _static_route():
-        src = open("server.py", encoding="utf-8").read()
+        src = server_src()
         i = src.index("def _static(self")
         return src[i:src.index("\n    def ", i + 10)]
 
@@ -5511,7 +5591,7 @@ class MascotStateTests(unittest.TestCase):
         self.assertNotIn("send_header", route,
                          "the asset route writes its own headers, so it can lose no-store")
         self.assertIn('self.send_header("Cache-Control", "no-store")',
-                      open("server.py", encoding="utf-8").read())
+                      server_src())
 
     def test_the_chat_list_gives_up_real_estate_rather_than_scrolling_under_him(self):
         """Bottom PADDING on a scroll container only clears him at the end of the scroll:
@@ -6230,7 +6310,7 @@ class BoardGatePlanTests(unittest.TestCase):
     forwarding, not the logic."""
 
     def _board_gate_branch(self):
-        src = open("server.py").read()
+        src = server_src()
         i = src.index('e["phase"] = "awaiting approval"')
         return src[i:src.index("elif q.get(", i)]
 
@@ -6343,7 +6423,7 @@ class BoardStageChipTests(unittest.TestCase):
     stalled one."""
 
     def test_the_open_span_in_times_is_the_current_stage(self):
-        src = open("server.py").read()
+        src = server_src()
         i = src.index('e["stage"]')
         block = src[max(0, i - 500):i + 120]
         self.assertIn('v.get("dur") is None', block, "the OPEN span is what marks the live stage")
@@ -6406,7 +6486,7 @@ class BoardFinishOrderTests(unittest.TestCase):
     time buries the newest result mid-column."""
 
     def test_the_server_ships_the_close_time(self):
-        src = open("server.py").read()
+        src = server_src()
         i = src.index('"start": wf.start_time')
         block = src[i:i + 700]
         self.assertIn('"end": closed_at', block,
@@ -7584,8 +7664,7 @@ class PrReviewWiringTests(unittest.TestCase):
         """A free-text allowlist made the operator retype slugs Otto already holds, and every
         near-miss spelling (`.git`, a browser URL, the checkout's local name) silently matches
         nothing. The endpoint must serve the list, and the form must render it."""
-        with open(os.path.join(self.ROOT, "server.py"), encoding="utf-8") as f:
-            self.assertIn("pr_review.known_repos()", f.read())
+        self.assertIn("pr_review.known_repos()", server_src())
         ui = ui_src()
         self.assertIn("data-prrepo=", ui)
         self.assertIn("PRREV_REPOS", ui)
@@ -7615,8 +7694,7 @@ class PrReviewWiringTests(unittest.TestCase):
         """The click and the unattended sweep must submit identically, so both go through
         `pr_review.publish`. A handler that re-derived the approve decision is how a manual
         post ends up commenting while an automatic one approves."""
-        with open(os.path.join(self.ROOT, "server.py"), encoding="utf-8") as f:
-            body = f.read().split("def _post_pr_review_post", 1)[1].split("\n    def ", 1)[0]
+        body = server_src().split("def _post_pr_review_post", 1)[1].split("\n    def ", 1)[0]
         self.assertIn("pr_review.publish(key)", body)
         for leaked in ("approve_on_pass", "verdict_of", "with_header", "post_review"):
             self.assertNotIn(leaked, body, f"{leaked} is back in the handler")
@@ -7640,8 +7718,7 @@ class PrReviewWiringTests(unittest.TestCase):
         posted a client-supplied body would let any page the operator visits write arbitrary
         text to a colleague's PR under their name. The request supplies a KEY and nothing
         else; the text is re-read from the chat store inside `publish`."""
-        with open(os.path.join(self.ROOT, "server.py"), encoding="utf-8") as f:
-            src = f.read()
+        src = server_src()
         body = src.split("def _post_pr_review_post", 1)[1].split("\n    def ", 1)[0]
         reads = set(re.findall(r"body\.get\(\s*[\"']([^\"']+)", body))
         self.assertEqual({"key"}, reads,
@@ -9022,8 +9099,7 @@ class SlackTriggerTests(unittest.TestCase):
         self.assertNotIn("untrusted_author", self.st.to_params(bots, pay, "w"))
         self.assertIn('classify_due = classify_due or (cap["risk"] == "read" and '
                       'bool(params.get("untrusted_author"))', workflow_src())
-        import server
-        retry = inspect.getsource(server)
+        retry = server_src()
         self.assertIn('if origin.get("untrusted_author"):', retry, "a retry dropped the flag")
 
     def test_a_derived_id_differs_by_author_mode_but_stays_stable_for_bots(self):
@@ -9396,7 +9472,7 @@ class UpdaterTests(unittest.TestCase):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "js", "update.js")).read()
         self.assertNotIn("b.hidden", src)
         self.assertIn('postJSON("/api/update/check"', src[src.index("async function showUpdateForm"):])
-        self.assertNotIn("updater.fetch", inspect.getsource(server).replace(
+        self.assertNotIn("updater.fetch", server_src().replace(
             inspect.getsource(server.Handler._post_update_check), ""))
 
     def test_service_unit_reads_the_cgroup(self):
@@ -9456,11 +9532,11 @@ class NeedsYouSuggestionTests(unittest.TestCase):
         # A run the operator stopped, and a card no longer on the board, carry nothing (round 3).
         self.assertFalse(server._carries(self._card("x", status="TERMINATED", verified=None)))
         self.assertFalse(server._carries(self._card("x", needs_human="terminated")))
-        src = inspect.getsource(server)
+        src = server_src()
         i = src.index("by_id = {e[\"id\"]: e for e in out if e[\"id\"] not in dismissed")
         self.assertLess(i, src.index('e["replaced_by"] = nxt if nxt in by_id'))
         self.assertIn('e["replaced_by"] = nxt if nxt in by_id and _carries(by_id[nxt]) else None',
-                      inspect.getsource(server))
+                      server_src())
         # A Retry's run replaces the card it came from.
         retried = self._card("web-1", verified=False, retried_to="web-2")
         self.assertEqual(server._replaced_by([retried, self._card("web-2")])["web-1"],
@@ -9480,9 +9556,7 @@ class NeedsYouSuggestionTests(unittest.TestCase):
         acts = ui[ui.index("const NEEDS_ACT="):ui.index("function needsSuggestion")]
         for reason in ("QA inconclusive", "review inconclusive", "unverified"):
             self.assertNotIn(f'"{reason}":', acts)
-        import inspect
-        import server
-        self.assertIn('not (replaced.get(e["id"]) or (None, False))[1]', inspect.getsource(server))
+        self.assertIn('not (replaced.get(e["id"]) or (None, False))[1]', server_src())
 
 
 class FactoryModeTests(unittest.TestCase):
@@ -9889,10 +9963,10 @@ class FactoryModeTests(unittest.TestCase):
         import inspect
         import server
         self.assertIn('factory.triaged(e["id"], e.get("needs_human"), fac)',
-                      inspect.getsource(server))
+                      server_src())
         src = inspect.getsource(server.Handler._post_needs_you_retry)
         self.assertLess(src.index("factory.is_sprint(wid)"), src.index("_run_origin(wid)"))
-        self.assertIn('e["no_retry"] = factory.is_sprint(e["id"])', inspect.getsource(server))
+        self.assertIn('e["no_retry"] = factory.is_sprint(e["id"])', server_src())
         from test_support import ui_src
         self.assertIn("it.no_retry?''", ui_src())
 
@@ -9918,8 +9992,7 @@ class FactoryModeTests(unittest.TestCase):
         self.assertFalse(t(t78, "qa_fail", {**st, "enabled": False}))
         # A superseded sprint is hidden whatever state it ended in, needs_human set or not.
         import inspect
-        import server
-        src = inspect.getsource(server)
+        src = server_src()
         self.assertIn('and not factory.superseded(e["id"], fac)\n', src)
         self.assertIn('factory.claim(wid, human=params.get("approval") == "ask")',
                       inspect.getsource(__import__("activities")))
@@ -10769,7 +10842,7 @@ class ReplyKindDispatchRatchetTests(unittest.TestCase):
     VENDOR = frozenset({"slack.py", "slack_state.py", "slack_socket.py", "slack_mcp.py",
                         "board.py", "pr_review.py", "events.py", "factory.py"})
     KINDS = ("slack_thread", "slack_post", "github_issue", "github_pr", "webhook")
-    BASELINE = {"activities.py": 1, "server.py": 1, "workflows.py": 1, "workspace.py": 1}
+    BASELINE = {"activities.py": 1, "srv_runs.py": 1, "workflows.py": 1, "workspace.py": 1}
 
     @classmethod
     def _branches(cls, src):

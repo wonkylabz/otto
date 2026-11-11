@@ -166,7 +166,7 @@ PM sprint ─▶ tickets in Ready ─▶ worker builds ─▶ draft PR ─▶ re
 
 | Layer | File(s) | Notes |
 |---|---|---|
-| Ingress | `server.py`, `web/`, `slack*.py`, `board.py`, `pr_review.py`, `events.py`, `runbooks.py`, `scheduler.py` | the five doors, normalizing into one workflow |
+| Ingress | `server.py` + `srv_*.py` (its POST route mixins), `web/`, `slack*.py`, `board.py`, `pr_review.py`, `events.py`, `runbooks.py`, `scheduler.py` | the five doors, normalizing into one workflow |
 | Orchestration | `workflows.py` + `wf_*.py`, `worker.py`, `activities.py` | the durable Temporal workflow (the only run path) |
 | Router #1 (which agent) | `routing.py`, `registry.py`, `intents.py` | shortlist by retrieval, then an LLM call |
 | Agents / skills | `registry.py`, `capabilities/` | discovered from `~/.claude/{agents,skills}`, plugins, and other repos' `.claude/` |
