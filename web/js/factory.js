@@ -115,6 +115,6 @@ function showFactoryForm(){
       mcp_allow:[...f.querySelectorAll(".ff-mcp:checked")].map(c=>c.value)};
     const ok=await postForm("/api/factory/enable", body, document.getElementById("ff-err"));
     btn.disabled=false; btn.textContent=label;
-    if(ok){ closeFormModal(); loadFactory(); }
+    if(ok){ if(btn.isConnected) closeFormModal(); loadFactory(); }
   };
 }

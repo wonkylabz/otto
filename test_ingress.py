@@ -10724,6 +10724,20 @@ class FactoryModeTests(unittest.TestCase):
         import snapshot
         self.assertIn("factory.json", snapshot.RUNTIME)
 
+    def test_the_factory_form_says_its_save_is_in_flight(self):
+        """The save takes seconds (it wires the board and the schedule); a merely greyed-out
+        button read as a hang. The label must come back on a refusal, and a form cancelled
+        mid-save must not close whatever modal is open by the time the save lands."""
+        src = ui_src()
+        form = src[src.index("function showFactoryForm"):]
+        form = form[:form.index("\n}\n")]
+        spin, post = form.index('class="spin"></span>Saving'), form.index('postForm("/api/factory/enable"')
+        self.assertLess(spin, post)
+        self.assertLess(post, form.index("btn.textContent=label"))
+        self.assertIn("if(btn.isConnected) closeFormModal()", form)
+        rule = src[src.index(".btn .spin {"):]
+        self.assertIn("currentColor", rule[:rule.index("}")])
+
 
 class ReplyKindDispatchRatchetTests(unittest.TestCase):
     """Ratchet: where the CORE branches on a vendor's `reply_to["kind"]`.
