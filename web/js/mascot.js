@@ -44,7 +44,7 @@ const MASCOT_STAGE={
   DELIVER:  ["working",  "wrapping up\u2026"],
   AUDIT:    ["working",  "writing it all down\u2026"],
 };
-const MOOD={paused:false, turn:null, fleet:null, react:null, quietSince:Date.now(), timer:null};
+const MOOD={paused:false, turn:null, fleet:null, react:null, missed:null, quietSince:Date.now(), timer:null};
 let MASCOT_SIG="";
 
 /* ---- placement ----
