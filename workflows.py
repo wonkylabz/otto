@@ -1517,9 +1517,11 @@ class OttoWorkflow(RepoFlowMixin, PostPrMixin, SwarmMixin, FrontmanMixin):
         record += "".join(str(n) for n in notes if n)
         if self._audience == contracts.CONVERSATION_AUDIENCE:
             return result, record
-        # A run that chose silence stays silent: a note glued on stops it being the sentinel,
-        # and delivery then posts "NO_REPLY + footer" to the target every fire.
-        if config.is_no_reply(result) and not self._needs_human:
+        # A NOTICE run that chose silence stays silent: a note glued on stops it being the
+        # sentinel, and delivery then posts "NO_REPLY + footer" to the target every fire. Only
+        # where silence is honoured: a report saying NO_REPLY is broken and keeps its notes.
+        if (self._audience == contracts.NOTICE_AUDIENCE and config.is_no_reply(result)
+                and not self._needs_human):
             return result, record
         return record, record
 

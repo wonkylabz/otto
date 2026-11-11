@@ -4942,6 +4942,13 @@ class FreshRouteWriteGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config.is_no_reply(sent), repr(sent))
         self.assertIn("No isolated workspace was engaged", out["result"])
 
+    async def test_a_report_saying_no_reply_keeps_its_notes(self):
+        """The control: silence is honoured for a notice only. A ticket comment reading NO_REPLY
+        is a broken report, and the note is the one line there explaining what happened."""
+        _, sent = await self._worker_run({"kind": "github_issue", "repo": "o/r", "number": 4},
+                                         said=config.NO_REPLY)
+        self.assertIn("No isolated workspace was engaged", sent)
+
 
 @unittest.skipUnless(_HAS_TEMPORAL, "temporalio not installed")
 class PlanRevisionGateTests(unittest.IsolatedAsyncioTestCase):
