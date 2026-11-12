@@ -4162,6 +4162,34 @@ class ThemeUiTests(unittest.TestCase):
         self.assertIn('window.OTTO_THEME_KEY = "otto.theme"', head)
 
 
+class FontSizeUiTests(unittest.TestCase):
+    """Admin -> Appearance -> Text size. One token (`--fs`) scales every font-size, so the
+    failure mode is a declaration that opted out by being written in bare px."""
+
+    def test_no_font_size_is_bare_px(self):
+        src = ui_src()
+        # the selector's own glyphs preview a FIXED size each, whichever scale is live
+        src = re.sub(r"\.fsopt\[data-fontsize=\"[sml]\"\] \.fsglyph \{[^}]*\}", "", src)
+        decls = re.findall(r"\bfont(?:-size)?:([^;{}\"<]*)", src)
+        bare = [d.strip() for d in decls if re.search(r"\d[\d.]*px(?!\*var\(--fs\))", d)]
+        self.assertEqual(bare, [], "font sizes that ignore the text-size scale")
+        self.assertGreater(src.count("px*var(--fs))"), 300)
+
+    def test_the_levels_the_picker_offers_are_the_ones_the_stylesheet_scales(self):
+        src = ui_src()
+        offered = set(re.findall(r'\["([a-z])","[A-Za-z]+"\]',
+                                 re.search(r"const FONT_SIZES=\[(.*?)\];", src).group(1)))
+        scaled = set(re.findall(r':root\[data-fontsize="([a-z])"\] \{ --fs:', src))
+        self.assertEqual(offered, {"s", "m", "l"})
+        self.assertEqual(scaled, offered - {"s"}, "small is today's size: no attribute, --fs 1")
+        self.assertIn("--fs: 1;", src)
+
+    def test_the_size_is_applied_before_the_first_paint(self):
+        head = ui_src().split("</head>", 1)[0]
+        self.assertIn("window.applyFontSize(window.currentFontSize());", head)
+        self.assertIn('window.OTTO_FONT_KEY = "otto.fontsize"', head)
+
+
 class AutoApproveToggleTests(unittest.TestCase):
     """The composer's "Auto approve" toggle pre-authorizes a chat's writes. It is the ONE way a
     browser can reach approval "auto", so the plumbing is guarded end to end: the client must send
@@ -4649,7 +4677,9 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 96830 -> 97084: the server split's seam rule (route mixins read server globals through
     # `_srv()`), which is what keeps the split's guards and patches meaning anything.
     # 97084 -> 97320: the attempt's backend decision is `dispatch.decide`, not inline rules.
-    MAX_RULES_BYTES = 97320   # fetched tier — bounded, but looser; it is not always loaded
+    # 97320 -> 97515: the text-size selector only works while every font-size rides its
+    # one token, and a bare px is silent — it just stays small.
+    MAX_RULES_BYTES = 97515   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

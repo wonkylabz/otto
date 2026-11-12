@@ -29,7 +29,7 @@ body.mascot-offstage .mascot { display: none; }
 /* ---- Memory: the source sits under its fact; row controls are a real target ---- */
 #memoryview .event { grid-template-columns: minmax(0, var(--measure)); }
 #memoryview .event > .esrc { grid-column: 1; grid-row: auto; margin: 0 0 4px 16px; }
-.soldel, .ruledel, .ruleedit, .factdel { min-height: 24px; padding: 3px 8px; font-size: 12px; }
+.soldel, .ruledel, .ruleedit, .factdel { min-height: 24px; padding: 3px 8px; font-size: calc(12px*var(--fs)); }
 
 /* ---- Audit: bars read against the panel; nothing under 11px ---- */
 .hday i { background: var(--accent-line); border-color: var(--accent); }
@@ -37,7 +37,7 @@ body.mascot-offstage .mascot { display: none; }
 .hday:hover i { background: var(--accent); }
 .hlegend .lk.runs { background: var(--accent-line); border-color: var(--accent); }
 .hlegend .lk.att { background: var(--danger); opacity: .85; }
-.hday span, .ctable th, .scorechip, .stocktag, .bchip.stage, .themename .cur, .latchclear, .capmcp { font-size: 11px; }
+.hday span, .ctable th, .scorechip, .stocktag, .bchip.stage, .themename .cur, .latchclear, .capmcp { font-size: calc(11px*var(--fs)); }
 
 /* ---- Tab icons: one definition for the phone bottom bar (mobile.css) and the desktop header ---- */
 .tab[data-view=chat] { --ico: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3C/svg%3E"); }

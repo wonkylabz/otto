@@ -8178,7 +8178,9 @@ class UiAssetLayoutTests(unittest.TestCase):
     # -> 127656 for Knowledge file upload: a drop zone (click/keyboard/drag states) and the
     # picked-file chips; the native file input is unstyleable, so it is hidden behind them.
     # -> 128230 for the chat-list search box and the snapshot export's section picker.
-    ASSET_MAX = 128230
+    # -> 133377 for Appearance -> Text size: every font-size is now calc(Npx*var(--fs)) so one
+    # token scales all text (~17 bytes on each of ~250 declarations), plus the selector's CSS.
+    ASSET_MAX = 133377
 
     def _assets(self):
         out = {}

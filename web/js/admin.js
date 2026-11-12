@@ -244,8 +244,13 @@ function stagesSection(st){
     <div class="asection-body">${body}</div></div>`;
 }
 
+const FONT_SIZES=[["s","Small"],["m","Medium"],["l","Big"]];
+
 function appearanceSection(){
-  const cur=currentTheme();
+  const cur=currentTheme(), fs=currentFontSize();
+  const sizes=FONT_SIZES.map(([id,name])=>`<button type="button" class="fsopt${id===fs?' sel':''}" data-fontsize="${id}"
+      aria-pressed="${id===fs}" title="${name} text. Applies immediately, to this browser only.">
+    <span class="fsglyph" aria-hidden="true">Aa</span><span class="fsname">${name}</span></button>`).join("");
   const cards=THEMES.map(t=>`<button class="themecard${t.id===cur?' sel':''}" data-theme="${esc(t.id)}"
       title="${esc(t.name)} — click to switch. Applies immediately, to this browser only.">
     <span class="themebar"><span class="s1"></span><span class="s2"></span><span class="s3"></span><span class="s4"></span><span class="s5"></span><span class="s6"></span></span>
@@ -260,6 +265,8 @@ function appearanceSection(){
     <div class="uigroup"><h4>Theme</h4>
       <p class="sub" style="margin:0">Each card previews itself: its swatches and text are drawn with the palette it would apply.</p>
       <div class="themegrid" id="theme-grid">${cards}</div></div>
+    <div class="uigroup"><h4>Text size</h4>
+      <div class="fsseg" id="font-seg" role="group" aria-label="Text size">${sizes}</div></div>
     <div class="uigroup"><h4>Companion</h4>
       <p class="sub" style="margin:0 0 8px">Otto animates whatever the pipeline is doing &mdash; on every tab, including the ones that show no runs. Drag him wherever you want him; double-click sends him home. Dismissing him with his own &times; lands back here.</p>
       <label class="mtoggle${mascotShown()?"":" off"}"><span class="switch${mascotShown()?" on":""}" data-mascot="1" title="show / hide Otto"></span>Show Otto</label></div>
@@ -277,6 +284,15 @@ function pickTheme(id){
   grid.querySelectorAll(".themecard").forEach(c=>c.classList.toggle("sel",c.dataset.theme===id));
   const count=grid.closest(".asection").querySelector(".sectcount");
   if(count) count.textContent=(THEMES.find(t=>t.id===id)||THEMES[0]).name;
+}
+
+function pickFontSize(id){
+  try { localStorage.setItem(OTTO_FONT_KEY, id); } catch(e){}
+  applyFontSize(id);
+  document.querySelectorAll("#font-seg .fsopt").forEach(b=>{
+    const on=b.dataset.fontsize===id;
+    b.classList.toggle("sel",on); b.setAttribute("aria-pressed",on);
+  });
 }
 
 function settingsSection(settings){
@@ -1338,6 +1354,7 @@ ${sessionsSection()}
     </div>`;
   wireSessions(el);
   el.querySelectorAll(".themecard").forEach(c=>c.addEventListener("click",()=>pickTheme(c.dataset.theme)));
+  el.querySelectorAll(".fsopt").forEach(b=>b.addEventListener("click",()=>pickFontSize(b.dataset.fontsize)));
   el.querySelectorAll(".riskpill").forEach(p=>p.addEventListener("click",()=>{
     const n=p.dataset.cap, nx=POLICY_STATE.capabilities[n].risk==="read"?"write":"read";
     POLICY_STATE.capabilities[n].risk=nx; p.className="riskpill "+nx; p.textContent=nx;

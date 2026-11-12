@@ -9,6 +9,7 @@ import inspect
 import io
 import json
 import os
+import math
 import re
 import shutil
 import signal
@@ -3542,7 +3543,10 @@ class ModelOrderTests(unittest.TestCase):
         ui = ui_src()
         col = int(re.search(r"\.modtable \.c-ord \{ width: (\d+)px", ui).group(1))
         pad = int(re.search(r"\.ctable td \{ padding: \d+px (\d+)px", ui).group(1)) * 2
-        grip = int(re.search(r"\.mrow \.mgrip \{ [^}]*font-size: (\d+)px", ui).group(1))
+        grip = int(re.search(r"\.mrow \.mgrip \{ [^}]*font-size: calc\((\d+)px\*var\(--fs\)\)",
+                             ui).group(1))
+        # the grip scales with Appearance -> Text size, so it must fit at the LARGEST level
+        grip = math.ceil(grip * max(map(float, re.findall(r"\{ --fs: ([\d.]+); \}", ui))))
         self.assertGreaterEqual(col, grip + pad,
                                 f"the grip is {grip}px and the cell spends {pad}px on padding, so "
                                 f"the column needs {grip + pad}px; it declares {col}px")
