@@ -18,7 +18,7 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
-- **Factory mode's PM and playtest are stricter about the product's UI.** The PM now readies a design-system ticket (with screenshot criteria at 1280px and 390px, both themes) before feature screens, tickets unmet Definition-of-Done items before polish (at most two polish tickets a sprint), and checks open and closed issues and PRs before filing, so it stops duplicating tickets. The playtest now fails a feature a user can't reach from the interface, and layout problems such as walls of repeated text or mid-word wrapping. A `CLEAN` verdict needs one line of evidence per page. Takes effect on the next sprint after a worker restart.
+- **Factory mode's PM and playtest are stricter about the product's UI.** The PM now readies a design-system ticket (with screenshot criteria at 1280px and 390px, both themes) before feature screens, tickets unmet Definition-of-Done items before polish (at most two polish tickets a sprint), and checks open and closed issues and PRs before filing, so it stops duplicating tickets. The playtest now fails a feature a user can't reach from the interface, and layout problems such as walls of repeated text or mid-word wrapping. The playtest is told to give one line of evidence per page before a `CLEAN`. Takes effect on the next sprint after a worker restart.
 
 ### Fixed
 

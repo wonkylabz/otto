@@ -9476,6 +9476,14 @@ class FactoryModeTests(unittest.TestCase):
         return self.factory.load()
 
     # --- the verdict line ------------------------------------------------------------
+
+    def test_briefs_keep_design_priority_and_dedupe_clauses(self):
+        brief, play = self.factory.SPRINT_BRIEF, self.factory.PLAYTEST_BRIEF
+        for clause in ("Design before screens", "Priority order", "TWO polish tickets",
+                       "No duplicates, no churn", "--limit 300"):
+            self.assertIn(clause, brief)
+        for clause in ("Reachability", "Visual design", "per-page evidence"):
+            self.assertIn(clause, play)
     def test_verdict_reads_the_last_line_only(self):
         v = self.factory.verdict
         self.assertEqual(v("planned 3 tickets\nFACTORY: CONTINUE")[0], "continue")
