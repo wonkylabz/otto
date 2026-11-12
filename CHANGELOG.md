@@ -26,6 +26,7 @@ changelog that restates it is a second copy of `git log`.
 - Audit: the runs-per-day bars are filled and the attention share is red; the smallest labels across the app are now 11px.
 - The web server's POST routes moved out of `server.py` into four modules by area (runs, integrations, memory, admin). No route or behaviour changed; the service needs its usual restart after updating.
 - The header no longer shows the "N capabilities" and "read · write" chips. Admin → Capabilities still shows `enabled / total`.
+- **Factory mode's PM and playtest are stricter about the product's UI.** The PM now readies a design-system ticket (with screenshot criteria at 1280px and 390px, both themes) before feature screens, tickets unmet Definition-of-Done items before polish (at most two polish tickets a sprint), and checks open and closed issues and PRs before filing, so it stops duplicating tickets. The playtest now fails a feature a user can't reach from the interface, and layout problems such as walls of repeated text or mid-word wrapping. The playtest is told to give one line of evidence per page before a `CLEAN`. Takes effect on the next sprint after a worker restart.
 
 ### Fixed
 
@@ -41,10 +42,6 @@ changelog that restates it is a second copy of `git log`.
 - The mascot fills an idle minute: after 40s of quiet he reads, juggles, grills and fails at the flute in turn, and once asleep he dreams — a thought bubble showing one stored memory at a time (click it to open Memory). Note the dream puts memory text in the corner of every tab; hide him in Admin → Appearance if you share your screen.
 - Data health findings have a **Fix** button in the Audit tab's Data tab (remove a stale model pin, detach a chat, re-derive labels, delete an empty workstream), so they no longer need code or a hand-edited store.
 - Board cards that a request fanned out into (swarm sub-tasks and Slack delegates) now carry a **family chip** shared with their parent: a short tag, one colour, and "sub-task 2/3" or "3 sub-tasks (1 done)". Hovering it dims every card outside the family; clicking it jumps to the parent.
-
-### Changed
-
-- **Factory mode's PM and playtest are stricter about the product's UI.** The PM now readies a design-system ticket (with screenshot criteria at 1280px and 390px, both themes) before feature screens, tickets unmet Definition-of-Done items before polish (at most two polish tickets a sprint), and checks open and closed issues and PRs before filing, so it stops duplicating tickets. The playtest now fails a feature a user can't reach from the interface, and layout problems such as walls of repeated text or mid-word wrapping. The playtest is told to give one line of evidence per page before a `CLEAN`. Takes effect on the next sprint after a worker restart.
 
 ### Fixed
 
