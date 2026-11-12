@@ -8,13 +8,13 @@ const MEM_PAGE=20;
 const MEM_SECTS="otto.memory.sections";
 let MEM={facts:[],sols:[],rules:[]};
 const MEM_SHOWN={facts:MEM_PAGE,sols:MEM_PAGE,rules:MEM_PAGE};
-/* Garbage collector: candidates only exist client-side after an explicit "Run GC" click (each
+/* Garbage collector: candidates only exist client-side after an explicit click on the bin (each
    run is several real LLM/claude -p turns, so it never fires on a page load) and are gone again
    once evicted or the tab reloads — this is a review scratchpad, not a fourth persistent store. */
 let GC=[]; let GC_META={scanned:0,verify_skipped:0,ran:false};
 /* A scan is several real claude -p turns (minutes on a real-sized store), so this must survive a
    re-render — switching tabs away and back calls loadMemory() again, which rebuilds the whole
-   section from scratch; without a variable outside that render, the fresh "Run GC" button looks
+   section from scratch; without a variable outside that render, the fresh bin looks
    like the scan was cancelled even though the fetch (and the server-side work) is still running
    untouched in the background and will land whenever it resolves. */
 let GC_RUNNING=false;
@@ -154,28 +154,40 @@ function gcRow(c,i){
 function gcElapsed(){
   return (GC_RUNNING && GC_STARTED) ? ` ${Math.max(0,Math.round((Date.now()-GC_STARTED)/1000))}s` : "";
 }
-function gcBody(){
-  const runCtl=GC_RUNNING
-    ?`<span class="runspin"><span class="spin"></span>scanning<span id="gc-elapsed">${gcElapsed()}</span></span>`
-    :`<button class="addbtn" id="gc-run" title="classify every stored fact/approach/rule and flag what looks stale or no longer true — several real LLM turns, so this is a button, not a page load">&#8635; Run GC</button>`;
-  const toolbar=(GC.length&&!GC_RUNNING)
-    ?`<button class="linkbtn" id="gc-selall">select all</button><button class="linkbtn" id="gc-selnone">select none</button>
-      <button class="btn approve sm" id="gc-evict" style="margin-left:auto">Evict selected</button>`:"";
-  const hint=GC_RUNNING?`<p class="sub${GC.length?"":" gccenter"}">Keeps running even if you switch tabs — a real store can take a few minutes.</p>`
-    :GC_META.ran?`<p class="sub">Scanned ${GC_META.scanned} item(s)`
-      +(GC_META.verify_skipped?`, ${GC_META.verify_skipped} left for next run (verification cap)`:"")+`.</p>`:"";
-  const list=GC.length?GC.map(gcRow).join("")
-    :`<p class="memempty">${GC_RUNNING?"":GC_META.ran?"Nothing flagged — memory looks clean.":"Not run yet."}</p>`;
-  return `<div class="memhead${GC.length?"":" gccenter"}">${runCtl}${toolbar}</div>
-    ${hint}
-    <div id="gc-list"${GC.length?"":' class="gccenter"'}>${list}</div>`;
+const GC_BIN=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12M9 7V4h6v3"/></svg>`;
+/* The header control: the bin starts a scan, and once one has finished a count sits beside it —
+   the count is the door to the review modal, so nothing is evicted from the header itself. */
+function gcCtl(){
+  if(GC_RUNNING) return `<span class="runspin" title="Keeps running even if you switch tabs — a real store can take a few minutes."><span class="spin"></span>scanning<span id="gc-elapsed">${gcElapsed()}</span></span>`;
+  const count=GC_META.ran?`<button class="gccount${GC.length?" has":""}" id="gc-count" aria-label="${GC.length} flagged for eviction" title="${GC.length?"review what the scan flagged — nothing is deleted until you evict":"nothing flagged — memory looks clean"}">${GC.length}</button>`:"";
+  return `<button class="gcbin" id="gc-run" aria-label="Run the memory garbage collector" title="Garbage collector: classify every stored fact, approach and rule and flag what looks stale or no longer true. Several real LLM turns. Read-only — nothing is deleted until you review and evict.">${GC_BIN}</button>${count}`;
 }
-function refreshGCSection(){
-  const body=document.querySelector('.memsec[data-sect="gc"] .memsec-body');
-  if(body) body.innerHTML=gcBody();
-  const cnt=document.querySelector('.memsec[data-sect="gc"] .sectcount');
-  if(cnt) cnt.textContent=GC.length;
+function refreshGC(){
+  const ctl=document.getElementById("gc-ctl");
+  if(ctl) ctl.innerHTML=gcCtl();
   wireGC();
+}
+function showGcModal(){
+  const c=openFormModal("<b>Garbage collector</b><br>flagged as stale or no longer true &mdash; nothing is deleted until you evict");
+  document.querySelector("#formModal .modalBox").classList.add("wideModalBox");
+  const meta=`Scanned ${GC_META.scanned} item(s)`+(GC_META.verify_skipped?`, ${GC_META.verify_skipped} left for next run (verification cap)`:"")+".";
+  c.innerHTML=`<div class="aform">
+    <div class="memhead"><span class="memstat">${meta}</span>${GC.length?`<button class="linkbtn" id="gc-selall">select all</button><button class="linkbtn" id="gc-selnone">select none</button>`:""}</div>
+    <div id="gc-list">${GC.length?GC.map(gcRow).join(""):`<p class="memempty">Nothing flagged — memory looks clean.</p>`}</div>
+    <div class="ferr" id="gc-err"></div>
+    <div class="factions">${GC.length?`<button class="btn approve" id="gc-evict">Evict selected</button>`:""}
+      <button class="btn decline" id="gc-close">Close</button></div>
+  </div>`;
+  document.getElementById("gc-close").onclick=closeFormModal;
+  const ev=document.getElementById("gc-evict");
+  if(ev) ev.onclick=evictGC;
+  const selall=document.getElementById("gc-selall");
+  if(selall) selall.onclick=()=>gcSetAll(true);
+  const selnone=document.getElementById("gc-selnone");
+  if(selnone) selnone.onclick=()=>gcSetAll(false);
+  c.querySelectorAll(".gcpick").forEach(cb=>cb.addEventListener("change",()=>{
+    cb.closest(".gccand").classList.toggle("gcunchecked",!cb.checked);
+  }));
 }
 /* The 1s elapsed-readout tick doubles as the poll for the scan actually finishing server-side —
    gc/run no longer blocks the request for the scan's whole duration (see runGC/gcTrack below), so
@@ -189,9 +201,9 @@ async function gcTick(){
   clearInterval(GC_TICK); GC_TICK=null;
   GC_RUNNING=false; GC_STARTED=null;
   const r=s.result||{};
-  GC=r.candidates||[]; GC_META={scanned:r.scanned||0,verify_skipped:r.verify_skipped||0,ran:true};
+  GC=r.candidates||[]; GC_META={scanned:r.scanned||0,verify_skipped:r.verify_skipped||0,ran:!r.error};
   if(r.error) toast("GC run failed: "+r.error);
-  refreshGCSection();
+  refreshGC();
 }
 function gcSetAll(checked){
   document.querySelectorAll(".gcpick").forEach(cb=>{
@@ -213,30 +225,23 @@ async function runGC(){
   catch(e){ toast("GC run failed: "+e.message); return; }
   if(!r.started) return;   // a scan was already running server-side — just let the tick pick it up
   gcTrack();
-  refreshGCSection();      // reflect "scanning…" immediately; GC_RUNNING outlives any later re-render
+  refreshGC();             // reflect "scanning…" immediately; GC_RUNNING outlives any later re-render
 }
 async function evictGC(){
   const picks=[...document.querySelectorAll(".gcpick:checked")].map(el=>GC[+el.dataset.i]).filter(Boolean);
   if(!picks.length) return;
   if(!await askConfirm(`Evict ${picks.length} item(s)? This can't be undone (the audit trail keeps a record).`,{ok:"Evict",danger:true})) return;
-  try{ await postJSON("/api/memory/gc/evict",{candidates:picks}); }
-  catch(e){ toast("Eviction failed: "+e.message); return; }
+  // The modal is still open and covers the toasts, so a refusal goes in its own error slot.
+  if(!await postForm("/api/memory/gc/evict",{candidates:picks},document.getElementById("gc-err"))) return;
   mascotEvict(picks.length);
   GC=[]; GC_META={scanned:0,verify_skipped:0,ran:false};
-  loadMemory();
+  closeFormModal(); loadMemory();
 }
 function wireGC(){
   const run=document.getElementById("gc-run");
   if(run) run.addEventListener("click",runGC);
-  const ev=document.getElementById("gc-evict");
-  if(ev) ev.addEventListener("click",evictGC);
-  const selall=document.getElementById("gc-selall");
-  if(selall) selall.addEventListener("click",()=>gcSetAll(true));
-  const selnone=document.getElementById("gc-selnone");
-  if(selnone) selnone.addEventListener("click",()=>gcSetAll(false));
-  document.querySelectorAll(".gcpick").forEach(cb=>cb.addEventListener("change",()=>{
-    cb.closest(".gccand").classList.toggle("gcunchecked",!cb.checked);
-  }));
+  const cnt=document.getElementById("gc-count");
+  if(cnt) cnt.addEventListener("click",showGcModal);
 }
 
 /* What Otto dreams about while he sleeps (mascot.js). ONE read per nap, never a poller, and it
@@ -275,6 +280,7 @@ async function loadMemory(){
   el.innerHTML=`
     <div class="phead"><h1>Persistent memory</h1>
       <p class="sub">What Otto carries into later runs. Every action is in <b>Audit</b>.</p>
+      <span class="gcctl" id="gc-ctl">${gcCtl()}</span>
       <span class="pside memstat"><b>${data.facts_total||0}</b> facts · <b>${sdata.count||0}</b> approaches · <b>${bdata.count||0}</b> rules</span></div>
     ${memSection("facts","Learned facts","Distilled from finished runs, injected as context on the next one.",data.facts_total||0,
       `<div class="memhead"><button class="clearbtn" id="mem-clear" style="margin-left:0">Clear facts</button></div>
@@ -287,8 +293,7 @@ async function loadMemory(){
     ${memSection("rules","Behaviour rules","Directives injected into runs, globally or per capability. Advisory: never changes the gate or tools.",bdata.count||0,
       `<div class="memhead"><button class="addbtn addnew" id="bx-add" style="margin-left:0">+ Add rule</button></div>
       ${memTools("rules","Search rules…","every scope")}
-      <div id="rules-list"></div>`, openState.rules)}
-    ${memSection("gc","Garbage collector","Classifies stored facts, approaches and rules and flags what looks stale or no longer true. Read-only until you pick candidates and confirm — nothing is deleted on its own.",GC.length,gcBody(),openState.gc)}`;
+      <div id="rules-list"></div>`, openState.rules)}`;
   ["facts","sols","rules"].forEach(k=>{
     memRender(k);
     const q=document.getElementById(k+"-q"), src=document.getElementById(k+"-src");
