@@ -16,6 +16,10 @@ changelog that restates it is a second copy of `git log`.
 - Data health findings have a **Fix** button in the Audit tab's Data tab (remove a stale model pin, detach a chat, re-derive labels, delete an empty workstream), so they no longer need code or a hand-edited store.
 - Board cards that a request fanned out into (swarm sub-tasks and Slack delegates) now carry a **family chip** shared with their parent: a short tag, one colour, and "sub-task 2/3" or "3 sub-tasks (1 done)". Hovering it dims every card outside the family; clicking it jumps to the parent.
 
+### Changed
+
+- **Factory mode's PM and playtest are stricter about the product's UI.** The PM now readies a design-system ticket (with screenshot criteria at 1280px and 390px, both themes) before feature screens, tickets unmet Definition-of-Done items before polish (at most two polish tickets a sprint), and checks open and closed issues and PRs before filing, so it stops duplicating tickets. The playtest now fails a feature a user can't reach from the interface, and layout problems such as walls of repeated text or mid-word wrapping. A `CLEAN` verdict needs one line of evidence per page. Takes effect on the next sprint after a worker restart.
+
 ### Fixed
 
 - A model pin left behind by a renamed capability is reported as **orphaned** instead of "model not in the pool", which pointed at a capability that runs fine. A chat taken out of workstreams no longer reports too many refs, since it can't spread them.
