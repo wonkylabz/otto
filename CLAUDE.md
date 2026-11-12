@@ -40,7 +40,7 @@ Read the layer's rules file before editing it — each carries the invariants th
 | Routing & capabilities | `routing.py`, `registry.py`, `intents.py`, `capabilities/` | `.claude/rules/routing-capabilities.md` |
 | Repo work — clones, PRs, review/QA, resuming a repo run, terminal state | `workspace.py`, `chats.py`, `audit.py` | `.claude/rules/repo-work.md` |
 | Cost, privacy, memory, report shaping | `privacy.py`, `memory.py`, `knowledge.py`, `contracts.py`, `delivery.py` | `.claude/rules/memory-privacy.md` |
-| Gateway, backends, walls | `gateway.py`, `local_runtime.py`, `error_classifier.py` | `.claude/rules/gateway-backends.md` |
+| Gateway, backends, walls | `gateway.py`, `dispatch.py`, `local_runtime.py`, `error_classifier.py` | `.claude/rules/gateway-backends.md` |
 | Tool grants, MCP, file safety, sandbox | `mcp_client.py`, `policy.py`, `claude_cli.py`, `file_safety.py` | `.claude/rules/tools-mcp.md` |
 | Engine facade + audit store | `engine.py`, `audit.py`, and the modules split out of them | `.claude/rules/engine-core.md` |
 | UI | `web/index.html` + `web/css/`, `web/js/`, `onboarding.py` | `.claude/rules/ui.md` |

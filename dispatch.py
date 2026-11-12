@@ -1,6 +1,6 @@
 """Which runtime serves an attempt — the DECISION, as a pure function.
 
-`engine.run_attempt` gathers the facts (the resolved pool entry, what the cap declares, the
+`engine._resolve_backend` gathers the facts (the resolved pool entry, what the cap declares, the
 session being resumed, the latch) and hands them here; this module turns them into one
 `Dispatch`. Same split as `ladder.py`: the side effects stay with the caller, the rules live
 once and are table-tested (`DispatchDecisionTests`).
