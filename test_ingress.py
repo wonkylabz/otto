@@ -6936,22 +6936,20 @@ class MascotHomeTests(unittest.TestCase):
         self.assertIn(".ledger", block, "home is no longer anchored above the ledger")
         self.assertIn("getBoundingClientRect()", block, "home is back to hard-coded geometry")
 
-    def test_on_the_board_an_undragged_otto_goes_small_into_the_corner(self):
-        """The Board's cards run edge to edge, so his home spot lands on them. There, and ONLY there,
-        an undragged Otto goes small into the corner, pinned by his far edges (the figure resizes on
-        a transition); every other tab keeps his Chat position, and a tab switch re-places him."""
+    def test_on_the_board_otto_is_hidden(self):
+        """The Board's cards run edge to edge, so anywhere he stands is on one. There, and ONLY
+        there, he is hidden — dragged or not, and never shrunk; a tab switch brings him back."""
         ui = ui_src()
-        self.assertIn('away=!p && !!bv && !bv.hidden;', ui,
-                      "a dragged Otto keeps his spot, and only the Board moves the undragged one")
         place = ui[ui.index("function mascotPlace()"):ui.index("function mascotLayout()")]
-        self.assertLess(place.index('classList.toggle("mascot-away", away)'), place.index("d.getBoundingClientRect()"),
-                        "the class resizes him, so it must land before he is measured")
-        self.assertIn('d.style.right="2px"; d.style.bottom="4px"', place)
-        self.assertIn("const size=away ? MASCOT_SMALL_SIZE : MASCOT_SIZE;", place)
+        self.assertIn("onBoard=!!bv && !bv.hidden;", place, "a dragged Otto must hide on the Board too")
+        self.assertLess(place.index('classList.toggle("mascot-offstage", onBoard)'),
+                        place.index("d.getBoundingClientRect()"),
+                        "leaving the Board must un-hide him before he is measured")
+        self.assertRegex(ui, r"body\.mascot-offstage \.mascot \{ display: none; \}")
+        self.assertNotIn("MASCOT_SMALL_SIZE", ui, "the small Board mascot is back")
         tab = ui[ui.index("function activateTab(v)"):]
         self.assertIn("mascotPlace()", tab[:tab.index('t.addEventListener("click",()=>activateTab')],
                       "a tab switch no longer re-places him")
-        self.assertRegex(ui, r"body\.mascot-away \.adminview \{ padding-bottom")
 
     def test_a_dragged_position_still_beats_home(self):
         """Where he stands is the user's. `mascotPos` returning a default corner instead of null

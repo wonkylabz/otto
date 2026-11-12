@@ -18,12 +18,8 @@
 /* The rail holds the Finished notices: collapsed, its toggle carries the cue. */
 .railcollapsed .rail:has(#chatnotif:not([hidden])) .railtoggle { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
 
-/* ---- Mascot on the Board: small, in the bottom-right corner, off the cards ---- */
-body.mascot-away .mascot { width: auto; align-items: flex-end; }
-body.mascot-away .mascot otto-mascot { margin-left: 0; }
-body.mascot-away .mbubble { left: auto; right: 0; width: max-content; }
-body.mascot-away .mbubble::after { left: auto; right: 22px; }
-body.mascot-away .adminview { padding-bottom: calc(var(--m-h, 70px) + 46px); }
+/* ---- Mascot on the Board: hidden, its cards run edge to edge ---- */
+body.mascot-offstage .mascot { display: none; }
 
 /* ---- Events: a switched-off card with a warning keeps the warning readable ---- */
 #eventsview .job.off:has(.jstatus .warn) { opacity: 1; }
