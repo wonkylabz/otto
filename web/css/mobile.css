@@ -10,7 +10,7 @@
   #ob-start { display: none; }
   /* Version under the wordmark; font-size 0 drops the tagline text around it */
   .wordmark > span { display: block; font-size: 0; line-height: 1; }
-  .wordmark span.ver { display: inline; font-size: 11px; color: var(--dim); }
+  .wordmark span.ver { display: inline; font-size: calc(11px*var(--fs)); color: var(--dim); }
   .status .estop { min-height: 44px; }
   .hint { display: none; }
 
@@ -20,7 +20,7 @@
     padding: 4px 6px env(safe-area-inset-bottom); }
   .tab, .tabmore { position: relative; flex: 1 1 0; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 3px; min-height: 52px; padding: 4px 2px; font-family: var(--sans);
-    font-size: 11px; font-weight: 500; color: var(--dim); background: transparent; border: none;
+    font-size: calc(11px*var(--fs)); font-weight: 500; color: var(--dim); background: transparent; border: none;
     border-radius: var(--r-md); cursor: pointer; }
   .tab::before, .tabmore::before { content: ""; width: 22px; height: 22px; background: currentColor;
     -webkit-mask: var(--ico) center / contain no-repeat; mask: var(--ico) center / contain no-repeat; }
@@ -33,7 +33,7 @@
   .tab:is([data-view=events],[data-view=memory],[data-view=knowledge],[data-view=admin]) { display: none; }
   .tabs.moreopen .tab:is([data-view=events],[data-view=memory],[data-view=knowledge],[data-view=admin]) {
     display: flex; position: fixed; right: 10px; width: 210px; height: 50px; min-height: 0;
-    flex-direction: row; justify-content: flex-start; gap: 12px; padding: 0 16px; font-size: 15px;
+    flex-direction: row; justify-content: flex-start; gap: 12px; padding: 0 16px; font-size: calc(15px*var(--fs));
     color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 0; }
   .tabs.moreopen .tab.active { color: var(--accent); }
   .tabs.moreopen .tab[data-view=admin]     { bottom: calc(var(--navh) + 10px); border-radius: 0 0 var(--r-lg) var(--r-lg); }
@@ -80,7 +80,7 @@
   .tab:focus:not(:focus-visible), .tabmore:focus:not(:focus-visible) { outline: none; }
 
   /* iOS zooms into any field under 16px on focus */
-  input:not([type=checkbox]):not([type=radio]), select, textarea, .field textarea { font-size: 16px; }
+  input:not([type=checkbox]):not([type=radio]), select, textarea, .field textarea { font-size: calc(16px*var(--fs)); }
 
   /* Config tabs: tighter rhythm, full-width rows that are easy to hit */
   .adminview { padding: 18px 16px 28px; }
@@ -94,7 +94,11 @@
   :root { --indent-sub: 12px; }
   /* Section header actions: only on an OPEN section, and compact */
   .asection.coll.collapsed > h3 > :not(.secttoggle, .sectcount) { display: none; }
-  .asection h3 .addbtn, .asection h3 .h3btns button, .asection h3 > button { min-height: 32px; padding: 4px 10px; font-size: 12.5px; }
+  .asection h3 .addbtn, .asection h3 .h3btns button, .asection h3 > button { min-height: 32px; padding: 4px 10px; font-size: calc(12.5px*var(--fs)); }
+  /* two 22px headings side by side: capped to the viewport so a larger text size still fits */
+  .viewswitch button { font-size: min(1em, 6.2vw); }
+  .fsseg { display: flex; }
+  .fsopt { min-width: 0; min-height: 56px; padding: 8px 6px 7px; }
   .sharegrid { grid-template-columns: 1fr 1fr; }
   .sharegrid .sharelbl, .sharegrid .bundlemsg { grid-column: 1 / -1; }
   .kprev { align-items: stretch; }
@@ -111,18 +115,18 @@
   .job.jsw > .switch { position: absolute; top: 12px; right: 14px; margin: 0; }
   #schedulesview .job .jbody { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
   #schedulesview .job .jtop { display: contents; }
-  #schedulesview .job .jname { flex: 1 1 100%; font-size: 15px; }
+  #schedulesview .job .jname { flex: 1 1 100%; font-size: calc(15px*var(--fs)); }
   #schedulesview .job.jsw .jname { padding-right: 52px; }
   #schedulesview .job .jasks { flex: 1 1 100%; white-space: normal; }
   #schedulesview .job .jstatus { order: 3; flex: 1 1 100%; min-width: 0; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
-  .job .jmeta { white-space: normal; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+  .job .jmeta { white-space: normal; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: calc(12px*var(--fs)); }
   #schedulesview .job .jreq { flex: 1 1 100%; white-space: normal; display: -webkit-box;
     -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-width: 0; overflow-wrap: anywhere; }
   #schedulesview .job .jreq::before { content: none; }
   #schedulesview .job .jactions { order: 4; flex: 1 1 100%; margin: 8px 0 0; padding-top: 8px;
     border-top: 1px solid var(--line); gap: 8px; }
   #schedulesview .job .jactions .addbtn { min-height: 36px; padding: 0 14px; }
-  #schedulesview .job .jactions .remove { margin-left: auto; min-width: 36px; min-height: 36px; font-size: 20px; }
+  #schedulesview .job .jactions .remove { margin-left: auto; min-width: 36px; min-height: 36px; font-size: calc(20px*var(--fs)); }
 
   /* Wide Admin tables: each row becomes a card; the header row's labels move onto the cells */
   :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) { display: block; width: 100%; table-layout: auto; }
@@ -137,7 +141,7 @@
   :is(.mpool, .mcptable, .projtable, .captable, .sesstable, .settable) td:is(.c-act, .c-rm) { margin-left: auto; }
   :is(.mcptable td.c-note, .projtable td.c-instr) { flex: 1 1 100%; }
   :is(.mcptable td.c-note, .projtable td.c-instr, .projtable td.c-conv)::before { display: block; margin-bottom: 4px;
-    font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
+    font-size: calc(11px*var(--fs)); font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--dim); }
   .mcptable td.c-note::before { content: "Usage notes"; }
   .projtable td.c-instr::before { content: "Standing instructions"; }
   .projtable td.c-conv::before { content: "Conventions"; }
@@ -150,7 +154,7 @@
   .mpool td.c-phases { flex: 1 1 100%; padding: 0; }
   .mpool td.c-phases .mradios { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); width: 100%; }
   .mpool td.c-phases .rc { width: auto; flex-direction: column; align-items: center; gap: 4px; min-height: 44px; justify-content: center; }
-  .mpool td.c-phases .rc::before { font-size: 10px; letter-spacing: .02em; text-transform: uppercase; color: var(--dim); }
+  .mpool td.c-phases .rc::before { font-size: calc(10px*var(--fs)); letter-spacing: .02em; text-transform: uppercase; color: var(--dim); }
   .mpool td.c-phases input { width: 20px; height: 20px; }
   .mpool td.c-phases .rc:nth-child(1)::before { content: "Route"; }
   .mpool td.c-phases .rc:nth-child(2)::before { content: "Split"; }
@@ -168,11 +172,11 @@
   .board { gap: 8px; }
   .bcol.empty { order: -1; flex: 1 1 0; min-width: 0; padding: 8px 10px 10px; }
   .bcol.empty .bcolhead { flex-direction: column; align-items: flex-start; gap: 4px; padding: 0;
-    font-size: 10.5px; letter-spacing: .04em; line-height: 1.25; }
-  .bcol.empty .bcolhead .bcount { font-size: 20px; font-weight: 600; padding: 0; min-width: 0; color: var(--text-2); }
+    font-size: calc(10.5px*var(--fs)); letter-spacing: .04em; line-height: 1.25; }
+  .bcol.empty .bcolhead .bcount { font-size: calc(20px*var(--fs)); font-weight: 600; padding: 0; min-width: 0; color: var(--text-2); }
   .bcol.empty .bempty { display: none; }
   .bcol:not(.empty) { padding: 8px 6px; }
-  .bfoot { gap: 0 2px; font-size: 12px; }
+  .bfoot { gap: 0 2px; font-size: calc(12px*var(--fs)); }
   .bfoot a { display: inline-flex; align-items: center; min-height: 36px; padding: 0 8px; }
 
   /* Modals become bottom sheets */

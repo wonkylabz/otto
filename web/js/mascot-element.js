@@ -1006,8 +1006,8 @@
 .dream { display: none; position: absolute; left: -8px; bottom: calc(100% - 2px); width: 190px; box-sizing: border-box;
   padding: 8px 12px 9px; cursor: pointer; background: var(--otto-paper); color: var(--otto-ink);
   border: 1.4px solid var(--otto-ink); border-radius: 22px 28px 20px 30px / 26px 20px 28px 22px;
-  font-style: italic; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; transform: rotate(-1deg); transform-origin: 50% 100%; }
-.dream::before { content: "dreaming of\\2026"; display: block; font-style: normal; font-size: 9.5px; letter-spacing: .06em;
+  font-style: italic; font-size: calc(11px*var(--fs)); line-height: 1.4; overflow-wrap: anywhere; transform: rotate(-1deg); transform-origin: 50% 100%; }
+.dream::before { content: "dreaming of\\2026"; display: block; font-style: normal; font-size: calc(9.5px*var(--fs)); letter-spacing: .06em;
   text-transform: uppercase; color: var(--otto-accent); margin-bottom: 2px; }
 :host { position: relative; }
 :host([dream]) .dream { display: block; animation: otto-dream-in .5s ease-out both; }

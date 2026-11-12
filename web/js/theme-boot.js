@@ -36,5 +36,18 @@ window.paintFavicon = function(){
   const meta = document.querySelector('meta[name="theme-color"]');
   if(meta) meta.setAttribute("content", accent);
 };
+/* Type scale, per browser like the palette. "s" is the size Otto always had, so it is the
+   absence of the attribute and an unknown value falls back to it. */
+window.OTTO_FONT_KEY = "otto.fontsize";
+window.applyFontSize = function(size){
+  const el = document.documentElement;
+  if(size === "m" || size === "l") el.setAttribute("data-fontsize", size);
+  else el.removeAttribute("data-fontsize");
+};
+window.currentFontSize = function(){
+  try { const v = localStorage.getItem(window.OTTO_FONT_KEY); return v === "m" || v === "l" ? v : "s"; }
+  catch(e){ return "s"; }
+};
 window.applyTheme(window.currentTheme());
+window.applyFontSize(window.currentFontSize());
 window.paintFavicon();

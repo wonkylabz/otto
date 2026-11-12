@@ -335,28 +335,28 @@ function showJobForm(job){
   c.innerHTML=`<div class="aform">
     <label>Name</label><input id="jf-name" placeholder="Rotate VPN certs">
     <label>Request</label>
-    <span class="sub" style="margin:-2px 0 4px;font-size:12px">The overall task. With steps below, this is the orientation they all share.</span>
+    <span class="sub" style="margin:-2px 0 4px;font-size: calc(12px*var(--fs))">The overall task. With steps below, this is the orientation they all share.</span>
     <textarea id="jf-req" class="reqarea" rows="3" placeholder="Rotate the client VPN certs in {{env}}"></textarea>
     <label>Capability</label>
-    <span class="sub" style="margin:-2px 0 4px;font-size:12px">Pin one to skip routing — required for a <b>project</b> skill. Steps can override it individually.</span>
+    <span class="sub" style="margin:-2px 0 4px;font-size: calc(12px*var(--fs))">Pin one to skip routing — required for a <b>project</b> skill. Steps can override it individually.</span>
     <select id="jf-cap">${capOpts}</select>
 
     <label>Parameters</label>
-    <span class="sub" style="margin:-2px 0 4px;font-size:12px">Use as <code>{{name}}</code> in the request, steps and notes. A <b>scheduled</b> runbook needs a default for every required parameter — nobody is there to be asked.</span>
+    <span class="sub" style="margin:-2px 0 4px;font-size: calc(12px*var(--fs))">Use as <code>{{name}}</code> in the request, steps and notes. A <b>scheduled</b> runbook needs a default for every required parameter — nobody is there to be asked.</span>
     <div id="jf-params"></div>
     <button class="addbtn" id="jf-addparam" type="button">+ parameter</button>
 
     <label style="margin-top:12px">Steps</label>
-    <span class="sub" style="margin:-2px 0 4px;font-size:12px">Leave empty for a single-turn run. With steps, each runs in dependency order (independent ones run together) and its output is passed to whatever <code>needs</code> it. Otto will <b>not</b> rewrite your steps if one fails — it stops for you.</span>
+    <span class="sub" style="margin:-2px 0 4px;font-size: calc(12px*var(--fs))">Leave empty for a single-turn run. With steps, each runs in dependency order (independent ones run together) and its output is passed to whatever <code>needs</code> it. Otto will <b>not</b> rewrite your steps if one fails — it stops for you.</span>
     <div id="jf-steps"></div>
     <button class="addbtn" id="jf-addstep" type="button">+ step</button>
 
     <label style="margin-top:12px">Notes / the runbook itself</label>
-    <span class="sub" style="margin:-2px 0 4px;font-size:12px">Preconditions, rollback, who to escalate to. Treated as the <b>approved plan</b>: it goes to the executor and to the verifier, and it replaces the plan preview at the approval gate.</span>
+    <span class="sub" style="margin:-2px 0 4px;font-size: calc(12px*var(--fs))">Preconditions, rollback, who to escalate to. Treated as the <b>approved plan</b>: it goes to the executor and to the verifier, and it replaces the plan preview at the approval gate.</span>
     <textarea id="jf-doc" rows="6" placeholder="## Preconditions&#10;- VPN connected&#10;&#10;## Rollback&#10;- Re-import the previous cert"></textarea>
 
     <label style="margin-top:12px">Cron — minute hour day-of-month month day-of-week</label>
-    <span class="sub" style="margin:-2px 0 4px;font-size:12px">Leave empty for an on-demand-only runbook.</span>
+    <span class="sub" style="margin:-2px 0 4px;font-size: calc(12px*var(--fs))">Leave empty for an on-demand-only runbook.</span>
     <input id="jf-cron" placeholder="0 9 * * 1-5">
     <div class="toolchips">
       <span class="cronpreset" data-cron="">on demand only</span>
@@ -371,7 +371,7 @@ function showJobForm(job){
       <input type="checkbox" id="jf-reuse"> <span>re-use one chat for every run</span></label>
 
     <label style="margin-top:12px">Deliver the result to Slack</label>
-    <span class="sub" style="margin:-2px 0 4px;font-size:12px">Where the run posts its answer — a channel (<code>#events</code>, <code>C0BAQSJHFSP</code>) or a user id to DM someone. Leave empty and the result reaches the audit log only. A run that answers <code>NO_REPLY</code> stays silent, so "only if you find something" works.</span>
+    <span class="sub" style="margin:-2px 0 4px;font-size: calc(12px*var(--fs))">Where the run posts its answer — a channel (<code>#events</code>, <code>C0BAQSJHFSP</code>) or a user id to DM someone. Leave empty and the result reaches the audit log only. A run that answers <code>NO_REPLY</code> stays silent, so "only if you find something" works.</span>
     <input id="jf-slack" placeholder="#events (leave empty for none)">
 
     <div class="ferr" id="jf-err"></div>

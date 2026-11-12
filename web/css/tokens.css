@@ -16,7 +16,11 @@
        so it tracks the font rather than a px guess; ~88ch at 14px lands near the 680px the chat
        bubble already uses, so the two reading surfaces agree. Tables keep the full column. */
     --measure: 88ch;
+    /* Type scale. Every font-size is calc(Npx*var(--fs)), so one number resizes all text. */
+    --fs: 1;
   }
+  :root[data-fontsize="m"] { --fs: 1.125; }
+  :root[data-fontsize="l"] { --fs: 1.25; }
 
   /* The default palette. Double-scoped like every other theme below rather than living on a
      bare :root, so its own card in the Appearance picker previews IT and not whatever theme the
