@@ -16,6 +16,7 @@ import attachments as attachments_mod
 import claude_cli
 import codex_cli
 import config
+import dispatch
 import error_classifier
 import gateway
 import ladder
@@ -171,6 +172,46 @@ def _effective_mcp(cap, base_path):
 
 
 
+def _resolve_backend(request, cap, *, wid, cwd, model_override, resume_session, local_disabled,
+                     fast_lane, external_text):
+    """Gather the facts `dispatch.decide` rules on, and trace what it decided. The rules live
+    there; this only reads the stores, and only the ones the pick can make matter."""
+    override_entry = gateway.resolve_model(model_override) if model_override else None
+    if model_override and override_entry is None:
+        trace("RUN", f"{wid} model override '{model_override}' isn't a known pool entry — "
+                     f"ignoring it, using the admin-configured model")
+    exec_entry = override_entry or gateway.exec_model_entry(cap.name)
+    pick = gateway.backend_of(exec_entry)
+    own_mcp = bool(getattr(cap, "mcp_config", None))
+    subprocess_pick = pick in (dispatch.LOCAL, dispatch.CODEX) and not own_mcp
+    session = local_runtime.session_backend(resume_session) if resume_session else None
+    connectors, declared = [], []
+    if subprocess_pick and not resume_session:
+        # What the cap DECLARED it cannot be served, then what the REQUEST names: the
+        # generalists declare nothing, so the first test is silent for exactly those caps.
+        connectors = list(mcp_client.unservable(cap))
+        connectors += [n for n in mcp_client.connectors_named(request, exclude=external_text,
+                                                             code_run=workspace.is_clone(cwd))
+                       if n not in connectors]
+        if pick == dispatch.CODEX:
+            declared = mcp_client.declared_servers(cap)
+    d = dispatch.decide(
+        cap_name=cap.name, exec_entry=exec_entry, pick=pick, override_entry=override_entry,
+        override_is_claude=bool(override_entry) and gateway.is_claude(override_entry),
+        own_mcp=own_mcp, session_backend=session,
+        resume_candidate=(local_runtime.resume_entry(resume_session)
+                          if resume_session and pick != session else None),
+        connectors=connectors, declared=declared, kind=gateway.model_kind(exec_entry),
+        latched=lambda: gateway.cap_local_latched(cap.name, exec_entry["name"]),
+        latch_fails=config.setting("cap_local_latch_fails"),
+        local_disabled=local_disabled, fallback=bool(config.setting("local_fallback")),
+        fast_lane=fast_lane is not None)
+    for note in d.notes:
+        trace("RUN", f"{wid} {note}")
+    return d
+
+
+
 def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downshift=False,
                 extra_tools=None, mcp_config_path=None, resume_session=None, wid=None, cwd=None,
                 recall=False, project=None, local_disabled=False, local_disabled_reason=None,
@@ -224,171 +265,19 @@ def run_attempt(request, cap, *, attempt=1, critique=None, escalate=False, downs
     # After the cap's cwd resolves: a project cap has no explicit one, and "user" hid its own skills.
     sources = "" if fast_lane is not None else _setting_sources(cwd)
 
-    # Backend choice: `claude -p` (the default) vs the LOCAL agent runtime. Local runs when
-    # the resolved execution model (per-chat override > per-cap cap_exec override > phase
-    # assignment) is a local pool entry AND the cap needs no repo `.mcp.json` (the runtime has
-    # no MCP client — such caps stay on Claude). A resumed session is bound to whichever
-    # backend minted its id: "local-…" ids route back to the local runtime regardless of
-    # current model assignments.
-    override_entry = gateway.resolve_model(model_override) if model_override else None
-    if model_override and override_entry is None:
-        trace("RUN", f"{wid} model override '{model_override}' isn't a known pool entry — "
-                     f"ignoring it, using the admin-configured model")
-    exec_entry = override_entry or gateway.exec_model_entry(cap.name)
-    # THREE runtimes now (issue #115). `use_local` and `use_codex` are never both true; both
-    # false means `claude -p`. A project cap carrying its own `.mcp_config` stays on Claude
-    # whatever the model says — only `claude -p` reads a repo's `.mcp.json`.
-    backend_pick = gateway.backend_of(exec_entry)
-    use_local = backend_pick == "local" and not getattr(cap, "mcp_config", None)
-    use_codex = backend_pick == "codex" and not getattr(cap, "mcp_config", None)
-    # THE LOCAL BACKEND CANNOT SERVE A claude.ai CONNECTOR, so a cap that needs one must not
-    # run there. `mcp_client` serves stdio servers (New Relic, k8s, Grafana, AWS, Vanta) but a
-    # connector's OAuth lives inside Claude Code — there is nothing to spawn. Unguarded, the
-    # cap runs anyway and discovers the gap one hallucinated call at a time: run
-    # sched-mosaic-9e5e5681 (2026-08-04) put a briefing cap on DeepSeek and spent three
-    # attempts, three supervisor kills and ~1.1M input tokens answering "tool is not available
-    # in this run". Honours the fallback contract rather than inventing a third behaviour:
-    # fallback ON substitutes Claude (the work lands, the audit row shows the move and why),
-    # strict mode STOPS the way every other local→Claude site does.
-    # Two questions, because a capability can only answer the first: which servers did this
-    # cap DECLARE that we cannot serve, and which connectors does this REQUEST name? The
-    # general worker/assistant declare nothing by design, so the declaration test is silent
-    # for exactly the caps that get asked to do anything — see mcp_client.connectors_named.
-    # TWO lists, because they are two different facts and this string is the audit row and the
-    # ⇢ badge — what somebody reads six weeks later. A connector is unreachable from either
-    # subprocess backend and always will be; a stdio server is withheld from CODEX only, for a
-    # credential-channel reason that says nothing about the server (`codex_cli`'s note, #121).
-    # Merged into one list, a Codex run blocked on `grafana` was told "the local backend cannot
-    # serve it" and "claude.ai connectors are OAuth'd inside Claude Code" — two things untrue
-    # at once, about a backend it was not on and a server the local backend serves fine.
-    connector_blockers, stdio_blockers = [], []
-    if (use_local or use_codex) and not resume_session:
-        connector_blockers = mcp_client.unservable(cap)
-        connector_blockers += [n for n in mcp_client.connectors_named(request,
-                                                                       exclude=external_text,
-                                                                       code_run=workspace.is_clone(cwd))
-                               if n not in connector_blockers]
-        # The CODEX backend serves no MCP at all yet — not because it cannot (an
-        # `mcp_tool_call` completes under the sandbox) but because the only channel for a
-        # server's credentials is a config table, and the argv door puts them in `ps` and in
-        # the transcript. A cap that DECLARED servers is blocked here rather than running
-        # without the tools it said it needs and inventing the answers.
-        if use_codex:
-            stdio_blockers = [n for n in mcp_client.declared_servers(cap)
-                              if n not in connector_blockers]
-    mcp_blockers = connector_blockers + stdio_blockers
-    if (use_local or use_codex) and mcp_blockers:
-        where = "local" if use_local else "codex"
-        parts = []
-        if connector_blockers:
-            parts.append("needs claude.ai connectors (" + ", ".join(connector_blockers)
-                         + "), which are OAuth'd inside Claude Code and cannot be served by "
-                           "any other backend")
-        if stdio_blockers:
-            parts.append("declares MCP servers (" + ", ".join(stdio_blockers)
-                         + ") that the codex backend does not grant yet — their credentials "
-                           "would have to travel on the command line (issue #121); the local "
-                           "backend serves them normally")
-        why = f"cannot run on the {where} backend: " + "; ".join(parts)
-        if not config.setting("local_fallback"):
-            return _strict_stop_attempt(
-                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why),
-                time.monotonic())
-        use_local = use_codex = False
-        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
-        trace("RUN", f"{wid} {cap.name} {why} — running on Claude")
-    else:
-        fb_forced = None
-    # THIS CAPABILITY HAS ALREADY PROVED IT CANNOT DO THE WORK ON THIS MODEL. Within one run the
-    # ladder self-corrects (issue #172 re-dispatches the rest of it to Claude), but nothing
-    # remembered that across runs, so every new run re-litigated the same doomed first attempt:
-    # `github-pr-review` lost fifteen of them on qwen3.6 while going 13/13 on Claude. Same shape
-    # as the connector refusal above — the fallback contract decides, not a third behaviour —
-    # and the latch is a circuit breaker: it expires, and the attempt it then lets through
-    # re-arms it on a fail or clears it on a pass.
-    # `override_entry` is exempt: that is the composer's per-run pick, i.e. a human choosing
-    # THIS model for THIS run, right now. Accumulated evidence outranks stored config (the phase
-    # default and the Admin cap pin), never a live instruction — and without the exemption there
-    # is no way to re-test a latched pairing on purpose.
-    # CLASS, not transport: the latch is evidence about a WEAK model, so a hosted frontier entry
-    # (gateway.model_kind == "hosted") is never consulted against it — a stale latch left from
-    # before the endpoint was re-classed must not exile it either.
-    if (use_local and not resume_session and not override_entry
-            and gateway.model_kind(exec_entry) == "local"
-            and gateway.cap_local_latched(cap.name, exec_entry["name"])):
-        why = (f"{cap.name} has failed verification on {exec_entry['name']} "
-               f"{config.setting('cap_local_latch_fails')} times in a row — latched off the "
-               f"local backend until it is re-tested")
-        if not config.setting("local_fallback"):
-            return _strict_stop_attempt(
-                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why),
-                time.monotonic())
-        use_local = False
-        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
-        trace("RUN", f"{wid} {why} — running on Claude")
-    resume_bound = None   # the session's own model, when the resolved one is on the wrong backend
-    if resume_session:
-        session_backend = local_runtime.session_backend(resume_session)
-        use_local = session_backend == "local"
-        use_codex = session_backend == "codex"
-        # A resumed session is bound to the backend that minted its id, but the model ENTRY is
-        # resolved independently — so a cross-backend pick (or a phase assignment that has since
-        # moved to Claude) hands a local model id to `claude -p`, or a Claude pool entry to the
-        # local runtime, which cannot serve either. The session's own model is the only correct
-        # answer here; /api/continue rebinds to a fresh run when the user's pick disagrees.
-        if gateway.backend_of(exec_entry) != session_backend:
-            # The model that minted it, else ANY entry on the same backend. ONE implementation
-            # (local_runtime.resume_entry) — the plan preview resumes the same session and has
-            # to reach the same answer.
-            bound = local_runtime.resume_entry(resume_session)
-            if bound:
-                trace("RUN", f"{wid} {exec_entry['name']} is on the wrong backend for this "
-                             f"resumed session — continuing on {bound['name']}")
-                override_entry, exec_entry, resume_bound = None, bound, bound
-    elif local_disabled and config.setting("local_fallback"):
-        # An EARLIER rung this run proved the local backend can't serve this cap at all — the
-        # server rejects tool calls (vLLM missing --enable-auto-tool-choice/--tool-call-parser),
-        # so every local attempt fails identically. Keep the rest of the ladder on Claude rather
-        # than dead-ending the final rung on the same broken server (regression: a run whose
-        # attempts 1-2 re-dispatched to Claude but whose final attempt went back to local and
-        # errored → a needless needs-human). A WORKING-but-weak local model never trips this and
-        # still runs the whole ladder locally (the cost opt-out is preserved).
-        use_local = use_codex = False
-
-    # A FAST-LANE run never goes to Codex: its guard there is a sandbox with a whole shell in it,
-    # and it grants no MCP — so the one grant this run has would be the one thing it lacked. The
-    # workflow refuses the lane for a codex pick up front; this is the backstop. Checked AFTER a
-    # resume picks its session's backend, or a resumed Codex session got its whole shell back.
-    if fast_lane is not None and use_codex:
-        why = "a fast-lane run is granted MCP tools only, and the codex backend has a shell and no MCP"
-        if resume_session:
-            # Claude cannot resume a Codex session, so there is nothing to fall back TO.
-            return _refused_attempt(wid, attempt, exec_entry, CODEX_SESSION_TOOLLESS,
-                                    time.monotonic())
-        if not config.setting("local_fallback"):
-            return _strict_stop_attempt(
-                wid, attempt, gateway.LocalFallbackDisabled(exec_entry, why), time.monotonic())
-        use_codex = False
-        fb_forced = {"fallback_from": exec_entry["name"], "fallback_reason": why}
-        trace("RUN", f"{wid} {why} — running on Claude")
-
-    # EVERY local->Claude switch above has to move the MODEL with the backend, not just the
-    # dispatch. A per-chat override outranks escalation/downshift/cap_exec below — and unlike
-    # them it is a raw pool entry with no Claude guarantee — so left standing it hands a LOCAL
-    # model id to `claude -p --model`, which rejects it outright and the CLI's "may not exist or
-    # you may not have access to it" becomes the run's entire final answer (web-3a05328f a2:
-    # backend=claude, model=qwen38-27b, fallback_from=qwen38-27b — a badge reading X ⇢ X).
-    # Dropping the override lets the chain fall to the Claude-only helpers, which is what the
-    # escalation was for. `exec_entry` deliberately keeps the local entry so the fallback badge
-    # still names what we moved off. The resume branch above does the same via `bound`.
-    # Only when this run actually LANDED on Claude. A codex override running on codex is not a
-    # mismatch — the check exists because a non-Claude id handed to `claude -p --model` is
-    # rejected outright and the CLI's refusal becomes the run's entire final answer.
-    if (override_entry and not use_local and not use_codex
-            and not gateway.is_claude(override_entry)):
-        trace("RUN", f"{wid} {override_entry['name']} is pinned but this run is on the Claude "
-                     f"backend — using the Claude execution model instead")
-        override_entry = None
+    d = _resolve_backend(request, cap, wid=wid, cwd=cwd, model_override=model_override,
+                         resume_session=resume_session, local_disabled=local_disabled,
+                         fast_lane=fast_lane, external_text=external_text)
+    if d.stop == dispatch.REFUSED:
+        # Claude cannot resume a Codex session, so there is nothing to fall back TO.
+        return _refused_attempt(wid, attempt, d.exec_entry, CODEX_SESSION_TOOLLESS,
+                                time.monotonic())
+    if d.stop:
+        return _strict_stop_attempt(
+            wid, attempt, gateway.LocalFallbackDisabled(d.exec_entry, d.why), time.monotonic())
+    exec_entry, override_entry, resume_bound = d.exec_entry, d.override_entry, d.resume_bound
+    use_local, use_codex = d.backend == dispatch.LOCAL, d.backend == dispatch.CODEX
+    backend_pick, fb_forced = d.pick, d.fallback
 
     if resume_session:
         # Continuation — raw follow-up in an existing session; no critique fold-in, no memory.

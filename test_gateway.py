@@ -29,6 +29,7 @@ import chats
 import claude_cli
 import codex_cli
 import config
+import dispatch
 import doctor
 import contracts
 import engine
@@ -4795,20 +4796,29 @@ class LocalConnectorGapTests(unittest.TestCase):
         self.assertTrue(self.m.connectors_named("publish it to confluence"))
 
     def test_the_engine_merges_both_questions_into_the_blocker_list(self):
-        """Grep-shaped, like the other backend-selection guards: the branch is deep inside
-        run_attempt and cannot be reached without a live model."""
-        with open(os.path.join(os.path.dirname(__file__), "engine.py"),
-                  encoding="utf-8", errors="surrogateescape") as fh:
-            src = fh.read()
-        # The variable was split in two when Codex arrived — a connector and a withheld stdio
-        # server are different facts and read differently on the badge (#115 P4) — so the anchor
-        # is the connector list, which is the half this test is about.
-        i = src.index("connector_blockers = mcp_client.unservable(cap)")
-        branch = src[i:i + 400]
-        self.assertIn("mcp_client.connectors_named(request", branch,
-                      "the request half of the connector guard is not wired in")
-        self.assertIn("exclude=external_text", branch,
-                      "ingress-quoted data is read as the operator naming a connector (#223)")
+        """What the cap DECLARES and what the request NAMES reach the decision as one list, with
+        ingress-quoted data excluded from the second (#223)."""
+        cap = registry.Capability("skill", "briefing", "briefs")
+        seen, facts = {}, {}
+        real = dispatch.decide
+
+        def named(request, exclude=None, code_run=False):
+            seen.update(request=request, exclude=exclude)
+            return ["claude_ai_Slack"]
+        entry = {"name": "qwen", "provider": "openai", "base_url": "http://x/v1", "model": "qwen"}
+        with mock.patch.object(gateway, "exec_model_entry", lambda cap_name=None, cfg=None: entry), \
+             mock.patch.object(mcp_client, "unservable", lambda cap: ["claude_ai_Gmail"]), \
+             mock.patch.object(mcp_client, "connectors_named", named), \
+             mock.patch.object(engine, "trace", lambda *a, **k: None), \
+             mock.patch.object(dispatch, "decide",
+                               lambda **kw: facts.update(kw) or real(**kw)):
+            d = engine._resolve_backend("check slack", cap, wid="w1", cwd=None,
+                                        model_override=None, resume_session=None,
+                                        local_disabled=False, fast_lane=None,
+                                        external_text="quoted ticket")
+        self.assertEqual(facts["connectors"], ["claude_ai_Gmail", "claude_ai_Slack"])
+        self.assertEqual(seen, {"request": "check slack", "exclude": "quoted ticket"})
+        self.assertEqual(d.backend, "claude")
 
     def _trigger(self, template, text, match=None):
         import slack_triggers
@@ -10490,17 +10500,14 @@ class BackendDispatchTests(unittest.TestCase):
                                         + "\n".join(offenders))
 
     def test_the_engine_asks_the_gateway_which_runtime_to_dispatch_to(self):
-        """`run_attempt`'s dispatch is the site that actually spawns the subprocess. It must
-        resolve the backend through the gateway, not re-derive it."""
-        src = inspect.getsource(engine.run_attempt)
-        i = src.index("exec_entry = override_entry or gateway.exec_model_entry(cap.name)")
-        window = src[i:i + 600]
-        self.assertIn("gateway.backend_of(exec_entry)", window,
-                      "engine.run_attempt derives the backend itself")
-        # …and it is a THREE-way. `use_local = not is_claude` is how a Codex entry ends up in
-        # the runtime that would POST /chat/completions at a `base_url` it does not have.
-        for flag in ("use_local", "use_codex"):
-            self.assertIn(flag, window, flag)
+        """The fact-gatherer must resolve the backend through the gateway, not re-derive it, and
+        `run_attempt` must dispatch on the decision it was handed — a THREE-way."""
+        src = inspect.getsource(engine._resolve_backend)
+        self.assertIn("pick = gateway.backend_of(exec_entry)", src)
+        self.assertNotIn("provider", src)
+        run = inspect.getsource(engine.run_attempt)
+        self.assertIn("d.backend == dispatch.LOCAL, d.backend == dispatch.CODEX", run)
+        self.assertNotIn("backend_of(", run, "run_attempt derives the backend a second time")
 
     def test_a_resumed_session_and_a_pool_entry_are_compared_in_the_same_vocabulary(self):
         """A session is bound for life to the runtime that minted it. `session_backend` and
@@ -10510,6 +10517,413 @@ class BackendDispatchTests(unittest.TestCase):
         self.assertEqual(local_runtime.session_backend("0b3f-uuid"), "claude")
         self.assertIn(local_runtime.session_backend("local-abcdef"), gateway.BACKENDS)
         self.assertIn(local_runtime.session_backend(None), gateway.BACKENDS)
+
+
+class DispatchDecisionTests(unittest.TestCase):
+    """`dispatch.decide` is WHICH RUNTIME serves an attempt, as a pure function of plain facts.
+
+    The rules used to be 165 lines inside `engine.run_attempt`, reachable only by faking three
+    runtimes, the pool and the MCP layer — so each was tested through whichever incident
+    introduced it, and never against the others. Here every rule is one row, and the invariants
+    that must hold across ALL of them are swept over the whole fact grid."""
+
+    CLAUDE = {"name": "sonnet", "model": "claude-sonnet-5"}
+    LOCAL = {"name": "qwen", "model": "qwen"}
+    CODEX = {"name": "codex-5", "model": "gpt-5-codex"}
+    BOUND = {"name": "qwen-old", "model": "qwen-old"}
+
+    def _d(self, pick="local", entry=None, **kw):
+        entry = entry or {"claude": self.CLAUDE, "local": self.LOCAL, "codex": self.CODEX}[pick]
+        return dispatch.decide(cap_name="briefing", exec_entry=entry, pick=pick, **kw)
+
+    def test_an_unobstructed_pick_runs_where_it_asked(self):
+        for pick in ("claude", "local", "codex"):
+            d = self._d(pick)
+            self.assertEqual((d.backend, d.pick, d.stop, d.fallback, d.notes),
+                             (pick, pick, None, None, ()), pick)
+
+    def test_a_cap_with_its_own_mcp_config_stays_on_claude_unbadged(self):
+        for pick in ("local", "codex"):
+            d = self._d(pick, own_mcp=True, connectors=["claude_ai_Gmail"], latched=lambda: True)
+            self.assertEqual((d.backend, d.fallback, d.stop), ("claude", None, None), pick)
+            self.assertEqual(d.pick, pick, "the trace still names what the entry asked for")
+
+    def test_a_connector_moves_either_subprocess_backend_to_claude(self):
+        for pick in ("local", "codex"):
+            d = self._d(pick, connectors=["claude_ai_Gmail"])
+            self.assertEqual(d.backend, "claude", pick)
+            self.assertEqual(d.fallback["fallback_from"], d.exec_entry["name"])
+            self.assertIn(f"cannot run on the {pick} backend", d.fallback["fallback_reason"])
+            self.assertIn("claude_ai_Gmail", d.fallback["fallback_reason"])
+            self.assertEqual(d.notes, (f"briefing {d.fallback['fallback_reason']}"
+                                       " — running on Claude",))
+            self.assertIs(d.exec_entry, {"local": self.LOCAL, "codex": self.CODEX}[pick],
+                          "the badge must still name what the run moved off")
+
+    def test_strict_mode_stops_instead_of_substituting(self):
+        cases = [dict(pick="local", connectors=["claude_ai_Gmail"]),
+                 dict(pick="codex", declared=["grafana"]),
+                 dict(pick="local", latched=lambda: True),
+                 dict(pick="codex", fast_lane=True)]
+        for kw in cases:
+            d = self._d(fallback=False, **kw)
+            self.assertEqual(d.stop, dispatch.STRICT, kw)
+            self.assertTrue(d.why, kw)
+            self.assertIsNone(d.fallback, "a stop is not a fallback")
+            self.assertEqual(self._d(**kw).backend, "claude", kw)
+
+    def test_a_declared_stdio_server_blocks_codex_and_only_codex(self):
+        self.assertEqual(self._d("local", declared=["grafana"]).backend, "local")
+        d = self._d("codex", declared=["grafana"])
+        self.assertEqual(d.backend, "claude")
+        why = d.fallback["fallback_reason"]
+        self.assertIn("declares MCP servers (grafana)", why)
+        self.assertNotIn("connectors", why, "a stdio server described as a connector")
+
+    def test_the_two_blocker_lists_are_reported_apart_and_never_twice(self):
+        d = self._d("codex", connectors=["claude_ai_Gmail"],
+                    declared=["claude_ai_Gmail", "grafana"])
+        why = d.fallback["fallback_reason"]
+        self.assertIn("needs claude.ai connectors (claude_ai_Gmail)", why)
+        self.assertIn("declares MCP servers (grafana)", why)
+        self.assertEqual(why.count("claude_ai_Gmail"), 1)
+
+    def test_a_latch_holds_only_for_a_weak_stored_pick(self):
+        d = self._d(latched=lambda: True, latch_fails=3)
+        self.assertEqual(d.backend, "claude")
+        self.assertIn("failed verification on qwen 3 times in a row",
+                      d.fallback["fallback_reason"])
+        self.assertEqual(self._d(latched=lambda: False).backend, "local")
+        self.assertEqual(self._d(latched=lambda: True, kind="hosted").backend, "local",
+                         "the latch is evidence about a WEAK model")
+        d = self._d(latched=lambda: True, override_entry=self.LOCAL, override_is_claude=False)
+        self.assertEqual((d.backend, d.override_entry), ("local", self.LOCAL),
+                         "a live per-run pick outranks stored evidence")
+
+    def test_the_latch_store_is_read_only_when_it_could_decide(self):
+        boom = mock.Mock(side_effect=AssertionError("read for nothing"))
+        for kw in (dict(kind="hosted"), dict(pick="codex"), dict(pick="claude"),
+                   dict(own_mcp=True), dict(session_backend="local"),
+                   dict(connectors=["claude_ai_Gmail"]),
+                   dict(override_entry=self.LOCAL, override_is_claude=False)):
+            self._d(latched=boom, **kw)
+        asked = mock.Mock(return_value=False)
+        self.assertEqual(self._d(latched=asked).backend, "local")
+        asked.assert_called_once_with()
+
+    def test_a_resume_follows_its_session_and_nothing_else(self):
+        obstacles = dict(connectors=["claude_ai_Gmail"], declared=["grafana"], latched=lambda: True,
+                         local_disabled=True)
+        for pick in ("claude", "local", "codex"):
+            for session in ("claude", "local", "codex"):
+                for fallback in (True, False):
+                    d = self._d(pick, session_backend=session, fallback=fallback,
+                                resume_candidate=self.BOUND, **obstacles)
+                    self.assertEqual((d.backend, d.stop, d.fallback), (session, None, None),
+                                     (pick, session, fallback))
+
+    def test_a_resume_on_the_wrong_backend_takes_the_sessions_own_model(self):
+        d = self._d("claude", session_backend="local", resume_candidate=self.BOUND,
+                    override_entry=self.CLAUDE)
+        self.assertEqual((d.exec_entry, d.resume_bound, d.override_entry),
+                         (self.BOUND, self.BOUND, None))
+        self.assertIn("continuing on qwen-old", d.notes[0])
+        same = self._d("local", session_backend="local", resume_candidate=self.BOUND)
+        self.assertEqual((same.exec_entry, same.resume_bound), (self.LOCAL, None),
+                         "a matching entry is not rebound")
+        none = self._d("claude", session_backend="local", resume_candidate=None)
+        self.assertEqual((none.backend, none.exec_entry, none.resume_bound),
+                         ("local", self.CLAUDE, None))
+
+    def test_a_wall_proven_earlier_keeps_the_ladder_on_claude(self):
+        for pick in ("local", "codex"):
+            d = self._d(pick, local_disabled=True)
+            self.assertEqual((d.backend, d.stop), ("claude", None), pick)
+            self.assertEqual(self._d(pick, local_disabled=True, fallback=False).backend, pick,
+                             "strict mode keeps the ladder where the operator put it")
+
+    def test_a_fast_lane_run_never_lands_on_codex(self):
+        d = self._d("codex", fast_lane=True)
+        self.assertEqual((d.backend, d.fallback["fallback_from"]), ("claude", "codex-5"))
+        self.assertEqual(d.fallback["fallback_reason"], dispatch.FAST_LANE_CODEX)
+        self.assertEqual(self._d("local", fast_lane=True).backend, "local")
+        self.assertEqual(self._d("codex", fast_lane=False).backend, "codex")
+
+    def test_a_resumed_codex_session_on_the_fast_lane_is_refused_not_moved(self):
+        for pick in ("claude", "local", "codex"):
+            for fallback in (True, False):
+                d = self._d(pick, session_backend="codex", fast_lane=True, fallback=fallback,
+                            resume_candidate=self.CODEX)
+                self.assertEqual(d.stop, dispatch.REFUSED, (pick, fallback))
+        self.assertIsNone(self._d("codex", session_backend="local", fast_lane=True).stop)
+
+    def test_a_non_claude_pick_is_dropped_once_the_run_lands_on_claude(self):
+        d = self._d("local", override_entry=self.LOCAL, override_is_claude=False,
+                    connectors=["claude_ai_Gmail"])
+        self.assertEqual((d.backend, d.override_entry), ("claude", None))
+        self.assertIs(d.exec_entry, self.LOCAL)
+        self.assertIn("qwen is pinned but this run is on the Claude backend", d.notes[-1])
+        kept = self._d("claude", override_entry=self.CLAUDE, override_is_claude=True)
+        self.assertEqual((kept.override_entry, kept.notes), (self.CLAUDE, ()))
+        codex = self._d("codex", override_entry=self.CODEX, override_is_claude=False)
+        self.assertEqual((codex.backend, codex.override_entry), ("codex", self.CODEX))
+
+    def test_the_first_rule_to_move_a_run_owns_the_reason(self):
+        d = self._d("codex", fast_lane=True, declared=["grafana"])
+        self.assertIn("declares MCP servers", d.fallback["fallback_reason"])
+        self.assertEqual(len(d.notes), 1)
+
+    def _grid(self):
+        import itertools
+        axes = dict(
+            pick=["claude", "local", "codex"], own_mcp=[False, True],
+            session_backend=[None, "claude", "local", "codex"],
+            resume_candidate=[None, self.BOUND],
+            override=[None, "claude", "other"],
+            connectors=[(), ("claude_ai_Gmail",)], declared=[(), ("grafana",)],
+            kind=["local", "hosted"], latched=[None, True], local_disabled=[False, True],
+            fallback=[True, False], fast_lane=[False, True])
+        for combo in itertools.product(*axes.values()):
+            f = dict(zip(axes, combo))
+            ov = f.pop("override")
+            f["override_entry"] = {"claude": self.CLAUDE, "other": self.LOCAL}.get(ov)
+            f["override_is_claude"] = ov == "claude"
+            f["latched"] = f["latched"] and (lambda: True)
+            yield f
+
+    def test_invariants_hold_over_the_whole_fact_grid(self):
+        n = 0
+        for f in self._grid():
+            d, n = self._d(**f), n + 1
+            start = f["pick"] if not f["own_mcp"] else "claude"
+            resuming = f["session_backend"] is not None
+            self.assertIn(d.backend, ("claude", "local", "codex"), f)
+            self.assertIn(d.stop, (None, dispatch.STRICT, dispatch.REFUSED), f)
+            self.assertEqual(d.pick, f["pick"], f)
+            if d.stop:
+                self.assertTrue(d.why, f)
+                self.assertIsNone(d.fallback, f)
+                continue
+            if resuming:
+                self.assertEqual(d.backend, f["session_backend"],
+                                 f"a resume left its session's runtime: {f}")
+                self.assertIsNone(d.fallback, f)
+            else:
+                self.assertIn(d.backend, (start, "claude"),
+                              f"a run crossed between subprocess backends: {f}")
+                self.assertIsNone(d.resume_bound, f)
+            if not f["fallback"] and not resuming:
+                self.assertEqual(d.backend, start, f"strict mode moved a run silently: {f}")
+            if d.fallback:
+                self.assertEqual(d.backend, "claude", f)
+                self.assertNotEqual(start, "claude", f)
+                self.assertEqual(d.fallback["fallback_from"], d.exec_entry["name"], f)
+                self.assertTrue(d.fallback["fallback_reason"], f)
+            if f["fast_lane"]:
+                self.assertNotEqual(d.backend, "codex", f)
+            if d.backend == "claude" and d.override_entry:
+                self.assertTrue(f["override_is_claude"],
+                                f"a non-Claude id would reach `claude -p --model`: {f}")
+            if d.backend != "claude" and not resuming:
+                self.assertFalse(f["connectors"], f"a connector cap ran off Claude: {f}")
+            if d.backend == "codex" and not resuming:
+                self.assertFalse(f["declared"], f"codex ran a cap that declared MCP: {f}")
+        self.assertEqual(n, 3 * 2 * 4 * 2 * 3 * 2 * 2 * 2 * 2 * 2 * 2 * 2)
+
+    def test_the_decision_is_pure(self):
+        """No I/O, no clock, no settings store — what lets it be swept exhaustively, and what
+        keeps a rule from reading a fact the caller did not hand it."""
+        tree = ast.parse(inspect.getsource(dispatch))
+        imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        imported |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+        self.assertEqual(imported, {"dataclasses"})
+        entry, before = dict(self.LOCAL), dict(self.LOCAL)
+        connectors = ["claude_ai_Gmail"]
+        self._d(entry=entry, connectors=connectors, declared=["grafana"])
+        self.assertEqual((entry, connectors), (before, ["claude_ai_Gmail"]),
+                         "decide mutated a fact it was handed")
+
+
+class DispatchWiringTests(unittest.TestCase):
+    """`engine._resolve_backend` gathers the facts and `run_attempt` obeys the answer. The rules
+    are `DispatchDecisionTests`' business; this is the seam on either side of them."""
+
+    CLAUDE = {"name": "sonnet", "provider": "claude", "model": "claude-sonnet-5"}
+    LOCAL = {"name": "qwen", "provider": "openai", "base_url": "http://x/v1", "model": "qwen"}
+    CODEX = {"name": "codex-5", "provider": "codex", "model": "gpt-5-codex"}
+
+    def setUp(self):
+        self.traces, self.seen = [], {}
+        self.cap = registry.Capability("skill", "briefing", "briefs")
+        self.cap.risk = "read"
+        self.entry = self.LOCAL
+        self.pool = {"qwen": self.LOCAL, "sonnet": self.CLAUDE, "codex-5": self.CODEX}
+
+        def named(request, exclude=None, code_run=False):
+            self.seen["named"] = (request, exclude, code_run)
+            return ["claude_ai_Slack"]
+
+        def latched(cap_name, model_name):
+            self.seen["latched"] = (cap_name, model_name)
+            return False
+        patches = [
+            (engine, "trace", lambda tag, msg: self.traces.append((tag, msg))),
+            (gateway, "exec_model_entry", lambda cap_name=None, cfg=None: self.entry),
+            (gateway, "resolve_model", lambda name, cfg=None: self.pool.get(name)),
+            (gateway, "model_kind", lambda e, cfg=None: "local"),
+            (gateway, "cap_local_latched", latched),
+            (mcp_client, "unservable", lambda cap: ["claude_ai_Gmail"]),
+            (mcp_client, "connectors_named", named),
+            (mcp_client, "declared_servers", lambda cap: ["grafana"]),
+            (workspace, "is_clone", lambda cwd: cwd == "/clone"),
+            (local_runtime, "resume_entry", lambda sid: self.LOCAL),
+        ]
+        for obj, name, fake in patches:
+            p = mock.patch.object(obj, name, fake)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _facts(self, **kw):
+        """The keyword arguments `_resolve_backend` hands `dispatch.decide`."""
+        got = {}
+        real = dispatch.decide
+
+        def spy(**facts):
+            got.update(facts)
+            return real(**facts)
+        args = dict(wid="w1", cwd=None, model_override=None, resume_session=None,
+                    local_disabled=False, fast_lane=None, external_text=None)
+        args.update(kw)
+        with mock.patch.object(dispatch, "decide", spy):
+            d = engine._resolve_backend("check slack", self.cap, **args)
+        return got, d
+
+    def test_a_fresh_local_pick_gathers_connectors_and_the_latch(self):
+        facts, d = self._facts(cwd="/clone", external_text="ticket body")
+        self.assertEqual(facts["connectors"], ["claude_ai_Gmail", "claude_ai_Slack"])
+        self.assertEqual(self.seen["named"], ("check slack", "ticket body", True))
+        self.assertNotIn("latched", self.seen, "a connector already moved the run")
+        self.assertFalse(facts["latched"]())
+        self.assertEqual(self.seen["latched"], ("briefing", "qwen"))
+        self.assertEqual((facts["pick"], facts["declared"], facts["session_backend"]),
+                         ("local", [], None))
+        self.assertEqual(d.backend, "claude")
+        self.assertEqual(self.traces, [("RUN", f"w1 {d.notes[0]}")])
+
+    def test_a_codex_pick_gathers_what_the_cap_declares(self):
+        self.entry = self.CODEX
+        facts, _ = self._facts()
+        self.assertEqual((facts["pick"], facts["declared"]), ("codex", ["grafana"]))
+        self.assertNotIn("latched", self.seen, "the latch is about the local backend")
+
+    def test_a_connector_the_cap_and_the_request_both_name_is_listed_once(self):
+        with mock.patch.object(mcp_client, "connectors_named",
+                               lambda r, exclude=None, code_run=False: ["claude_ai_Gmail"]):
+            self.assertEqual(self._facts()[0]["connectors"], ["claude_ai_Gmail"])
+
+    def test_nothing_is_looked_up_that_the_pick_cannot_make_matter(self):
+        boom = mock.Mock(side_effect=AssertionError("looked up for nothing"))
+        cases = [("a claude pick", self.CLAUDE, None, None),
+                 ("a resume", self.LOCAL, "local-abc123", None),
+                 ("a cap with its own .mcp.json", self.LOCAL, None, "/repo/.mcp.json")]
+        for label, entry, sid, own in cases:
+            self.entry, self.cap.mcp_config = entry, own
+            with mock.patch.object(mcp_client, "unservable", boom), \
+                 mock.patch.object(mcp_client, "connectors_named", boom), \
+                 mock.patch.object(mcp_client, "declared_servers", boom), \
+                 mock.patch.object(gateway, "cap_local_latched", boom):
+                facts, _ = self._facts(resume_session=sid)
+            self.assertEqual((facts["connectors"], facts["declared"]), ([], []), label)
+            self.assertEqual(facts["own_mcp"], bool(own), label)
+
+    def test_a_resume_asks_for_the_sessions_entry_only_on_a_mismatch(self):
+        facts, d = self._facts(resume_session="local-abc123")
+        self.assertEqual((facts["session_backend"], facts["resume_candidate"]), ("local", None))
+        self.entry = self.CLAUDE
+        facts, d = self._facts(resume_session="local-abc123")
+        self.assertEqual(facts["resume_candidate"], self.LOCAL)
+        self.assertEqual((d.backend, d.exec_entry), ("local", self.LOCAL))
+
+    def test_an_unknown_model_pick_is_ignored_and_said_so(self):
+        facts, _ = self._facts(model_override="no-such-model")
+        self.assertIsNone(facts["override_entry"])
+        self.assertIs(facts["exec_entry"], self.LOCAL)
+        self.assertIn("no-such-model", self.traces[0][1])
+
+    def test_a_known_model_pick_becomes_the_entry(self):
+        facts, _ = self._facts(model_override="codex-5")
+        self.assertEqual((facts["exec_entry"], facts["override_entry"], facts["pick"],
+                          facts["override_is_claude"]), (self.CODEX, self.CODEX, "codex", False))
+        facts, _ = self._facts(model_override="sonnet")
+        self.assertTrue(facts["override_is_claude"])
+
+    def test_settings_and_flags_reach_the_decision_as_plain_values(self):
+        with mock.patch.object(config, "setting", lambda name: {
+                "local_fallback": 0, "cap_local_latch_fails": 4}[name]):
+            facts, d = self._facts(local_disabled=True, fast_lane=[])
+        self.assertIs(facts["fallback"], False)
+        self.assertEqual((facts["latch_fails"], facts["local_disabled"], facts["fast_lane"]),
+                         (4, True, True), "an EMPTY fast-lane grant is still the fast lane")
+        self.assertEqual(d.stop, dispatch.STRICT)
+
+    def test_every_fact_the_decision_takes_is_handed_over(self):
+        facts, _ = self._facts()
+        want = set(inspect.signature(dispatch.decide).parameters)
+        self.assertEqual(set(facts), want, "a fact left to its default is a rule switched off")
+
+    def _run_with(self, d):
+        ran = []
+        with mock.patch.object(engine, "_resolve_backend", lambda *a, **k: d), \
+             mock.patch.object(engine, "_claude", lambda *a, **k: ran.append("claude")), \
+             mock.patch.object(local_runtime, "run_json", lambda *a, **k: ran.append("local")), \
+             mock.patch.object(codex_cli, "run_json", lambda *a, **k: ran.append("codex")):
+            return engine.run_attempt("check slack", self.cap, attempt=2, wid="w1"), ran
+
+    def test_a_strict_stop_ends_the_attempt_before_anything_runs(self):
+        att, ran = self._run_with(dispatch.Dispatch(
+            backend="local", exec_entry=self.LOCAL, pick="local", stop=dispatch.STRICT,
+            why="cannot run on the local backend: needs claude.ai connectors (x)"))
+        self.assertEqual(ran, [])
+        self.assertTrue(att["local_strict_stop"] and att["is_error"])
+        self.assertEqual((att["attempt"], att["workflow"]), (2, "w1"))
+        self.assertIn("needs claude.ai connectors (x)", att["result"])
+
+    def test_a_refusal_delivers_its_own_message_and_names_the_sessions_backend(self):
+        att, ran = self._run_with(dispatch.Dispatch(
+            backend="codex", exec_entry=self.CODEX, pick="codex", stop=dispatch.REFUSED,
+            why=dispatch.FAST_LANE_CODEX))
+        self.assertEqual(ran, [])
+        self.assertEqual((att["result"], att["backend"]),
+                         (engine.CODEX_SESSION_TOOLLESS, "codex"))
+        self.assertTrue(att["local_strict_stop"])
+
+    def test_run_attempt_dispatches_to_the_backend_it_was_handed(self):
+        out = {"result": "ok", "is_error": False, "total_cost_usd": 0, "session_id": "s",
+               "usage": {}}
+        fb = {"fallback_from": "qwen", "fallback_reason": "why"}
+        cases = [("local", "local", self.LOCAL, None), ("codex", "codex", self.CODEX, None),
+                 ("claude", "local", self.LOCAL, fb), ("claude", "codex", self.CODEX, fb)]
+        for backend, pick, entry, fallback in cases:
+            ran = []
+            d = dispatch.Dispatch(backend=backend, exec_entry=entry, pick=pick,
+                                  fallback=fallback)
+            with mock.patch.object(engine, "_resolve_backend", lambda *a, **k: d), \
+                 mock.patch.object(config, "SUPERVISE", False), \
+                 mock.patch.object(workspace, "refresh_repos", lambda: None), \
+                 mock.patch.object(gateway, "exec_model_id", lambda cap_name=None: "claude-x"), \
+                 mock.patch.object(gateway, "codex_config", lambda e: {}), \
+                 mock.patch.object(engine, "_claude",
+                                   lambda *a, **k: ran.append("claude") or dict(out)), \
+                 mock.patch.object(local_runtime, "run_json",
+                                   lambda *a, **k: ran.append("local") or dict(out)), \
+                 mock.patch.object(codex_cli, "run_json",
+                                   lambda *a, **k: ran.append("codex") or dict(out)):
+                att = engine.run_attempt("check slack", self.cap, attempt=2, wid="w1")
+            self.assertEqual((ran, att["backend"]), ([backend], backend),
+                             f"dispatched on the pick ({pick}), not the decision")
+            self.assertEqual((att["fallback_from"], att["fallback_reason"]),
+                             ((fallback or {}).get("fallback_from"),
+                              (fallback or {}).get("fallback_reason")), backend)
 
 
 class CodexBackendTests(unittest.TestCase):
