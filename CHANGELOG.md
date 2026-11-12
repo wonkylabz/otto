@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-12
+
 ### Added
 
 - Five more themes in Admin → Appearance, drawn from the same Figma colour-combination library as the first five: Ocean Tide, Cherry Blossom, Cozy Campfire, Evening Rose and Emerald Odyssey. Per browser, as before.
@@ -747,7 +749,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/wonkylabz/otto/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/wonkylabz/otto/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/wonkylabz/otto/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/wonkylabz/otto/compare/v0.12.1...v0.13.0
