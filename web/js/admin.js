@@ -1704,31 +1704,6 @@ function showMcpForm(existing){
   };
 }
 
-function showProjectForm(){
-  const c=openFormModal("<b>New project repo</b><br>a repository Otto can read, clone and work in");
-  c.innerHTML=`<div class="aform">
-    <label>Repo URL</label><input id="pf-url" placeholder="https://github.com/owner/repo">
-    <p class="sub" style="margin:2px 0 0">GitHub or GitLab remote (<code>git@…</code> works too). Otto clones it under <code>data/repos/</code> using your <code>gh</code> login.</p>
-    <label style="margin-top:10px">Local checkout <span class="sub">(optional)</span></label><input id="pf-path" placeholder="/home/you/repositories/repo">
-    <p class="sub" style="margin:2px 0 0">Already have it on disk? Point at it and Otto clones from there instead — faster, offline, and the checkout gets write-protected.</p>
-    <div class="ferr" id="pf-err"></div>
-    <div class="factions"><button class="btn approve" id="pf-save">Add project repo</button><button class="btn decline" id="pf-cancel">Cancel</button></div>
-  </div>`;
-  document.getElementById("pf-cancel").onclick=closeFormModal;
-  document.getElementById("pf-save").onclick=async(e)=>{
-    // The clone runs inside this request, so the button must say so — a silent multi-second
-    // wait on a form with no feedback reads as a dead button and gets clicked again.
-    const btn=e.target, was=btn.textContent;
-    btn.disabled=true; btn.textContent="Cloning…";
-    const ok=await postForm("/api/project/add",{
-      url:document.getElementById("pf-url").value.trim(),
-      path:document.getElementById("pf-path").value.trim(),
-    },document.getElementById("pf-err"));
-    btn.disabled=false; btn.textContent=was;
-    if(ok){ closeFormModal(); loadAdmin(); }
-  };
-}
-
 function queueSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveAdmin,400); }
 // The ONE writer of a capability's execution backend. The merged Execution dropdown spans three
 // stores — cap_exec (models.json), cap_local_exec (models.json) and the policy tool_free flag —

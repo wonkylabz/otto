@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- Admin → Project repos → **+ Add project repo** now lists every GitHub repo your `gh` login can reach (personal, organisation and collaborator; archived ones are left out). Filter, tick one or several, and they are cloned one after another. Pasting a URL still works, and is the fallback when `gh` cannot list. Needs a restart to pick up the new route.
+
 ### Changed
 
 - The rules that pick which backend serves an attempt (Claude, local or Codex) moved out of the
