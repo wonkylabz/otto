@@ -123,7 +123,8 @@ function mascotPlace(){
     const f=p || mascotHomeMem() || MASCOT_FALLBACK;
     x=MASCOT_EDGE + freeX*mascotClamp(f.fx); y=MASCOT_EDGE + freeY*mascotClamp(f.fy);
   }
-  d.style.left=Math.round(x)+"px"; d.style.top=Math.round(y)+"px";
+  // right/bottom reset too: the CSS seeds them, and with top set as well the dock stretches.
+  d.style.left=Math.round(x)+"px"; d.style.top=Math.round(y)+"px"; d.style.right="auto"; d.style.bottom="auto";
   // No room for a bubble above his head up there - put it under him and flip the tail.
   d.classList.toggle("below", y < 120);
   // The dream balloon is drawn by the element, which cannot see the dock: told HERE, on every

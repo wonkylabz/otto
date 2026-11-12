@@ -6947,6 +6947,8 @@ class MascotHomeTests(unittest.TestCase):
                         "leaving the Board must un-hide him before he is measured")
         self.assertRegex(ui, r"body\.mascot-offstage \.mascot \{ display: none; \}")
         self.assertNotIn("MASCOT_SMALL_SIZE", ui, "the small Board mascot is back")
+        self.assertIn('d.style.right="auto"; d.style.bottom="auto";', place,
+                      "the CSS seeds right/bottom: unreset, the dock stretches and he drifts up per tab switch")
         tab = ui[ui.index("function activateTab(v)"):]
         self.assertIn("mascotPlace()", tab[:tab.index('t.addEventListener("click",()=>activateTab')],
                       "a tab switch no longer re-places him")
