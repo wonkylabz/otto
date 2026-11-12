@@ -25,9 +25,11 @@ changelog that restates it is a second copy of `git log`.
 - Memory: each entry's source line sits under its facts, and the forget/edit/delete controls are larger.
 - Audit: the runs-per-day bars are filled and the attention share is red; the smallest labels across the app are now 11px.
 - The web server's POST routes moved out of `server.py` into four modules by area (runs, integrations, memory, admin). No route or behaviour changed; the service needs its usual restart after updating.
+- The header no longer shows the "N capabilities" and "read · write" chips. Admin → Capabilities still shows `enabled / total`.
 
 ### Fixed
 
+- The **FACTORY** header chip was unreadable in dark themes (dark text on a dark pill) and hidden at narrow widths; it now keeps its amber fill everywhere.
 - Running the test suite without `temporalio` (a bare `python3`) now includes one failure that names the command to use, and the docs no longer claim that run comes back green.
 
 ## [0.15.0] - 2026-11-11

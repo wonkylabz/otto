@@ -4594,6 +4594,15 @@ class HeaderCounterTests(unittest.TestCase):
         self.assertIn("applyCaps(Object.values(POLICY_STATE.capabilities))", html)
         self.assertNotIn('getElementById("n-caps").textContent=caps.filter', html)
 
+    def test_header_carries_no_capability_chips_and_the_factory_chip_wins_the_pill_rule(self):
+        # The "N capabilities" / "read · write" chips were noise. The FACTORY chip has a title, so
+        # the generic header-pill rule (`.status > span[title]`) repainted it surface-on-surface:
+        # dark ink on a dark pill in the dark themes.
+        html = self._html()
+        self.assertNotIn('id="n-caps"', html)
+        self.assertNotIn('id="n-read"', html)
+        self.assertIn(".status > span[title]:not(.factorychip)", html)
+
     def test_applycaps_also_refreshes_the_admin_badge(self):
         # Otherwise toggling a cap updates the header and leaves the section badge stale.
         body = re.search(r"function applyCaps\(caps\)\{(.*?)\n\}", self._html(), re.S).group(1)

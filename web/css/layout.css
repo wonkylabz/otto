@@ -69,7 +69,7 @@ body.mascot-away .adminview { padding-bottom: calc(var(--m-h, 70px) + 46px); }
   .tab .tabbadge { margin-left: 0; }
   .tab.active .tabbadge { box-shadow: 0 0 0 1.5px var(--on-accent); }
   .status { gap: 8px; }
-  .status > span[title] { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
+  .status > span[title]:not(.factorychip) { padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
   .status .estop, .status .obbtn { border-radius: 999px; padding: 5px 12px; font-family: var(--sans); }
   .status .updbtn { background: var(--accent-soft); border-color: var(--accent-line); }
   .status .updbtn:hover { color: var(--accent); border-color: var(--accent); }
@@ -86,5 +86,5 @@ body.mascot-away .adminview { padding-bottom: calc(var(--m-h, 70px) + 46px); }
 @media (min-width: 681px) and (max-width: 1759px) { header .tabs { margin: 0 auto; } header .status { margin-left: 0; } }
 @media (min-width: 681px) and (max-width: 1380px) { .tab::before { display: none; } }
 /* The pill group is wider than the old bare tabs, so the status chips yield earlier or Admin clips. */
-@media (min-width: 681px) and (max-width: 1280px) { .status > span[title*="risk"] { display: none; } .tab { padding: 5px 10px; } }
-@media (min-width: 681px) and (max-width: 1100px) { .status > span[title] { display: none; } .tabs { margin-left: 6px; } .tab { padding: 5px 8px; } }
+@media (min-width: 681px) and (max-width: 1280px) { .tab { padding: 5px 10px; } }
+@media (min-width: 681px) and (max-width: 1100px) { .status > span[title]:not(.factorychip) { display: none; } .tabs { margin-left: 6px; } .tab { padding: 5px 8px; } }

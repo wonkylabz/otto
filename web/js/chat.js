@@ -1636,13 +1636,8 @@ let CAPS_LIST=[], slashItems=[], slashIdx=-1;
 function applyCaps(caps){
   CAPS_LIST = caps;
   const on=caps.filter(c=>c.enabled!==false);
-  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
-  set("n-caps",on.length);
-  set("n-read",on.filter(c=>c.risk==="read").length);
-  set("n-write",on.filter(c=>c.risk==="write").length);
-  // The header counts ENABLED caps, the Admin section lists ALL of them — two different, both
-  // correct numbers that read as a bug when they sit on one screen unexplained. The section
-  // badge shows both, and is refreshed from here so toggling a cap can't leave it stale.
+  // The Admin section badge shows enabled / total, and is refreshed from here so toggling a cap
+  // can't leave it stale. (The header no longer carries capability counts.)
   const badge=document.querySelector('.asection[data-sect="caps"] .sectcount');
   if(badge) badge.textContent=`${on.length} / ${caps.length}`;
 }
