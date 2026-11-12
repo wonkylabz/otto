@@ -28,7 +28,6 @@ const MASCOT_KEY="otto.mascot", MASCOT_POS_KEY="otto.mascot.pos", MASCOT_HOME_KE
 const MASCOT_HOBBIES=["reading","juggling","grilling","fluting"];
 const MASCOT_HOBBY_AFTER_MS=40000, MASCOT_HOBBY_MS=50000, MASCOT_DREAM_MS=20000, MASCOT_DREAM_CUT=120;
 const DREAM={facts:null, loading:false, since:0};
-const MASCOT_SIZE="104", MASCOT_SMALL_SIZE="56";
 const MASCOT_EDGE=14;      // the gap he keeps from any viewport edge, wherever he is dropped
 const MASCOT_STAGE={
   INGRESS:  ["thinking", "let me read that\u2026"],
@@ -103,20 +102,17 @@ function mascotPlace(){
   const d=document.getElementById("mascot");
   if(!d || d.hidden) return;
   const p=mascotPos(), fig=document.getElementById("mascot-fig");
-  // Undragged on the Board he goes small into the corner: its cards run edge to edge, so his
-  // home spot lands on them. Every other tab keeps his Chat position. Set BEFORE measuring.
-  const bv=document.getElementById("boardview"), away=!p && !!bv && !bv.hidden;
-  document.body.classList.toggle("mascot-away", away);
-  const size=away ? MASCOT_SMALL_SIZE : MASCOT_SIZE;
-  if(fig && fig.getAttribute("size")!==size) fig.setAttribute("size", size);
+  // The Board's cards run edge to edge, so anywhere he stands is on one: he is hidden there.
+  // Toggled BEFORE measuring - a display:none dock has a zero rect.
+  const bv=document.getElementById("boardview"), onBoard=!!bv && !bv.hidden;
+  document.body.classList.toggle("mascot-offstage", onBoard);
+  if(onBoard){ mascotLayout(); return; }
   const r=d.getBoundingClientRect();
   const freeX=Math.max(0, window.innerWidth - r.width - MASCOT_EDGE*2);
   const freeY=Math.max(0, window.innerHeight - r.height - MASCOT_EDGE*2);
   const home=p ? null : mascotHomeXY(r);
   let x, y;
-  if(away){
-    x=window.innerWidth - r.width - 2; y=window.innerHeight - r.height - 4;
-  } else if(home){
+  if(home){
     x=home.x; y=home.y;
     // Cached as a fraction: the rail can't be measured from any other tab, so a resize over
     // there would otherwise fling an undragged Otto into a corner he has never stood in.
@@ -127,10 +123,8 @@ function mascotPlace(){
     const f=p || mascotHomeMem() || MASCOT_FALLBACK;
     x=MASCOT_EDGE + freeX*mascotClamp(f.fx); y=MASCOT_EDGE + freeY*mascotClamp(f.fy);
   }
-  // Away he is pinned by his far edges: the figure resizes on a transition, so a left/top taken
-  // from a mid-transition rect strands him short of the corner.
-  if(away){ d.style.left="auto"; d.style.top="auto"; d.style.right="2px"; d.style.bottom="4px"; }
-  else { d.style.left=Math.round(x)+"px"; d.style.top=Math.round(y)+"px"; d.style.right="auto"; d.style.bottom="auto"; }
+  // right/bottom reset too: the CSS seeds them, and with top set as well the dock stretches.
+  d.style.left=Math.round(x)+"px"; d.style.top=Math.round(y)+"px"; d.style.right="auto"; d.style.bottom="auto";
   // No room for a bubble above his head up there - put it under him and flip the tail.
   d.classList.toggle("below", y < 120);
   // The dream balloon is drawn by the element, which cannot see the dock: told HERE, on every
