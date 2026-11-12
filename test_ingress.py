@@ -6874,6 +6874,37 @@ class ChatViewCollapseTests(unittest.TestCase):
                       "sending a message must still jump to the bottom")
 
 
+class LayoutPolishTests(unittest.TestCase):
+    """layout.css is a late override file, so its ORDER is its behaviour: after the stylesheets it
+    restyles, before mobile.css, whose phone rules must keep winning."""
+
+    _MOBILE = "Board: empty columns shrink to a row of count tiles"
+
+    def test_layout_css_loads_after_what_it_overrides_and_before_mobile(self):
+        ui = ui_src()
+        order = [ui.index(m) for m in (".chatview { --hist-w: clamp(190px", "Swarm board refresh",
+                                       ".hlegend .lk.att { background: var(--warn)",
+                                       "Layout polish pass", self._MOBILE)]
+        self.assertEqual(order, sorted(order))
+
+    def test_the_centred_header_never_pushes_pause_off_screen(self):
+        """`minmax(0,1fr)` keeps the tabs dead centre by letting the status column shrink below its
+        content, so the FACTORY chip pushed Pause - the one control that must stay reachable - past
+        the right edge between 1760 and 1900px. An auto minimum gives up the centre line instead."""
+        ui = ui_src()
+        wide = ui[ui.index("@media (min-width: 1760px)"):]
+        wide = wide[:wide.index("@media", 10)]
+        self.assertIn("grid-template-columns: auto 1fr auto 1fr;", wide)
+        self.assertNotIn("minmax(0", wide.split("*/")[-1])
+
+    def test_run_options_start_collapsed_and_the_rail_remembers_its_state(self):
+        ui = ui_src()
+        self.assertIn('applyOptCollapsed(isNarrow() || v!=="0"', ui,
+                      "only an explicit open ('0') shows the panel; no stored choice is collapsed")
+        self.assertIn('applyRailCollapsed(localStorage.getItem(RAIL_COLLAPSED_KEY)==="1", false)', ui)
+        self.assertIn('id="rail-toggle"', ui)
+
+
 class MascotHomeTests(unittest.TestCase):
     """Where Otto STANDS before anyone drags him. His old home was the bottom-left corner, over
     the chats sidebar — which now collapses to a 34px rail he hung off the side of. Home is the
@@ -6895,6 +6926,23 @@ class MascotHomeTests(unittest.TestCase):
         self.assertIn(".rail", block, "home no longer resolves against the rail")
         self.assertIn(".ledger", block, "home is no longer anchored above the ledger")
         self.assertIn("getBoundingClientRect()", block, "home is back to hard-coded geometry")
+
+    def test_on_the_board_an_undragged_otto_goes_small_into_the_corner(self):
+        """The Board's cards run edge to edge, so his home spot lands on them. There, and ONLY there,
+        an undragged Otto goes small into the corner, pinned by his far edges (the figure resizes on
+        a transition); every other tab keeps his Chat position, and a tab switch re-places him."""
+        ui = ui_src()
+        self.assertIn('away=!p && !!bv && !bv.hidden;', ui,
+                      "a dragged Otto keeps his spot, and only the Board moves the undragged one")
+        place = ui[ui.index("function mascotPlace()"):ui.index("function mascotLayout()")]
+        self.assertLess(place.index('classList.toggle("mascot-away", away)'), place.index("d.getBoundingClientRect()"),
+                        "the class resizes him, so it must land before he is measured")
+        self.assertIn('d.style.right="2px"; d.style.bottom="4px"', place)
+        self.assertIn("const size=away ? MASCOT_SMALL_SIZE : MASCOT_SIZE;", place)
+        tab = ui[ui.index("function activateTab(v)"):]
+        self.assertIn("mascotPlace()", tab[:tab.index('t.addEventListener("click",()=>activateTab')],
+                      "a tab switch no longer re-places him")
+        self.assertRegex(ui, r"body\.mascot-away \.adminview \{ padding-bottom")
 
     def test_a_dragged_position_still_beats_home(self):
         """Where he stands is the user's. `mascotPos` returning a default corner instead of null
@@ -8002,7 +8050,8 @@ class UiAssetLayoutTests(unittest.TestCase):
     # -> 14_992 for the home-screen install: the manifest link, the apple-touch-icon (iOS reads
     # neither the manifest's icons nor an SVG) and theme-color. Head tags belong in the shell.
     # -> 15_295 for the chat-list search box and Clear: sidebar controls, so the shell is where it lives.
-    INDEX_MAX = 15_295
+    # -> 15_590 for the pipeline rail's collapse button and layout.css's tag (app.css is at its ratchet).
+    INDEX_MAX = 15_590
     # app.css is the largest asset. The next two are chat.js (99_837) and admin.js (96_159);
     # both are a tab's worth of behaviour and neither has an obvious seam left, so the ceiling
     # is set by the CSS. Splitting app.css by feature was deliberately left out of the move:

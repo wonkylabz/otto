@@ -1,7 +1,7 @@
 # UI conventions (`web/index.html` + `web/css/`, `web/js/`)
 
 `index.html` is the head, the markup shell and the tag list — no style, no logic. Everything
-else is an asset: `css/tokens.css` (design tokens + the five palettes), `css/app.css`, and the
+else is an asset: `css/tokens.css` (design tokens + the ten palettes), `css/app.css`, and the
 scripts, one per tab plus `util`/`markdown`/`modal` (shared) and `boot` (startup). Classic
 `<script src>`, no bundler, served by `server.Handler._static`.
 

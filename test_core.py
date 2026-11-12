@@ -4147,10 +4147,10 @@ class ThemeUiTests(unittest.TestCase):
     def test_every_palette_is_double_scoped(self):
         """Each block must match BOTH the root and any element carrying `data-theme`: the
         picker's cards preview a palette by wearing its attribute, so a root-only selector
-        renders all five swatches in whatever theme the page already has. Enforced by the
+        renders all ten swatches in whatever theme the page already has. Enforced by the
         regex above, which only matches the two-selector form — this asserts the count so a
         theme dropped from the picker can't pass by simply not matching."""
-        self.assertEqual(len(self._palettes()), 5)
+        self.assertEqual(len(self._palettes()), 10)
 
     def test_the_theme_is_applied_before_the_first_paint(self):
         """The boot has to run in <head>, ahead of <body>: applied from the main script instead,

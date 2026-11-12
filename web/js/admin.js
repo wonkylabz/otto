@@ -197,6 +197,16 @@ const THEMES=[
    desc:"Monochrome sumi charcoal. Dark."},
   {id:"blue-eclipse", name:"Blue Eclipse",
    desc:"Midnight blue and periwinkle. Dark."},
+  {id:"ocean-tide", name:"Ocean Tide",
+   desc:"Deep teal ink on a pale cyan ground."},
+  {id:"cherry-blossom", name:"Cherry Blossom",
+   desc:"Petal pink and white under a cherry ink."},
+  {id:"cozy-campfire", name:"Cozy Campfire",
+   desc:"Firelit browns, copper and ember. Dark."},
+  {id:"evening-rose", name:"Evening Rose",
+   desc:"Charcoal plum and dusty rose. Dark."},
+  {id:"emerald-odyssey", name:"Emerald Odyssey",
+   desc:"Deep emerald under a mint accent. Dark."},
 ];
 
 /* A stage duration, at the precision a reader can act on: sub-minute in seconds (one decimal

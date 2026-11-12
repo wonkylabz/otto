@@ -13,10 +13,17 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
+- Five more themes in Admin → Appearance, drawn from the same Figma colour-combination library as the first five: Ocean Tide, Cherry Blossom, Cozy Campfire, Evening Rose and Emerald Odyssey. Per browser, as before.
 - The regression corpus now covers the repo-conventions judge: a pair of cases checks that a convention the request asked to break fails the run, and that the same output passes with no repo rules in view.
 
 ### Changed
 
+- The header is restyled: a raised bar, the tabs as one centred pill group with an icon each (the active tab is filled), the capability counters as chips, and Setup, Update and Pause as matching pills. Phone layout is unchanged.
+- Chat: Run options now start collapsed (your earlier open/closed choice is reset once), the workflow pipeline rail has a collapse button, and the chat list is wider with two-line titles.
+- On the Board, an undragged Otto sits small in the bottom-right corner instead of over the cards. Everywhere else he keeps his Chat position; a spot you dragged him to is kept.
+- Events: a warning on a switched-off Slack card (missing scopes, a refused token) is shown at full contrast instead of dimmed with the card.
+- Memory: each entry's source line sits under its facts, and the forget/edit/delete controls are larger.
+- Audit: the runs-per-day bars are filled and the attention share is red; the smallest labels across the app are now 11px.
 - The web server's POST routes moved out of `server.py` into four modules by area (runs, integrations, memory, admin). No route or behaviour changed; the service needs its usual restart after updating.
 
 ### Fixed
