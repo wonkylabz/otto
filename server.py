@@ -51,6 +51,7 @@ import onboarding
 import policy
 import pr_review
 import registry
+import repos
 import runbooks
 import scheduler
 import slack
@@ -1913,6 +1914,16 @@ class Handler(RunRoutes, IngressRoutes, MemoryRoutes, AdminRoutes, BaseHTTPReque
             # Allowlisted git repos a task can be run against in an isolated workspace (#57).
             self._send(200, json.dumps({"repos": [
                 {"name": r["name"], "origin": r["origin"]} for r in workspace.git_repos()]}))
+        elif self.path == "/api/repos/available":
+            # The add-repo picker's list. Shells out to `gh`, so only the open modal awaits it.
+            rows, err = repos.available()
+            if rows is None:
+                self._send(502, json.dumps({"error": "could not list your GitHub repos: " + err}))
+            else:
+                have = {s.lower() for s in registry.project_slugs()}
+                for r in rows:
+                    r["registered"] = r["slug"].lower() in have
+                self._send(200, json.dumps({"repos": rows}))
         elif self.path == "/api/chats" or self.path.startswith("/api/chats?"):
             rows = chats.list_summaries((parse_qs(urlparse(self.path).query).get("q") or [""])[0])
             hints = workstreams.suggest([c["id"] for c in rows if not c["workstream"]])

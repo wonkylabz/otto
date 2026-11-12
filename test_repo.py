@@ -4001,3 +4001,67 @@ class RepoChecksTests(unittest.TestCase):
         self.assertEqual(self.rc._execute(self.tmp, "exit 3", 30)[:2], ("fail", 3))
         self.assertEqual(self.rc._execute(self.tmp, "no-such-cmd-xyz", 30)[0], "error")
         self.assertEqual(self.rc._execute(self.tmp, "sleep 5", 1)[0], "error")
+
+
+class RepoPickerTests(unittest.TestCase):
+    """Admin -> Project repos -> + Add lists the `gh` login's repos to tick, instead of one URL
+    pasted per repo. The list shells out to `gh`, so it is fetched by the open modal only."""
+
+    # Verbatim rows from `gh api user/repos --jq <_LIST_JQ>` (public, private, archived).
+    OUT = ('["wonkylabz/otto",false,false,"Local agentic orchestrator","https://github.com/wonkylabz/otto.git"]\n'
+           '["msosas/zero-marketing",true,false,"","https://github.com/msosas/zero-marketing.git"]\n'
+           '["acme/old-thing",false,true,"","https://github.com/acme/old-thing.git"]\n'
+           'gh: a stray warning line\n')
+
+    def test_rows_parse_and_archived_repos_are_dropped(self):
+        rows = repos.parse_listing(self.OUT)
+        self.assertEqual([r["slug"] for r in rows], ["wonkylabz/otto", "msosas/zero-marketing"])
+        self.assertEqual(rows[0], {"slug": "wonkylabz/otto", "private": False,
+                                   "url": "https://github.com/wonkylabz/otto.git",
+                                   "description": "Local agentic orchestrator"})
+        self.assertTrue(rows[1]["private"])
+
+    def test_a_failed_listing_is_none_never_an_empty_list(self):
+        with mock.patch.object(repos, "_run", return_value=(1, "", "gh: not logged in")):
+            self.assertEqual(repos.available(), (None, "gh: not logged in"))
+        with mock.patch.object(repos, "_run", return_value=(0, "", "")):
+            self.assertEqual(repos.available(), ([], None))
+
+    def _get(self, listing):
+        import server
+        import urllib.error
+        import urllib.request
+        from socketserver import ThreadingTCPServer
+        httpd = ThreadingTCPServer(("127.0.0.1", 0), server.Handler)
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(t.join, 5)
+        self.addCleanup(httpd.shutdown)
+        url = "http://127.0.0.1:%d/api/repos/available" % httpd.server_address[1]
+        with mock.patch.object(repos, "available", return_value=listing), \
+                mock.patch.object(registry, "project_slugs", return_value=["WonkyLabz/otto"]):
+            try:
+                with urllib.request.urlopen(url, timeout=10) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                with e:
+                    return e.code, json.loads(e.read())
+
+    def test_the_route_marks_what_is_already_registered(self):
+        st, body = self._get((repos.parse_listing(self.OUT), None))
+        self.assertEqual(st, 200)
+        self.assertEqual({r["slug"]: r["registered"] for r in body["repos"]},
+                         {"wonkylabz/otto": True, "msosas/zero-marketing": False})
+
+    def test_a_gh_failure_is_an_error_the_form_can_show(self):
+        st, body = self._get((None, "gh: not logged in"))
+        self.assertEqual(st, 502)
+        self.assertIn("not logged in", body["error"])
+
+    def test_the_list_loads_in_the_modal_never_with_the_admin_panel(self):
+        src = ui_src()
+        form = src[src.index("function showProjectForm("):]
+        self.assertIn('getJSON("/api/repos/available")', form)
+        self.assertEqual(src.count("/api/repos/available"), 1,
+                         "the gh-backed list is fetched somewhere a panel spinner may await it")

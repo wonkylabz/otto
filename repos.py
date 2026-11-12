@@ -16,6 +16,7 @@ Auth is `gh`'s credential helper — the same credential the PR path already use
 repo needs no new secret. The helper is injected per-command rather than written into the
 user's global git config: Otto must not reconfigure the machine it runs on.
 """
+import json
 import os
 import re
 import shutil
@@ -65,6 +66,39 @@ def parse(url):
     host = m.group("host").lower()
     return {"url": f"https://{host}/{owner}/{name}.git", "host": host,
             "owner": owner, "name": name, "slug": slug(name)}
+
+
+# One compact JSON array per repo: `--paginate` concatenates pages, so a per-row `@json` line is
+# the only shape that survives it without a streaming parser.
+_LIST_JQ = ('.[] | [.full_name, .private, .archived, (.description // ""), .clone_url] | @json')
+LIST_TIMEOUT_S = 60
+
+
+def parse_listing(out):
+    """`gh api user/repos` rows -> [{slug, url, private, description}], archived dropped (a repo
+    nothing can be pushed to is no use to repo-mode). Pure; a malformed line is skipped."""
+    rows = []
+    for line in (out or "").splitlines():
+        try:
+            full, private, archived, desc, clone = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        info = parse(clone or "")
+        if archived or not info or not full:
+            continue
+        rows.append({"slug": str(full), "url": info["url"], "private": bool(private),
+                     "description": str(desc or "")[:160]})
+    return rows
+
+
+def available():
+    """Every repo the `gh` login can reach — owned, org and collaborator — as (rows, error).
+    A failure is (None, why), never an empty list: "you have no repos" is a different answer."""
+    rc, out, err = _run(["gh", "api", "--paginate", "user/repos?per_page=100&sort=pushed",
+                         "--jq", _LIST_JQ], timeout=LIST_TIMEOUT_S)
+    if rc != 0:
+        return None, (err or "gh api failed")[-300:]
+    return parse_listing(out), None
 
 
 def slug(name):
