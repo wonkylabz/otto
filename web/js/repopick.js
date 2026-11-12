@@ -18,11 +18,13 @@ function showProjectForm(){
   const list=document.getElementById("pf-list"), filter=document.getElementById("pf-filter");
   const save=document.getElementById("pf-save"), err=document.getElementById("pf-err");
   const picked=new Set();
+  let ready=false;   // until the list lands, a keystroke must not repaint "loading" or the error as "no repos"
   const label=()=>{ save.textContent=picked.size>1 ? "Add "+picked.size+" project repos" : "Add project repo"; };
   const note=t=>{ list.innerHTML=`<span class="sk-help" style="padding:8px 10px">${esc(t)}</span>`; };
   // Re-rendered per keystroke rather than hidden row by row: the picks live in the Set, so a
   // filtered-out tick is still added and a row cannot be shown stale.
   const draw=()=>{
+    if(!ready) return;
     const q=filter.value.trim().toLowerCase();
     const rows=REPO_PICK.filter(r=>!q || r.slug.toLowerCase().includes(q));
     if(!rows.length){ note(REPO_PICK.length ? "No repo matches that filter." : "Your GitHub login can see no repos."); return; }
@@ -38,7 +40,7 @@ function showProjectForm(){
   });
   filter.addEventListener("input",draw);
   getJSON("/api/repos/available")
-    .then(d=>{ REPO_PICK=d.repos||[]; if(list.isConnected) draw(); })
+    .then(d=>{ REPO_PICK=d.repos||[]; ready=true; if(list.isConnected) draw(); })
     .catch(e=>{ REPO_PICK=[]; if(list.isConnected) note(e.message+" — paste a URL below instead."); });
   document.getElementById("pf-cancel").onclick=closeFormModal;
   save.onclick=async()=>{
