@@ -6887,6 +6887,16 @@ class LayoutPolishTests(unittest.TestCase):
                                        "Layout polish pass", self._MOBILE)]
         self.assertEqual(order, sorted(order))
 
+    def test_the_centred_header_never_pushes_pause_off_screen(self):
+        """`minmax(0,1fr)` keeps the tabs dead centre by letting the status column shrink below its
+        content, so the FACTORY chip pushed Pause - the one control that must stay reachable - past
+        the right edge between 1760 and 1900px. An auto minimum gives up the centre line instead."""
+        ui = ui_src()
+        wide = ui[ui.index("@media (min-width: 1760px)"):]
+        wide = wide[:wide.index("@media", 10)]
+        self.assertIn("grid-template-columns: auto 1fr auto 1fr;", wide)
+        self.assertNotIn("minmax(0", wide.split("*/")[-1])
+
     def test_run_options_start_collapsed_and_the_rail_remembers_its_state(self):
         ui = ui_src()
         self.assertIn('applyOptCollapsed(isNarrow() || v!=="0"', ui,
