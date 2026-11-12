@@ -18,6 +18,7 @@ function activateTab(v){
   if(v==="board") loadBoard();
   if(v==="schedules") loadJobs();
   if(v==="events") loadEvents();
+  if(typeof mascotPlace==="function") mascotPlace();   // his spot depends on the tab
 }
 document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click",()=>activateTab(t.dataset.view)));
 // Phone-only "More" menu: the bottom bar holds four views, the rest open above it.

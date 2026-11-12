@@ -1713,7 +1713,9 @@ function syncOptSummary(){
   box.textContent = bits.length ? "· "+bits.join(" · ") : "· defaults";
   box.title = bits.length ? "Set for this chat: "+bits.join(", ") : "";
 }
-const OPT_COLLAPSED_KEY="ottoOptCollapsed";
+// v2: the default flipped to collapsed, and a "0" stored under the old default-open key
+// is indistinguishable from a choice, so the old key is not read.
+const OPT_COLLAPSED_KEY="ottoOptCollapsed2";
 function applyOptCollapsed(on, persist=true){
   const panel=document.getElementById("optpanel"), btn=document.getElementById("opt-toggle");
   if(panel) panel.classList.toggle("collapsed", !!on);
@@ -1725,8 +1727,22 @@ function applyOptCollapsed(on, persist=true){
 document.getElementById("opt-toggle").addEventListener("click",()=>{
   applyOptCollapsed(!document.getElementById("optpanel").classList.contains("collapsed"), !isNarrow());
 });
-// No stored choice yet: a short screen starts collapsed, or the options crowd out the chat.
-try { const v=localStorage.getItem(OPT_COLLAPSED_KEY); applyOptCollapsed(isNarrow() || (v===null ? window.innerHeight<820 : v==="1"), v!==null && !isNarrow()); } catch(e){}
+// Collapsed unless the user opened it: the summary line already says what is set.
+try { const v=localStorage.getItem(OPT_COLLAPSED_KEY); applyOptCollapsed(isNarrow() || v!=="0", v!==null && !isNarrow()); } catch(e){}
+
+const RAIL_COLLAPSED_KEY="ottoRailCollapsed";
+function applyRailCollapsed(on, persist=true){
+  const view=document.getElementById("chatview"), btn=document.getElementById("rail-toggle");
+  if(view) view.classList.toggle("railcollapsed", !!on);
+  if(btn){ btn.setAttribute("aria-expanded", on?"false":"true");
+           btn.title = on ? "Show the pipeline" : "Collapse the pipeline"; }
+  if(persist) try { localStorage.setItem(RAIL_COLLAPSED_KEY, on?"1":"0"); } catch(e){}
+  if(typeof mascotPlace==="function") mascotPlace();   // his home is the rail's foot
+}
+document.getElementById("rail-toggle").addEventListener("click",()=>{
+  applyRailCollapsed(!document.getElementById("chatview").classList.contains("railcollapsed"));
+});
+try { applyRailCollapsed(localStorage.getItem(RAIL_COLLAPSED_KEY)==="1", false); } catch(e){}
 
 document.addEventListener("change",e=>{ if(!e.target) return;
   if(e.target.closest("#optpanel")) syncOptSummary();

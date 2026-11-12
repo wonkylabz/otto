@@ -142,3 +142,98 @@
     --stg-pr: #F0A0CE; --stg-review: #B4AFFF; --stg-qa: #F0A87F; --stg-merge: #97D9A3; --stg-deliver: #A8C0D8;
     --zebra: rgba(190,214,255,.045); --scrim: rgba(3,7,15,.64); --shadow: rgba(0,0,0,.55);
   }
+
+  /* Ocean Tide (#00D1D1 #4152D7 #00ADAE #005C5C) — the deep teal is the ink and accent on a
+     pale tint of the cyan; the indigo is the plan stage. */
+  :root[data-theme="ocean-tide"], [data-theme="ocean-tide"] {
+    color-scheme: light;
+    --ground: #ECF5F5; --surface: #F7FCFC; --surface-2: #DEEDED; --raised: #FFFFFF;
+    --line: rgba(0,60,60,0.14); --line-strong: rgba(0,60,60,0.24);
+    --text: #0B2E2E; --text-2: #335555; --dim: #4C6868;
+    --accent: #005C5C; --accent-soft: rgba(0,92,92,0.1); --accent-line: rgba(0,92,92,0.34);
+    --on-accent: #EFFFFE;
+    --ok: #2F6B2A; --ok-soft: rgba(47,107,42,0.14);
+    --warn: #6E5300; --warn-soft: rgba(110,83,0,0.11); --warn-line: rgba(110,83,0,0.34);
+    --danger: #A8262E; --danger-soft: rgba(168,38,46,0.1); --danger-line: rgba(168,38,46,0.32);
+    --danger-deep: #861A22;
+    --stg-router: #50626A; --stg-clarify: #6D3E92; --stg-decompose: #126864;
+    --stg-plan: #4152D7; --stg-gate: #765900; --stg-run: #2A6A2F;
+    --stg-pr: #9B2A6B; --stg-review: #46429F; --stg-qa: #92471A; --stg-merge: #2D6838; --stg-deliver: #3F5E75;
+    --zebra: rgba(0,60,60,.045); --scrim: rgba(0,60,60,.34); --shadow: rgba(0,60,60,.18);
+  }
+
+  /* Cherry Blossom (#F3CCCB #FFFFFF #D5F2D8 #FFB6C6) — petal-pink ground, white surfaces, a
+     cherry accent deepened from the pink; --ok is the pale green taken down to AA. */
+  :root[data-theme="cherry-blossom"], [data-theme="cherry-blossom"] {
+    color-scheme: light;
+    --ground: #FBF0F0; --surface: #FFFAFA; --surface-2: #F3DFDF; --raised: #FFFFFF;
+    --line: rgba(70,28,40,0.14); --line-strong: rgba(70,28,40,0.24);
+    --text: #3A1F27; --text-2: #5E3F49; --dim: #7A5562;
+    --accent: #A12A63; --accent-soft: rgba(161,42,99,0.1); --accent-line: rgba(161,42,99,0.34);
+    --on-accent: #FFF5F8;
+    --ok: #2C6B3A; --ok-soft: rgba(44,107,58,0.14);
+    --warn: #6E5300; --warn-soft: rgba(110,83,0,0.11); --warn-line: rgba(110,83,0,0.34);
+    --danger: #B5301A; --danger-soft: rgba(181,48,26,0.1); --danger-line: rgba(181,48,26,0.32);
+    --danger-deep: #8F2412;
+    --stg-router: #665A5E; --stg-clarify: #6D3E92; --stg-decompose: #126864;
+    --stg-plan: #23578F; --stg-gate: #765900; --stg-run: #2A6A2F;
+    --stg-pr: #9B2A6B; --stg-review: #46429F; --stg-qa: #92471A; --stg-merge: #2D6838; --stg-deliver: #3F5E75;
+    --zebra: rgba(70,28,40,.045); --scrim: rgba(70,28,40,.34); --shadow: rgba(70,28,40,.18);
+  }
+
+  /* Cozy Campfire (#885129 #AE7A33 #8A6F28 #670F08) — the warm dark. Copper, gold and ember
+     lifted to tints; the ground is the brown taken down to firelit near-black. */
+  :root[data-theme="cozy-campfire"], [data-theme="cozy-campfire"] {
+    color-scheme: dark;
+    --ground: #1C1410; --surface: #251B15; --surface-2: #2E221A; --raised: #382A20;
+    --line: rgba(245,225,205,0.13); --line-strong: rgba(245,225,205,0.26);
+    --text: #F2E7DA; --text-2: #CBB9A6; --dim: #A6917E;
+    --accent: #E39A62; --accent-soft: rgba(227,154,98,0.14); --accent-line: rgba(227,154,98,0.38);
+    --on-accent: #1F1208;
+    --ok: #8CC97B; --ok-soft: rgba(140,201,123,0.16);
+    --warn: #DCC872; --warn-soft: rgba(220,200,114,0.14); --warn-line: rgba(220,200,114,0.38);
+    --danger: #F0776B; --danger-soft: rgba(240,119,107,0.14); --danger-line: rgba(240,119,107,0.36);
+    --danger-deep: #F59A90;
+    --stg-router: #B3A89C; --stg-clarify: #C79BE8; --stg-decompose: #6FC9C0;
+    --stg-plan: #8FB6E8; --stg-gate: #DFC073; --stg-run: #7BC98C;
+    --stg-pr: #E79BC8; --stg-review: #A9A6F0; --stg-qa: #E8A17C; --stg-merge: #8FD19B; --stg-deliver: #9FB6C8;
+    --zebra: rgba(245,225,205,.045); --scrim: rgba(10,6,4,.62); --shadow: rgba(0,0,0,.5);
+  }
+
+  /* Evening Rose (#DFABAA #9A6665 #8E4484 #4B4B4B) — the rose dark. The dusty rose is the
+     accent as given; the ground is the charcoal deepened toward the plum. */
+  :root[data-theme="evening-rose"], [data-theme="evening-rose"] {
+    color-scheme: dark;
+    --ground: #1C181B; --surface: #252024; --surface-2: #2E272C; --raised: #383036;
+    --line: rgba(242,224,230,0.13); --line-strong: rgba(242,224,230,0.26);
+    --text: #F2E8EA; --text-2: #CDBCC1; --dim: #AC9AA1;
+    --accent: #DFABAA; --accent-soft: rgba(223,171,170,0.14); --accent-line: rgba(223,171,170,0.38);
+    --on-accent: #24121A;
+    --ok: #7FCF9A; --ok-soft: rgba(127,207,154,0.16);
+    --warn: #E2C56E; --warn-soft: rgba(226,197,110,0.14); --warn-line: rgba(226,197,110,0.38);
+    --danger: #FF7B6B; --danger-soft: rgba(255,123,107,0.14); --danger-line: rgba(255,123,107,0.36);
+    --danger-deep: #FF9C90;
+    --stg-router: #AFA3A8; --stg-clarify: #C98BD0; --stg-decompose: #6FC9C0;
+    --stg-plan: #8FB6E8; --stg-gate: #DFC073; --stg-run: #7BC98C;
+    --stg-pr: #E79BC8; --stg-review: #A9A6F0; --stg-qa: #E8A17C; --stg-merge: #8FD19B; --stg-deliver: #9FB6C8;
+    --zebra: rgba(242,224,230,.045); --scrim: rgba(8,4,8,.64); --shadow: rgba(0,0,0,.55);
+  }
+
+  /* Emerald Odyssey (#006850 #72E6CA #3EBB9F #0B3D30) — the green dark. The mint is the accent
+     as given on the deep emerald darkened; --ok goes to lime so it is not the accent again. */
+  :root[data-theme="emerald-odyssey"], [data-theme="emerald-odyssey"] {
+    color-scheme: dark;
+    --ground: #0A1F1A; --surface: #0F2923; --surface-2: #13322B; --raised: #183C33;
+    --line: rgba(200,240,228,0.13); --line-strong: rgba(200,240,228,0.26);
+    --text: #E2F4EE; --text-2: #AECFC5; --dim: #84A89D;
+    --accent: #72E6CA; --accent-soft: rgba(114,230,202,0.14); --accent-line: rgba(114,230,202,0.38);
+    --on-accent: #05231C;
+    --ok: #B4DC6E; --ok-soft: rgba(180,220,110,0.16);
+    --warn: #E6C66C; --warn-soft: rgba(230,198,108,0.14); --warn-line: rgba(230,198,108,0.38);
+    --danger: #FF8585; --danger-soft: rgba(255,133,133,0.14); --danger-line: rgba(255,133,133,0.36);
+    --danger-deep: #FFA3A3;
+    --stg-router: #9DB3AC; --stg-clarify: #C79BE8; --stg-decompose: #6FC9C0;
+    --stg-plan: #8FB6E8; --stg-gate: #DFC073; --stg-run: #A8D878;
+    --stg-pr: #E79BC8; --stg-review: #A9A6F0; --stg-qa: #E8A17C; --stg-merge: #8FD19B; --stg-deliver: #9FB6C8;
+    --zebra: rgba(200,240,228,.045); --scrim: rgba(2,10,8,.64); --shadow: rgba(0,0,0,.55);
+  }

@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="/css/onboarding.css">
 <link rel="stylesheet" href="/css/board.css">
 <link rel="stylesheet" href="/css/insights.css">
+<link rel="stylesheet" href="/css/layout.css">
 <link rel="stylesheet" href="/css/mobile.css">
 <link rel="stylesheet" href="/css/motion.css">
 <script src="/js/theme-boot.js"></script>
@@ -171,7 +172,7 @@
   </section>
 
   <aside class="rail">
-    <h2>Workflow pipeline</h2>
+    <h2><span>Workflow pipeline</span><button class="railtoggle" id="rail-toggle" title="Collapse the pipeline" aria-expanded="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 5l5 5-5 5"/></svg></button></h2>
     <div class="pipe" id="pipe"></div>
     <div class="notif" id="chatnotif" hidden title="tasks that finished in chats you weren't watching">
       <div class="nhead"><span class="ndot"></span><b>Finished</b>&nbsp;(<span id="chatnotif-n">0</span>)<span class="nclear">clear</span></div>
