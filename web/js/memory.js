@@ -201,7 +201,7 @@ async function gcTick(){
   clearInterval(GC_TICK); GC_TICK=null;
   GC_RUNNING=false; GC_STARTED=null;
   const r=s.result||{};
-  GC=r.candidates||[]; GC_META={scanned:r.scanned||0,verify_skipped:r.verify_skipped||0,ran:true};
+  GC=r.candidates||[]; GC_META={scanned:r.scanned||0,verify_skipped:r.verify_skipped||0,ran:!r.error};
   if(r.error) toast("GC run failed: "+r.error);
   refreshGC();
 }

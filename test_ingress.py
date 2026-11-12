@@ -5210,6 +5210,12 @@ class MemoryGcHeaderTests(unittest.TestCase):
         self.assertEqual(src.count('id="gc-evict"'), 1)
         self.assertIn('cnt.addEventListener("click",showGcModal)', src)
 
+    def test_a_failed_scan_leaves_no_count(self):
+        """The count's empty state says "memory looks clean" — a scan that errored never looked."""
+        src = ui_src()
+        tick = src[src.index("async function gcTick("):src.index("function gcSetAll(")]
+        self.assertIn("ran:!r.error", tick)
+
     def test_a_refused_eviction_is_reported_inside_the_modal(self):
         """The overlay sits above the toasts, so a toasted refusal is painted behind the modal."""
         src = ui_src()
