@@ -8574,7 +8574,7 @@ class UiErrorEscapingTests(unittest.TestCase):
 
 class StageTimingUiTests(unittest.TestCase):
     """The two screens that read the persisted stage map (issue #129): the run-detail drawer
-    (one run) and Admin → Pipeline timings (the aggregate). Read through `ui_src()`, which
+    (one run) and Audit → Pipeline timings (the aggregate). Read through `ui_src()`, which
     re-inlines every asset in document order — the only reader that keeps a grep guard meaning
     anything after the UI split."""
 
@@ -8594,13 +8594,20 @@ class StageTimingUiTests(unittest.TestCase):
         self.assertIn("open", src[i:i + 1200])
         self.assertIn("t.dur==null", src[i:i + 1200])
 
-    def test_admin_has_its_own_pipeline_timings_section_fed_by_api_stats(self):
+    def test_the_aggregates_live_in_audit_and_admin_no_longer_renders_them(self):
+        """Pipeline timings and the Claude fallback rate are readings, not configuration, so
+        they render in Audit — filled AFTER the trail paints, never awaited by it."""
         src = ui_src()
         self.assertIn("function stagesSection(", src)
-        self.assertIn("${stagesSection(STAGE_STATS)}", src)
-        self.assertIn("STAGE_STATS=(stats&&stats.stages)", src,
-                      "the section renders whatever STAGE_STATS holds — unset, it is silently "
-                      "empty on every load")
+        self.assertIn("function fallbackSection(", src)
+        i = src.index("async function loadAuditExtras(")
+        body = src[i:i + 900]
+        self.assertIn("stagesSection((stats&&stats.stages)", body)
+        self.assertIn("fallbackSection((health&&health.gateway)", body)
+        i = src.index("function renderAdmin(")
+        admin = src[i:src.index("\nfunction ", i + 10)]
+        for gone in ("stagesSection(", "Claude-fallback rate", "Base tool allowlists"):
+            self.assertNotIn(gone, admin)
 
     def test_the_table_reports_no_share_of_a_total_it_cannot_have(self):
         """A clean run records RUN as open and the stages below it not at all, so a percentage

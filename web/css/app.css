@@ -925,9 +925,6 @@
   .gccount.has { color: var(--warn); border-color: var(--warn); }
   .memstat { font-size: calc(12px*var(--fs)); color: var(--dim); }
   .memstat b { color: var(--text); font-weight: 600; font-size: calc(16px*var(--fs)); }
-  .fbpanel { margin: 10px 0 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; }
-  .fbhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
-  .fbhead small { color: var(--dim); font-size: calc(12px*var(--fs)); }
   .fbgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 12px 10px; }
   .fbcell { display: flex; flex-direction: column; gap: 1px; padding-left: 10px; border-left: 2px solid var(--line-strong); font-size: calc(11px*var(--fs)); color: var(--dim); }
   .fbcell b { font-size: calc(20px*var(--fs)); line-height: 1.1; font-weight: 600; color: var(--text); }
@@ -1546,9 +1543,6 @@
   .convrules { margin: 0; padding-left: 18px; font-size: calc(12.5px*var(--fs)); line-height: 1.65; }
   .convrules li { margin-bottom: 5px; }
   @media (max-width: 1120px) { .projtable .c-conv { display: none; } }
-  /* Base tool allowlists table */
-  .tooltable .c-kind { width: 150px; }
-  .tooltable td.c-kind { color: var(--text-2); font-size: calc(12.5px*var(--fs)); }
   .toolchips { display: flex; flex-wrap: wrap; gap: 7px; }
   .toolchips span { font-family: var(--mono); font-size: calc(11.5px*var(--fs)); color: var(--dim); background: var(--surface-2);
     border: 1px solid var(--line); padding: 4px 9px; border-radius: var(--r-sm); }
