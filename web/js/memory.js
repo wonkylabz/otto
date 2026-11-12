@@ -159,7 +159,7 @@ const GC_BIN=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-
    the count is the door to the review modal, so nothing is evicted from the header itself. */
 function gcCtl(){
   if(GC_RUNNING) return `<span class="runspin" title="Keeps running even if you switch tabs — a real store can take a few minutes."><span class="spin"></span>scanning<span id="gc-elapsed">${gcElapsed()}</span></span>`;
-  const count=GC_META.ran?`<button class="gccount${GC.length?" has":""}" id="gc-count" title="${GC.length?"review what the scan flagged — nothing is deleted until you evict":"nothing flagged — memory looks clean"}">${GC.length}</button>`:"";
+  const count=GC_META.ran?`<button class="gccount${GC.length?" has":""}" id="gc-count" aria-label="${GC.length} flagged for eviction" title="${GC.length?"review what the scan flagged — nothing is deleted until you evict":"nothing flagged — memory looks clean"}">${GC.length}</button>`:"";
   return `<button class="gcbin" id="gc-run" aria-label="Run the memory garbage collector" title="Garbage collector: classify every stored fact, approach and rule and flag what looks stale or no longer true. Several real LLM turns. Read-only — nothing is deleted until you review and evict.">${GC_BIN}</button>${count}`;
 }
 function refreshGC(){
@@ -174,6 +174,7 @@ function showGcModal(){
   c.innerHTML=`<div class="aform">
     <div class="memhead"><span class="memstat">${meta}</span>${GC.length?`<button class="linkbtn" id="gc-selall">select all</button><button class="linkbtn" id="gc-selnone">select none</button>`:""}</div>
     <div id="gc-list">${GC.length?GC.map(gcRow).join(""):`<p class="memempty">Nothing flagged — memory looks clean.</p>`}</div>
+    <div class="ferr" id="gc-err"></div>
     <div class="factions">${GC.length?`<button class="btn approve" id="gc-evict">Evict selected</button>`:""}
       <button class="btn decline" id="gc-close">Close</button></div>
   </div>`;
@@ -230,8 +231,8 @@ async function evictGC(){
   const picks=[...document.querySelectorAll(".gcpick:checked")].map(el=>GC[+el.dataset.i]).filter(Boolean);
   if(!picks.length) return;
   if(!await askConfirm(`Evict ${picks.length} item(s)? This can't be undone (the audit trail keeps a record).`,{ok:"Evict",danger:true})) return;
-  try{ await postJSON("/api/memory/gc/evict",{candidates:picks}); }
-  catch(e){ toast("Eviction failed: "+e.message); return; }
+  // The modal is still open and covers the toasts, so a refusal goes in its own error slot.
+  if(!await postForm("/api/memory/gc/evict",{candidates:picks},document.getElementById("gc-err"))) return;
   mascotEvict(picks.length);
   GC=[]; GC_META={scanned:0,verify_skipped:0,ran:false};
   closeFormModal(); loadMemory();

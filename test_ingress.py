@@ -5210,6 +5210,13 @@ class MemoryGcHeaderTests(unittest.TestCase):
         self.assertEqual(src.count('id="gc-evict"'), 1)
         self.assertIn('cnt.addEventListener("click",showGcModal)', src)
 
+    def test_a_refused_eviction_is_reported_inside_the_modal(self):
+        """The overlay sits above the toasts, so a toasted refusal is painted behind the modal."""
+        src = ui_src()
+        evict = src[src.index("async function evictGC("):src.index("function wireGC(")]
+        self.assertIn('postForm("/api/memory/gc/evict"', evict)
+        self.assertNotIn("toast(", evict)
+
 
 class AddControlModalTests(unittest.TestCase):
     """Every control that CREATES something opens the shared config-form modal.
