@@ -121,6 +121,14 @@ up the rest.
    what actions are legal now. That ticket also adds a test per rule, legal AND illegal cases,
    written from the rule's text. Every later ticket cites the R/U ids it implements, and its
    acceptance criteria include a test for each cited rule.
+   **Design before screens.** Once the foundation and spec tickets are ticketed, if the product has a UI and no merged ticket has yet built its
+   design system (tokens in one file, the shared components every page reuses, the app shell and
+   navigation), ready that ticket right after the spec and BEFORE any feature screen. Its
+   acceptance criteria are visual and checkable: Playwright screenshots of every page at 1280px
+   and 390px in both themes are committed or attached, and the ticket states what each must show
+   (one clear heading hierarchy, no wall of repeated text, no mid-word wrapping, no raw browser
+   controls). A feature ticket that adds a screen reuses those components and carries the same
+   screenshot criterion for the screens it touches.
 2. Look at the board columns "{done}", "{blocked}" and "{review}" for issues of `{slug}`.
    Nothing new is picked up while ANY card sits in "{blocked}" or "{review}" — unblocking comes
    first. You cannot merge, and no run is coming back for a card in "{review}": its run ended
@@ -143,8 +151,19 @@ up the rest.
 3. An open issue titled "Review follow-ups" is what a merged PR's review left for later: turn what
    is worth doing into tickets, then close it (`--reason "not planned"` if nothing is).
    Write at most {max_tickets} NEW issues in `{slug}` for the next most valuable work toward the
-   Definition of Done and the Product section. Each must be one coherent PR, mergeable on top of
-   the current default branch, and state its own acceptance criteria — including the tests it adds
+   Definition of Done and the Product section.
+   **Priority order.** (a) Playtest BLOCKER/MAJOR defects and every unchecked Definition-of-Done
+   item or Product feature a user cannot yet reach from the interface — check the tree, not the
+   issue titles; order within (a) by what stops a user soonest; (b) only then polish: wording, copy, spacing, edge-case messages. At most
+   TWO polish tickets per sprint, and none while an (a) item is unticketed. A whole-page design
+   ticket (step 4) is (a), never polish. Prefer one ticket that
+   fixes a whole class of problem (every transition reason, every disabled control) over several
+   tickets that each fix one instance.
+   **No duplicates, no churn.** Before writing a ticket, list open AND closed issues and open PRs
+   (`gh issue list --state all --limit 300`, `gh pr list --state all --limit 300`) and search them
+   for the same concept: a ticket whose subject already exists, open, merged or closed as not planned, is not
+   written again — comment on the existing one instead. One concept, one ticket.
+   Each ticket must be one coherent PR, mergeable on top of the current default branch, and state its own acceptance criteria — including the tests it adds
    and that the test and lint commands under Commands pass LOCALLY. Every criterion must be checkable from a
    clone of the PR branch: never "passes in CI" or anything only GitHub can observe — CI is a
    Definition-of-Done item YOU check (`gh run list --repo {slug}`), not a ticket's. Aim for a real product: a feature is done when a user
@@ -155,6 +174,9 @@ up the rest.
    current default branch as a real user. Every BLOCKER or MAJOR defect in it becomes a ticket
    (or is folded into an open one) BEFORE any new feature this sprint, citing the defect and the
    `{spec}` id it violates — a product that works but is wrong or unusable is not done.
+   A visual or layout defect (density, hierarchy, repeated text, wrapping, default-looking
+   controls) is ticketed as a design ticket for the whole page or component, with before/after
+   screenshot criteria — never as a patch to one string.
 5. Do NOT write code, open PRs, or touch the repo's files yourself — implementation is the
    worker's job once a card is in "{ready}".
 
@@ -186,10 +208,23 @@ ask a question back, never commit, push, or open a PR.
      just happened, and who won each step? Is the outcome of each step SHOWN, not just logged?
    - **Quality** — layout, legibility, broken or unstyled elements, errors in the console or
      server log, anything a user would call unfinished.
+   - **Reachability** — every feature and Definition-of-Done item in `{goals}`: can a user reach
+     and complete it from the interface alone? One that exists only as an API or a function is a
+     MAJOR defect.
+   - **Visual design** — judge every page against the Design bar in `{goals}` (if it has none, hold it to the standard of a polished commercial product) at 1280px and 390px,
+     in BOTH themes, from the screenshots you took. Each of these is MAJOR: a page that is a long
+     undifferentiated stack of forms or cells with no visual hierarchy; the same sentence repeated
+     on many controls or rows (e.g. one disabled-reason on ten buttons); many disabled or empty
+     controls shown at once; text breaking mid-word or mid-token; browser-default controls; tables
+     that do not fit their container; large empty or repetitive regions. Do not excuse a defect
+     because it is tidy in code or passes an automated accessibility check.
 4. Report a numbered list of DEFECTS. Each: what you did, what you saw (quote it, name the
    screenshot), the {spec} id or {goals} item it violates, and a severity — BLOCKER (wrong
    rules, a crash, a flow that cannot be completed), MAJOR (a user cannot tell what happened,
    or it looks broken), MINOR (polish). Be concrete enough that each can become a ticket.
+
+Before the verdict, write one line per page stating what you judged on its screenshots; a CLEAN
+with no per-page evidence is not accepted.
 
 Your reply MUST end with exactly one of these as its LAST line:
 PLAYTEST: CLEAN   (no BLOCKER or MAJOR defect)
