@@ -1543,9 +1543,8 @@
      then the sidebar only on very narrow widths. */
   @media (max-width: 1100px) { .chatview { grid-template-columns: var(--hist-w) minmax(0,1fr); } .rail { display: none; } }
   @media (max-width: 1280px) { .status { gap: 12px; } .wordmark span { display: none; } }
-  @media (max-width: 1140px) { header { gap: 10px; padding: 12px 14px; } .tabs { margin-left: 8px; }
-    .status > span[title*="risk"] { display: none; } }
-  @media (max-width: 900px)  { .status > span { display: none; } .estop { margin-left: auto; } }
+  @media (max-width: 1140px) { header { gap: 10px; padding: 12px 14px; } .tabs { margin-left: 8px; } }
+  @media (max-width: 900px)  { .status > span:not(.factorychip) { display: none; } .estop { margin-left: auto; } }
   @media (max-width: 820px)  { .tabs { flex: 1 1 auto; } .tab { flex: none; } }
   @media (max-width: 680px) { .chatview, .chatview.histcollapsed { grid-template-columns: minmax(0,1fr); } .history { display: none; }
     .stream { padding: 18px 14px 8px; } .composer { padding: 12px 14px 14px; } .optlabel { width: 88px; } }

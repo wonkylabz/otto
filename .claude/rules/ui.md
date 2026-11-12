@@ -35,7 +35,7 @@ scripts, one per tab plus `util`/`markdown`/`modal` (shared) and `boot` (startup
 - **The Admin phase table's headers and radio columns are two ordered lists** — add a tier to one only and every column to its right is silently mislabelled. Guarded against `gateway.TASKS` (`BoardStageChipTests`).
 - **A Run-mode control the pipeline would IGNORE is disabled, never left tickable** (`applyModeExclusions`) — repo forces write, so Brainstorm + a repo pick ran neither. The workflow resolves it too (`BrainstormModeTests`).
 - **Codex is its own optgroup in the Execution select, with no tool-free option** (`codexModels`) — `tool_free` is one completion against `/chat/completions`, which this backend does not have, so offering it is a control the pipeline ignores (`CodexWiringTests`).
-- **Two counters for the same noun must reconcile on screen.** The header counts ENABLED caps, Admin every discovered one (`enabled / total`); a memory ROW holds up to 3 facts, so its badge counts facts. `applyCaps` owns both counts; never recount inline (`HeaderCounterTests`).
+- **Two counters for the same noun must reconcile on screen.** Admin's caps badge reads `enabled / total`; a memory ROW holds up to 3 facts, so its badge counts facts. `applyCaps` owns the caps count; never recount inline (`HeaderCounterTests`).
 - **Headless UI checks**: no hash routing, tabs scroll inside — inject a script, `activateTab(...)`, read back via `document.title`.
 
 ## Where the UI writes
