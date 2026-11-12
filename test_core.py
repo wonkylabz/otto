@@ -4648,7 +4648,8 @@ class ClaudeMdBudgetTests(unittest.TestCase):
     # 96627 -> 96830: a workstream chat's refs are its subject, not every link it ever saw.
     # 96830 -> 97084: the server split's seam rule (route mixins read server globals through
     # `_srv()`), which is what keeps the split's guards and patches meaning anything.
-    MAX_RULES_BYTES = 97084   # fetched tier — bounded, but looser; it is not always loaded
+    # 97084 -> 97320: the attempt's backend decision is `dispatch.decide`, not inline rules.
+    MAX_RULES_BYTES = 97320   # fetched tier — bounded, but looser; it is not always loaded
     MAX_RULE_CHARS = 280
     # 60 -> 0 (#56): every over-cap line was split into the two rules it was, or trimmed of
     # the incident narrative its commit message already carries. The cap is now absolute —

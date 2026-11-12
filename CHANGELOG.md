@@ -11,6 +11,11 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Changed
+
+- The rules that pick which backend serves an attempt (Claude, local or Codex) moved out of the
+  attempt runner into one module, `dispatch.py`. Same behaviour; a restart picks it up.
+
 ## [0.16.0] - 2026-11-12
 
 ### Added

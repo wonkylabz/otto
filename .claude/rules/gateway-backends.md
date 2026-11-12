@@ -25,6 +25,7 @@
 
 **Execution backend follows the execution model** — Claude model → `claude -p`; LOCAL model → `local_runtime.py`. Plus tool-free: a read cap with a `cap_local_exec` model tries one local completion, escalating to Claude on verify fail.
 
+- **Which runtime serves an ATTEMPT is `dispatch.decide`, pure** — `engine._resolve_backend` only gathers its facts. A rule written inline in `run_attempt` is reachable only by faking three runtimes, so it is never tested against the others (`DispatchDecisionTests`).
 - **Which runtime an entry dispatches to is `gateway.backend_of` ALONE** (`claude`|`local`|`codex`) — `provider != "claude"` meant "therefore local" in 34 sites, so a third backend falls into the local runtime with no `base_url` (`BackendDispatchTests`).
 - **Codex is a THIRD runtime, never a mode of the local one** (`codex_cli.py`) — codex-cli 0.155.0 removed `wire_api="chat"`, so it speaks only the Responses API and cannot be driven through the `/chat/completions` loop `local_runtime` owns (`CodexBackendTests`).
 - **On Codex the exit code is not a verdict; `turn.completed` is the only end-of-turn** — an unauthenticated run exits 0, and a killed turn has narrated, so an `agent_message` as the answer reports a timeout as success (`CodexBackendTests`).
