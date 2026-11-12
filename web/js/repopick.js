@@ -51,6 +51,8 @@ function showProjectForm(){
     save.disabled=true; err.textContent="";
     const failed=[];
     for(let i=0;i<jobs.length;i++){
+      // Cancelled or closed mid-run: the form is gone, so stop adding what nobody is watching.
+      if(!save.isConnected) break;
       save.textContent=jobs.length>1 ? "Cloning "+(i+1)+"/"+jobs.length+"…" : "Cloning…";
       try {
         await postJSON("/api/project/add",jobs[i]);
@@ -58,8 +60,9 @@ function showProjectForm(){
         const row=REPO_PICK.find(r=>r.url===jobs[i].url); if(row) row.registered=true;
       } catch(e){ failed.push((jobs[i].url||jobs[i].path)+": "+e.message); }
     }
-    save.disabled=false; label();
     loadAdmin();
+    if(!save.isConnected) return;   // never close a modal opened since
+    save.disabled=false; label();
     if(!failed.length){ closeFormModal(); return; }
     // What landed is already ticked off; the form stays open on exactly what did not.
     err.textContent=failed.join(" · "); draw();

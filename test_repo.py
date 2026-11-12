@@ -4065,3 +4065,12 @@ class RepoPickerTests(unittest.TestCase):
         self.assertIn('getJSON("/api/repos/available")', form)
         self.assertEqual(src.count("/api/repos/available"), 1,
                          "the gh-backed list is fetched somewhere a panel spinner may await it")
+
+    def test_cancelling_mid_run_stops_adding_and_closes_nothing_else(self):
+        """Closing the form empties it but the save loop kept running: every remaining repo was
+        still cloned, then `closeFormModal` shut whichever modal had been opened since."""
+        src = ui_src()
+        form = src[src.index("function showProjectForm("):]
+        loop = form[form.index("for(let i=0;i<jobs.length;i++){"):]
+        self.assertLess(loop.index("if(!save.isConnected) break;"), loop.index("postJSON("))
+        self.assertLess(loop.index("if(!save.isConnected) return;"), loop.index("closeFormModal()"))
