@@ -17,6 +17,8 @@ changelog that restates it is a second copy of `git log`.
 
 ### Changed
 
+- Memory tab: the **Garbage collector** section is now a bin icon beside the fact/approach/rule counts. Click it to scan; when the scan finishes a count appears next to it, and clicking the count opens the candidates to review and evict. Nothing is deleted until you evict, as before. Ships on a browser refresh.
+
 - The rules that pick which backend serves an attempt (Claude, local or Codex) moved out of the
   attempt runner into one module, `dispatch.py`. Same behaviour; a restart picks it up.
 

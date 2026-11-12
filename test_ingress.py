@@ -5189,6 +5189,28 @@ class KnowledgeTabWidthTests(unittest.TestCase):
                          "fills the row and pushes the Preview button past the shared edge")
 
 
+class MemoryGcHeaderTests(unittest.TestCase):
+    """The garbage collector is a header control, and its review happens in the shared modal.
+
+    It used to be a fourth collapsible section whose badge read 0 until a scan ran, so it looked
+    like a fourth (empty) store. Now: a bin beside the store counts starts the scan, and the count
+    it leaves is the only door to the candidates."""
+
+    def test_the_gc_is_a_header_control_not_a_section(self):
+        src = ui_src()
+        self.assertNotIn('memSection("gc"', src)
+        head = src[src.index("<h1>Persistent memory</h1>"):]
+        self.assertLess(head.index('id="gc-ctl"'), head.index('class="pside memstat"'))
+
+    def test_the_count_opens_the_shared_modal_and_only_it_evicts(self):
+        src = ui_src()
+        body = src[src.index("function showGcModal("):src.index("function gcTick(")]
+        self.assertIn("openFormModal(", body)
+        self.assertIn('id="gc-evict"', body)
+        self.assertEqual(src.count('id="gc-evict"'), 1)
+        self.assertIn('cnt.addEventListener("click",showGcModal)', src)
+
+
 class AddControlModalTests(unittest.TestCase):
     """Every control that CREATES something opens the shared config-form modal.
 

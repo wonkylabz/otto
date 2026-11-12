@@ -899,13 +899,14 @@
 
   /* memory */
   .memhead { display: flex; align-items: baseline; gap: 22px; margin: 0 0 22px; flex-wrap: wrap; }
-  /* GC only, and only while it's a single lone control (no toolbar yet) — Run GC / the spinner
-     centered in the row, same as the empty-state screenshot asked for. Once candidates exist,
-     the row goes back to normal (select all/none left, Evict selected pushed right via its own
-     margin-left:auto) since a centered CLUSTER of toolbar buttons reads worse than a left-aligned one. */
-  .memhead.gccenter { justify-content: center; }
-  #gc-list.gccenter { text-align: center; }   /* "Not run yet." / "Nothing flagged" under the centered button */
-  p.sub.gccenter { text-align: center; max-width: none; }   /* the scanning hint, under the centered button — .sub's own max-width would otherwise keep it hugging the left edge */
+  /* GC lives in the page header: the bin starts a scan, the count opens the review modal */
+  .phead .gcctl { margin-left: auto; flex: none; align-self: center; display: inline-flex; align-items: center; gap: 6px; }
+  .phead .gcctl + .pside { margin-left: 0; }
+  .gcbin { background: transparent; border: none; color: var(--dim); cursor: pointer; padding: 4px; line-height: 0; border-radius: var(--r-sm); }
+  .gcbin svg { width: 17px; height: 17px; }
+  .gcbin:hover { color: var(--danger); background: var(--surface-2); }
+  .gccount { font: 600 11px/1 inherit; color: var(--dim); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; cursor: pointer; }
+  .gccount.has { color: var(--warn); border-color: var(--warn); }
   .memstat { font-size: 12px; color: var(--dim); }
   .memstat b { color: var(--text); font-weight: 600; font-size: 16px; }
   .fbpanel { margin: 10px 0 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; }
