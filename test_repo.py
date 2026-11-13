@@ -2304,24 +2304,15 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(self._ids(), ["b", "a", "c"])
         self.assertFalse(any(c["floated"] for c in chats.list_summaries()))
 
-    def test_a_drag_made_mid_run_does_not_pin_the_floated_chat_on_top(self):
-        self._three()
-        chats.save({"id": "d", "title": "d", "messages": [{"role": "user", "text": "hi"}]})
-        chats.set_order(["a", "b", "c", "d"])
-        self._run("c", "web-1")
-        self._run("d", "web-2")
-        self.assertEqual(self._ids(), ["c", "d", "a", "b"])
-        # The client sends what it rendered: floated rows first, with a and b swapped.
-        self.assertEqual(chats.set_order(["c", "d", "b", "a"]), ["b", "a", "c", "d"])
-        self._run("c", "")
-        self._run("d", "")
-        self.assertEqual(self._ids(), ["b", "a", "c", "d"])
-
-    def test_a_floated_chat_stays_beside_the_neighbour_it_preceded(self):
+    def test_the_order_is_stored_as_given_even_while_a_chat_runs(self):
+        # The client sends POSITIONS; a server that re-guessed them from "who is running now"
+        # misplaced a chat whose run started or ended during the drag.
         self._three()
         chats.set_order(["a", "b", "c"])
-        self._run("a", "web-1")
-        self.assertEqual(chats.set_order(["a", "c", "b"]), ["c", "a", "b"])
+        self._run("c", "web-1")
+        self.assertEqual(chats.set_order(["b", "a", "c"]), ["b", "a", "c"])
+        self.assertEqual(self._ids(), ["c", "b", "a"])
+        self.assertEqual([c["pos"] for c in chats.list_summaries()], [2, 0, 1])
 
     def test_reordering_changes_no_chat(self):
         # Display only: every chat reads back identical, `updated` included (the trim's key).

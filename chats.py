@@ -192,7 +192,7 @@ def list_summaries(q=None):
     return [{"id": r["id"], "title": r["title"] or "", "updated": r["updated"],
              "messages": r["n"], "cap": (_decode(r["cap"]) or {}).get("name"),
              "labels": _decode(r["labels"]) or [], "run_id": r["run_id"],
-             "pinned": bool(r["pinned"]), "manual": r["pos"] is not None,
+             "pinned": bool(r["pinned"]), "manual": r["pos"] is not None, "pos": r["pos"],
              "floated": bool(r["floated"]),
              "workstream": {"id": r["ws_id"], "title": r["ws_title"]} if r["ws_id"] else None}
             for r in rows]
@@ -554,21 +554,11 @@ def find_reattach(request):
 def set_order(ids):
     """Record the sidebar's manual chat order; `[]` returns it to newest-first. Returns the
     stored ids. DISPLAY ONLY: nothing but list_summaries reads it — the trim still evicts by
-    `updated`. Pruned to known chats and deduped: the client sends the list it rendered."""
+    `updated`. Stored as given, pruned to known chats and deduped: a running chat is DISPLAYED
+    above its position, so the client sends positions (`movedChatOrder`), never what it drew."""
     with _conn() as conn, storage.tx(conn):
         known = {r["id"] for r in conn.execute("SELECT id FROM chats")}
         clean = list(dict.fromkeys(str(i) for i in (ids or []) if str(i) in known))
-        # A floated chat is on top only while it runs, so the rendered list misplaces it: put
-        # it back before its old successor, or a drag made mid-run would pin it there for good.
-        old = [r["chat_id"] for r in conn.execute("SELECT chat_id FROM chat_order ORDER BY pos")]
-        floated = {r["id"] for r in conn.execute(
-            f"SELECT c.id FROM chats c JOIN chat_order o ON o.chat_id = c.id WHERE {_FLOATED}")}
-        if clean and floated & set(clean):
-            rest = [c for c in clean if c not in floated]
-            for f in reversed([c for c in old if c in floated and c in clean]):
-                after = next((c for c in old[old.index(f) + 1:] if c in rest), None)
-                rest.insert(rest.index(after) if after else len(rest), f)
-            clean = rest
         conn.execute("DELETE FROM chat_order")
         conn.executemany("INSERT INTO chat_order (chat_id, pos) VALUES (?, ?)",
                          [(c, n) for n, c in enumerate(clean)])

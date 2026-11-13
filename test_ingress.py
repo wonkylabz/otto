@@ -599,9 +599,50 @@ class ChatReorderUiTests(unittest.TestCase):
         self.assertIn("""${c.floated?' data-float="1" """, self.src)
         self.assertIn("|| row.dataset.float) return;", self.src)
 
-    def test_the_whole_list_is_sent_not_just_the_rendered_page(self):
-        # The server stores what it is given, so the chats behind "show more" must ride along.
-        self.assertIn("shown.concat(histItems.map(c=>c.id).filter(id=>!seen.has(id)))", self.src)
+    def _moved(self, items, *args):
+        fn = self.src[self.src.index("function movedChatOrder("):self.src.index("function wireChatDrag(")]
+        js = fn + f"\nconsole.log(JSON.stringify(movedChatOrder({json.dumps(items)}, ...{json.dumps(args)})));"
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=20)
+        return json.loads(out.stdout or "null"), out.stderr
+
+    @staticmethod
+    def _items(spec):
+        """'B^ F A C' in DISPLAY order; a letter's stored position is its place in `stored`."""
+        shown, stored = spec
+        return [{"id": c.strip("^"), "pinned": c.endswith("^"),
+                 "pos": stored.index(c.strip("^")) if c.strip("^") in stored else None} for c in shown.split()]
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_drag_moves_only_the_dragged_chat(self):
+        # The server stores what it is given, so every case sends the whole list in STORED order.
+        cases = [
+            # a running chat (B, drawn first) keeps its place when a neighbour is dragged past it
+            (("B A C D", "ABCD"), ("C", "A", None), list("CABD")),
+            # ...and when it finishes mid-drag: it was never sent as "on top"
+            (("C A B D", "ABCD"), ("D", "A", None), list("DABC")),
+            # a pin toggled since the last drag: F stays after A (was stored A F B C, B now pinned)
+            (("B^ F A C", "AFBC"), ("C", "A", None), list("BCAF")),
+            # dropped last on the page: anchored AFTER its previous neighbour, hidden rows intact
+            (("A B C D E", "ABCDE"), ("A", None, "C"), list("BCADE")),
+            # a chat new since the last drag (no position) sits first and is a valid anchor
+            (("N A B", "AB"), ("B", "N", None), list("BNA")),
+        ]
+        for spec, args, want in cases:
+            got, err = self._moved(self._items(spec), *args)
+            self.assertEqual(got, want, f"{spec} {args} {err}")
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_drag_with_no_anchor_saves_nothing(self):
+        # Alone in its group, or the anchor gone: storing a guess would be storing a wrong order.
+        self.assertIsNone(self._moved(self._items(("A B", "AB")), "A", None, None)[0])
+        self.assertIsNone(self._moved(self._items(("A B", "AB")), "A", None, "ghost")[0])
+        # Dropped back where it was (a drop on the other group's row does this): unchanged.
+        self.assertIsNone(self._moved(self._items(("A B C", "")), "B", "C", None)[0])
+        self.assertIsNone(self._moved(self._items(("A B C", "")), "C", None, "B")[0])
+        self.assertIn('if(ids) await postOr("/api/chats/reorder"', self.src)
+
+    def test_the_anchor_is_a_same_group_row_that_is_not_floated(self):
+        self.assertIn("!n.dataset.float && n.dataset.pinned===row.dataset.pinned", self.src)
 
     def test_a_poll_cannot_re_render_the_list_mid_drag(self):
         body = self.src[self.src.index("async function loadChatList()"):]

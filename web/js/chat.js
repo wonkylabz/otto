@@ -534,6 +534,19 @@ try { applyHistCollapsed(isNarrow() || localStorage.getItem(HIST_COLLAPSED_KEY)=
    Display only (chats.set_order). Pinned chats sort first whatever the order says, so a drag
    stays inside the group it started in. Off while searching: a filtered list is a partial one. */
 let _dragChat=null, _chatDropped=false, histItems=[];
+/* The ids to store after dragging ONE chat: the list in its STORED order (a running chat is
+   drawn above its position, so the rendered order is not it) with only `id` moved, to just
+   before `before` or else just after `after`. null = nothing to anchor to, or nothing moved:
+   saving an unchanged list would still turn newest-first into a frozen manual order. */
+function movedChatOrder(items, id, before, after){
+  const t=items.slice().sort((a,b)=>(b.pinned-a.pinned)||((b.pos==null)-(a.pos==null))||((a.pos||0)-(b.pos||0)))
+                 .map(c=>c.id), was=t.indexOf(id);
+  if(was>=0) t.splice(was,1);
+  const at=before!=null ? t.indexOf(before) : (after!=null && t.includes(after) ? t.indexOf(after)+1 : -1);
+  if(at<0 || at===was) return null;
+  t.splice(at,0,id);
+  return t;
+}
 function wireChatDrag(el){
   // Properties, not addEventListener: #histlist outlives every re-render.
   el.ondragstart=e=>{
@@ -566,12 +579,15 @@ function wireChatDrag(el){
   };
 }
 async function saveChatOrder(el){
-  // The WHOLE list: the server stores what it is given, so the chats behind "show more" ride
-  // along after the rendered ones or they would lose their place.
-  const shown=[...el.querySelectorAll(".histitem")].map(r=>r.dataset.chat), seen=new Set(shown);
-  const ids=shown.concat(histItems.map(c=>c.id).filter(id=>!seen.has(id)));
+  // Anchor on the dragged row's nearest neighbour that HAS a stored place here: same pinned
+  // group, not floated. The whole list is sent, the chats behind "show more" included.
+  const row=el.querySelector(".histitem.dragging");
+  const near=dir=>{ for(let n=row&&row[dir]; n; n=n[dir])
+    if(n.classList.contains("histitem") && !n.dataset.float && n.dataset.pinned===row.dataset.pinned) return n.dataset.chat;
+    return null; };
+  const ids=row && movedChatOrder(histItems, row.dataset.chat, near("nextElementSibling"), near("previousElementSibling"));
   _dragChat=null;                                      // release the render guard before reloading
-  await postOr("/api/chats/reorder",{ids},"reordering your chats");
+  if(ids) await postOr("/api/chats/reorder",{ids},"reordering your chats");
   delete el.dataset.sig; loadChatList();
 }
 
