@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- The web UI could stay half-loaded forever (console: `poll is not defined`), most often on a busy Mac such as right after boot: the server queued only 5 connections, so part of the ~35 scripts and styles a page load requests at once were reset and the browser never retried them. It now queues 128. Needs a restart to take effect.
+
 ## [0.17.0] - 2026-11-13
 
 ### Added

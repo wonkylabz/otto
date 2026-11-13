@@ -5091,6 +5091,24 @@ class EstopCoverageTests(unittest.TestCase):
         self.assertIn("estop_check", [a.__name__ for a in worker.ACTIVITIES])
 
 
+class ListenBacklogTests(unittest.TestCase):
+    """A page load fires ~35 asset requests at once. The stdlib backlog of 5 reset the overflow
+    and a browser never retries a failed <script>, so the UI booted half-loaded forever."""
+
+    def test_the_web_server_queues_a_whole_page_load(self):
+        import server
+        self.assertGreaterEqual(server._Server.request_queue_size, 64)
+
+    def test_bind_serves_with_that_server(self):
+        import server
+        self.assertIn("_Server(", inspect.getsource(server._bind))
+        httpd = server._Server(("127.0.0.1", 0), server.Handler)
+        try:
+            self.assertEqual(httpd.request_queue_size, 128)
+        finally:
+            httpd.server_close()
+
+
 class ServerSourceReaderTests(unittest.TestCase):
     """`server.Handler` is one class at runtime and five files on disk: `server.py` plus the
     `srv_*.py` route mixins. Same two hazards as the `OttoWorkflow` split: a guard grepping
