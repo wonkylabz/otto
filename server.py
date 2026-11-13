@@ -2319,12 +2319,19 @@ _POST_PREFIXES = [
 ]
 
 
+class _Server(socketserver.ThreadingTCPServer):
+    """The stdlib default listen backlog is 5. A page load fires ~35 asset requests at once, so
+    the overflow was reset and the browser — which never retries a failed <script> — booted
+    half a UI (`poll is not defined`) that never finished loading."""
+    allow_reuse_address = True
+    request_queue_size = 128
+
+
 def _bind(start):
     """Bind the first free port from `start` upward (skips ports already in use)."""
-    socketserver.ThreadingTCPServer.allow_reuse_address = True
     for port in range(start, start + 40):
         try:
-            return socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler), port
+            return _Server(("127.0.0.1", port), Handler), port
         except OSError:
             continue
     raise SystemExit(f"No free port in {start}-{start + 39}. Set PORT to a free one.")
