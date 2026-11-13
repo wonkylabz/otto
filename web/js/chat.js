@@ -546,12 +546,15 @@ function wireChatDrag(el){
   };
   el.ondragover=e=>{
     const from=_dragChat && el.querySelector(".histitem.dragging");
-    const row=e.target.closest(".histitem");
-    if(!from || !row || row.dataset.pinned!==from.dataset.pinned) return;
+    if(!from) return;
+    // Anywhere in the list is a legal drop: the rows already moved, so releasing in the gap
+    // between two of them must save what is on screen, not revert it.
     e.preventDefault();
     e.dataTransfer.dropEffect="move";
+    const row=e.target.closest(".histitem");
+    if(!row || row===from || row.dataset.pinned!==from.dataset.pinned) return;
     const r=row.getBoundingClientRect();
-    if(row!==from) row.parentNode.insertBefore(from, (e.clientY-r.top)>r.height/2 ? row.nextSibling : row);
+    row.parentNode.insertBefore(from, (e.clientY-r.top)>r.height/2 ? row.nextSibling : row);
   };
   el.ondrop=e=>{ if(_dragChat){ e.preventDefault(); _chatDropped=true; saveChatOrder(el); } };
   el.ondragend=()=>{

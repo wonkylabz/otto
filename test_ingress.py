@@ -583,6 +583,13 @@ class ChatReorderUiTests(unittest.TestCase):
         # Pinned chats sort first whatever the order says, so a cross-group drop would snap back.
         self.assertIn("row.dataset.pinned!==from.dataset.pinned", self.src)
 
+    def test_a_drop_between_two_rows_is_legal(self):
+        # preventDefault is what makes a drop legal; gated on being over a row, releasing in the
+        # 4px gap between two fired no drop and the visibly moved row silently snapped back.
+        body = self.src[self.src.index("function wireChatDrag(el)"):]
+        over = body[body.index("el.ondragover="):body.index("el.ondrop=")]
+        self.assertLess(over.index("e.preventDefault();"), over.index('e.target.closest(".histitem")'))
+
     def test_a_filtered_list_is_not_draggable(self):
         # A search hides chats; saving its order would be saving a partial list.
         self.assertIn("""${q?'':' draggable="true"'}""", self.src)
