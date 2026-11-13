@@ -27,6 +27,13 @@ class MemoryRoutes:
         """POST /api/chats/pin"""
         self._send(200, json.dumps({"pinned": chats.set_pinned(body.get("id"), body.get("pinned"))}))
 
+    def _post_chats_reorder(self, body):
+        """POST /api/chats/reorder — the sidebar's drag order; display only."""
+        ids = body.get("ids")
+        if not isinstance(ids, list):
+            return self._send(400, json.dumps({"error": "ids must be a list"}))
+        self._send(200, json.dumps({"order": chats.set_order(ids)}))
+
     def _post_chats_clear(self, body):
         """POST /api/chats/clear — deletes every chat except pinned and running ones."""
         self._send(200, json.dumps({"deleted": chats.delete_unpinned()}))

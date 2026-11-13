@@ -573,6 +573,116 @@ class JobReorderUiTests(unittest.TestCase):
             self.assertIn(prop, self.src)
 
 
+class ChatReorderUiTests(unittest.TestCase):
+    """The chat sidebar's drag-to-reorder, read through the assembled UI."""
+
+    def setUp(self):
+        self.src = ui_src()
+
+    def test_a_drag_cannot_cross_the_pinned_boundary(self):
+        # Pinned chats sort first whatever the order says, so a cross-group drop would snap back.
+        self.assertIn("row.dataset.pinned!==from.dataset.pinned", self.src)
+
+    def test_a_drop_between_two_rows_is_legal(self):
+        # preventDefault is what makes a drop legal; gated on being over a row, releasing in the
+        # 4px gap between two fired no drop and the visibly moved row silently snapped back.
+        body = self.src[self.src.index("function wireChatDrag(el)"):]
+        over = body[body.index("el.ondragover="):body.index("el.ondrop=")]
+        self.assertLess(over.index("e.preventDefault();"), over.index('e.target.closest(".histitem")'))
+
+    def test_a_filtered_list_is_not_draggable(self):
+        # A search hides chats; saving its order would be saving a partial list.
+        self.assertIn("""(q?'':' draggable="true"')""", self.src)
+
+    def test_a_floated_row_is_neither_draggable_nor_a_drop_neighbour(self):
+        # It is on top only while its run lasts; the server puts it back, so a drag would lie.
+        self.assertIn("""${c.floated?' data-float="1" """, self.src)
+        self.assertIn("|| row.dataset.float) return;", self.src)
+
+    def _moved(self, items, *args):
+        fn = self.src[self.src.index("function movedChatOrder("):self.src.index("function wireChatDrag(")]
+        js = fn + f"\nconsole.log(JSON.stringify(movedChatOrder({json.dumps(items)}, ...{json.dumps(args)})));"
+        out = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=20)
+        return json.loads(out.stdout or "null"), out.stderr
+
+    @staticmethod
+    def _items(spec):
+        """'B^ F A C' in DISPLAY order; a letter's stored position is its place in `stored`."""
+        shown, stored = spec
+        return [{"id": c.strip("^"), "pinned": c.endswith("^"),
+                 "pos": stored.index(c.strip("^")) if c.strip("^") in stored else None} for c in shown.split()]
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_drag_moves_only_the_dragged_chat(self):
+        # The server stores what it is given, so every case sends the whole list in STORED order.
+        cases = [
+            # a running chat (B, drawn first) keeps its place when a neighbour is dragged past it
+            (("B A C D", "ABCD"), ("C", "A", None), list("CABD")),
+            # ...and when it finishes mid-drag: it was never sent as "on top"
+            (("C A B D", "ABCD"), ("D", "A", None), list("DABC")),
+            # a pin toggled since the last drag: F stays after A (was stored A F B C, B now pinned)
+            (("B^ F A C", "AFBC"), ("C", "A", None), list("BCAF")),
+            # dropped last on the page: anchored AFTER its previous neighbour, hidden rows intact
+            (("A B C D E", "ABCDE"), ("A", None, "C"), list("BCADE")),
+            # a chat new since the last drag (no position) sits first and is a valid anchor
+            (("N A B", "AB"), ("B", "N", None), list("BNA")),
+        ]
+        for spec, args, want in cases:
+            got, err = self._moved(self._items(spec), *args)
+            self.assertEqual(got, want, f"{spec} {args} {err}")
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_a_drag_with_no_anchor_saves_nothing(self):
+        # Alone in its group, or the anchor gone: storing a guess would be storing a wrong order.
+        self.assertIsNone(self._moved(self._items(("A B", "AB")), "A", None, None)[0])
+        self.assertIsNone(self._moved(self._items(("A B", "AB")), "A", None, "ghost")[0])
+        # Dropped back where it was (a drop on the other group's row does this): unchanged.
+        self.assertIsNone(self._moved(self._items(("A B C", "")), "B", "C", None)[0])
+        self.assertIsNone(self._moved(self._items(("A B C", "")), "C", None, "B")[0])
+        self.assertIn("if(ids){", self.src)
+
+    def test_the_anchor_is_a_same_group_row_that_is_not_floated(self):
+        self.assertIn("!n.dataset.float && n.dataset.pinned===row.dataset.pinned", self.src)
+
+    def test_a_row_dropped_between_the_neighbours_it_left_saves_nothing(self):
+        # Judged on the DOM, not on indexes: with a floated chat stored right after the dragged
+        # one, re-anchoring an unmoved row on its next VISIBLE neighbour hopped the floated slot.
+        self.assertIn("_dragHome=JSON.stringify(chatAnchors(row));", self.src)
+        self.assertIn("JSON.stringify(anchors)!==_dragHome && movedChatOrder(", self.src)
+
+    def test_a_second_drag_builds_on_the_first_before_its_save_returns(self):
+        body = self.src[self.src.index("async function saveChatOrder(el)"):]
+        self.assertLess(body.index("c.pos=at.get(c.id)"), body.index('await postOr("/api/chats/reorder"'))
+
+    def test_a_list_fetched_before_an_order_save_landed_is_discarded(self):
+        # It holds the OLD positions: kept as histItems, the next drag was silently dropped or
+        # undid the one before. Bumped on BOTH sides of the POST, so a load begun mid-save dies too.
+        body = self.src[self.src.index("async function saveChatOrder(el)"):]
+        post = body.index('await postOr("/api/chats/reorder"')
+        self.assertLess(body.index("_histGen++;"), post)
+        self.assertIn("_histGen++;", body[post:post + 200])
+        load = self.src[self.src.index("async function loadChatList()"):]
+        self.assertLess(load.index("const gen=_histGen;"), load.index("getJSON("))
+
+    def test_a_poll_cannot_re_render_the_list_mid_drag(self):
+        body = self.src[self.src.index("async function loadChatList()"):]
+        self.assertLess(body.index("if(_dragChat) return POLL_SKIP;"), body.index("getJSON("))
+        # ...and a fetch already in flight when the drag began must not paint either.
+        self.assertLess(body.index("if(_dragChat || gen!==_histGen) return POLL_SKIP;"),
+                        body.index("histItems=items;"))
+
+    def test_a_drag_abandoned_outside_the_list_re_renders_rather_than_lying(self):
+        self.assertIn("if(!_chatDropped){ delete el.dataset.sig; loadChatList(); }", self.src)
+
+    def test_the_drag_handlers_are_assigned_as_properties(self):
+        body = self.src[self.src.index("function wireChatDrag(el)"):]
+        for prop in ("el.ondragstart=", "el.ondragover=", "el.ondrop=", "el.ondragend="):
+            self.assertIn(prop, body[:2000])
+
+    def test_the_reorder_route_is_registered(self):
+        self.assertIs(server._POST_ROUTES["/api/chats/reorder"], server.Handler._post_chats_reorder)
+
+
 class RunbookCapResolutionTests(unittest.TestCase):
     """A runbook stores a capability NAME; the trusted {name,kind,risk} dict is resolved from the
     registry at fire time, so a cap reclassified to write gates the next run instead of firing

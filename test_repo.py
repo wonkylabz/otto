@@ -2230,6 +2230,97 @@ class ChatHistoryTests(unittest.TestCase):
         chats.delete("a")
         self.assertIsNone(chats.get("a"))
 
+    def _three(self):
+        for cid in ("a", "b", "c"):
+            chats.save({"id": cid, "title": cid, "messages": [{"role": "user", "text": "hi"}]})
+        return [c["id"] for c in chats.list_summaries()]
+
+    def test_a_dragged_order_replaces_newest_first_and_survives_a_save(self):
+        self.assertEqual(self._three(), ["c", "b", "a"])
+        self.assertEqual(chats.set_order(["a", "c", "b", "ghost", "a"]), ["a", "c", "b"])
+        self.assertEqual([c["id"] for c in chats.list_summaries()], ["a", "c", "b"])
+        # _upsert_row is INSERT OR REPLACE: an order kept as a column would be wiped right here.
+        chats.save({"id": "b", "title": "b2", "messages": [{"role": "user", "text": "again"}]})
+        self.assertEqual([c["id"] for c in chats.list_summaries()], ["a", "c", "b"])
+
+    def test_a_chat_the_order_does_not_name_comes_first_and_pinned_still_floats(self):
+        self._three()
+        chats.set_order(["a", "b", "c"])
+        chats.save({"id": "new", "title": "new", "messages": [{"role": "user", "text": "hi"}]})
+        self.assertEqual([c["id"] for c in chats.list_summaries()], ["new", "a", "b", "c"])
+        chats.set_pinned("c", True)
+        rows = chats.list_summaries()
+        self.assertEqual([c["id"] for c in rows], ["c", "new", "a", "b"])
+        self.assertEqual([c["manual"] for c in rows], [True, False, True, True])
+
+    def test_an_empty_order_returns_the_list_to_newest_first(self):
+        newest_first = self._three()
+        chats.set_order(["a", "b", "c"])
+        self.assertEqual(chats.set_order([]), [])
+        rows = chats.list_summaries()
+        self.assertEqual([c["id"] for c in rows], newest_first)
+        self.assertFalse(any(c["manual"] for c in rows))
+
+    def test_a_recreated_chat_does_not_inherit_a_deleted_ones_position(self):
+        # Ingress chat ids are deterministic (gh-pr-..., a Slack key), so an id comes back.
+        for drop in (lambda: chats.delete("a"), chats.delete_unpinned):
+            self._three()
+            chats.set_order(["c", "b", "a"])
+            drop()
+            chats.save({"id": "a", "title": "a", "messages": [{"role": "user", "text": "hi"}]})
+            row = next(c for c in chats.list_summaries() if c["id"] == "a")
+            self.assertFalse(row["manual"])
+
+    def test_a_trimmed_chat_leaves_no_order_row(self):
+        self._three()
+        chats.set_order(["c", "b", "a"])
+        with mock.patch.object(chats, "MAX_CHATS", 2):
+            chats.save({"id": "d", "title": "d", "messages": [{"role": "user", "text": "hi"}]})
+        with chats._conn() as conn:
+            left = {r["chat_id"] for r in conn.execute("SELECT chat_id FROM chat_order")}
+        self.assertEqual(left, {c["id"] for c in chats.list_summaries()} - {"d"})
+
+    def _ids(self):
+        return [c["id"] for c in chats.list_summaries()]
+
+    def _run(self, cid, wid):
+        chats.save({"id": cid, "title": cid, "run_id": wid,
+                    "messages": [{"role": "user", "text": "hi"}]})
+
+    def test_a_running_chat_floats_above_the_dragged_order_then_drops_back(self):
+        self._three()
+        chats.set_order(["a", "b", "c"])
+        self._run("c", "web-1")
+        self.assertEqual(self._ids(), ["c", "a", "b"])
+        self.assertTrue(chats.list_summaries()[0]["floated"])
+        self._run("c", "")
+        self.assertEqual(self._ids(), ["a", "b", "c"])
+
+    def test_newest_first_is_untouched_by_a_running_chat(self):
+        # No manual order, nothing to rescue: the float exists for a chat the order buried.
+        self._three()
+        self._run("a", "web-1")
+        chats.save({"id": "b", "title": "b", "messages": [{"role": "user", "text": "more"}]})
+        self.assertEqual(self._ids(), ["b", "a", "c"])
+        self.assertFalse(any(c["floated"] for c in chats.list_summaries()))
+
+    def test_the_order_is_stored_as_given_even_while_a_chat_runs(self):
+        # The client sends POSITIONS; a server that re-guessed them from "who is running now"
+        # misplaced a chat whose run started or ended during the drag.
+        self._three()
+        chats.set_order(["a", "b", "c"])
+        self._run("c", "web-1")
+        self.assertEqual(chats.set_order(["b", "a", "c"]), ["b", "a", "c"])
+        self.assertEqual(self._ids(), ["c", "b", "a"])
+        self.assertEqual([c["pos"] for c in chats.list_summaries()], [2, 0, 1])
+
+    def test_reordering_changes_no_chat(self):
+        # Display only: every chat reads back identical, `updated` included (the trim's key).
+        self._three()
+        before = {c: chats.get(c) for c in ("a", "b", "c")}
+        chats.set_order(["a", "b", "c"])
+        self.assertEqual({c: chats.get(c) for c in ("a", "b", "c")}, before)
+
     def test_a_workflow_opened_repo_mode_chat_records_its_git_identity(self):
         # The turn a WORKFLOW records (chat_key — a needs-you retry, any unattended run) has no
         # browser to persist repo/git_run_id client-side. Without them the chat is not continuable

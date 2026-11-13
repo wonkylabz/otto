@@ -507,6 +507,10 @@ function setHistQuery(q){
     try { out=await postJSON("/api/chats/clear",{}); } catch(e){ toast("clearing chats failed: "+e.message); return; }
     if(activeChat&&(out.deleted||[]).includes(activeChat.id)) newChat(); else loadChatList();
   });
+  document.getElementById("reset-chat-order").addEventListener("click",async()=>{
+    await postOr("/api/chats/reorder",{ids:[]},"resetting the chat order");
+    loadChatList();
+  });
 })();
 
 /* Collapsed/expanded state of the chat list is per-browser, so it survives a reload but is
@@ -526,8 +530,86 @@ document.getElementById("hist-toggle").addEventListener("click",()=>{
 // A phone stacks the list above the chat, so it starts closed there whatever desktop chose.
 try { applyHistCollapsed(isNarrow() || localStorage.getItem(HIST_COLLAPSED_KEY)==="1", !isNarrow()); } catch(e){}
 
+/* ---- drag to reorder ----
+   Display only (chats.set_order). Pinned chats sort first whatever the order says, so a drag
+   stays inside the group it started in. Off while searching: a filtered list is a partial one. */
+let _dragChat=null, _chatDropped=false, _dragHome="", histItems=[];
+// Bumped around every order save: a list fetched before the save landed is the OLD order, and
+// painting it (or keeping it as histItems) makes the next drag build on positions that are gone.
+let _histGen=0;
+/* A row's nearest neighbours that HAVE a stored place beside it: same pinned group, not floated.
+   [next, prev] — what a drop is anchored on, and what "it did not move" is judged by. */
+function chatAnchors(row){
+  const near=dir=>{ for(let n=row[dir]; n; n=n[dir])
+    if(n.classList.contains("histitem") && !n.dataset.float && n.dataset.pinned===row.dataset.pinned) return n.dataset.chat;
+    return null; };
+  return [near("nextElementSibling"), near("previousElementSibling")];
+}
+/* The ids to store after dragging ONE chat: the list in its STORED order (a running chat is
+   drawn above its position, so the rendered order is not it) with only `id` moved, to just
+   before `before` or else just after `after`. null = nothing to anchor to, or nothing moved:
+   saving an unchanged list would still turn newest-first into a frozen manual order. */
+function movedChatOrder(items, id, before, after){
+  const t=items.slice().sort((a,b)=>(b.pinned-a.pinned)||((b.pos==null)-(a.pos==null))||((a.pos||0)-(b.pos||0)))
+                 .map(c=>c.id), was=t.indexOf(id);
+  if(was>=0) t.splice(was,1);
+  const at=before!=null ? t.indexOf(before) : (after!=null && t.includes(after) ? t.indexOf(after)+1 : -1);
+  if(at<0 || at===was) return null;
+  t.splice(at,0,id);
+  return t;
+}
+function wireChatDrag(el){
+  // Properties, not addEventListener: #histlist outlives every re-render.
+  el.ondragstart=e=>{
+    const row=e.target.closest(".histitem[draggable]");
+    if(!row) return;
+    _dragChat=row.dataset.chat; _chatDropped=false; _dragHome=JSON.stringify(chatAnchors(row));
+    e.dataTransfer.effectAllowed="move";
+    e.dataTransfer.setData("text/plain", _dragChat);   // Firefox starts no drag without a payload
+    row.classList.add("dragging");
+  };
+  el.ondragover=e=>{
+    const from=_dragChat && el.querySelector(".histitem.dragging");
+    if(!from) return;
+    // Anywhere in the list is a legal drop: the rows already moved, so releasing in the gap
+    // between two of them must save what is on screen, not revert it.
+    e.preventDefault();
+    e.dataTransfer.dropEffect="move";
+    const row=e.target.closest(".histitem");
+    // A floated (running) row is on top only until its run ends: not a place to drop beside.
+    if(!row || row===from || row.dataset.pinned!==from.dataset.pinned || row.dataset.float) return;
+    const r=row.getBoundingClientRect();
+    row.parentNode.insertBefore(from, (e.clientY-r.top)>r.height/2 ? row.nextSibling : row);
+  };
+  el.ondrop=e=>{ if(_dragChat){ e.preventDefault(); _chatDropped=true; saveChatOrder(el); } };
+  el.ondragend=()=>{
+    el.querySelectorAll(".histitem.dragging").forEach(r=>r.classList.remove("dragging"));
+    _dragChat=null;
+    // Dropped outside the list: rows moved during dragover but nothing was saved.
+    if(!_chatDropped){ delete el.dataset.sig; loadChatList(); }
+  };
+}
+async function saveChatOrder(el){
+  // The whole list is sent, the chats behind "show more" included. Dropped between the SAME
+  // neighbours it left: nothing moved, and re-anchoring it would hop a floated chat's slot.
+  const row=el.querySelector(".histitem.dragging"), anchors=row?chatAnchors(row):[];
+  const ids=row && JSON.stringify(anchors)!==_dragHome && movedChatOrder(histItems, row.dataset.chat, ...anchors);
+  _dragChat=null;                                      // release the render guard before reloading
+  if(ids){
+    // A second drag can start before this round-trip ends: it must build on THIS order.
+    const at=new Map(ids.map((id,i)=>[id,i]));
+    histItems.forEach(c=>{ if(at.has(c.id)) c.pos=at.get(c.id); });
+    _histGen++;
+    await postOr("/api/chats/reorder",{ids},"reordering your chats");
+    _histGen++;
+  }
+  delete el.dataset.sig; loadChatList();
+}
+
 async function loadChatList(){
   const el=document.getElementById("histlist"); if(!el) return;
+  if(_dragChat) return POLL_SKIP;      // a re-render mid-drag drops the dragged row on the floor
+  const gen=_histGen;
   // A failed read used to paint an EMPTY chat list, which reads as "my chats are gone".
   let data;
   const q=histQ;
@@ -541,6 +623,10 @@ async function loadChatList(){
   const present=new Set(items.map(c=>c.id));
   const running=new Set(items.filter(c=>c.run_id).map(c=>c.id));
   if(q!==histQ) return;               // the search changed while this one was loading
+  if(_dragChat || gen!==_histGen) return POLL_SKIP;   // a drag or an order save overtook this load
+  histItems=items;
+  const reset=document.getElementById("reset-chat-order");
+  if(reset) reset.hidden=!!q || !items.some(c=>c.manual);
   // A filtered list hides chats, so finish detection waits until the search is cleared.
   if(!q){
     if(prevRunning) for(const id of prevRunning)   // run gone but chat still there = it finished
@@ -557,13 +643,13 @@ async function loadChatList(){
   // working (the poll re-renders only when something actually changed).
   // histShown rides in the signature: "show more" re-renders through this same guard, and
   // without it the click would be swallowed as an unchanged poll.
-  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title,c.ws_suggest&&c.ws_suggest.id]), activeChat&&activeChat.id, histShown, q]);
+  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title,c.ws_suggest&&c.ws_suggest.id,!!c.floated]), activeChat&&activeChat.id, histShown, q]);
   if(el.dataset.sig===sig) return;
   el.dataset.sig=sig;
   const keepScroll=el.scrollTop;
   const page=items.slice(0, histShown), rest=items.length-page.length;
   el.innerHTML = items.length ? page.map(c=>`
-    <div class="histitem ${activeChat&&activeChat.id===c.id?'active':''}" data-chat="${esc(c.id)}">
+    <div class="histitem ${activeChat&&activeChat.id===c.id?'active':''}" data-chat="${esc(c.id)}" data-pinned="${c.pinned?1:0}"${c.floated?' data-float="1" title="On top while it runs, then back to where you put it"':(q?'':' draggable="true"')}>
       <div class="htitle">${esc(c.title||'Untitled')}</div>
       <div class="hmeta">${(c.labels||[]).map(l=>`<span class="hlabel" title="${esc(l)}">${esc(HLABEL_SHORT[l]||l)}</span>`).join("")}${c.workstream?`<span class="hlabel hws" data-wstl="${esc(c.workstream.id)}" title="workstream: ${esc(c.workstream.title)} — open its timeline">&#9776; ${esc(c.workstream.title)}</span>`:wsSuggestChip(c.id, c.ws_suggest, false)}${c.cap?`<span class="hcap" title="${esc(c.cap)}">${esc(c.cap)}</span>·`:''}<span class="hcount">${c.messages} msg</span></div>
       ${c.run_id?`<span class="hspin spin" title="working…"></span>`:''}
@@ -572,6 +658,7 @@ async function loadChatList(){
     </div>`).join("")+(rest>0?`<button class="histmore" id="hist-more" title="${rest} older chat${rest===1?'':'s'} not shown">Show ${Math.min(HIST_PAGE,rest)} more (${rest} older)</button>`:"")
     : `<p class="memempty" style="padding:8px 10px">${q?`No chat matches “${esc(q)}”.`:"No past chats yet."}</p>`;
   el.scrollTop=keepScroll;
+  wireChatDrag(el);
   const more=document.getElementById("hist-more");
   if(more) more.addEventListener("click",()=>{ histShown+=HIST_PAGE; loadChatList(); });
   el.querySelectorAll("[data-chat]").forEach(d=>d.addEventListener("click",e=>{
