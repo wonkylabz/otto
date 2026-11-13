@@ -654,12 +654,22 @@ class ChatReorderUiTests(unittest.TestCase):
         body = self.src[self.src.index("async function saveChatOrder(el)"):]
         self.assertLess(body.index("c.pos=at.get(c.id)"), body.index('await postOr("/api/chats/reorder"'))
 
+    def test_a_list_fetched_before_an_order_save_landed_is_discarded(self):
+        # It holds the OLD positions: kept as histItems, the next drag was silently dropped or
+        # undid the one before. Bumped on BOTH sides of the POST, so a load begun mid-save dies too.
+        body = self.src[self.src.index("async function saveChatOrder(el)"):]
+        post = body.index('await postOr("/api/chats/reorder"')
+        self.assertLess(body.index("_histGen++;"), post)
+        self.assertIn("_histGen++;", body[post:post + 200])
+        load = self.src[self.src.index("async function loadChatList()"):]
+        self.assertLess(load.index("const gen=_histGen;"), load.index("getJSON("))
+
     def test_a_poll_cannot_re_render_the_list_mid_drag(self):
         body = self.src[self.src.index("async function loadChatList()"):]
         self.assertLess(body.index("if(_dragChat) return POLL_SKIP;"), body.index("getJSON("))
         # ...and a fetch already in flight when the drag began must not paint either.
-        self.assertLess(body.index("// a drag began while this one was loading"),
-                        body.index("el.innerHTML = items.length"))
+        self.assertLess(body.index("if(_dragChat || gen!==_histGen) return POLL_SKIP;"),
+                        body.index("histItems=items;"))
 
     def test_a_drag_abandoned_outside_the_list_re_renders_rather_than_lying(self):
         self.assertIn("if(!_chatDropped){ delete el.dataset.sig; loadChatList(); }", self.src)

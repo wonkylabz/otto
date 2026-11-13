@@ -534,6 +534,9 @@ try { applyHistCollapsed(isNarrow() || localStorage.getItem(HIST_COLLAPSED_KEY)=
    Display only (chats.set_order). Pinned chats sort first whatever the order says, so a drag
    stays inside the group it started in. Off while searching: a filtered list is a partial one. */
 let _dragChat=null, _chatDropped=false, _dragHome="", histItems=[];
+// Bumped around every order save: a list fetched before the save landed is the OLD order, and
+// painting it (or keeping it as histItems) makes the next drag build on positions that are gone.
+let _histGen=0;
 /* A row's nearest neighbours that HAVE a stored place beside it: same pinned group, not floated.
    [next, prev] — what a drop is anchored on, and what "it did not move" is judged by. */
 function chatAnchors(row){
@@ -596,7 +599,9 @@ async function saveChatOrder(el){
     // A second drag can start before this round-trip ends: it must build on THIS order.
     const at=new Map(ids.map((id,i)=>[id,i]));
     histItems.forEach(c=>{ if(at.has(c.id)) c.pos=at.get(c.id); });
+    _histGen++;
     await postOr("/api/chats/reorder",{ids},"reordering your chats");
+    _histGen++;
   }
   delete el.dataset.sig; loadChatList();
 }
@@ -604,6 +609,7 @@ async function saveChatOrder(el){
 async function loadChatList(){
   const el=document.getElementById("histlist"); if(!el) return;
   if(_dragChat) return POLL_SKIP;      // a re-render mid-drag drops the dragged row on the floor
+  const gen=_histGen;
   // A failed read used to paint an EMPTY chat list, which reads as "my chats are gone".
   let data;
   const q=histQ;
@@ -617,7 +623,7 @@ async function loadChatList(){
   const present=new Set(items.map(c=>c.id));
   const running=new Set(items.filter(c=>c.run_id).map(c=>c.id));
   if(q!==histQ) return;               // the search changed while this one was loading
-  if(_dragChat) return POLL_SKIP;     // a drag began while this one was loading
+  if(_dragChat || gen!==_histGen) return POLL_SKIP;   // a drag or an order save overtook this load
   histItems=items;
   const reset=document.getElementById("reset-chat-order");
   if(reset) reset.hidden=!!q || !items.some(c=>c.manual);
