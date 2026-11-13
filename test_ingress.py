@@ -573,6 +573,43 @@ class JobReorderUiTests(unittest.TestCase):
             self.assertIn(prop, self.src)
 
 
+class ChatReorderUiTests(unittest.TestCase):
+    """The chat sidebar's drag-to-reorder, read through the assembled UI."""
+
+    def setUp(self):
+        self.src = ui_src()
+
+    def test_a_drag_cannot_cross_the_pinned_boundary(self):
+        # Pinned chats sort first whatever the order says, so a cross-group drop would snap back.
+        self.assertIn("row.dataset.pinned!==from.dataset.pinned", self.src)
+
+    def test_a_filtered_list_is_not_draggable(self):
+        # A search hides chats; saving its order would be saving a partial list.
+        self.assertIn("""${q?'':' draggable="true"'}""", self.src)
+
+    def test_the_whole_list_is_sent_not_just_the_rendered_page(self):
+        # The server stores what it is given, so the chats behind "show more" must ride along.
+        self.assertIn("shown.concat(histItems.map(c=>c.id).filter(id=>!seen.has(id)))", self.src)
+
+    def test_a_poll_cannot_re_render_the_list_mid_drag(self):
+        body = self.src[self.src.index("async function loadChatList()"):]
+        self.assertLess(body.index("if(_dragChat) return POLL_SKIP;"), body.index("getJSON("))
+        # ...and a fetch already in flight when the drag began must not paint either.
+        self.assertLess(body.index("// a drag began while this one was loading"),
+                        body.index("el.innerHTML = items.length"))
+
+    def test_a_drag_abandoned_outside_the_list_re_renders_rather_than_lying(self):
+        self.assertIn("if(!_chatDropped){ delete el.dataset.sig; loadChatList(); }", self.src)
+
+    def test_the_drag_handlers_are_assigned_as_properties(self):
+        body = self.src[self.src.index("function wireChatDrag(el)"):]
+        for prop in ("el.ondragstart=", "el.ondragover=", "el.ondrop=", "el.ondragend="):
+            self.assertIn(prop, body[:2000])
+
+    def test_the_reorder_route_is_registered(self):
+        self.assertIs(server._POST_ROUTES["/api/chats/reorder"], server.Handler._post_chats_reorder)
+
+
 class RunbookCapResolutionTests(unittest.TestCase):
     """A runbook stores a capability NAME; the trusted {name,kind,risk} dict is resolved from the
     registry at fire time, so a cap reclassified to write gates the next run instead of firing

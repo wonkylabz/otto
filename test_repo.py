@@ -2230,6 +2230,44 @@ class ChatHistoryTests(unittest.TestCase):
         chats.delete("a")
         self.assertIsNone(chats.get("a"))
 
+    def _three(self):
+        for cid in ("a", "b", "c"):
+            chats.save({"id": cid, "title": cid, "messages": [{"role": "user", "text": "hi"}]})
+        return [c["id"] for c in chats.list_summaries()]
+
+    def test_a_dragged_order_replaces_newest_first_and_survives_a_save(self):
+        self.assertEqual(self._three(), ["c", "b", "a"])
+        self.assertEqual(chats.set_order(["a", "c", "b", "ghost", "a"]), ["a", "c", "b"])
+        self.assertEqual([c["id"] for c in chats.list_summaries()], ["a", "c", "b"])
+        # _upsert_row is INSERT OR REPLACE: an order kept as a column would be wiped right here.
+        chats.save({"id": "b", "title": "b2", "messages": [{"role": "user", "text": "again"}]})
+        self.assertEqual([c["id"] for c in chats.list_summaries()], ["a", "c", "b"])
+
+    def test_a_chat_the_order_does_not_name_comes_first_and_pinned_still_floats(self):
+        self._three()
+        chats.set_order(["a", "b", "c"])
+        chats.save({"id": "new", "title": "new", "messages": [{"role": "user", "text": "hi"}]})
+        self.assertEqual([c["id"] for c in chats.list_summaries()], ["new", "a", "b", "c"])
+        chats.set_pinned("c", True)
+        rows = chats.list_summaries()
+        self.assertEqual([c["id"] for c in rows], ["c", "new", "a", "b"])
+        self.assertEqual([c["manual"] for c in rows], [True, False, True, True])
+
+    def test_an_empty_order_returns_the_list_to_newest_first(self):
+        newest_first = self._three()
+        chats.set_order(["a", "b", "c"])
+        self.assertEqual(chats.set_order([]), [])
+        rows = chats.list_summaries()
+        self.assertEqual([c["id"] for c in rows], newest_first)
+        self.assertFalse(any(c["manual"] for c in rows))
+
+    def test_reordering_changes_no_chat(self):
+        # Display only: every chat reads back identical, `updated` included (the trim's key).
+        self._three()
+        before = {c: chats.get(c) for c in ("a", "b", "c")}
+        chats.set_order(["a", "b", "c"])
+        self.assertEqual({c: chats.get(c) for c in ("a", "b", "c")}, before)
+
     def test_a_workflow_opened_repo_mode_chat_records_its_git_identity(self):
         # The turn a WORKFLOW records (chat_key — a needs-you retry, any unattended run) has no
         # browser to persist repo/git_run_id client-side. Without them the chat is not continuable

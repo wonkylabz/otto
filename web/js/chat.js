@@ -507,6 +507,10 @@ function setHistQuery(q){
     try { out=await postJSON("/api/chats/clear",{}); } catch(e){ toast("clearing chats failed: "+e.message); return; }
     if(activeChat&&(out.deleted||[]).includes(activeChat.id)) newChat(); else loadChatList();
   });
+  document.getElementById("reset-chat-order").addEventListener("click",async()=>{
+    await postOr("/api/chats/reorder",{ids:[]},"resetting the chat order");
+    loadChatList();
+  });
 })();
 
 /* Collapsed/expanded state of the chat list is per-browser, so it survives a reload but is
@@ -526,8 +530,50 @@ document.getElementById("hist-toggle").addEventListener("click",()=>{
 // A phone stacks the list above the chat, so it starts closed there whatever desktop chose.
 try { applyHistCollapsed(isNarrow() || localStorage.getItem(HIST_COLLAPSED_KEY)==="1", !isNarrow()); } catch(e){}
 
+/* ---- drag to reorder ----
+   Display only (chats.set_order). Pinned chats sort first whatever the order says, so a drag
+   stays inside the group it started in. Off while searching: a filtered list is a partial one. */
+let _dragChat=null, _chatDropped=false, histItems=[];
+function wireChatDrag(el){
+  // Properties, not addEventListener: #histlist outlives every re-render.
+  el.ondragstart=e=>{
+    const row=e.target.closest(".histitem[draggable]");
+    if(!row) return;
+    _dragChat=row.dataset.chat; _chatDropped=false;
+    e.dataTransfer.effectAllowed="move";
+    e.dataTransfer.setData("text/plain", _dragChat);   // Firefox starts no drag without a payload
+    row.classList.add("dragging");
+  };
+  el.ondragover=e=>{
+    const from=_dragChat && el.querySelector(".histitem.dragging");
+    const row=e.target.closest(".histitem");
+    if(!from || !row || row.dataset.pinned!==from.dataset.pinned) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect="move";
+    const r=row.getBoundingClientRect();
+    if(row!==from) row.parentNode.insertBefore(from, (e.clientY-r.top)>r.height/2 ? row.nextSibling : row);
+  };
+  el.ondrop=e=>{ if(_dragChat){ e.preventDefault(); _chatDropped=true; saveChatOrder(el); } };
+  el.ondragend=()=>{
+    el.querySelectorAll(".histitem.dragging").forEach(r=>r.classList.remove("dragging"));
+    _dragChat=null;
+    // Dropped outside the list: rows moved during dragover but nothing was saved.
+    if(!_chatDropped){ delete el.dataset.sig; loadChatList(); }
+  };
+}
+async function saveChatOrder(el){
+  // The WHOLE list: the server stores what it is given, so the chats behind "show more" ride
+  // along after the rendered ones or they would lose their place.
+  const shown=[...el.querySelectorAll(".histitem")].map(r=>r.dataset.chat), seen=new Set(shown);
+  const ids=shown.concat(histItems.map(c=>c.id).filter(id=>!seen.has(id)));
+  _dragChat=null;                                      // release the render guard before reloading
+  await postOr("/api/chats/reorder",{ids},"reordering your chats");
+  delete el.dataset.sig; loadChatList();
+}
+
 async function loadChatList(){
   const el=document.getElementById("histlist"); if(!el) return;
+  if(_dragChat) return POLL_SKIP;      // a re-render mid-drag drops the dragged row on the floor
   // A failed read used to paint an EMPTY chat list, which reads as "my chats are gone".
   let data;
   const q=histQ;
@@ -541,6 +587,10 @@ async function loadChatList(){
   const present=new Set(items.map(c=>c.id));
   const running=new Set(items.filter(c=>c.run_id).map(c=>c.id));
   if(q!==histQ) return;               // the search changed while this one was loading
+  if(_dragChat) return POLL_SKIP;     // a drag began while this one was loading
+  histItems=items;
+  const reset=document.getElementById("reset-chat-order");
+  if(reset) reset.hidden=!!q || !items.some(c=>c.manual);
   // A filtered list hides chats, so finish detection waits until the search is cleared.
   if(!q){
     if(prevRunning) for(const id of prevRunning)   // run gone but chat still there = it finished
@@ -563,7 +613,7 @@ async function loadChatList(){
   const keepScroll=el.scrollTop;
   const page=items.slice(0, histShown), rest=items.length-page.length;
   el.innerHTML = items.length ? page.map(c=>`
-    <div class="histitem ${activeChat&&activeChat.id===c.id?'active':''}" data-chat="${esc(c.id)}">
+    <div class="histitem ${activeChat&&activeChat.id===c.id?'active':''}" data-chat="${esc(c.id)}" data-pinned="${c.pinned?1:0}"${q?'':' draggable="true"'}>
       <div class="htitle">${esc(c.title||'Untitled')}</div>
       <div class="hmeta">${(c.labels||[]).map(l=>`<span class="hlabel" title="${esc(l)}">${esc(HLABEL_SHORT[l]||l)}</span>`).join("")}${c.workstream?`<span class="hlabel hws" data-wstl="${esc(c.workstream.id)}" title="workstream: ${esc(c.workstream.title)} — open its timeline">&#9776; ${esc(c.workstream.title)}</span>`:wsSuggestChip(c.id, c.ws_suggest, false)}${c.cap?`<span class="hcap" title="${esc(c.cap)}">${esc(c.cap)}</span>·`:''}<span class="hcount">${c.messages} msg</span></div>
       ${c.run_id?`<span class="hspin spin" title="working…"></span>`:''}
@@ -572,6 +622,7 @@ async function loadChatList(){
     </div>`).join("")+(rest>0?`<button class="histmore" id="hist-more" title="${rest} older chat${rest===1?'':'s'} not shown">Show ${Math.min(HIST_PAGE,rest)} more (${rest} older)</button>`:"")
     : `<p class="memempty" style="padding:8px 10px">${q?`No chat matches “${esc(q)}”.`:"No past chats yet."}</p>`;
   el.scrollTop=keepScroll;
+  wireChatDrag(el);
   const more=document.getElementById("hist-more");
   if(more) more.addEventListener("click",()=>{ histShown+=HIST_PAGE; loadChatList(); });
   el.querySelectorAll("[data-chat]").forEach(d=>d.addEventListener("click",e=>{

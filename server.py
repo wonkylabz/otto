@@ -2243,6 +2243,7 @@ _POST_ROUTES = {
     "/api/chats/clear": Handler._post_chats_clear,
     "/api/chats/delete": Handler._post_chats_delete,
     "/api/chats/pin": Handler._post_chats_pin,
+    "/api/chats/reorder": Handler._post_chats_reorder,
     "/api/chats/save": Handler._post_chats_save,
     "/api/continue": Handler._post_continue,
     "/api/conventions/refresh": Handler._post_conventions_refresh,

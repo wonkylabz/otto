@@ -99,6 +99,7 @@
   .chatview.histcollapsed { --hist-w: 34px; }
   .histcollapsed .histhead { padding: 16px 0 11px; justify-content: center; }
   .histcollapsed .histhead > span:not(.hacts), .histcollapsed .histhead #new-chat, .histcollapsed .histhead #clear-chats,
+  .histcollapsed .histhead #reset-chat-order,
   .histcollapsed .histlist, .histcollapsed .histsearch { display: none; }
   .histhead .hacts { display: flex; align-items: center; gap: 6px; }
   .histhead .histtoggle { border-color: transparent; padding: 3px; line-height: 0; color: var(--dim); }
@@ -114,6 +115,7 @@
   .histitem { position: relative; padding: 9px 30px 9px 10px; border-radius: var(--r-md); cursor: pointer; margin-bottom: 4px; border: 1px solid transparent; }
   .histitem:hover { background: var(--raised); }
   .histitem.active { background: var(--raised); border-color: var(--line-strong); }
+  .histitem.dragging { opacity: .45; border-color: var(--accent); }
   .htitle { font-size: calc(13px*var(--fs)); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* one line: only the cap name ellipsises, so the message count never gets cut off */
   .hmeta { font-size: calc(11px*var(--fs)); color: var(--dim); margin-top: 3px; display: flex; align-items: baseline; gap: 4px; }

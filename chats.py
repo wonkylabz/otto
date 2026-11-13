@@ -90,6 +90,9 @@ def _schema(conn):
         PRIMARY KEY (chat_id, seq)
     )""")
     storage.ensure_columns(conn, "messages", {"attachments": "TEXT"})
+    # The sidebar's manual order. Its OWN table: _upsert_row is INSERT OR REPLACE, so a column
+    # on `chats` is wiped by any save that doesn't carry it. A stale row is inert (joined only).
+    conn.execute("CREATE TABLE IF NOT EXISTS chat_order (chat_id TEXT PRIMARY KEY, pos INTEGER NOT NULL)")
 
 
 @contextlib.contextmanager
@@ -172,17 +175,18 @@ def list_summaries(q=None):
         rows = conn.execute(f"""
             SELECT c.id, c.title, c.updated, c.cap, c.labels, c.run_id, c.pinned,
                    (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS n,
-                   w.title AS ws_title, w.id AS ws_id
+                   w.title AS ws_title, w.id AS ws_id, o.pos
             FROM chats c LEFT JOIN workstreams w ON w.id = c.workstream_id
+                 LEFT JOIN chat_order o ON o.chat_id = c.id
             {where}
-            -- Pinned chats float to the top; within each group, newest first (`seq` breaks the
-            -- tie when two saves land in the same second).
-            ORDER BY c.pinned DESC, c.updated DESC, c.seq DESC
+            -- Pinned chats float to the top. Within each group a chat the manual order doesn't
+            -- name (new since the last drag) comes first, newest first; then the dragged order.
+            ORDER BY c.pinned DESC, (o.pos IS NULL) DESC, o.pos, c.updated DESC, c.seq DESC
         """, args).fetchall()
     return [{"id": r["id"], "title": r["title"] or "", "updated": r["updated"],
              "messages": r["n"], "cap": (_decode(r["cap"]) or {}).get("name"),
              "labels": _decode(r["labels"]) or [], "run_id": r["run_id"],
-             "pinned": bool(r["pinned"]),
+             "pinned": bool(r["pinned"]), "manual": r["pos"] is not None,
              "workstream": {"id": r["ws_id"], "title": r["ws_title"]} if r["ws_id"] else None}
             for r in rows]
 
@@ -531,6 +535,19 @@ def find_reattach(request):
         if awaiting:
             hits.append(r["id"])
     return hits[0] if len(hits) == 1 else None
+
+
+def set_order(ids):
+    """Record the sidebar's manual chat order; `[]` returns it to newest-first. Returns the
+    stored ids. DISPLAY ONLY: nothing but list_summaries reads it — the trim still evicts by
+    `updated`. Pruned to known chats and deduped: the client sends the list it rendered."""
+    with _conn() as conn, storage.tx(conn):
+        known = {r["id"] for r in conn.execute("SELECT id FROM chats")}
+        clean = list(dict.fromkeys(str(i) for i in (ids or []) if str(i) in known))
+        conn.execute("DELETE FROM chat_order")
+        conn.executemany("INSERT INTO chat_order (chat_id, pos) VALUES (?, ?)",
+                         [(c, n) for n, c in enumerate(clean)])
+    return clean
 
 
 def delete_unpinned():
