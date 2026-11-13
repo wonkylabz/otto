@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-13
+
 ### Added
 
 - Chat sidebar: **drag a chat to reorder it**. The order is saved on the server, so it follows you across browsers; chats started after your last drag appear on top, a chat with a task running rises to the top until it finishes and then returns to where you put it, pinned chats still float first, and dragging is off while a search is filtering the list. The **↻** button next to Clear returns the list to newest first. Display only — nothing about a chat or its run changes. Needs a restart to pick up the new route.
@@ -767,7 +769,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/wonkylabz/otto/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/wonkylabz/otto/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/wonkylabz/otto/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/wonkylabz/otto/compare/v0.13.0...v0.14.0
