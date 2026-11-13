@@ -77,7 +77,6 @@ async function loadAdmin(){
   GATEWAY_STATS=(health&&health.gateway)||{tasks:{},down:{}};
   MODEL_HEALTH=(models&&models.health)||{};   // fresh: /api/models re-probes stale local entries
   SCORECARD={}; ((stats&&stats.caps)||[]).forEach(c=>{ SCORECARD[c.name]=c; });
-  STAGE_STATS=(stats&&stats.stages)||{stages:[],runs:0};
   POLICY_STATE={capabilities:{},mcps:{}};
   data.capabilities.forEach(c=>POLICY_STATE.capabilities[c.name]={risk:c.risk,enabled:c.enabled,tool_free:!!c.tool_free});
   data.mcps.forEach(m=>POLICY_STATE.mcps[m.name]={enabled:m.enabled});   // notes are server-owned — /api/mcp/note is their only writer
@@ -208,41 +207,6 @@ const THEMES=[
   {id:"emerald-odyssey", name:"Emerald Odyssey",
    desc:"Deep emerald under a mint accent. Dark."},
 ];
-
-/* A stage duration, at the precision a reader can act on: sub-minute in seconds (one decimal
-   under 10s, where the difference between 1.2s and 9s is the finding), minutes above it. */
-function stageDur(ms){
-  if(ms==null) return "—";
-  if(ms<10000) return (ms/1000).toFixed(1)+"s";
-  if(ms<60000) return Math.round(ms/1000)+"s";
-  const m=Math.floor(ms/60000); return m+"m "+Math.round((ms%60000)/1000)+"s";
-}
-/* Where a run's wall time actually goes, stage by stage (issue #129), over the same JUDGED-runs
-   denominator (`audit.by_judge`) the reliability chips use — a resume has no pre-attempt chain
-   and would drag every median down. Read straight off the audit trail, so it survives the
-   Temporal retention horizon the live board's stage chip dies at.
-
-   Coverage is stated PER STAGE and never summed into a share of the whole: an attempt row is
-   written from inside the RUN span, so a clean run records RUN as open and everything after it
-   not at all. A percentage across stages would divide by a different stage set on every run. */
-function stagesSection(st){
-  const rows=(st&&st.stages)||[], runs=(st&&st.runs)||0;
-  const body=!rows.length
-    ? `<p class="sub" style="margin:10px 0">No stage timings recorded yet — they are written from the first run after this shipped.</p>`
-    : `<p class="sub" style="margin:10px 0 10px">Median and p90 wall time per pipeline stage over <b>${runs}</b> judged run${runs===1?'':'s'}. Everything above <b>RUN</b> is what a run pays before the model is asked anything, and is measured on every run. <b>RUN</b> and the stages below it are written while RUN is still open, so they are only measured on a run that ended needing a human — read each row's own <b>Measured</b> count, not the total.</p>`
-      +`<table class="ctable"><thead><tr><th>Stage</th>
-         <th class="r" title="judged runs whose span for this stage closed — the only ones behind the two medians">Measured</th>
-         <th class="r">Median</th><th class="r">p90</th>
-         <th class="r" title="judged runs that entered this stage but whose span never closed at the last audit write — expected for RUN and below">Open</th></tr></thead><tbody>`
-      +rows.map(r=>`<tr><td><span class="nm">${esc(r.stage)}</span></td>
-          <td class="r">${r.runs}</td><td class="r">${stageDur(r.p50_ms)}</td>
-          <td class="r">${stageDur(r.p90_ms)}</td>
-          <td class="r">${r.open||""}</td></tr>`).join("")
-      +`</tbody></table>`;
-  return `<div class="asection coll collapsed" data-sect="stages"><h3><span class="secttoggle" title="collapse / expand">
-      <span class="gcaret">&#9662;</span>Pipeline timings<span class="sectcount" title="judged runs with stage timings recorded">${runs}</span></span></h3>
-    <div class="asection-body">${body}</div></div>`;
-}
 
 const FONT_SIZES=[["s","Small"],["m","Medium"],["l","Big"]];
 
@@ -461,25 +425,9 @@ function modelsSection(m){
       <td class="c-rm r"><button class="remove" data-delmodel="${esc(p.name)}" title="remove">&times;</button></td>
     </tr>`).join("");
   const gs=(typeof GATEWAY_STATS!=="undefined"&&GATEWAY_STATS)||{tasks:{},down:{}};
-  const since=gs.since?new Date(gs.since*1000).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
-  const fbRows=Object.entries(gs.tasks||{}).filter(([,v])=>(v.calls||0)>0)
-    .sort((a,b)=>(b[1].fallbacks/b[1].calls)-(a[1].fallbacks/a[1].calls));
-  const fb=fbRows.map(([t,v])=>{const pct=Math.round(100*(v.fallbacks||0)/v.calls);
-      return `<span class="fbcell${pct>25?' hot':''}" title="${v.fallbacks||0} of ${v.calls} ${esc(t)} calls fell back to Claude"><span>${esc(t)}</span><b>${pct}%</b><span>${v.fallbacks||0} / ${v.calls}</span></span>`;}).join("");
   const down=Object.entries(gs.down||{})
     .map(([n,s])=>`<span class="memstat" title="marked down after a failure; skipped for ${s}s more">&#9888; ${esc(n)} down</span>`).join(" ");
-  const fbtotal=fbRows.reduce((n,[,v])=>n+v.calls,0);
-  // Judge-side spend the audit trail cannot hold (it only records execution attempts).
-  const oh=gs.overhead_usd||0;
-  const ohtip=Object.entries(gs.tasks||{}).filter(([,v])=>(v.cost_usd||0)>0)
-    .sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0))
-    .map(([t,v])=>`${t} $${(v.cost_usd||0).toFixed(2)}`).join(", ");
-  const ohbadge=oh>0?`<span class="memstat" title="Claude spend on judging rather than executing${ohtip?` \u2014 ${ohtip}`:''}. Counted apart from the audit trail, which only records execution attempts.">judging <b>$${oh.toFixed(2)}</b></span>`:"";
-  const badge=(fb||down||ohbadge)?`<div class="fbpanel">
-      ${fb?`<div class="fbhead"><b>Claude-fallback rate</b>
-        <small>${since?`since ${esc(since)}`:"all-time"} \u00b7 ${fbtotal} calls</small></div>
-        <div class="fbgrid">${fb}</div>`:""}
-      ${(ohbadge||down)?`<div class="fbfoot">${ohbadge} ${down}</div>`:""}</div>`:"";
+  const badge=down?`<div class="fbfoot">${down}</div>`:"";
   // Outside .asection-body so the warning survives the section being collapsed.
   const bad=(m.pool||[]).filter(p=>MODEL_HEALTH[p.name]&&!MODEL_HEALTH[p.name].ok);
   // What the broken model is USED for is the actionable half — and the per-capability pin is the
@@ -1291,7 +1239,6 @@ function renderAdmin(data, models, el, settings){
       <th class="c-ns">Memory namespace</th><th class="c-act"></th></tr></thead>
     <tbody>${projectRows}</tbody></table>`
     :`<p class="sub" style="margin:6px 0 0">No project repos imported yet.</p>`;
-  const extraWrite=data.writeTools.filter(t=>!data.readTools.includes(t));
   el.innerHTML=`
     <div class="phead"><h1>Configuration</h1>
       <p class="sub"><b style="color:var(--accent)">Read</b> caps run on their own; <b style="color:var(--warn)">write</b> caps wait for approval — click a risk pill to flip it. Hover any control for what it does.</p>
@@ -1311,7 +1258,6 @@ function renderAdmin(data, models, el, settings){
       </div>
       <div id="cap-list">${capListHtml}</div>
       <p class="capnone" id="cap-empty" hidden>No capabilities match your search.</p></div></div>
-    ${stagesSection(STAGE_STATS)}
     <div class="asection coll collapsed" data-sect="mcp"><h3><span class="secttoggle" title="collapse / expand"><span class="gcaret">&#9662;</span>MCP servers<span class="sectcount${mcpIssues?' bad':''}">${data.mcps.length}</span></span>
       <span class="h3btns"><button class="addbtn" id="mcp-recheck" title="re-run claude mcp list (health check)">&#8635; Recheck health</button>
       <button class="addbtn addnew" id="add-mcp">+ Add MCP server</button></span></h3>
@@ -1338,20 +1284,7 @@ function renderAdmin(data, models, el, settings){
       </div>
       </div>
     </div>
-${sessionsSection()}
-    <div class="asection coll collapsed" data-sect="tools"><h3><span class="secttoggle" title="collapse / expand">
-        <span class="gcaret">&#9662;</span>Base tool allowlists</span></h3>
-      <div class="asection-body">
-      <table class="ctable tooltable">
-        <colgroup><col class="c-kind"><col></colgroup>
-        <thead><tr><th class="c-kind">Risk</th><th>Tools granted</th></tr></thead>
-        <tbody>
-          <tr><td class="c-kind">Read may use</td><td class="wrap"><div class="toolchips">${data.readTools.map(t=>`<span>${esc(t)}</span>`).join("")}</div></td></tr>
-          <tr><td class="c-kind">Write adds</td><td class="wrap"><div class="toolchips">${extraWrite.map(t=>`<span>${esc(t)}</span>`).join("")}</div></td></tr>
-          <tr><td class="c-kind">Every enabled MCP adds</td><td class="wrap"><div class="toolchips"><span>mcp__&lt;name&gt;</span></div></td></tr>
-        </tbody></table>
-      </div>
-    </div>`;
+${sessionsSection()}`;
   wireSessions(el);
   el.querySelectorAll(".themecard").forEach(c=>c.addEventListener("click",()=>pickTheme(c.dataset.theme)));
   el.querySelectorAll(".fsopt").forEach(b=>b.addEventListener("click",()=>pickFontSize(b.dataset.fontsize)));

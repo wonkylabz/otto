@@ -199,6 +199,76 @@ function wireInsights(){
   if(all) all.addEventListener("click",()=>{ INSIGHT_ALL=!INSIGHT_ALL; box.innerHTML=renderInsights(AU_INSIGHT.data); wireInsights(); });
 }
 
+/* A stage duration, at the precision a reader can act on: sub-minute in seconds (one decimal
+   under 10s, where the difference between 1.2s and 9s is the finding), minutes above it. */
+function stageDur(ms){
+  if(ms==null) return "—";
+  if(ms<10000) return (ms/1000).toFixed(1)+"s";
+  if(ms<60000) return Math.round(ms/1000)+"s";
+  const m=Math.floor(ms/60000); return m+"m "+Math.round((ms%60000)/1000)+"s";
+}
+/* Where a run's wall time actually goes, stage by stage (issue #129), over the same JUDGED-runs
+   denominator (`audit.by_judge`) the reliability chips use — a resume has no pre-attempt chain
+   and would drag every median down. Read straight off the audit trail, so it survives the
+   Temporal retention horizon the live board's stage chip dies at.
+
+   Coverage is stated PER STAGE and never summed into a share of the whole: an attempt row is
+   written from inside the RUN span, so a clean run records RUN as open and everything after it
+   not at all. A percentage across stages would divide by a different stage set on every run. */
+function stagesSection(st){
+  const rows=(st&&st.stages)||[], runs=(st&&st.runs)||0;
+  const body=!rows.length
+    ? `<p class="sub" style="margin:10px 0">No stage timings recorded yet — they are written from the first run after this shipped.</p>`
+    : `<p class="sub" style="margin:10px 0 10px">Median and p90 wall time per pipeline stage over <b>${runs}</b> judged run${runs===1?'':'s'}. Everything above <b>RUN</b> is what a run pays before the model is asked anything, and is measured on every run. <b>RUN</b> and the stages below it are written while RUN is still open, so they are only measured on a run that ended needing a human — read each row's own <b>Measured</b> count, not the total.</p>`
+      +`<table class="ctable"><thead><tr><th>Stage</th>
+         <th class="r" title="judged runs whose span for this stage closed — the only ones behind the two medians">Measured</th>
+         <th class="r">Median</th><th class="r">p90</th>
+         <th class="r" title="judged runs that entered this stage but whose span never closed at the last audit write — expected for RUN and below">Open</th></tr></thead><tbody>`
+      +rows.map(r=>`<tr><td><span class="nm">${esc(r.stage)}</span></td>
+          <td class="r">${r.runs}</td><td class="r">${stageDur(r.p50_ms)}</td>
+          <td class="r">${stageDur(r.p90_ms)}</td>
+          <td class="r">${r.open||""}</td></tr>`).join("")
+      +`</tbody></table>`;
+  return `<div class="asection coll collapsed" data-sect="au-stages"><h3><span class="secttoggle" title="collapse / expand">
+      <span class="gcaret">&#9662;</span>Pipeline timings<span class="sectcount" title="judged runs with stage timings recorded">${runs}</span></span></h3>
+    <div class="asection-body">${body}</div></div>`;
+}
+
+/* How often a phase's chosen model could not serve the call and Claude covered it, plus the
+   judge-side spend the trail cannot hold (it records execution attempts only). */
+function fallbackSection(gs){
+  const rows=Object.entries((gs&&gs.tasks)||{}).filter(([,v])=>(v.calls||0)>0)
+    .sort((a,b)=>(b[1].fallbacks/b[1].calls)-(a[1].fallbacks/a[1].calls));
+  const calls=rows.reduce((n,[,v])=>n+v.calls,0), fell=rows.reduce((n,[,v])=>n+(v.fallbacks||0),0);
+  const since=gs&&gs.since?new Date(gs.since*1000).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
+  const cells=rows.map(([t,v])=>{const pct=Math.round(100*(v.fallbacks||0)/v.calls);
+    return `<span class="fbcell${pct>25?' hot':''}" title="${v.fallbacks||0} of ${v.calls} ${esc(t)} calls fell back to Claude"><span>${esc(t)}</span><b>${pct}%</b><span>${v.fallbacks||0} / ${v.calls}</span></span>`;}).join("");
+  const oh=(gs&&gs.overhead_usd)||0;
+  const ohtip=Object.entries((gs&&gs.tasks)||{}).filter(([,v])=>(v.cost_usd||0)>0)
+    .sort((a,b)=>(b[1].cost_usd||0)-(a[1].cost_usd||0))
+    .map(([t,v])=>`${t} $${(v.cost_usd||0).toFixed(2)}`).join(", ");
+  const body=!rows.length
+    ? `<p class="sub" style="margin:10px 0">No model calls recorded yet.</p>`
+    : `<p class="sub" style="margin:10px 0 10px">Share of each phase's calls where the chosen model could not serve it and Claude covered &mdash; ${since?`since ${esc(since)}`:"all-time"}, <b>${calls}</b> calls.</p>
+       <div class="fbgrid">${cells}</div>
+       ${oh>0?`<div class="fbfoot"><span class="memstat" title="Claude spend on judging rather than executing${ohtip?` — ${esc(ohtip)}`:''}. Counted apart from the trail, which only records execution attempts.">judging <b>$${oh.toFixed(2)}</b></span></div>`:""}`;
+  return `<div class="asection coll collapsed" data-sect="au-fallback"><h3><span class="secttoggle" title="collapse / expand">
+      <span class="gcaret">&#9662;</span>Claude fallback rate<span class="sectcount" title="calls that fell back to Claude, across every phase">${calls?Math.round(100*fell/calls)+"%":"0"}</span></span></h3>
+    <div class="asection-body">${body}</div></div>`;
+}
+/* Filled after the trail paints, like the health report: neither fetch may hold the table. */
+async function loadAuditExtras(){
+  const [stats, health]=await Promise.all([
+    getJSON("/api/stats").catch(()=>null), getJSON("/api/health").catch(()=>null)]);
+  const box=document.getElementById("au-extras");
+  if(!box) return;
+  box.innerHTML=stagesSection((stats&&stats.stages)||{stages:[],runs:0})
+    +fallbackSection((health&&health.gateway)||{tasks:{}});
+  box.querySelectorAll(".secttoggle").forEach(t=>t.addEventListener("click",
+    ()=>t.closest(".asection").classList.toggle("collapsed")));
+  enhanceToggles(box,".secttoggle",".asection","collapsed");
+}
+
 // The trail is paged on the server: the whole trail was one response and one <tbody>, which
 // grows without bound on an install that never clears it (the trail is immutable).
 const AU_PAGE=50;
@@ -208,6 +278,7 @@ async function loadAudit(paging){
   // Turning a page keeps the Health section that is already on screen: blanking the view
   // re-rendered it, reset the scroll and, past the cache window, re-scanned the whole trail.
   const health=paging?document.getElementById("au-health"):null;
+  const extras=paging?document.getElementById("au-extras"):null;
   if(!health) el.innerHTML=spinHTML();
   let data;
   const qs=new URLSearchParams();
@@ -296,6 +367,7 @@ async function loadAudit(paging){
     <div class="phead"><h1>Audit</h1>
       <p class="sub">How Otto is doing, then every action it took — including declined writes and failures. Click any row to inspect its request and output.</p></div>
     <section id="au-health" class="ahealth" aria-label="health report"></section>
+    <div id="au-extras"></div>
     <h2 class="atrailhead">Trail <span class="immutable">append-only</span></h2>
     <div class="memhead">
       <span class="memstat"><b>${data.count}</b> actions</span>
@@ -344,6 +416,8 @@ async function loadAudit(paging){
   }));
   const slot=el.querySelector("#au-health");
   if(health && slot) slot.replaceWith(health); else loadInsights();
+  const xslot=el.querySelector("#au-extras");
+  if(extras && xslot) xslot.replaceWith(extras); else loadAuditExtras();
   el.querySelectorAll("tr.arec").forEach(r=>{
     const open=()=>openAuditDetail(data.entries[+r.dataset.i]);
     r.addEventListener("click",open);
