@@ -2261,6 +2261,25 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in rows], newest_first)
         self.assertFalse(any(c["manual"] for c in rows))
 
+    def test_a_recreated_chat_does_not_inherit_a_deleted_ones_position(self):
+        # Ingress chat ids are deterministic (gh-pr-..., a Slack key), so an id comes back.
+        for drop in (lambda: chats.delete("a"), chats.delete_unpinned):
+            self._three()
+            chats.set_order(["c", "b", "a"])
+            drop()
+            chats.save({"id": "a", "title": "a", "messages": [{"role": "user", "text": "hi"}]})
+            row = next(c for c in chats.list_summaries() if c["id"] == "a")
+            self.assertFalse(row["manual"])
+
+    def test_a_trimmed_chat_leaves_no_order_row(self):
+        self._three()
+        chats.set_order(["c", "b", "a"])
+        with mock.patch.object(chats, "MAX_CHATS", 2):
+            chats.save({"id": "d", "title": "d", "messages": [{"role": "user", "text": "hi"}]})
+        with chats._conn() as conn:
+            left = {r["chat_id"] for r in conn.execute("SELECT chat_id FROM chat_order")}
+        self.assertEqual(left, {c["id"] for c in chats.list_summaries()} - {"d"})
+
     def test_reordering_changes_no_chat(self):
         # Display only: every chat reads back identical, `updated` included (the trim's key).
         self._three()

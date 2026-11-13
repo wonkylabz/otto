@@ -91,7 +91,7 @@ def _schema(conn):
     )""")
     storage.ensure_columns(conn, "messages", {"attachments": "TEXT"})
     # The sidebar's manual order. Its OWN table: _upsert_row is INSERT OR REPLACE, so a column
-    # on `chats` is wiped by any save that doesn't carry it. A stale row is inert (joined only).
+    # on `chats` is wiped by any save that doesn't carry it.
     conn.execute("CREATE TABLE IF NOT EXISTS chat_order (chat_id TEXT PRIMARY KEY, pos INTEGER NOT NULL)")
 
 
@@ -308,6 +308,13 @@ def _trim_chats(conn):
         conn.execute(f"DELETE FROM messages WHERE chat_id IN ({marks})", stale)
         conn.execute(f"DELETE FROM chats WHERE id IN ({marks})", stale)
         workstreams.gc(conn)
+        _gc_order(conn)
+
+
+def _gc_order(conn):
+    """Every path that deletes a chat calls this: ingress chat ids are deterministic, so a
+    leftover row would hand a recreated chat the dead one's position."""
+    conn.execute("DELETE FROM chat_order WHERE chat_id NOT IN (SELECT id FROM chats)")
 
 
 def _trim_messages(conn, cid):
@@ -559,6 +566,7 @@ def delete_unpinned():
         conn.executemany("DELETE FROM messages WHERE chat_id = ?", [(c,) for c in ids])
         conn.executemany("DELETE FROM chats WHERE id = ?", [(c,) for c in ids])
         workstreams.gc(conn)
+        _gc_order(conn)
     return ids
 
 
@@ -567,3 +575,4 @@ def delete(cid):
         conn.execute("DELETE FROM messages WHERE chat_id = ?", (cid,))
         conn.execute("DELETE FROM chats WHERE id = ?", (cid,))
         workstreams.gc(conn)
+        _gc_order(conn)
