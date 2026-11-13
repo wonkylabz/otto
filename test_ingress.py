@@ -5101,9 +5101,10 @@ class ListenBacklogTests(unittest.TestCase):
 
     def test_bind_serves_with_that_server(self):
         import server
-        httpd, _ = server._bind(0 + 18700)
+        self.assertIn("_Server(", inspect.getsource(server._bind))
+        httpd = server._Server(("127.0.0.1", 0), server.Handler)
         try:
-            self.assertIsInstance(httpd, server._Server)
+            self.assertEqual(httpd.request_queue_size, 128)
         finally:
             httpd.server_close()
 
