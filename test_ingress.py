@@ -639,10 +639,20 @@ class ChatReorderUiTests(unittest.TestCase):
         # Dropped back where it was (a drop on the other group's row does this): unchanged.
         self.assertIsNone(self._moved(self._items(("A B C", "")), "B", "C", None)[0])
         self.assertIsNone(self._moved(self._items(("A B C", "")), "C", None, "B")[0])
-        self.assertIn('if(ids) await postOr("/api/chats/reorder"', self.src)
+        self.assertIn("if(ids){", self.src)
 
     def test_the_anchor_is_a_same_group_row_that_is_not_floated(self):
         self.assertIn("!n.dataset.float && n.dataset.pinned===row.dataset.pinned", self.src)
+
+    def test_a_row_dropped_between_the_neighbours_it_left_saves_nothing(self):
+        # Judged on the DOM, not on indexes: with a floated chat stored right after the dragged
+        # one, re-anchoring an unmoved row on its next VISIBLE neighbour hopped the floated slot.
+        self.assertIn("_dragHome=JSON.stringify(chatAnchors(row));", self.src)
+        self.assertIn("JSON.stringify(anchors)!==_dragHome && movedChatOrder(", self.src)
+
+    def test_a_second_drag_builds_on_the_first_before_its_save_returns(self):
+        body = self.src[self.src.index("async function saveChatOrder(el)"):]
+        self.assertLess(body.index("c.pos=at.get(c.id)"), body.index('await postOr("/api/chats/reorder"'))
 
     def test_a_poll_cannot_re_render_the_list_mid_drag(self):
         body = self.src[self.src.index("async function loadChatList()"):]

@@ -533,7 +533,15 @@ try { applyHistCollapsed(isNarrow() || localStorage.getItem(HIST_COLLAPSED_KEY)=
 /* ---- drag to reorder ----
    Display only (chats.set_order). Pinned chats sort first whatever the order says, so a drag
    stays inside the group it started in. Off while searching: a filtered list is a partial one. */
-let _dragChat=null, _chatDropped=false, histItems=[];
+let _dragChat=null, _chatDropped=false, _dragHome="", histItems=[];
+/* A row's nearest neighbours that HAVE a stored place beside it: same pinned group, not floated.
+   [next, prev] — what a drop is anchored on, and what "it did not move" is judged by. */
+function chatAnchors(row){
+  const near=dir=>{ for(let n=row[dir]; n; n=n[dir])
+    if(n.classList.contains("histitem") && !n.dataset.float && n.dataset.pinned===row.dataset.pinned) return n.dataset.chat;
+    return null; };
+  return [near("nextElementSibling"), near("previousElementSibling")];
+}
 /* The ids to store after dragging ONE chat: the list in its STORED order (a running chat is
    drawn above its position, so the rendered order is not it) with only `id` moved, to just
    before `before` or else just after `after`. null = nothing to anchor to, or nothing moved:
@@ -552,7 +560,7 @@ function wireChatDrag(el){
   el.ondragstart=e=>{
     const row=e.target.closest(".histitem[draggable]");
     if(!row) return;
-    _dragChat=row.dataset.chat; _chatDropped=false;
+    _dragChat=row.dataset.chat; _chatDropped=false; _dragHome=JSON.stringify(chatAnchors(row));
     e.dataTransfer.effectAllowed="move";
     e.dataTransfer.setData("text/plain", _dragChat);   // Firefox starts no drag without a payload
     row.classList.add("dragging");
@@ -579,15 +587,17 @@ function wireChatDrag(el){
   };
 }
 async function saveChatOrder(el){
-  // Anchor on the dragged row's nearest neighbour that HAS a stored place here: same pinned
-  // group, not floated. The whole list is sent, the chats behind "show more" included.
-  const row=el.querySelector(".histitem.dragging");
-  const near=dir=>{ for(let n=row&&row[dir]; n; n=n[dir])
-    if(n.classList.contains("histitem") && !n.dataset.float && n.dataset.pinned===row.dataset.pinned) return n.dataset.chat;
-    return null; };
-  const ids=row && movedChatOrder(histItems, row.dataset.chat, near("nextElementSibling"), near("previousElementSibling"));
+  // The whole list is sent, the chats behind "show more" included. Dropped between the SAME
+  // neighbours it left: nothing moved, and re-anchoring it would hop a floated chat's slot.
+  const row=el.querySelector(".histitem.dragging"), anchors=row?chatAnchors(row):[];
+  const ids=row && JSON.stringify(anchors)!==_dragHome && movedChatOrder(histItems, row.dataset.chat, ...anchors);
   _dragChat=null;                                      // release the render guard before reloading
-  if(ids) await postOr("/api/chats/reorder",{ids},"reordering your chats");
+  if(ids){
+    // A second drag can start before this round-trip ends: it must build on THIS order.
+    const at=new Map(ids.map((id,i)=>[id,i]));
+    histItems.forEach(c=>{ if(at.has(c.id)) c.pos=at.get(c.id); });
+    await postOr("/api/chats/reorder",{ids},"reordering your chats");
+  }
   delete el.dataset.sig; loadChatList();
 }
 
