@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-14
+
 ### Fixed
 
 - The web UI could stay half-loaded forever (console: `poll is not defined`), most often on a busy Mac such as right after boot: the server queued only 5 connections, so part of the ~35 scripts and styles a page load requests at once were reset and the browser never retried them. It now queues 128. Needs a restart to take effect.
@@ -773,7 +775,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/wonkylabz/otto/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/wonkylabz/otto/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/wonkylabz/otto/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/wonkylabz/otto/compare/v0.14.0...v0.15.0
