@@ -552,7 +552,8 @@ function wireChatDrag(el){
     e.preventDefault();
     e.dataTransfer.dropEffect="move";
     const row=e.target.closest(".histitem");
-    if(!row || row===from || row.dataset.pinned!==from.dataset.pinned) return;
+    // A floated (running) row is on top only until its run ends: not a place to drop beside.
+    if(!row || row===from || row.dataset.pinned!==from.dataset.pinned || row.dataset.float) return;
     const r=row.getBoundingClientRect();
     row.parentNode.insertBefore(from, (e.clientY-r.top)>r.height/2 ? row.nextSibling : row);
   };
@@ -610,13 +611,13 @@ async function loadChatList(){
   // working (the poll re-renders only when something actually changed).
   // histShown rides in the signature: "show more" re-renders through this same guard, and
   // without it the click would be swallowed as an unchanged poll.
-  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title,c.ws_suggest&&c.ws_suggest.id]), activeChat&&activeChat.id, histShown, q]);
+  const sig=JSON.stringify([items.map(c=>[c.id,c.title,c.messages,(c.labels||[]).join(","),c.cap,!!c.run_id,!!c.pinned,c.workstream&&c.workstream.title,c.ws_suggest&&c.ws_suggest.id,!!c.floated]), activeChat&&activeChat.id, histShown, q]);
   if(el.dataset.sig===sig) return;
   el.dataset.sig=sig;
   const keepScroll=el.scrollTop;
   const page=items.slice(0, histShown), rest=items.length-page.length;
   el.innerHTML = items.length ? page.map(c=>`
-    <div class="histitem ${activeChat&&activeChat.id===c.id?'active':''}" data-chat="${esc(c.id)}" data-pinned="${c.pinned?1:0}"${q?'':' draggable="true"'}>
+    <div class="histitem ${activeChat&&activeChat.id===c.id?'active':''}" data-chat="${esc(c.id)}" data-pinned="${c.pinned?1:0}"${c.floated?' data-float="1" title="On top while it runs, then back to where you put it"':(q?'':' draggable="true"')}>
       <div class="htitle">${esc(c.title||'Untitled')}</div>
       <div class="hmeta">${(c.labels||[]).map(l=>`<span class="hlabel" title="${esc(l)}">${esc(HLABEL_SHORT[l]||l)}</span>`).join("")}${c.workstream?`<span class="hlabel hws" data-wstl="${esc(c.workstream.id)}" title="workstream: ${esc(c.workstream.title)} — open its timeline">&#9776; ${esc(c.workstream.title)}</span>`:wsSuggestChip(c.id, c.ws_suggest, false)}${c.cap?`<span class="hcap" title="${esc(c.cap)}">${esc(c.cap)}</span>·`:''}<span class="hcount">${c.messages} msg</span></div>
       ${c.run_id?`<span class="hspin spin" title="working…"></span>`:''}

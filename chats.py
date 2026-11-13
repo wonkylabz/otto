@@ -156,6 +156,10 @@ def _chat(row, messages):
     }
 
 
+# A running chat that has a manual position: shown above it until the run ends.
+_FLOATED = "(c.run_id IS NOT NULL AND c.run_id != '' AND o.pos IS NOT NULL)"
+
+
 def _like(q):
     return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
@@ -175,18 +179,21 @@ def list_summaries(q=None):
         rows = conn.execute(f"""
             SELECT c.id, c.title, c.updated, c.cap, c.labels, c.run_id, c.pinned,
                    (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) AS n,
-                   w.title AS ws_title, w.id AS ws_id, o.pos
+                   w.title AS ws_title, w.id AS ws_id, o.pos, {_FLOATED} AS floated
             FROM chats c LEFT JOIN workstreams w ON w.id = c.workstream_id
                  LEFT JOIN chat_order o ON o.chat_id = c.id
             {where}
-            -- Pinned chats float to the top. Within each group a chat the manual order doesn't
-            -- name (new since the last drag) comes first, newest first; then the dragged order.
-            ORDER BY c.pinned DESC, (o.pos IS NULL) DESC, o.pos, c.updated DESC, c.seq DESC
+            -- Pinned chats float to the top. Within each group: a RUNNING chat the manual order
+            -- placed (it could sit behind "show more" with its spinner unseen), then a chat the
+            -- order doesn't name (new since the last drag), newest first, then the dragged order.
+            ORDER BY c.pinned DESC, floated DESC, (o.pos IS NULL) DESC, o.pos,
+                     c.updated DESC, c.seq DESC
         """, args).fetchall()
     return [{"id": r["id"], "title": r["title"] or "", "updated": r["updated"],
              "messages": r["n"], "cap": (_decode(r["cap"]) or {}).get("name"),
              "labels": _decode(r["labels"]) or [], "run_id": r["run_id"],
              "pinned": bool(r["pinned"]), "manual": r["pos"] is not None,
+             "floated": bool(r["floated"]),
              "workstream": {"id": r["ws_id"], "title": r["ws_title"]} if r["ws_id"] else None}
             for r in rows]
 
@@ -551,6 +558,17 @@ def set_order(ids):
     with _conn() as conn, storage.tx(conn):
         known = {r["id"] for r in conn.execute("SELECT id FROM chats")}
         clean = list(dict.fromkeys(str(i) for i in (ids or []) if str(i) in known))
+        # A floated chat is on top only while it runs, so the rendered list misplaces it: put
+        # it back before its old successor, or a drag made mid-run would pin it there for good.
+        old = [r["chat_id"] for r in conn.execute("SELECT chat_id FROM chat_order ORDER BY pos")]
+        floated = {r["id"] for r in conn.execute(
+            f"SELECT c.id FROM chats c JOIN chat_order o ON o.chat_id = c.id WHERE {_FLOATED}")}
+        if clean and floated & set(clean):
+            rest = [c for c in clean if c not in floated]
+            for f in reversed([c for c in old if c in floated and c in clean]):
+                after = next((c for c in old[old.index(f) + 1:] if c in rest), None)
+                rest.insert(rest.index(after) if after else len(rest), f)
+            clean = rest
         conn.execute("DELETE FROM chat_order")
         conn.executemany("INSERT INTO chat_order (chat_id, pos) VALUES (?, ?)",
                          [(c, n) for n, c in enumerate(clean)])

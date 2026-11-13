@@ -592,7 +592,12 @@ class ChatReorderUiTests(unittest.TestCase):
 
     def test_a_filtered_list_is_not_draggable(self):
         # A search hides chats; saving its order would be saving a partial list.
-        self.assertIn("""${q?'':' draggable="true"'}""", self.src)
+        self.assertIn("""(q?'':' draggable="true"')""", self.src)
+
+    def test_a_floated_row_is_neither_draggable_nor_a_drop_neighbour(self):
+        # It is on top only while its run lasts; the server puts it back, so a drag would lie.
+        self.assertIn("""${c.floated?' data-float="1" """, self.src)
+        self.assertIn("|| row.dataset.float) return;", self.src)
 
     def test_the_whole_list_is_sent_not_just_the_rendered_page(self):
         # The server stores what it is given, so the chats behind "show more" must ride along.

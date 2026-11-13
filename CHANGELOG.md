@@ -13,7 +13,7 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
-- Chat sidebar: **drag a chat to reorder it**. The order is saved on the server, so it follows you across browsers; chats started after your last drag appear on top, pinned chats still float first, and dragging is off while a search is filtering the list. The **↻** button next to Clear returns the list to newest first. Display only — nothing about a chat or its run changes. Needs a restart to pick up the new route.
+- Chat sidebar: **drag a chat to reorder it**. The order is saved on the server, so it follows you across browsers; chats started after your last drag appear on top, a chat with a task running rises to the top until it finishes and then returns to where you put it, pinned chats still float first, and dragging is off while a search is filtering the list. The **↻** button next to Clear returns the list to newest first. Display only — nothing about a chat or its run changes. Needs a restart to pick up the new route.
 
 - Admin → Appearance → **Text size**: Small (the size Otto always had), Medium and Big. Per browser, like the theme, and applied to every tab on desktop and phone. Ships on a browser refresh.
 
