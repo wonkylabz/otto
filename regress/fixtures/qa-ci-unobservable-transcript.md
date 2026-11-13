@@ -1,7 +1,7 @@
 **TLDR** — PR 16 works as the ticket describes: install, lint and test all pass on a clean checkout, and `make run` starts the current terminal game.
 
 - I tested a fresh clone of the PR branch (commit 7990538) in a throwaway virtualenv on Python 3.13.
-- `make install` pulled the pinned versions: Flask 3.1.3, ruff 0.17.0 and pytest 8.4.2.
+- `make install` pulled the pinned versions: Flask 3.1.3, ruff 0.6.9 and pytest 8.4.2.
 - `make lint` passed (`ruff check` and `ruff format --check`, 16 files). `make test` passed 95 tests. The old `unittest discover` run also passes all 95.
 - The `truco/` and `tests/` changes are only ruff reformatting and import ordering, so gameplay is unchanged.
 - `make run` falls back to `python -m truco` because no web module exists yet, and it launched the game. `make cli` also launched it.
