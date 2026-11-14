@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-11-15
+
 ### Fixed
 
 - Admin → LLM models: the **Vision** and **Turns** columns disappeared on a phone or any window under ~1010px wide, so a model could not be marked vision-capable there. They now stay visible and the table scrolls sideways instead. Ships on a browser refresh.
@@ -779,7 +781,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.2...HEAD
+[0.17.2]: https://github.com/wonkylabz/otto/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/wonkylabz/otto/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/wonkylabz/otto/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/wonkylabz/otto/compare/v0.15.0...v0.16.0
