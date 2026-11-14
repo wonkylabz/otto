@@ -9364,6 +9364,16 @@ class ModelTableMobileTests(unittest.TestCase):
         self.assertIn('.mpool td.c-turns::before { content: "Turns"; }', ui)
         self.assertIn('.mpool td.c-vision::before { content: "Vision"; }', ui)
 
+    def test_phone_cards_drop_the_desktop_column_widths(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn(".mpool td:is(.c-turns, .c-vision, .c-test, .c-rm) { width: auto; }", ui,
+                      "a card cell keeping its desktop width pushes remove onto its own line")
+        self.assertLess(ui.index(".modtable .c-test { width:"),
+                        ui.index(".mpool td:is(.c-turns, .c-vision, .c-test, .c-rm) { width: auto; }"))
+        self.assertIn(".mpool td.c-test { flex: 1 1 0; min-width: 0; }", ui,
+                      "an auto-width Check cell grows with a failed test's detail and wraps remove")
+
     def test_phone_card_labels_never_break_mid_word(self):
         from test_support import ui_src
         rule = re.search(r"\.mpool :is\(td\.c-turns, td\.c-vision\)::before \{([^}]*)\}", ui_src())

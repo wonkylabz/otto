@@ -159,6 +159,15 @@
     text-transform: uppercase; color: var(--dim); flex: none; white-space: nowrap; }
   .mpool td.c-turns::before { content: "Turns"; }
   .mpool td.c-vision::before { content: "Vision"; }
+  /* app.css's desktop column widths (.modtable .c-*, 0,2,0) out-rank the card's td width:auto,
+     so a 150px Check cell pushed remove onto its own line; controls sized to the 36px test button */
+  .mpool td:is(.c-turns, .c-vision, .c-test, .c-rm) { width: auto; }
+  .mpool td.c-turns input { width: 72px; min-height: 36px; }
+  .mpool td.c-vision input { width: 20px; height: 20px; margin: 0; }
+  /* fills the free space, so a long failed-test detail ellipsizes in .tres instead of wrapping remove */
+  .mpool td.c-test { flex: 1 1 0; min-width: 0; }
+  .mpool td.c-rm { margin-left: 0; min-width: 36px; min-height: 36px; display: flex; align-items: center;
+    justify-content: center; font-size: calc(20px*var(--fs)); }
   .mpool td.c-phases { flex: 1 1 100%; padding: 0; }
   .mpool td.c-phases .mradios { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); width: 100%; }
   .mpool td.c-phases .rc { width: auto; flex-direction: column; align-items: center; gap: 4px; min-height: 44px; justify-content: center; }
