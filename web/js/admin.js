@@ -453,9 +453,9 @@ function modelsSection(m){
     ${warn}
     <div class="asection-body">
     ${endpointsBlock(m)}
-    ${subsect("models","Models",m.pool.length,`<table class="ctable modtable mpool">
+    ${subsect("models","Models",m.pool.length,`<div class="mscroll"><table class="ctable modtable mpool">
       <colgroup><col><col class="c-tag"><col class="c-health"><col class="c-phases"><col class="c-turns"><col class="c-vision"><col class="c-test"><col class="c-ord"><col class="c-rm"></colgroup>
-      ${head}<tbody>${rows}</tbody></table>${badge}`,modelIssues())}</div></div>`;
+      ${head}<tbody>${rows}</tbody></table></div>${badge}`,modelIssues())}</div></div>`;
 }
 
 function wireModels(el){

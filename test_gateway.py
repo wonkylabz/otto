@@ -9317,6 +9317,54 @@ class ModelPhaseColumnWidthTests(unittest.TestCase):
                       "the grid the header labels were laid out in")
 
 
+class ModelTableMobileTests(unittest.TestCase):
+    """Turns and Vision are per-model SETTINGS. A breakpoint hiding them left a phone with no way
+    to mark a model vision-capable, so a narrow window scrolls the table sideways instead."""
+
+    def test_settings_columns_are_never_hidden_by_a_breakpoint(self):
+        from test_support import ui_src
+        ui = ui_src()
+        rules, i = [], 0
+        while (i := ui.find("@media", i)) != -1:      # every rule of every block, brace-matched
+            i = ui.index("{", i) + 1
+            depth, start = 1, i
+            while depth:
+                c = ui[i]
+                if c == "{": depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 1 or depth == 0: rules.append(ui[start:i]); start = i + 1
+                i += 1
+        self.assertGreater(len(rules), 50, "the scan must reach past each block's first rule")
+        for rule in rules:
+            sel, _, body = rule.partition("{")
+            if ":empty" in sel:          # a Claude/Codex row's blank cell, not the setting
+                continue
+            for col in ("c-vision", "c-turns"):
+                self.assertFalse(col in sel and re.search(r"display:\s*none", body),
+                                 f".{col} hidden under a breakpoint: {rule.strip()}")
+
+    def test_model_table_scrolls_inside_its_own_box(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn('<div class="mscroll"><table class="ctable modtable mpool">', ui)
+        self.assertIn(".mscroll { overflow-x: auto; }", ui)
+
+    def test_desktop_width_floor_stops_above_the_phone_card_layout(self):
+        from test_support import ui_src
+        ui = ui_src()
+        rule = re.search(r"@media ([^{]*)\{ \.modtable\.mpool \{ min-width", ui)
+        self.assertIsNotNone(rule)
+        self.assertIn("min-width: 681px", rule.group(1),
+                      "the floor must not apply where mobile.css stacks the table into cards")
+
+    def test_phone_cards_label_the_settings_cells(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn('.mpool td.c-turns::before { content: "Turns"; }', ui)
+        self.assertIn('.mpool td.c-vision::before { content: "Vision"; }', ui)
+
+
 class ModelColumnFitTests(unittest.TestCase):
     """`.ctable` is `table-layout: fixed`, so a declared column width is ENFORCED: content wider
     than it does not widen the column, it spills out of the cell. Both offenders here were the

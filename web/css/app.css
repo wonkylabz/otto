@@ -890,7 +890,10 @@
   /* the warning banner above the table already names every broken model, so the per-row pill
      is the first thing to shed when the window can't hold the columns */
   @media (max-width: 940px) { .modtable .c-health { display: none; } }
-  @media (max-width: 1010px) { .modtable .c-turns, .modtable .c-vision { display: none; } }
+  /* Turns/Vision are settings, never hidden: the table scrolls instead. The floor stops at
+     mobile.css's card layout (ModelTableMobileTests). */
+  .mscroll { overflow-x: auto; }
+  @media (min-width: 681px) and (max-width: 1010px) { .modtable.mpool { min-width: 1060px; } }
   .mrow.off { opacity: .5; }
   .mrow .mgrip { cursor: grab; color: var(--dim); opacity: .3; font-size: calc(15px*var(--fs)); }
   .mrow:hover .mgrip { opacity: .85; }
