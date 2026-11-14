@@ -890,7 +890,11 @@
   /* the warning banner above the table already names every broken model, so the per-row pill
      is the first thing to shed when the window can't hold the columns */
   @media (max-width: 940px) { .modtable .c-health { display: none; } }
-  @media (max-width: 1010px) { .modtable .c-turns, .modtable .c-vision { display: none; } }
+  /* Turns and Vision are SETTINGS, not status: hiding them under a breakpoint left a phone with
+     no way to mark a model vision-capable. The table scrolls sideways in its own box instead,
+     floored so the model name keeps room beside the fixed columns (ModelTableMobileTests). */
+  .mscroll { overflow-x: auto; }
+  @media (max-width: 1010px) { .modtable.mpool { min-width: 1060px; } }
   .mrow.off { opacity: .5; }
   .mrow .mgrip { cursor: grab; color: var(--dim); opacity: .3; font-size: calc(15px*var(--fs)); }
   .mrow:hover .mgrip { opacity: .85; }

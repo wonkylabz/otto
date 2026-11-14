@@ -9317,6 +9317,25 @@ class ModelPhaseColumnWidthTests(unittest.TestCase):
                       "the grid the header labels were laid out in")
 
 
+class ModelTableMobileTests(unittest.TestCase):
+    """Turns and Vision are per-model SETTINGS. A breakpoint hiding them left a phone with no way
+    to mark a model vision-capable, so a narrow window scrolls the table sideways instead."""
+
+    def test_settings_columns_are_never_hidden_by_a_breakpoint(self):
+        from test_support import ui_src
+        ui = ui_src()
+        for rule in re.findall(r"@media[^{]*\{([^}]*)\}", ui):
+            for col in ("c-vision", "c-turns"):
+                self.assertFalse(col in rule and "display: none" in rule,
+                                 f".modtable .{col} hidden under a breakpoint: {rule.strip()}")
+
+    def test_model_table_scrolls_inside_its_own_box(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn('<div class="mscroll"><table class="ctable modtable mpool">', ui)
+        self.assertIn(".mscroll { overflow-x: auto; }", ui)
+
+
 class ModelColumnFitTests(unittest.TestCase):
     """`.ctable` is `table-layout: fixed`, so a declared column width is ENFORCED: content wider
     than it does not widen the column, it spills out of the cell. Both offenders here were the

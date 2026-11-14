@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Admin → LLM models: the **Vision** and **Turns** columns disappeared on a phone or any window under ~1010px wide, so a model could not be marked vision-capable there. They now stay visible and the table scrolls sideways instead. Ships on a browser refresh.
+
 ## [0.17.1] - 2026-11-14
 
 ### Fixed
