@@ -9335,6 +9335,20 @@ class ModelTableMobileTests(unittest.TestCase):
         self.assertIn('<div class="mscroll"><table class="ctable modtable mpool">', ui)
         self.assertIn(".mscroll { overflow-x: auto; }", ui)
 
+    def test_desktop_width_floor_stops_above_the_phone_card_layout(self):
+        from test_support import ui_src
+        ui = ui_src()
+        rule = re.search(r"@media ([^{]*)\{ \.modtable\.mpool \{ min-width", ui)
+        self.assertIsNotNone(rule)
+        self.assertIn("min-width: 681px", rule.group(1),
+                      "the floor must not apply where mobile.css stacks the table into cards")
+
+    def test_phone_cards_label_the_settings_cells(self):
+        from test_support import ui_src
+        ui = ui_src()
+        self.assertIn('.mpool td.c-turns::before { content: "Turns"; }', ui)
+        self.assertIn('.mpool td.c-vision::before { content: "Vision"; }', ui)
+
 
 class ModelColumnFitTests(unittest.TestCase):
     """`.ctable` is `table-layout: fixed`, so a declared column width is ENFORCED: content wider
