@@ -164,7 +164,8 @@
   .mpool td:is(.c-turns, .c-vision, .c-test, .c-rm) { width: auto; }
   .mpool td.c-turns input { width: 72px; min-height: 36px; }
   .mpool td.c-vision input { width: 20px; height: 20px; margin: 0; }
-  .mpool td.c-test { margin-left: auto; }
+  /* fills the free space, so a long failed-test detail ellipsizes in .tres instead of wrapping remove */
+  .mpool td.c-test { flex: 1 1 0; min-width: 0; }
   .mpool td.c-rm { margin-left: 0; min-width: 36px; min-height: 36px; display: flex; align-items: center;
     justify-content: center; font-size: calc(20px*var(--fs)); }
   .mpool td.c-phases { flex: 1 1 100%; padding: 0; }

@@ -9371,6 +9371,8 @@ class ModelTableMobileTests(unittest.TestCase):
                       "a card cell keeping its desktop width pushes remove onto its own line")
         self.assertLess(ui.index(".modtable .c-test { width:"),
                         ui.index(".mpool td:is(.c-turns, .c-vision, .c-test, .c-rm) { width: auto; }"))
+        self.assertIn(".mpool td.c-test { flex: 1 1 0; min-width: 0; }", ui,
+                      "an auto-width Check cell grows with a failed test's detail and wraps remove")
 
     def test_phone_card_labels_never_break_mid_word(self):
         from test_support import ui_src
