@@ -9364,6 +9364,13 @@ class ModelTableMobileTests(unittest.TestCase):
         self.assertIn('.mpool td.c-turns::before { content: "Turns"; }', ui)
         self.assertIn('.mpool td.c-vision::before { content: "Vision"; }', ui)
 
+    def test_phone_card_labels_never_break_mid_word(self):
+        from test_support import ui_src
+        rule = re.search(r"\.mpool :is\(td\.c-turns, td\.c-vision\)::before \{([^}]*)\}", ui_src())
+        self.assertIsNotNone(rule)
+        self.assertIn("white-space: nowrap", rule.group(1))
+        self.assertIn("flex: none", rule.group(1))
+
 
 class ModelColumnFitTests(unittest.TestCase):
     """`.ctable` is `table-layout: fixed`, so a declared column width is ENFORCED: content wider

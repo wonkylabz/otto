@@ -154,8 +154,9 @@
   /* the header row is hidden in card mode, so a settings cell carries its own label */
   .mpool :is(td.c-turns, td.c-vision) { display: flex; align-items: center; gap: 6px; }
   .mpool :is(td.c-turns, td.c-vision):empty { display: none; }
+  /* flex:none + nowrap: the card td's overflow-wrap:anywhere let the label shrink to "VISIO / N" */
   .mpool :is(td.c-turns, td.c-vision)::before { font-size: calc(10px*var(--fs)); letter-spacing: .02em;
-    text-transform: uppercase; color: var(--dim); }
+    text-transform: uppercase; color: var(--dim); flex: none; white-space: nowrap; }
   .mpool td.c-turns::before { content: "Turns"; }
   .mpool td.c-vision::before { content: "Vision"; }
   .mpool td.c-phases { flex: 1 1 100%; padding: 0; }
