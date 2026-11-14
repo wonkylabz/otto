@@ -9324,10 +9324,25 @@ class ModelTableMobileTests(unittest.TestCase):
     def test_settings_columns_are_never_hidden_by_a_breakpoint(self):
         from test_support import ui_src
         ui = ui_src()
-        for rule in re.findall(r"@media[^{]*\{([^}]*)\}", ui):
+        rules, i = [], 0
+        while (i := ui.find("@media", i)) != -1:      # every rule of every block, brace-matched
+            i = ui.index("{", i) + 1
+            depth, start = 1, i
+            while depth:
+                c = ui[i]
+                if c == "{": depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 1 or depth == 0: rules.append(ui[start:i]); start = i + 1
+                i += 1
+        self.assertGreater(len(rules), 50, "the scan must reach past each block's first rule")
+        for rule in rules:
+            sel, _, body = rule.partition("{")
+            if ":empty" in sel:          # a Claude/Codex row's blank cell, not the setting
+                continue
             for col in ("c-vision", "c-turns"):
-                self.assertFalse(col in rule and "display: none" in rule,
-                                 f".modtable .{col} hidden under a breakpoint: {rule.strip()}")
+                self.assertFalse(col in sel and re.search(r"display:\s*none", body),
+                                 f".{col} hidden under a breakpoint: {rule.strip()}")
 
     def test_model_table_scrolls_inside_its_own_box(self):
         from test_support import ui_src
