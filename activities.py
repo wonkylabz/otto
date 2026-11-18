@@ -1747,7 +1747,9 @@ def reap_stuck(payload: dict) -> dict:
     it cannot fire when the worker itself died or the workflow was force-terminated. Two passes:
 
     * Board cards stuck In Progress (`gh-issue-*`): moved to Blocked + `needs-human` label +
-      terminal row. Idempotent — a card already out of In Progress is no longer listed.
+      terminal row — no row, and no push, when a dead run already has one (a hand stop writes
+      it but leaves the card In Progress). Idempotent — a card already out of In Progress is no
+      longer listed.
     * Every OTHER OttoWorkflow (`web-*`/`sched-*`/`slack-*`/…), which used to be invisible here:
       a dead/stale one gets the same terminal row (recovering its origin via engine.run_origin)
       so it reaches /api/needs-you instead of vanishing. Idempotent via the audit trail — a wid
@@ -1762,7 +1764,11 @@ def reap_stuck(payload: dict) -> dict:
     # Built ONCE (one audit scan, not one per workflow) and read by BOTH passes: a card whose run
     # a human already terminated still sits In Progress, so the card pass must still move it —
     # but its terminal row already exists, and a second one is a duplicate needs-you entry.
-    audited = engine.needs_human_wids()
+    # An unreadable trail must not stop the card pass, which needs no trail to block a card.
+    try:
+        audited = engine.needs_human_wids()
+    except Exception:
+        audited = None
     if board_on:
         meta = board.project_meta(cfg)
         blocked_option = (meta.get("options") or {}).get((cfg.get("columns") or {}).get("blocked"))
@@ -1777,17 +1783,22 @@ def reap_stuck(payload: dict) -> dict:
             board.set_status_raw(meta.get("project_id"), meta.get("status_field_id"),
                                  stub.get("item_id"), blocked_option)
             board.add_label(stub.get("repo"), n, "needs-human")
-            reaped.append(n)
-            if wid in audited:
+            # Only a DEAD run's existing row is its terminal one; a stale run still running may
+            # carry an unrelated earlier row, and its hang must still be surfaced. An already
+            # surfaced run is not news, so it stays out of `reaped` and the push.
+            if state == "dead" and audited and wid in audited:
                 continue
+            reaped.append(n)
             engine.record_terminal(
                 wid, f"GitHub issue #{n}", None,
                 reason=("workflow_dead" if state == "dead" else "stuck_timeout"),
                 detail=f"reaper moved stuck card #{n} to Blocked (workflow {state})",
                 repo=stub.get("repo"))
 
-    # General sweep.
+    # General sweep — it cannot tell surfaced from not without the trail, so it re-raises.
     swept = []
+    if audited is None:
+        audited = engine.needs_human_wids()
     for row in _list_otto_workflows(config.REAP_WINDOW_H):
         wid, status = row.get("wid") or "", row.get("status")
         if wid.startswith("gh-issue-") or _SWARM_CHILD_RE.search(wid) or wid in audited:

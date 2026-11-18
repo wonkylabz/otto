@@ -8291,11 +8291,23 @@ class ReaperSweepTests(unittest.TestCase):
     def test_card_of_an_already_audited_run_moves_but_writes_no_second_row(self):
         """A human terminating a board run writes its terminal row, but the card stays In
         Progress — the card pass must still block it, never add a second needs-you entry."""
-        self.audited = {"gh-issue-10"}
+        self.audited = {"gh-issue-10", "gh-issue-12"}
         out = self.activities.reap_stuck({})
-        self.assertEqual(out["reaped"], [10, 12])
+        # Both cards still block; #12 is STALE (still running), so an earlier row of its run is
+        # not its terminal one and it is surfaced anyway. #10 is not news: out of the push.
         self.assertEqual(self.moves, [("IT10", "opt-bl"), ("IT12", "opt-bl")])
+        self.assertEqual(self.labels, [(10, "needs-human"), (12, "needs-human")])
+        self.assertEqual(out["reaped"], [12])
         self.assertEqual([t["wid"] for t in self.terminals], ["gh-issue-12"])
+        self.assertNotIn("#10", " ".join(self.notes[0]["lines"]))
+
+    def test_an_unreadable_trail_still_blocks_the_dead_cards(self):
+        def boom():
+            raise RuntimeError("database is locked")
+        engine.needs_human_wids = boom
+        with self.assertRaises(RuntimeError):
+            self.activities.reap_stuck({})
+        self.assertEqual(self.moves, [("IT10", "opt-bl"), ("IT12", "opt-bl")])
 
     def test_all_alive_reaps_nothing(self):
         self.activities._reap_state = lambda wid: "alive"
