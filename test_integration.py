@@ -8312,6 +8312,17 @@ class ReaperSweepTests(unittest.TestCase):
         self.assertEqual(self.moves, [])
         self.assertEqual(self.terminals, [])
 
+    def test_trail_is_read_after_the_listing_not_before(self):
+        """A hand stop landing while the `gh` listing runs must still be seen."""
+        listed = self.board.list_in_column
+        def list_then_stop(cfg, key):
+            out = listed(cfg, key)
+            self.audited = {"gh-issue-10"}          # _wf_terminate wrote its row meanwhile
+            return out
+        self.board.list_in_column = list_then_stop
+        self.activities.reap_stuck({})
+        self.assertEqual([t["wid"] for t in self.terminals], ["gh-issue-12"])
+
     def test_all_alive_reaps_nothing(self):
         self.activities._reap_state = lambda wid: "alive"
         out = self.activities.reap_stuck({})

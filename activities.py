@@ -1756,16 +1756,19 @@ def reap_stuck(payload: dict) -> dict:
       that already has a needs-human row (its own finalizer, server._wf_terminate, or a previous
       sweep) is skipped. Bounded by config.REAP_WINDOW_H. Runs even with the board disabled.
 
-    Raises only when the audit trail is unreadable, and then before touching any card."""
+    Raises when the audit trail is unreadable. The card pass reads it before moving a card, so it
+    never blocks a card it could not check; a later failure can still raise after cards moved."""
     import board
     cfg = board.load()
     board_on = board.enabled(cfg)
     reaped = []
     # A card whose run a human already terminated still sits In Progress, so the card pass must
     # still move it — but its terminal row already exists, and a second one is a duplicate
-    # needs-you entry. An unreadable trail raises HERE, before any card moves: a card blocked
-    # with no row is never revisited (it leaves In Progress), while one left there is retried.
-    audited = engine.needs_human_wids() if board_on else set()
+    # needs-you entry. The trail is read LAZILY, at the first non-alive card and before its move:
+    # late enough that a hand stop during the `gh` listing is seen, and an unreadable trail
+    # raises before that card moves — a card blocked with no row leaves In Progress and is never
+    # revisited, while one left there is retried. An all-alive column reads nothing.
+    audited = None
     if board_on:
         meta = board.project_meta(cfg)
         blocked_option = (meta.get("options") or {}).get((cfg.get("columns") or {}).get("blocked"))
@@ -1777,6 +1780,8 @@ def reap_stuck(payload: dict) -> dict:
             state = _reap_state(wid)
             if state == "alive":
                 continue
+            if audited is None:
+                audited = engine.needs_human_wids()
             board.set_status_raw(meta.get("project_id"), meta.get("status_field_id"),
                                  stub.get("item_id"), blocked_option)
             board.add_label(stub.get("repo"), n, "needs-human")
