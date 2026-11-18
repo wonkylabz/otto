@@ -1756,19 +1756,16 @@ def reap_stuck(payload: dict) -> dict:
       that already has a needs-human row (its own finalizer, server._wf_terminate, or a previous
       sweep) is skipped. Bounded by config.REAP_WINDOW_H. Runs even with the board disabled.
 
-    Never raises."""
+    Raises only when the audit trail is unreadable, and then before touching any card."""
     import board
     cfg = board.load()
     board_on = board.enabled(cfg)
     reaped = []
-    # Built ONCE (one audit scan, not one per workflow) and read by BOTH passes: a card whose run
-    # a human already terminated still sits In Progress, so the card pass must still move it —
-    # but its terminal row already exists, and a second one is a duplicate needs-you entry.
-    # An unreadable trail must not stop the card pass, which needs no trail to block a card.
-    try:
-        audited = engine.needs_human_wids()
-    except Exception:
-        audited = None
+    # A card whose run a human already terminated still sits In Progress, so the card pass must
+    # still move it — but its terminal row already exists, and a second one is a duplicate
+    # needs-you entry. An unreadable trail raises HERE, before any card moves: a card blocked
+    # with no row is never revisited (it leaves In Progress), while one left there is retried.
+    audited = engine.needs_human_wids() if board_on else set()
     if board_on:
         meta = board.project_meta(cfg)
         blocked_option = (meta.get("options") or {}).get((cfg.get("columns") or {}).get("blocked"))
@@ -1786,7 +1783,7 @@ def reap_stuck(payload: dict) -> dict:
             # Only a DEAD run's existing row is its terminal one; a stale run still running may
             # carry an unrelated earlier row, and its hang must still be surfaced. An already
             # surfaced run is not news, so it stays out of `reaped` and the push.
-            if state == "dead" and audited and wid in audited:
+            if state == "dead" and wid in audited:
                 continue
             reaped.append(n)
             engine.record_terminal(
@@ -1795,10 +1792,10 @@ def reap_stuck(payload: dict) -> dict:
                 detail=f"reaper moved stuck card #{n} to Blocked (workflow {state})",
                 repo=stub.get("repo"))
 
-    # General sweep — it cannot tell surfaced from not without the trail, so it re-raises.
+    # General sweep. Re-read: the card pass spends seconds on `gh`, and a row written meanwhile
+    # must not be missed. One audit scan, not one per workflow.
     swept = []
-    if audited is None:
-        audited = engine.needs_human_wids()
+    audited = engine.needs_human_wids()
     for row in _list_otto_workflows(config.REAP_WINDOW_H):
         wid, status = row.get("wid") or "", row.get("status")
         if wid.startswith("gh-issue-") or _SWARM_CHILD_RE.search(wid) or wid in audited:

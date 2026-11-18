@@ -8301,13 +8301,16 @@ class ReaperSweepTests(unittest.TestCase):
         self.assertEqual([t["wid"] for t in self.terminals], ["gh-issue-12"])
         self.assertNotIn("#10", " ".join(self.notes[0]["lines"]))
 
-    def test_an_unreadable_trail_still_blocks_the_dead_cards(self):
+    def test_an_unreadable_trail_moves_no_card(self):
+        """A card blocked with no terminal row leaves In Progress, so no later sweep finds it;
+        left where it is, the next fire retries it."""
         def boom():
             raise RuntimeError("database is locked")
         engine.needs_human_wids = boom
         with self.assertRaises(RuntimeError):
             self.activities.reap_stuck({})
-        self.assertEqual(self.moves, [("IT10", "opt-bl"), ("IT12", "opt-bl")])
+        self.assertEqual(self.moves, [])
+        self.assertEqual(self.terminals, [])
 
     def test_all_alive_reaps_nothing(self):
         self.activities._reap_state = lambda wid: "alive"
