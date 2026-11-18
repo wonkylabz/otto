@@ -1759,6 +1759,10 @@ def reap_stuck(payload: dict) -> dict:
     cfg = board.load()
     board_on = board.enabled(cfg)
     reaped = []
+    # Built ONCE (one audit scan, not one per workflow) and read by BOTH passes: a card whose run
+    # a human already terminated still sits In Progress, so the card pass must still move it —
+    # but its terminal row already exists, and a second one is a duplicate needs-you entry.
+    audited = engine.needs_human_wids()
     if board_on:
         meta = board.project_meta(cfg)
         blocked_option = (meta.get("options") or {}).get((cfg.get("columns") or {}).get("blocked"))
@@ -1773,16 +1777,17 @@ def reap_stuck(payload: dict) -> dict:
             board.set_status_raw(meta.get("project_id"), meta.get("status_field_id"),
                                  stub.get("item_id"), blocked_option)
             board.add_label(stub.get("repo"), n, "needs-human")
+            reaped.append(n)
+            if wid in audited:
+                continue
             engine.record_terminal(
                 wid, f"GitHub issue #{n}", None,
                 reason=("workflow_dead" if state == "dead" else "stuck_timeout"),
                 detail=f"reaper moved stuck card #{n} to Blocked (workflow {state})",
                 repo=stub.get("repo"))
-            reaped.append(n)
 
-    # General sweep. The audited-wid set is built ONCE (one audit scan, not one per workflow).
+    # General sweep.
     swept = []
-    audited = engine.needs_human_wids()
     for row in _list_otto_workflows(config.REAP_WINDOW_H):
         wid, status = row.get("wid") or "", row.get("status")
         if wid.startswith("gh-issue-") or _SWARM_CHILD_RE.search(wid) or wid in audited:

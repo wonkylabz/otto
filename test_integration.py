@@ -8288,6 +8288,15 @@ class ReaperSweepTests(unittest.TestCase):
         self.assertEqual(by_wid["gh-issue-12"]["reason"], "stuck_timeout")
         self.assertNotIn("gh-issue-11", by_wid)
 
+    def test_card_of_an_already_audited_run_moves_but_writes_no_second_row(self):
+        """A human terminating a board run writes its terminal row, but the card stays In
+        Progress — the card pass must still block it, never add a second needs-you entry."""
+        self.audited = {"gh-issue-10"}
+        out = self.activities.reap_stuck({})
+        self.assertEqual(out["reaped"], [10, 12])
+        self.assertEqual(self.moves, [("IT10", "opt-bl"), ("IT12", "opt-bl")])
+        self.assertEqual([t["wid"] for t in self.terminals], ["gh-issue-12"])
+
     def test_all_alive_reaps_nothing(self):
         self.activities._reap_state = lambda wid: "alive"
         out = self.activities.reap_stuck({})

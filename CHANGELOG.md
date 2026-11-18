@@ -11,6 +11,10 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopping a GitHub board run by hand no longer leaves **two** entries in Needs you. The stop already recorded one, but the card stayed In Progress, so the stuck-run sweep later recorded a second one (`workflow_dead`, with no capability). The sweep still moves the card to Blocked, but it no longer adds a second entry. Needs a worker restart.
+
 ## [0.17.2] - 2026-11-15
 
 ### Fixed
