@@ -8288,6 +8288,41 @@ class ReaperSweepTests(unittest.TestCase):
         self.assertEqual(by_wid["gh-issue-12"]["reason"], "stuck_timeout")
         self.assertNotIn("gh-issue-11", by_wid)
 
+    def test_card_of_an_already_audited_run_moves_but_writes_no_second_row(self):
+        """A human terminating a board run writes its terminal row, but the card stays In
+        Progress — the card pass must still block it, never add a second needs-you entry."""
+        self.audited = {"gh-issue-10", "gh-issue-12"}
+        out = self.activities.reap_stuck({})
+        # Both cards still block; #12 is STALE (still running), so an earlier row of its run is
+        # not its terminal one and it is surfaced anyway. #10 is not news: out of the push.
+        self.assertEqual(self.moves, [("IT10", "opt-bl"), ("IT12", "opt-bl")])
+        self.assertEqual(self.labels, [(10, "needs-human"), (12, "needs-human")])
+        self.assertEqual(out["reaped"], [12])
+        self.assertEqual([t["wid"] for t in self.terminals], ["gh-issue-12"])
+        self.assertNotIn("#10", " ".join(self.notes[0]["lines"]))
+
+    def test_an_unreadable_trail_moves_no_card(self):
+        """A card blocked with no terminal row leaves In Progress, so no later sweep finds it;
+        left where it is, the next fire retries it."""
+        def boom():
+            raise RuntimeError("database is locked")
+        engine.needs_human_wids = boom
+        with self.assertRaises(RuntimeError):
+            self.activities.reap_stuck({})
+        self.assertEqual(self.moves, [])
+        self.assertEqual(self.terminals, [])
+
+    def test_trail_is_read_after_the_listing_not_before(self):
+        """A hand stop landing while the `gh` listing runs must still be seen."""
+        listed = self.board.list_in_column
+        def list_then_stop(cfg, key):
+            out = listed(cfg, key)
+            self.audited = {"gh-issue-10"}          # _wf_terminate wrote its row meanwhile
+            return out
+        self.board.list_in_column = list_then_stop
+        self.activities.reap_stuck({})
+        self.assertEqual([t["wid"] for t in self.terminals], ["gh-issue-12"])
+
     def test_all_alive_reaps_nothing(self):
         self.activities._reap_state = lambda wid: "alive"
         out = self.activities.reap_stuck({})
