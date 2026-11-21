@@ -8858,7 +8858,7 @@ class SlackAdminMcpTests(unittest.TestCase):
         """A run asked to DM someone had no way to: the server resolved only CHANNEL names, so
         it posted to a channel named after the person, which failed `channel_not_found`."""
         self._dm_ready()
-        for ref in ("@Ale", "@ale.g", "U0ALE", "ale"):
+        for ref in ("@Ale", "@ale.g", "U0ALE", "@U0ALE"):
             self.calls.clear()
             text, err = self.mod.dispatch("post_message", {"channel": ref, "text": "hi"})
             self.assertFalse(err, f"{ref}: {text}")
@@ -8882,14 +8882,31 @@ class SlackAdminMcpTests(unittest.TestCase):
         self.assertNotIn("U0GONE", text)
         self.assertNotIn("B0BOT", text)
 
-    def test_a_hash_name_stays_a_channel(self):
-        """`#ale` names a channel; falling back to a person there would DM someone when the run
-        meant a channel that does not exist."""
+    def test_a_bare_name_is_a_channel_never_a_person(self):
+        """The channel listing can be PARTIAL (no `groups:read` drops private channels), so a
+        bare name falling back to a person DMs whoever shares the name of a channel the token
+        merely cannot see — a leak no retry undoes. The refusal says how to name a person."""
         self._dm_ready()
-        text, err = self.mod.dispatch("post_message", {"channel": "#ale", "text": "hi"})
+        for ref in ("ale", "#ale"):
+            self.calls.clear()
+            text, err = self.mod.dispatch("post_message", {"channel": ref, "text": "hi"})
+            self.assertTrue(err, ref)
+            self.assertIn("channel_not_found", text)
+            self.assertIn("@ale", text)
+            self.assertNotIn("conversations.open", [c[0] for c in self.calls], ref)
+
+    def test_a_truncated_user_listing_refuses_rather_than_calls_a_name_unique(self):
+        """A namesake past the cap would make a unique-looking match the wrong person."""
+        self._dm_ready()
+        self.responses["users.list"] = {"ok": True, "members": self.USERS,
+                                        "response_metadata": {"next_cursor": "more"}}
+        orig = self.mod._users
+        self.addCleanup(setattr, self.mod, "_users", orig)
+        self.mod._users = lambda hard_cap=5: orig(hard_cap=hard_cap)
+        text, err = self.mod.dispatch("post_message", {"channel": "@Ale", "text": "hi"})
         self.assertTrue(err)
-        self.assertIn("channel_not_found", text)
-        self.assertNotIn("conversations.open", [c[0] for c in self.calls])
+        self.assertIn("too_many_users", text)
+        self.assertEqual(self._posted_to(), [])
 
     def test_a_channel_wins_over_a_person_with_the_same_bare_name(self):
         self.USERS = self.USERS + [{"id": "U0GEN", "name": "general", "profile": {}}]

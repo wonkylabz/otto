@@ -13,7 +13,7 @@ changelog that restates it is a second copy of `git log`.
 
 ### Added
 
-- The Slack admin MCP server (`slack_mcp.py`) can now send **direct messages**. `post_message` and `channel_history` accept a person (`@name`, a user id, or a plain name that no channel has) as well as a channel, and a new `list_users` tool looks people up. A name matching more than one person is refused with the candidates listed, never guessed; `#name` always means a channel. Add the `users:read` and `im:write` scopes to the Slack app (`im:history` to read a DM back), reinstall it and replace the token. No restart needed — the server is spawned per run.
+- The Slack admin MCP server (`slack_mcp.py`) can now send **direct messages**. `post_message` and `channel_history` accept a person (`@name` or a user id) as well as a channel, and a new `list_users` tool looks people up. A name matching more than one person is refused with the candidates listed, never guessed; a bare name always means a channel. Add the `users:read` and `im:write` scopes to the Slack app (`im:history` to read a DM back), reinstall it and replace the token. No restart needed — the server is spawned per run.
 
 ### Fixed
 

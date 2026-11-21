@@ -5,6 +5,8 @@ state IN a channel: each post is one item, a reaction on it is the human's verdi
 claude.ai connector can't serve that on the local backend, and Otto's runbook delivery posts
 one message per run, so N items share one reaction target. Both also take a PERSON (`@name`
 or a `U…` id) and open the direct message with them; `list_users` resolves a name to that id.
+A person is only ever named explicitly — a bare name is a channel, so a channel this token
+cannot see never silently becomes a direct message to someone sharing its name.
 
 Every Slack integration Otto already has is read/post: the claude.ai Slack connector
 (`slack_search_*`, `slack_send_message`), Otto's own listener (`slack.py`, which calls
@@ -76,9 +78,9 @@ _ERRORS = {
 _TEXT_CHARS = 600
 
 # Where a read or a post goes. A PERSON is spelled with '@' (or given by id) so a channel and a
-# person sharing a name are never confused; a bare name that matches no channel is tried as one.
-_TARGET = ("Channel id (C…/G…/D…) or name ('#name'), or a person for a direct message: "
-           "'@name' or a user id (U…/W…).")
+# person sharing a name are never confused.
+_TARGET = ("Channel id (C…/G…/D…) or name ('#name' or bare), or a person for a direct "
+           "message: '@name' or a user id (U…/W…) — a bare name is always a channel.")
 
 TOOLS = [
     {"name": "list_channels",
@@ -227,9 +229,13 @@ def _is_id(ref, prefixes):
 
 def _users(hard_cap=5000):
     """Every person the token can see, paged — bots, Slackbot and deactivated accounts dropped,
-    since none can be messaged. Returns (list, error_or_None)."""
+    since none can be messaged. Returns (list, error_or_None). A listing cut at `hard_cap` is an
+    ERROR, not a short answer: `_user`'s ambiguity check is only as good as the list it reads."""
     out, cursor = [], ""
-    while len(out) < hard_cap:
+    while True:
+        if len(out) >= hard_cap:
+            return out, (f"too_many_users — the workspace lists over {hard_cap} people, so a "
+                         "name cannot be proven unique. Pass the user id (U…).")
         params = {"limit": 200}
         if cursor:
             params["cursor"] = cursor
@@ -288,15 +294,16 @@ def _resolve(ref, people=False):
     archived and private channels so `unarchive_channel` can find its target and a private
     channel is refused for the right reason.
 
-    `people`: `ref` may also name a person ('@name', a U…/W… id, or a bare name no channel has),
-    resolved to the direct message with them — for reading and posting, never archiving."""
+    `people`: `ref` may also name a person ('@name' or a U…/W… id), resolved to the direct
+    message with them — for reading and posting, never archiving. Never a bare name: the channel
+    listing can be partial (no `groups:read` drops private ones), so falling back to a person
+    would DM whoever shares the name of a channel the token merely cannot see."""
     ref = (ref or "").strip()
     if people and ref.startswith("@"):
         uid, err = (ref[1:], None) if _is_id(ref[1:], ("U", "W")) else _user(ref)
         return (None, err) if err else _open_dm(uid)
     if people and _is_id(ref, ("U", "W")):
         return _open_dm(ref)
-    people = people and not ref.startswith("#")      # '#name' is a channel, never a person
     ref = ref.lstrip("#")
     if not ref:
         return None, "no channel given"
@@ -309,16 +316,11 @@ def _resolve(ref, people=False):
     if err:
         return None, err
     hit = [c for c in chans if c.get("name") == ref]
-    if hit:
-        return hit[0].get("id"), None
-    if people:
-        uid, uerr = _user(ref)
-        if uid:
-            return _open_dm(uid)
-        if not uerr.startswith("user_not_found"):
-            return None, uerr
-    return None, (f"channel_not_found — no channel named '{ref}' is visible to this token"
-                  + (" and no person has that name" if people else ""))
+    if not hit:
+        return None, (f"channel_not_found — no channel named '{ref}' is visible to this token"
+                      + (f"; for a direct message, name the person as '@{ref}' or by user id"
+                         if people else ""))
+    return hit[0].get("id"), None
 
 
 def _archive(args, method):

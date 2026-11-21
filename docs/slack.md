@@ -242,7 +242,7 @@ Those two need `channels:history` and `chat:write`; a bot must be invited to the
 
 Both also take a **person** — `@name` or a user id (`U…`) — and open the direct message with them;
 `list_users` resolves a name to that id. A name matching more than one person is refused with the
-candidates listed, never guessed. A direct message needs `users:read` (find the person) and
+candidates listed, never guessed, and a bare name is always a channel. A direct message needs `users:read` (find the person) and
 `im:write` (open the conversation), plus `im:history` to read one back. On a bot token the message
 comes from the bot; on a user token it comes from you.
 
