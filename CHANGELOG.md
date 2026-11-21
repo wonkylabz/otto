@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.17.3] - 2026-11-21
+
 ### Added
 
 - The Slack admin MCP server (`slack_mcp.py`) can now send **direct messages**. `post_message` and `channel_history` accept a person (`@name` or a user id) as well as a channel, and a new `list_users` tool looks people up. A name matching more than one person is refused with the candidates listed, never guessed; a bare name always means a channel. Add the `users:read` and `im:write` scopes to the Slack app (`im:history` to read a DM back), reinstall it and replace the token. No restart needed — the server is spawned per run.
@@ -791,7 +793,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.2...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.3...HEAD
+[0.17.3]: https://github.com/wonkylabz/otto/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/wonkylabz/otto/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/wonkylabz/otto/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/wonkylabz/otto/compare/v0.16.0...v0.17.0
