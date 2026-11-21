@@ -6297,6 +6297,40 @@ class MascotStateTests(unittest.TestCase):
         self.assertIn("mascotReact(...r)", back[:400])
 
 
+class MobileChatFreshnessTests(unittest.TestCase):
+    """On a phone the open chat went stale: a backgrounded page is suspended, a request in
+    flight then may never settle, and the run watcher awaiting it froze the stream. Nothing else
+    re-read an open chat, and the installed app has no browser reload, so quitting it was the
+    only recovery."""
+
+    def setUp(self):
+        self.src = ui_src()
+
+    def test_the_run_watchers_requests_are_bounded(self):
+        self.assertIn("function fetchT(url, ms)", self.src)
+        for path in ("/api/wf?id=", "/api/progress?id="):
+            self.assertNotRegex(self.src, r"await fetch\(\"" + re.escape(path),
+                                f"a hung {path} request freezes the watcher; use fetchT")
+
+    def test_the_list_poll_resyncs_an_open_chat_that_is_behind(self):
+        self.assertIn("if(!q) syncActiveChat(items);", self.src)
+        fn = re.search(r"function syncActiveChat\(items\)\{.*?\n\}", self.src, re.S)
+        self.assertIsNotNone(fn)
+        # AHEAD only: a local turn awaiting its debounced save is briefly behind the server.
+        self.assertIn("row.messages>activeChat.messages.length", fn.group(0))
+        self.assertIn("busy", fn.group(0), "a live turn owns the stream; resync must wait for it")
+
+    def test_a_resync_never_collapses_the_sidebar(self):
+        self.assertIn("if(isNarrow() && !refresh) applyHistCollapsed(true, false);", self.src)
+
+    def test_pull_to_refresh_exists_and_never_reads_over_an_unsaved_turn(self):
+        fn = re.search(r"async function refreshView\(\)\{.*?\n\}", self.src, re.S)
+        self.assertIsNotNone(fn, "the installed app has no other way to re-read the page")
+        body = fn.group(0)
+        self.assertLess(body.index("persistChat()"), body.index("resyncActiveChat()"))
+        self.assertIn('addEventListener("touchend"', self.src)
+
+
 class PollerBackoffTests(unittest.TestCase):
     """Six module-level `setInterval`s polled `/api/*` at a fixed rate for the life of the tab,
     with every failure swallowed by an empty catch. A BACKGROUNDED Board tab with the server

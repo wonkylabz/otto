@@ -84,3 +84,17 @@ body.mascot-offstage .mascot { display: none; }
 /* The pill group is wider than the old bare tabs, so the status chips yield earlier or Admin clips. */
 @media (min-width: 681px) and (max-width: 1280px) { .tab { padding: 5px 10px; } }
 @media (min-width: 681px) and (max-width: 1100px) { .status > span[title]:not(.factorychip) { display: none; } .tabs { margin-left: 6px; } .tab { padding: 5px 8px; } }
+
+/* ---- Pull-to-refresh (chat.js) ---- */
+/* Parked above the viewport, dragged down by the pull, held
+   spinning while the refresh runs. Touch-only, so it never shows on a desktop. Here, not in
+   mobile.css: a tablet is past the phone breakpoint and pulls too. */
+.ptr { position: fixed; top: env(safe-area-inset-top); left: 50%; z-index: 400; display: flex;
+  align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,.12);
+  transform: translate(-50%, -60px); opacity: 0; pointer-events: none; }
+.ptr.on, .ptr.busy { opacity: 1; }
+.ptr .spin { animation: none; border-top-color: var(--dim); }
+.ptr.ready .spin { border-top-color: var(--accent); }
+.ptr.busy { transform: translate(-50%, 12px); transition: transform .15s; }
+.ptr.busy .spin { animation: spin .8s linear infinite; border-top-color: var(--accent); }

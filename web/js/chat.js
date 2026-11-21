@@ -198,7 +198,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
   while(true){
     if(!alive()) return;                          // parked — superseded or switched away
     let st;
-    try { st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json(); }
+    try { st=await (await fetchT("/api/wf?id="+encodeURIComponent(wid))).json(); }
     catch(e){ await sleep(500); continue; }
     if(!alive()) return;
 
@@ -389,7 +389,7 @@ async function watchLoop(wid, chatId, content, sess, flags){
     const planActive = !previewDone && !gateDone && !!(times.PLAN && times.PLAN.start && times.PLAN.dur==null);
     if((runActive || planActive) && st.state==="running" && !isSwarm && (drafting || progressTick++ % 4 === 0)){
       try{
-        const pg=await (await fetch("/api/progress?id="+encodeURIComponent(wid))).json();
+        const pg=await (await fetchT("/api/progress?id="+encodeURIComponent(wid))).json();
         if(!alive()) return;
         // The preview's transcript ranks below every attempt server-side, so `part` naming it is
         // proof the run has not started executing yet — paint PLAN, never RUN, off it. A 900s
@@ -625,6 +625,7 @@ async function loadChatList(){
   if(q!==histQ) return;               // the search changed while this one was loading
   if(_dragChat || gen!==_histGen) return POLL_SKIP;   // a drag or an order save overtook this load
   histItems=items;
+  if(!q) syncActiveChat(items);
   const reset=document.getElementById("reset-chat-order");
   if(reset) reset.hidden=!!q || !items.some(c=>c.manual);
   // A filtered list hides chats, so finish detection waits until the search is cleared.
@@ -677,6 +678,94 @@ async function loadChatList(){
     if(activeChat&&activeChat.id===b.dataset.delchat) newChat(); else loadChatList();
   }));
 }
+/* The open chat is read ONCE, by openChat; afterwards only this tab's own watcher writes to it.
+   A reply landing while that watcher was away (a phone suspending the page, a turn sent from
+   another device, an unattended run appending to the thread) left the stream stale until the
+   app was quit. The list poll already carries each chat's message count and live run, so a
+   server copy that is AHEAD of the screen re-opens it. Ahead only: a local turn awaiting its
+   debounced save is behind the server for 600ms, never ahead of it. */
+let resyncing=false;
+async function resyncActiveChat(){
+  if(!activeChat || resyncing) return;
+  resyncing=true;
+  try { await openChat(activeChat.id, true); } finally { resyncing=false; }
+}
+function syncActiveChat(items){
+  if(!activeChat || busy || dispatching) return;   // a live turn owns the stream
+  const row=items.find(c=>c.id===activeChat.id); if(!row) return;
+  // Count, never `run_id`: a list read in flight while this tab clears its own finished run
+  // still names it, and re-opening on that would re-attach to the run just delivered.
+  if(row.messages>activeChat.messages.length) resyncActiveChat();
+}
+/* Back from the background: a watcher frozen mid-request recovers on its own only once
+   `fetchT` aborts, so a live turn is re-attached straight away instead. A short hide (a
+   notification pulled down) is left alone — re-rendering a gate card under the reader's thumb
+   costs more than it fixes. */
+let hiddenAt=0;
+function onResume(){
+  if(!activeChat || !activeChat.run_id) return;
+  const cv=document.getElementById("chatview");
+  if(cv && !cv.hidden) resyncActiveChat();
+}
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden){ hiddenAt=Date.now(); return; }
+  if(hiddenAt && Date.now()-hiddenAt>5000) onResume();
+});
+window.addEventListener("pageshow", e=>{ if(e.persisted) onResume(); });   // restored from the back-forward cache
+
+/* Pull-to-refresh. Installed to the home screen Otto runs with no browser chrome, and the page
+   itself never scrolls (`body` is overflow:hidden), so the browser's own gesture and reload
+   button are both gone — quitting the app was the only way to re-read anything. A pull starts
+   only where the touched scroller is already at its top, and only when it is mostly vertical. */
+(function(){
+  const TRIGGER=70;
+  const ind=document.createElement("div");
+  ind.className="ptr"; ind.innerHTML='<span class="spin"></span>';
+  document.body.appendChild(ind);
+  let y0=null, x0=0, pulled=0;
+  function atTop(n){
+    for(; n && n!==document.body; n=n.parentElement){
+      const oy=getComputedStyle(n).overflowY;
+      if((oy==="auto"||oy==="scroll") && n.scrollHeight>n.clientHeight) return n.scrollTop<=0;
+    }
+    return true;
+  }
+  const paint=d=>{ ind.style.transform=`translate(-50%, ${Math.min(d, TRIGGER*1.5)-40}px)`;
+    ind.classList.toggle("ready", d>=TRIGGER); ind.classList.toggle("on", d>0); };
+  const reset=()=>{ y0=null; pulled=0; ind.classList.remove("on","ready"); ind.style.transform=""; };
+  document.addEventListener("touchstart", e=>{
+    reset();
+    if(e.touches.length!==1) return;
+    const t=e.target;
+    if(t.closest && t.closest("input,textarea,select,.modalOverlay,otto-mascot")) return;
+    if(!atTop(t)) return;
+    y0=e.touches[0].clientY; x0=e.touches[0].clientX;
+  }, {passive:true});
+  document.addEventListener("touchmove", e=>{
+    if(y0==null) return;
+    const dy=e.touches[0].clientY-y0, dx=e.touches[0].clientX-x0;
+    if(dy<=0 || Math.abs(dx)>dy){ if(!pulled) y0=null; paint(pulled=0); return; }
+    paint(pulled=dy);
+  }, {passive:true});
+  document.addEventListener("touchend", ()=>{
+    const go=pulled>=TRIGGER; reset();
+    if(go) refreshView();
+  });
+  document.addEventListener("touchcancel", reset);
+})();
+async function refreshView(){
+  const cv=document.getElementById("chatview");
+  if(!cv || cv.hidden){ location.reload(); return; }   // every other tab rebuilds from its loader on boot
+  const ind=document.querySelector(".ptr"); if(ind) ind.classList.add("busy");
+  try {
+    if(chatSaveTimer){ clearTimeout(chatSaveTimer); chatSaveTimer=null; await persistChat(); }   // never re-read over an unsaved turn
+    await refreshHealth();
+    await loadChatList();
+    // A live Temporal turn is re-attached (the watcher restarts); a direct-path turn or the
+    // gap before /api/submit answers has no run id to re-attach, so it is left to finish.
+    if(activeChat && (!busy || activeChat.run_id)) await resyncActiveChat();
+  } finally { if(ind) ind.classList.remove("busy"); }
+}
 /* Completed pipelines persist per chat: leaving a chat snapshots its pipe (stage timers
    included) and reopening restores it — it resets only when a new task runs in that chat
    (every submit path rebuilds the pipe). Mid-run pipes aren't snapshotted; reattachRun
@@ -684,10 +773,13 @@ async function loadChatList(){
 const pipeSnaps=new Map();
 function snapPipe(){ if(activeChat && !activeChat.run_id) pipeSnaps.set(activeChat.id, pipeEl.innerHTML); }
 
-async function openChat(id){
-  let chat; try { chat=await (await fetch("/api/chats/get?id="+encodeURIComponent(id))).json(); } catch(e){ return; }
+// `refresh`: re-reading the chat ALREADY open (resync, pull-to-refresh) — the reader did not
+// pick a chat, so the phone's sidebar stays where they left it.
+async function openChat(id, refresh){
+  let chat; try { chat=await (await fetchT("/api/chats/get?id="+encodeURIComponent(id))).json(); } catch(e){ return; }
   if(!chat||!chat.id) return;
-  if(isNarrow()) applyHistCollapsed(true, false);
+  if(refresh && !(activeChat && activeChat.id===id)) return;   // the reader moved on meanwhile
+  if(isNarrow() && !refresh) applyHistCollapsed(true, false);
   stopWatch();                              // park any watcher on the chat we're leaving (its run continues server-side)
   snapPipe();                               // keep the outgoing chat's finished pipeline for its return
   busy=false; syncSendBtn();
@@ -1623,7 +1715,7 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
       // second poller competing with one.
       async function replanDetail(){
         try {
-          const pg=await (await fetch("/api/progress?id="+encodeURIComponent(wid))).json();
+          const pg=await (await fetchT("/api/progress?id="+encodeURIComponent(wid))).json();
           if(pg && pg.found && pg.part===PLAN_PART && pg.last){
             rpDetail.textContent=pg.last+" \u00b7 "+Math.round(pg.idle_s)+"s ago";
             return;
@@ -1643,7 +1735,7 @@ function gate(content,cap,plan,repo,reason,concerns,revisions,maxRevisions,repla
         for(let tries=0; tries<400; tries++){        // ~10min ceiling, matching the preview's own budget
           await sleep(1500);
           let st;
-          try { st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json(); }
+          try { st=await (await fetchT("/api/wf?id="+encodeURIComponent(wid))).json(); }
           catch(e){ continue; }
           if(st.state!=="awaiting_approval"){
             stopReplan();

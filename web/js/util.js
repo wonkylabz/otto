@@ -246,6 +246,17 @@ async function getJSON(path){
   return data;
 }
 
+/* A fetch that cannot hang. A phone suspends a backgrounded page, and a request in flight at
+   that moment may never settle on resume — a run watcher awaiting it froze the open chat until
+   the app was quit. Aborting turns the hang into the ordinary failure every caller retries.
+   The timer is never cleared: the signal also bounds the BODY read, and a late abort of a
+   finished request is a no-op. */
+function fetchT(url, ms){
+  const ac=new AbortController();
+  setTimeout(()=>ac.abort(), ms||15000);
+  return fetch(url, {signal:ac.signal});
+}
+
 /* THE poller. Six module-level `setInterval`s ran at a fixed period for the life of the tab,
    each swallowing its own failures: with the server down, a BACKGROUNDED Board tab still hit
    `/api/*` at ~0.6 req/s forever, and said nothing. Two things a bare `setInterval` cannot do:
