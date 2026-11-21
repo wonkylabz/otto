@@ -992,6 +992,20 @@ class LocalRuntimeTests(unittest.TestCase):
                         flags[b["tool_use_id"]] = b.get("is_error", False)
         self.assertEqual(flags, {"bad": True, "good": False, "refused": True})
 
+    def test_a_reused_tool_call_id_cannot_hide_a_later_publish(self):
+        """Recovered calls are numbered per TURN (`call_local_0` every time) and some endpoints
+        mint ids per response, while the publish ledger keys on (file, id): a failed call 0 on
+        turn 1 hid a landed publish that was call 0 on turn 2, and the retry posted twice."""
+        path = os.path.join(self.tmp, "ids.jsonl")
+        self._script([
+            self._tool_call("Bash", {"command": "exit 1"}, cid="same"),
+            self._tool_call("Bash", {"command": "echo gh pr comment 5 --body hi"}, cid="same"),
+            {"role": "assistant", "content": "done"},
+        ])
+        local_runtime.run_json("go", allowed_tools=config.READ_TOOLS, model_entry=self.MODEL,
+                               cwd=self.tmp, transcript=path)
+        self.assertEqual(len(claude_cli.published_actions([path])), 1)
+
     def test_a_refused_post_is_not_a_publish(self):
         """The ledger's half of the same fix, read off a local-shaped transcript: a post whose
         result is flagged is not counted; one with a clean result still is."""

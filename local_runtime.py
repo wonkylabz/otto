@@ -739,6 +739,19 @@ def _restarted(part, parts):
     return any(re.sub(r"\s+", " ", p or "").strip()[:_RESTART_PREFIX] == head for p in parts)
 
 
+def _unique_call_ids(calls, seen):
+    """Give every tool call an id no earlier call in this run used, in place. The transcript is
+    read keyed on (file, id) — the publish ledger drops a call whose id has an ERROR result — so a
+    recovered `call_local_0` reused on every turn, or an endpoint minting ids per response, let
+    one failed call hide a later publish that landed, and the retry posted it twice."""
+    for tc in calls or []:
+        cid = str(tc.get("id") or "")
+        if not cid or cid in seen:
+            cid = f"call_{uuid.uuid4().hex[:12]}"
+            tc["id"] = cid
+        seen.add(cid)
+
+
 def _recover_tool_calls(content, offered_names):
     """Parse text-embedded tool calls out of `content`, in either the Hermes JSON form
     (`<tool_call>{"name":…,"arguments":{…}}</tool_call>`) or the qwen3_coder XML form
@@ -1460,6 +1473,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     usage = {"input_tokens": 0, "output_tokens": 0}
     learned = {}                   # an output ceiling the endpoint named, kept for later turns
     result, is_error = None, False
+    call_ids = set()        # every tool-call id this run has used — see `_unique_call_ids`
     parts, continuations = [], 0   # stitched final answer across max_tokens cutoffs
     nudged = False                 # one shot at converting a reasoning-only turn into an answer
     started, wrap_msg = time.time(), None   # one budget wrap-up per run (config.WRAP_UP_MESSAGE)
@@ -1537,6 +1551,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                 if recovered:
                     msg["tool_calls"] = recovered
                     msg["content"] = residual
+            _unique_call_ids(msg.get("tool_calls"), call_ids)
             messages.append(msg)
             _emit(sink, on_event, _assistant_event(msg))
             calls = msg.get("tool_calls") or []
@@ -1648,12 +1663,12 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                                     bash_mode=bash_mode, bash_rules=bash_rules)
                 messages.append({"role": "tool", "tool_call_id": tc.get("id"),
                                  "content": out})
-                result = {"type": "tool_result", "tool_use_id": tc.get("id"), "content": out}
+                block = {"type": "tool_result", "tool_use_id": tc.get("id"), "content": out}
                 if isinstance(out, ToolError):
                     # Same shape as `claude -p`: what reads the transcript (the publish ledger,
                     # the judge's evidence) needs the FLAG, never a guess at the text.
-                    result["is_error"] = True
-                _emit(sink, on_event, {"type": "user", "message": {"content": [result]}})
+                    block["is_error"] = True
+                _emit(sink, on_event, {"type": "user", "message": {"content": [block]}})
         else:
             result, is_error = f"(local runtime hit the {max_turns}-turn budget)", True
     except RunDeadline:
