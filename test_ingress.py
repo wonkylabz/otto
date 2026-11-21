@@ -6322,7 +6322,7 @@ class MobileChatFreshnessTests(unittest.TestCase):
 
     def test_a_resync_never_replaces_a_turn_or_an_open_gate(self):
         self.assertIn("if(refresh && (dispatching || (busy && !wasBusy) || activeChat.messages.length!==n0)) return;", self.src)
-        fn = re.search(r"async function resyncActiveChat\(\)\{.*?\n\}", self.src, re.S)
+        fn = re.search(r"async function resyncActiveChat\(force\)\{.*?\n\}", self.src, re.S)
         self.assertIn('.modalOverlay:not([hidden])', fn.group(0))
         self.assertIn('if(!force && document.querySelector(".clarify:not(.resolved)")) return;', fn.group(0))
 
