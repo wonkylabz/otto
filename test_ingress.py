@@ -6320,6 +6320,11 @@ class MobileChatFreshnessTests(unittest.TestCase):
         self.assertIn("row.messages>activeChat.messages.length", fn.group(0))
         self.assertIn("busy", fn.group(0), "a live turn owns the stream; resync must wait for it")
 
+    def test_a_resync_never_replaces_a_turn_or_an_open_gate(self):
+        self.assertIn("if(refresh && (dispatching || (busy && !wasBusy) || activeChat.messages.length!==n0)) return;", self.src)
+        fn = re.search(r"async function resyncActiveChat\(\)\{.*?\n\}", self.src, re.S)
+        self.assertIn('.modalOverlay:not([hidden])', fn.group(0))
+
     def test_a_resync_never_collapses_the_sidebar(self):
         self.assertIn("if(isNarrow() && !refresh) applyHistCollapsed(true, false);", self.src)
 

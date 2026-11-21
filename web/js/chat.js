@@ -687,6 +687,9 @@ async function loadChatList(){
 let resyncing=false;
 async function resyncActiveChat(){
   if(!activeChat || resyncing) return;
+  // An open plan modal belongs to the watcher a re-open parks: its Approve would close the card
+  // and send nothing, leaving the run parked until the gate deadline declines it.
+  if(document.querySelector(".modalOverlay:not([hidden])")) return;
   resyncing=true;
   try { await openChat(activeChat.id, true); } finally { resyncing=false; }
 }
@@ -776,9 +779,13 @@ function snapPipe(){ if(activeChat && !activeChat.run_id) pipeSnaps.set(activeCh
 // `refresh`: re-reading the chat ALREADY open (resync, pull-to-refresh) — the reader did not
 // pick a chat, so the phone's sidebar stays where they left it.
 async function openChat(id, refresh){
+  const wasBusy=busy, n0=activeChat?activeChat.messages.length:0;
   let chat; try { chat=await (await fetchT("/api/chats/get?id="+encodeURIComponent(id))).json(); } catch(e){ return; }
   if(!chat||!chat.id) return;
   if(refresh && !(activeChat && activeChat.id===id)) return;   // the reader moved on meanwhile
+  // A turn sent while this read was in flight is not in the copy it returned: replacing the
+  // chat with it would drop the question and wipe the stream the new watcher paints into.
+  if(refresh && (dispatching || (busy && !wasBusy) || activeChat.messages.length!==n0)) return;
   if(isNarrow() && !refresh) applyHistCollapsed(true, false);
   stopWatch();                              // park any watcher on the chat we're leaving (its run continues server-side)
   snapPipe();                               // keep the outgoing chat's finished pipeline for its return
