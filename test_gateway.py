@@ -968,6 +968,49 @@ class LocalRuntimeTests(unittest.TestCase):
             {"id": cid, "type": "function",
              "function": {"name": name, "arguments": json.dumps(args)}}]}
 
+    def test_a_failed_tool_call_is_recorded_is_error_like_claude_p(self):
+        """The local transcript must carry `is_error` on a failed
+        result, as `claude -p`'s does. Without it the publish ledger counted a refused Slack
+        post as sent, so the ladder stopped as `published_unverified` with nothing posted, and
+        the judge failed the run's truthful "nothing was sent" report."""
+        path = os.path.join(self.tmp, "t.jsonl")
+        self._script([
+            self._tool_call("Bash", {"command": "echo nope; exit 3"}, cid="bad"),
+            self._tool_call("Bash", {"command": "echo fine"}, cid="good"),
+            self._tool_call("NotOffered", {}, cid="refused"),
+            {"role": "assistant", "content": "done"},
+        ])
+        local_runtime.run_json("go", allowed_tools=config.READ_TOOLS, model_entry=self.MODEL,
+                               cwd=self.tmp, transcript=path)
+        flags = {}
+        with open(path) as f:
+            for line in f:
+                ev = json.loads(line)
+                for b in ((ev.get("message") or {}).get("content") or []) if isinstance(
+                        ev.get("message"), dict) else []:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        flags[b["tool_use_id"]] = b.get("is_error", False)
+        self.assertEqual(flags, {"bad": True, "good": False, "refused": True})
+
+    def test_a_refused_post_is_not_a_publish(self):
+        """The ledger's half of the same fix, read off a local-shaped transcript: a post whose
+        result is flagged is not counted; one with a clean result still is."""
+        path = os.path.join(self.tmp, "p.jsonl")
+        post = "mcp__slack-admin__post_message"
+        evs = [{"type": "assistant", "message": {"content": [
+                   {"type": "tool_use", "id": "a", "name": post,
+                    "input": {"channel": "ale", "text": "hi"}},
+                   {"type": "tool_use", "id": "b", "name": post,
+                    "input": {"channel": "C1", "text": "hi"}}]}},
+               {"type": "user", "message": {"content": [
+                   {"type": "tool_result", "tool_use_id": "a", "is_error": True,
+                    "content": "Error: FAILED ale: channel_not_found"},
+                   {"type": "tool_result", "tool_use_id": "b", "content": "OK posted"}]}}]
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(e) for e in evs))
+        self.assertEqual([p["text"] for p in claude_cli.published_posts([path])], ["text: hi"])
+        self.assertEqual(len(claude_cli.published_actions([path])), 1)
+
     def test_a_background_job_lives_for_the_run_and_dies_with_it(self):
         """Cross-call persistence is per RUN: a `server &` left behind would hold its port and
         pin two drainer threads in the worker for good."""
@@ -6825,6 +6868,16 @@ class LocalMcpPoolTests(unittest.TestCase):
         # Same contract as every other local tool: the model reads the failure and adapts.
         self.pool = mcp_client.Pool(["fake"], allowed_tools=["mcp__fake"], pol={})
         self.assertEqual(self.pool.call("mcp__fake__boom", {}), "Error: it broke")
+
+    def test_an_isError_result_stays_FLAGGED_through_the_clip(self):
+        """The `Error:` prefix is for the model; the flag is for whatever reads the transcript. A
+        refused Slack post flattened to text alone read as PUBLISHED."""
+        self.pool = mcp_client.Pool(["fake"], allowed_tools=["mcp__fake"], pol={})
+        self.assertIsInstance(self.pool.call("mcp__fake__boom", {}), mcp_client.ToolError)
+        self.assertNotIsInstance(self.pool.call("mcp__fake__echo", {"text": "x"}),
+                                 mcp_client.ToolError)
+        out = local_runtime._run_tool("mcp__fake__boom", {}, None, {"mcp__fake__boom"}, self.pool)
+        self.assertIsInstance(out, mcp_client.ToolError)
 
     def test_the_risk_allowlist_filters_which_mcp_tools_are_offered(self):
         self.pool = mcp_client.Pool(["fake"], allowed_tools=["mcp__fake__echo"], pol={})

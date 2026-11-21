@@ -664,6 +664,14 @@ def _rank(items, key, request, budget, require_score, owner=None):
 
 # --- the stdio JSON-RPC session --------------------------------------------
 
+class ToolError(str):
+    """A tool result that reports a FAILURE — still the text the model reads, but marked, so the
+    local runtime can record it as `is_error` the way `claude -p` does. Flattening the MCP
+    `isError` into an `Error:` prefix alone made a refused Slack post read as a PUBLISHED one: the
+    ladder stopped without a retry and the judge failed the run's truthful "nothing was sent"
+    (`LocalRuntimeTests`, `LocalMcpPoolTests`)."""
+
+
 class McpError(RuntimeError):
     """A server-side or transport failure. Surfaced to the model as tool-result TEXT (same
     contract as every other local tool error), never raised into the loop."""
@@ -807,7 +815,7 @@ class Session:
         res = self._request("tools/call", {"name": tool, "arguments": args or {}})
         text = _content_text(res.get("content"))
         if res.get("isError"):
-            return f"Error: {text or 'the MCP tool reported a failure'}"
+            return ToolError(f"Error: {text or 'the MCP tool reported a failure'}")
         return text or "(no output)"
 
 
@@ -1026,7 +1034,7 @@ class Pool:
         try:
             return sess.call(tool, args)
         except McpError as e:
-            return f"Error: {e}"
+            return ToolError(f"Error: {e}")
 
     def close(self):
         for s in self._sessions:
