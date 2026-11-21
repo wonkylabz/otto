@@ -688,8 +688,10 @@ let resyncing=false;
 async function resyncActiveChat(){
   if(!activeChat || resyncing) return;
   // An open plan modal belongs to the watcher a re-open parks: its Approve would close the card
-  // and send nothing, leaving the run parked until the gate deadline declines it.
-  if(document.querySelector(".modalOverlay:not([hidden])")) return;
+  // and send nothing, leaving the run parked until the gate deadline declines it. An open
+  // clarify card is a watcher waiting on the READER, not a stuck one: rebuilding it erases a
+  // half-typed answer, and stepping away to look one up is the normal phone flow.
+  if(document.querySelector(".modalOverlay:not([hidden]), .clarify:not(.resolved)")) return;
   resyncing=true;
   try { await openChat(activeChat.id, true); } finally { resyncing=false; }
 }
