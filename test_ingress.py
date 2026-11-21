@@ -6323,7 +6323,8 @@ class MobileChatFreshnessTests(unittest.TestCase):
     def test_a_resync_never_replaces_a_turn_or_an_open_gate(self):
         self.assertIn("if(refresh && (dispatching || (busy && !wasBusy) || activeChat.messages.length!==n0)) return;", self.src)
         fn = re.search(r"async function resyncActiveChat\(\)\{.*?\n\}", self.src, re.S)
-        self.assertIn('.modalOverlay:not([hidden]), .clarify:not(.resolved)', fn.group(0))
+        self.assertIn('.modalOverlay:not([hidden])', fn.group(0))
+        self.assertIn('if(!force && document.querySelector(".clarify:not(.resolved)")) return;', fn.group(0))
 
     def test_a_resync_never_collapses_the_sidebar(self):
         self.assertIn("if(isNarrow() && !refresh) applyHistCollapsed(true, false);", self.src)
@@ -6332,7 +6333,7 @@ class MobileChatFreshnessTests(unittest.TestCase):
         fn = re.search(r"async function refreshView\(\)\{.*?\n\}", self.src, re.S)
         self.assertIsNotNone(fn, "the installed app has no other way to re-read the page")
         body = fn.group(0)
-        self.assertLess(body.index("persistChat()"), body.index("resyncActiveChat()"))
+        self.assertLess(body.index("persistChat()"), body.index("resyncActiveChat(true)"))
         self.assertIn('addEventListener("touchend"', self.src)
 
 

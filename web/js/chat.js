@@ -685,13 +685,16 @@ async function loadChatList(){
    server copy that is AHEAD of the screen re-opens it. Ahead only: a local turn awaiting its
    debounced save is behind the server for 600ms, never ahead of it. */
 let resyncing=false;
-async function resyncActiveChat(){
+// `force`: the reader PULLED — their own ask outranks the clarify guard, and is the only way
+// out when the question was answered elsewhere (Board, desktop) and this card never resolves.
+async function resyncActiveChat(force){
   if(!activeChat || resyncing) return;
   // An open plan modal belongs to the watcher a re-open parks: its Approve would close the card
   // and send nothing, leaving the run parked until the gate deadline declines it. An open
   // clarify card is a watcher waiting on the READER, not a stuck one: rebuilding it erases a
   // half-typed answer, and stepping away to look one up is the normal phone flow.
-  if(document.querySelector(".modalOverlay:not([hidden]), .clarify:not(.resolved)")) return;
+  if(document.querySelector(".modalOverlay:not([hidden])")) return;
+  if(!force && document.querySelector(".clarify:not(.resolved)")) return;
   resyncing=true;
   try { await openChat(activeChat.id, true); } finally { resyncing=false; }
 }
@@ -768,7 +771,7 @@ async function refreshView(){
     await loadChatList();
     // A live Temporal turn is re-attached (the watcher restarts); a direct-path turn or the
     // gap before /api/submit answers has no run id to re-attach, so it is left to finish.
-    if(activeChat && (!busy || activeChat.run_id)) await resyncActiveChat();
+    if(activeChat && (!busy || activeChat.run_id)) await resyncActiveChat(true);
   } finally { if(ind) ind.classList.remove("busy"); }
 }
 /* Completed pipelines persist per chat: leaving a chat snapshots its pipe (stage timers
