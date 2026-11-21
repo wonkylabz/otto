@@ -60,6 +60,7 @@ import error_classifier
 import file_safety
 import gateway
 import mcp_client
+from mcp_client import ToolError
 import registry
 import storage
 from ui import trace
@@ -468,7 +469,8 @@ def _t_bash(args, cwd, mode=None):
         out = (stdout or "") + (("\n" + stderr) if stderr else "")
         out = out.strip() or "(no output)"
         if proc.returncode != 0:
-            out += f"\n(exit code {proc.returncode})"
+            # A non-zero exit is an ERROR result, as `claude -p` records it.
+            return ToolError(out + f"\n(exit code {proc.returncode})")
         return out
     finally:
         if scratch:
@@ -641,28 +643,28 @@ def _run_tool(name, args, cwd, offered_names, mcp=None, bash_mode=None, bash_rul
     RESULT the model reads and adapts to, and so it sits next to `offered_names`, the other thing
     standing between a tool call and the machine."""
     if name not in offered_names:
-        return f"Error: tool '{name}' is not available in this run."
+        return ToolError(f"Error: tool '{name}' is not available in this run.")
     if name == "Bash" and bash_mode:
         if bash_mode == "allowlist":
             refusal = bash_refusal((args or {}).get("command"), bash_rules or [])
             if refusal:
                 # No trace: the refusal is returned as the tool RESULT, so it is already in the
                 # transcript the same way every other tool outcome is.
-                return refusal
+                return ToolError(refusal)
         try:
             return _clip(_t_bash(args or {}, cwd, mode=bash_mode))
         except subprocess.TimeoutExpired:
-            return f"Error: Bash timed out after {config.LOCAL_TOOL_TIMEOUT_S:.0f}s"
+            return ToolError(f"Error: Bash timed out after {config.LOCAL_TOOL_TIMEOUT_S:.0f}s")
         except Exception as e:  # noqa: BLE001 - tool failures are data for the model
-            return _clip(f"Error: {e}")
+            return _clip(ToolError(f"Error: {e}"))
     if mcp is not None and name in mcp:
         return _clip(mcp.call(name, args or {}))
     try:
         out = _TOOL_IMPL[name](args or {}, cwd)
     except subprocess.TimeoutExpired:
-        out = f"Error: {name} timed out after {config.LOCAL_TOOL_TIMEOUT_S:.0f}s"
+        out = ToolError(f"Error: {name} timed out after {config.LOCAL_TOOL_TIMEOUT_S:.0f}s")
     except Exception as e:  # noqa: BLE001 - tool failures are data for the model, not crashes
-        out = f"Error: {e}"
+        out = ToolError(f"Error: {e}")
     return out if name == "Skill" else _clip(out)
 
 
@@ -691,10 +693,11 @@ def _must_report(turn, max_turns, wrap_turn, started, deadline):
 def _clip(out):
     """Bound one tool result. Applies to MCP results too — a `pods_list` or an NRQL dump is
     exactly the kind of payload that would otherwise eat a small local context window."""
+    failed = isinstance(out, ToolError)
     out = str(out)
     if len(out) > _TOOL_OUT_CHARS:
         out = out[:_TOOL_OUT_CHARS] + f"\n… (truncated at {_TOOL_OUT_CHARS} chars)"
-    return out
+    return ToolError(out) if failed else out
 
 
 # --- recovering text-embedded tool calls ------------------------------------
@@ -734,6 +737,19 @@ def _restarted(part, parts):
         return False
     head = norm[:_RESTART_PREFIX]
     return any(re.sub(r"\s+", " ", p or "").strip()[:_RESTART_PREFIX] == head for p in parts)
+
+
+def _unique_call_ids(calls, seen):
+    """Give every tool call an id no earlier call in this run used, in place. The transcript is
+    read keyed on (file, id) — the publish ledger drops a call whose id has an ERROR result — so a
+    recovered `call_local_0` reused on every turn, or an endpoint minting ids per response, let
+    one failed call hide a later publish that landed, and the retry posted it twice."""
+    for tc in calls or []:
+        cid = str(tc.get("id") or "")
+        if not cid or cid in seen:
+            cid = f"call_{uuid.uuid4().hex[:12]}"
+            tc["id"] = cid
+        seen.add(cid)
 
 
 def _recover_tool_calls(content, offered_names):
@@ -1457,6 +1473,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
     usage = {"input_tokens": 0, "output_tokens": 0}
     learned = {}                   # an output ceiling the endpoint named, kept for later turns
     result, is_error = None, False
+    call_ids = set()        # every tool-call id this run has used — see `_unique_call_ids`
     parts, continuations = [], 0   # stitched final answer across max_tokens cutoffs
     nudged = False                 # one shot at converting a reasoning-only turn into an answer
     started, wrap_msg = time.time(), None   # one budget wrap-up per run (config.WRAP_UP_MESSAGE)
@@ -1534,6 +1551,7 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                 if recovered:
                     msg["tool_calls"] = recovered
                     msg["content"] = residual
+            _unique_call_ids(msg.get("tool_calls"), call_ids)
             messages.append(msg)
             _emit(sink, on_event, _assistant_event(msg))
             calls = msg.get("tool_calls") or []
@@ -1632,21 +1650,25 @@ def run_json(prompt, allowed_tools=None, model_entry=None, timeout=None,
                 except ValueError:
                     args = {}
                 if abort is not None and abort.is_set():
-                    out = "Error: attempt aborted by the supervisor before this tool call"
+                    out = ToolError("Error: attempt aborted by the supervisor before this tool call")
                 elif last:
                     # Offered no tools and called one anyway (structured, or recovered from its
                     # text): refused, never run, or the enforced report is a request again.
-                    out = ("Error: this run's budget is spent — no more tool calls. Reply now "
-                           "with your final report from what you already have.")
+                    out = ToolError("Error: this run's budget is spent — no more tool calls. Reply "
+                                    "now with your final report from what you already have.")
                 elif time.time() > deadline:
-                    out = "Error: run timed out before this tool call"
+                    out = ToolError("Error: run timed out before this tool call")
                 else:
                     out = _run_tool(fn.get("name"), args, cwd, offered_names, mcp,
                                     bash_mode=bash_mode, bash_rules=bash_rules)
                 messages.append({"role": "tool", "tool_call_id": tc.get("id"),
                                  "content": out})
-                _emit(sink, on_event, {"type": "user", "message": {"content": [
-                    {"type": "tool_result", "tool_use_id": tc.get("id"), "content": out}]}})
+                block = {"type": "tool_result", "tool_use_id": tc.get("id"), "content": out}
+                if isinstance(out, ToolError):
+                    # Same shape as `claude -p`: what reads the transcript (the publish ledger,
+                    # the judge's evidence) needs the FLAG, never a guess at the text.
+                    block["is_error"] = True
+                _emit(sink, on_event, {"type": "user", "message": {"content": [block]}})
         else:
             result, is_error = f"(local runtime hit the {max_turns}-turn budget)", True
     except RunDeadline:

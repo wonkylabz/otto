@@ -11,7 +11,13 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- The Slack admin MCP server (`slack_mcp.py`) can now send **direct messages**. `post_message` and `channel_history` accept a person (`@name` or a user id) as well as a channel, and a new `list_users` tool looks people up. A name matching more than one person is refused with the candidates listed, never guessed; a bare name always means a channel. Add the `users:read` and `im:write` scopes to the Slack app (`im:history` to read a DM back), reinstall it and replace the token. No restart needed — the server is spawned per run.
+
 ### Fixed
+
+- On a local model, a tool call that failed was recorded as if it had succeeded. A Slack post refused by Slack therefore counted as sent: the run stopped in Needs you as "published, unverified" instead of retrying, and the judge failed its truthful "nothing was sent" report. Failed calls — including a Bash command exiting non-zero — are now recorded as errors, as they already were on Claude. Needs a worker restart.
 
 - Stopping a GitHub board run by hand no longer leaves **two** entries in Needs you. The stop already recorded one, but the card stayed In Progress, so the stuck-run sweep later recorded a second one (`workflow_dead`, with no capability). The sweep still moves the card to Blocked, but it no longer adds a second entry. Needs a worker restart.
 

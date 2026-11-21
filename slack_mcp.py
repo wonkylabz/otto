@@ -3,7 +3,10 @@
 Plus a read/post pair (`channel_history`, `post_message`) for a capability that keeps its
 state IN a channel: each post is one item, a reaction on it is the human's verdict. The
 claude.ai connector can't serve that on the local backend, and Otto's runbook delivery posts
-one message per run, so N items share one reaction target.
+one message per run, so N items share one reaction target. Both also take a PERSON (`@name`
+or a `U…` id) and open the direct message with them; `list_users` resolves a name to that id.
+A person is only ever named explicitly — a bare name is a channel, so a channel this token
+cannot see never silently becomes a direct message to someone sharing its name.
 
 Every Slack integration Otto already has is read/post: the claude.ai Slack connector
 (`slack_search_*`, `slack_send_message`), Otto's own listener (`slack.py`, which calls
@@ -44,7 +47,9 @@ _ERRORS = {
     "missing_scope":
         "the token lacks the scope for this call. Listing needs `channels:read` (+ `groups:read` "
         "for private); archiving needs `channels:write` (+ `groups:write`) on a user token, "
-        "`channels:manage` on a bot; reading needs `channels:history`, posting `chat:write`. Add it in the Slack app's OAuth & Permissions, reinstall, "
+        "`channels:manage` on a bot; reading needs `channels:history`, posting `chat:write`; a "
+        "direct message needs `users:read` to find the person and `im:write` to open it "
+        "(`im:history` to read it). Add it in the Slack app's OAuth & Permissions, reinstall, "
         "and replace the token.",
     "not_in_channel":
         "the token's identity is not a member of that channel. A bot must be invited; a user "
@@ -59,6 +64,10 @@ _ERRORS = {
         "Channel Management). The scope is present; the policy is what refuses.",
     "method_not_supported_for_channel_type":
         "that conversation type cannot be archived — a DM or group DM has no archive.",
+    "user_not_found": "no such user — `list_users` shows who this token can see.",
+    "user_not_visible": "that user is not visible to this token (another workspace, or restricted).",
+    "user_disabled": "that user's account is deactivated — a direct message cannot reach them.",
+    "cannot_dm_bot": "that user is a bot; Slack does not open a direct message with a bot.",
     "invalid_auth": "the token is rejected. It may have been revoked or rotated.",
     "not_authed": f"no token reached the server — its def must set {TOKEN_ENV} in `env`.",
     "token_revoked": "the token has been revoked; reinstall the Slack app and replace it.",
@@ -67,6 +76,11 @@ _ERRORS = {
 # One message line in a history listing. Model-bound, so a long message is clipped WITH a marker
 # — an unmarked cut reads as the whole message.
 _TEXT_CHARS = 600
+
+# Where a read or a post goes. A PERSON is spelled with '@' (or given by id) so a channel and a
+# person sharing a name are never confused.
+_TARGET = ("Channel id (C…/G…/D…) or name ('#name' or bare), or a person for a direct "
+           "message: '@name' or a user id (U…/W…) — a bare name is always a channel.")
 
 TOOLS = [
     {"name": "list_channels",
@@ -101,15 +115,27 @@ TOOLS = [
          "properties": {"channel": {"type": "string",
                                     "description": "Channel id (C…) or name, with or without '#'."}},
          "required": ["channel"]}},
+    {"name": "list_users",
+     "description": ("List people in the workspace (id, handle, display and real name) — the "
+                     "lookup for a direct message. Bots and deactivated accounts are left out."),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "query": {"type": "string",
+                       "description": "Only people whose handle, display or real name contains this."},
+             "limit": {"type": "integer",
+                       "description": "Maximum people to return (default 200)."},
+         }}},
     {"name": "channel_history",
      "description": ("Read a channel's messages, newest first, each with its ts, author and "
                      "REACTIONS (emoji name, count, who reacted). Use it to see what was already "
-                     "posted and how people reacted to each message."),
+                     "posted and how people reacted to each message. Given a person, reads the "
+                     "direct message with them."),
      "inputSchema": {
          "type": "object",
          "properties": {
              "channel": {"type": "string",
-                         "description": "Channel id (C…) or name, with or without '#'."},
+                         "description": _TARGET},
              "limit": {"type": "integer",
                        "description": "Maximum messages to return (default 200, max 1000)."},
              "oldest": {"type": "string",
@@ -117,13 +143,14 @@ TOOLS = [
          },
          "required": ["channel"]}},
     {"name": "post_message",
-     "description": ("Post one message to a channel and return its ts. Slack mrkdwn: *bold*, "
-                     "_italic_, <url|label>. Link previews are off."),
+     "description": ("Post one message to a channel, or send a direct message to a person, and "
+                     "return its ts. Slack mrkdwn: *bold*, _italic_, <url|label>. Link previews "
+                     "are off."),
      "inputSchema": {
          "type": "object",
          "properties": {
              "channel": {"type": "string",
-                         "description": "Channel id (C…) or name, with or without '#'."},
+                         "description": _TARGET},
              "text": {"type": "string", "description": "The message body."},
          },
          "required": ["channel", "text"]}},
@@ -196,16 +223,91 @@ def _channels(include_archived=False, include_private=False, hard_cap=2000):
     return out, None
 
 
-def _resolve(ref):
+def _is_id(ref, prefixes):
+    return ref[:1] in prefixes and ref.isupper() and ref.isalnum()
+
+
+def _users(hard_cap=5000):
+    """Every person the token can see, paged — bots, Slackbot and deactivated accounts dropped,
+    since none can be messaged. Returns (list, error_or_None). A listing cut at `hard_cap` is an
+    ERROR, not a short answer: `_user`'s ambiguity check is only as good as the list it reads."""
+    out, cursor = [], ""
+    while True:
+        if len(out) >= hard_cap:
+            return out, (f"too_many_users — the workspace lists over {hard_cap} people, so a "
+                         "name cannot be proven unique. Pass the user id (U…).")
+        params = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        resp = _call("users.list", params)
+        if not resp.get("ok"):
+            return out, _explain(resp)
+        out += [u for u in resp.get("members") or []
+                if not (u.get("deleted") or u.get("is_bot") or u.get("id") == "USLACKBOT")]
+        cursor = ((resp.get("response_metadata") or {}).get("next_cursor") or "").strip()
+        if not cursor:
+            break
+    return out, None
+
+
+def _names(u):
+    prof = u.get("profile") or {}
+    return [n for n in (u.get("name"), prof.get("display_name"), u.get("real_name"),
+                        prof.get("real_name")) if n]
+
+
+def _user(ref):
+    """A user id for a person's handle or name. Returns (id, error_or_None).
+
+    A message to the WRONG person is a leak no retry undoes, so this never guesses: an exact
+    handle/display/real-name match wins, else a first-name match, and more than one candidate at
+    either step is refused with the candidates named."""
+    want = ref.strip().lstrip("@").casefold()
+    users, err = _users()
+    if err:
+        return None, err
+    exact = [u for u in users if want in (n.casefold() for n in _names(u))]
+    first = [u for u in users
+             if want in {(n.split() or [""])[0].casefold() for n in _names(u)}]
+    for hits in (exact, first):
+        if len(hits) == 1:
+            return hits[0].get("id"), None
+        if len(hits) > 1:
+            who = ", ".join(f"{u.get('id')} ({' / '.join(_names(u))})" for u in hits[:10])
+            return None, (f"ambiguous — '{ref}' matches {len(hits)} people: {who}. "
+                          "Pass the user id.")
+    return None, f"user_not_found — nobody named '{ref}' is visible to this token"
+
+
+def _open_dm(uid):
+    """The direct-message channel with one person, opened if it does not exist yet."""
+    resp = _call("conversations.open", {"users": uid}, post=True)
+    if not resp.get("ok"):
+        return None, _explain(resp)
+    return (resp.get("channel") or {}).get("id"), None
+
+
+def _resolve(ref, people=False):
     """A channel id for `ref`, which may already be one. Returns (id, error_or_None).
 
     A name is resolved against the channel list rather than guessed at, and the lookup spans
     archived and private channels so `unarchive_channel` can find its target and a private
-    channel is refused for the right reason."""
-    ref = (ref or "").strip().lstrip("#")
+    channel is refused for the right reason.
+
+    `people`: `ref` may also name a person ('@name' or a U…/W… id), resolved to the direct
+    message with them — for reading and posting, never archiving. Never a bare name: the channel
+    listing can be partial (no `groups:read` drops private ones), so falling back to a person
+    would DM whoever shares the name of a channel the token merely cannot see."""
+    ref = (ref or "").strip()
+    if people and ref.startswith("@"):
+        uid, err = (ref[1:], None) if _is_id(ref[1:], ("U", "W")) else _user(ref)
+        return (None, err) if err else _open_dm(uid)
+    if people and _is_id(ref, ("U", "W")):
+        return _open_dm(ref)
+    ref = ref.lstrip("#")
     if not ref:
         return None, "no channel given"
-    if ref[:1] in ("C", "G") and ref.isupper() and ref.isalnum():
+    if _is_id(ref, ("C", "G") + (("D",) if people else ())):
         return ref, None
     chans, err = _channels(include_archived=True, include_private=True)
     if err and err.startswith("missing_scope"):
@@ -215,7 +317,9 @@ def _resolve(ref):
         return None, err
     hit = [c for c in chans if c.get("name") == ref]
     if not hit:
-        return None, f"channel_not_found — no channel named '{ref}' is visible to this token"
+        return None, (f"channel_not_found — no channel named '{ref}' is visible to this token"
+                      + (f"; for a direct message, name the person as '@{ref}' or by user id"
+                         if people else ""))
     return hit[0].get("id"), None
 
 
@@ -249,9 +353,23 @@ def _list(args):
     return "\n".join([head, *lines]), False
 
 
+def _list_users(args):
+    users, err = _users()
+    if err:
+        return f"FAILED: {err}", True
+    q = (args.get("query") or "").strip().lstrip("@").casefold()
+    limit = int(args.get("limit") or 200)
+    rows = [u for u in users if not q or any(q in n.casefold() for n in _names(u))]
+    lines = [f"{u.get('id')}\t@{u.get('name')}\t" + " / ".join(_names(u)[1:]) for u in rows[:limit]]
+    head = f"{len(rows)} person(s)" + (f" matching '{q}'" if q else "")
+    if len(rows) > limit:
+        head += f", showing {limit}"
+    return "\n".join([head, *lines]), False
+
+
 def _history(args):
     ref = args.get("channel")
-    cid, err = _resolve(ref)
+    cid, err = _resolve(ref, people=True)
     if err:
         return f"FAILED {ref}: {err}", True
     limit = max(1, min(int(args.get("limit") or 200), 1000))
@@ -287,7 +405,7 @@ def _post(args):
     ref, text = args.get("channel"), (args.get("text") or "").strip()
     if not text:
         return "FAILED: empty message", True
-    cid, err = _resolve(ref)
+    cid, err = _resolve(ref, people=True)
     if err:
         return f"FAILED {ref}: {err}", True
     resp = _call("chat.postMessage", {"channel": cid, "text": text, "unfurl_links": "false",
@@ -307,6 +425,8 @@ def dispatch(name, args):
         return _archive(args, "conversations.archive")
     if name == "unarchive_channel":
         return _archive(args, "conversations.unarchive")
+    if name == "list_users":
+        return _list_users(args)
     if name == "channel_history":
         return _history(args)
     if name == "post_message":

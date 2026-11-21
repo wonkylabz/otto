@@ -8837,6 +8837,90 @@ class SlackAdminMcpTests(unittest.TestCase):
         slack_mcp._call = fake
         self.addCleanup(setattr, slack_mcp, "_call", orig)
 
+    USERS = [{"id": "U0ALE", "name": "ale.g", "real_name": "Ale Garcia",
+              "profile": {"display_name": "Ale", "real_name": "Ale Garcia"}},
+             {"id": "U0ALEX", "name": "alex", "real_name": "Alex Smith",
+              "profile": {"display_name": "", "real_name": "Alex Smith"}},
+             {"id": "U0SAM1", "name": "sam1", "real_name": "Sam One", "profile": {}},
+             {"id": "U0SAM2", "name": "sam2", "real_name": "Sam Two", "profile": {}},
+             {"id": "U0GONE", "name": "ale", "deleted": True, "profile": {}},
+             {"id": "B0BOT", "name": "ale-bot", "is_bot": True, "profile": {}}]
+
+    def _dm_ready(self):
+        self.responses["users.list"] = {"ok": True, "members": self.USERS}
+        self.responses["conversations.open"] = {"ok": True, "channel": {"id": "D0DM"}}
+        self.responses["chat.postMessage"] = {"ok": True, "ts": "1.000001"}
+
+    def _posted_to(self):
+        return [c[1]["channel"] for c in self.calls if c[0] == "chat.postMessage"]
+
+    def test_a_person_gets_a_direct_message_by_name(self):
+        """A run asked to DM someone had no way to: the server resolved only CHANNEL names, so
+        it posted to a channel named after the person, which failed `channel_not_found`."""
+        self._dm_ready()
+        for ref in ("@Ale", "@ale.g", "U0ALE", "@U0ALE"):
+            self.calls.clear()
+            text, err = self.mod.dispatch("post_message", {"channel": ref, "text": "hi"})
+            self.assertFalse(err, f"{ref}: {text}")
+            self.assertIn(("conversations.open", {"users": "U0ALE"}, True), self.calls, ref)
+            self.assertEqual(self._posted_to(), ["D0DM"], ref)
+
+    def test_an_ambiguous_person_is_refused_never_guessed(self):
+        """A direct message to the wrong person is a leak no retry undoes."""
+        self._dm_ready()
+        text, err = self.mod.dispatch("post_message", {"channel": "@sam", "text": "hi"})
+        self.assertTrue(err)
+        self.assertIn("ambiguous", text)
+        self.assertIn("U0SAM1", text)
+        self.assertEqual(self._posted_to(), [])
+
+    def test_a_deactivated_or_bot_account_is_not_a_person(self):
+        self._dm_ready()
+        text, err = self.mod.dispatch("list_users", {"query": "ale"})
+        self.assertFalse(err, text)
+        self.assertIn("U0ALE", text)
+        self.assertNotIn("U0GONE", text)
+        self.assertNotIn("B0BOT", text)
+
+    def test_a_bare_name_is_a_channel_never_a_person(self):
+        """The channel listing can be PARTIAL (no `groups:read` drops private channels), so a
+        bare name falling back to a person DMs whoever shares the name of a channel the token
+        merely cannot see — a leak no retry undoes. The refusal says how to name a person."""
+        self._dm_ready()
+        for ref in ("ale", "#ale"):
+            self.calls.clear()
+            text, err = self.mod.dispatch("post_message", {"channel": ref, "text": "hi"})
+            self.assertTrue(err, ref)
+            self.assertIn("channel_not_found", text)
+            self.assertIn("@ale", text)
+            self.assertNotIn("conversations.open", [c[0] for c in self.calls], ref)
+
+    def test_a_truncated_user_listing_refuses_rather_than_calls_a_name_unique(self):
+        """A namesake past the cap would make a unique-looking match the wrong person."""
+        self._dm_ready()
+        self.responses["users.list"] = {"ok": True, "members": self.USERS,
+                                        "response_metadata": {"next_cursor": "more"}}
+        orig = self.mod._users
+        self.addCleanup(setattr, self.mod, "_users", orig)
+        self.mod._users = lambda hard_cap=5: orig(hard_cap=hard_cap)
+        text, err = self.mod.dispatch("post_message", {"channel": "@Ale", "text": "hi"})
+        self.assertTrue(err)
+        self.assertIn("too_many_users", text)
+        self.assertEqual(self._posted_to(), [])
+
+    def test_a_channel_wins_over_a_person_with_the_same_bare_name(self):
+        self.USERS = self.USERS + [{"id": "U0GEN", "name": "general", "profile": {}}]
+        self._dm_ready()
+        text, err = self.mod.dispatch("post_message", {"channel": "general", "text": "hi"})
+        self.assertFalse(err, text)
+        self.assertEqual(self._posted_to(), ["C0BBB"])
+
+    def test_a_person_is_never_an_archive_target(self):
+        self._dm_ready()
+        text, err = self.mod.dispatch("archive_channel", {"channel": "@Ale"})
+        self.assertTrue(err)
+        self.assertNotIn("conversations.archive", [c[0] for c in self.calls])
+
     def test_a_channel_name_is_resolved_to_an_id_before_archiving(self):
         """A run reads names off a report and ids off nothing — `conversations.archive` takes
         the id, and passing it a name fails `channel_not_found` for a channel that exists."""
@@ -8926,7 +9010,7 @@ class SlackAdminMcpTests(unittest.TestCase):
         self.assertEqual(out[0]["result"]["serverInfo"]["name"], "slack-admin")
         self.assertEqual({t["name"] for t in out[1]["result"]["tools"]},
                          {"list_channels", "archive_channel", "unarchive_channel",
-                          "channel_history", "post_message"})
+                          "channel_history", "post_message", "list_users"})
         self.assertFalse(out[2]["result"]["isError"])
         self.assertIn("error", out[3])
 
@@ -9074,7 +9158,7 @@ class SlackAdminMcpSpawnTests(unittest.TestCase):
         s = self._session()
         self.assertEqual({t["name"] for t in s.list_tools()},
                          {"list_channels", "archive_channel", "unarchive_channel",
-                          "channel_history", "post_message"})
+                          "channel_history", "post_message", "list_users"})
         out = mcp_client._content_text(s.call("archive_channel", {"channel": "#inc-1377"}))
         self.assertIn("archived", out)
         self.assertIn(("POST", "conversations.archive", "C0AAA", "Bearer xoxp-e2e-canary"),
