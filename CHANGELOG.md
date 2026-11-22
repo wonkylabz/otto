@@ -11,6 +11,14 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+### Added
+
+- **Pull to refresh** in the web UI. Otto installed to a phone's home screen has no browser reload, so quitting the app was the only way to re-read it. Pull down from the top of the chat to re-read the open chat and reconnect to a running reply; on other tabs it reloads the page. Ships on a browser refresh.
+
+### Fixed
+
+- On a phone, an open chat could stop updating: new replies never appeared until the app was quit and reopened. The phone pauses the app in the background, and the reply's live view could hang waiting on a request that never finished. Requests now time out and retry, the live view reconnects when the app comes back, and an open chat whose server copy has new messages (a reply that finished while you were away, a turn sent from another device, a scheduled run posting to the thread) is reloaded on its own. Ships on a browser refresh.
+
 ## [0.17.3] - 2026-11-21
 
 ### Added

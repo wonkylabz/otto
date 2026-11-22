@@ -570,7 +570,7 @@ async function openRunDebug(wid, capLabel, ui){
   catch(e){ body.innerHTML=`<p class="err">Couldn't load run detail (${esc(e.message)}).</p>`; return; }
   if(gen!==DBG_GEN) return;
   // A dead worker leaves an attempt that looks live on disk forever; only Temporal can say.
-  const wfEnded=async()=>{ const st=await (await fetch("/api/wf?id="+encodeURIComponent(wid))).json();
+  const wfEnded=async()=>{ const st=await (await fetchT("/api/wf?id="+encodeURIComponent(wid))).json();
     return st.state==="unreachable"?null:(st.state==="done"||st.state==="failed"); };
   let ended=false, ticks=0;
   if(r.found&&r.attempts.some(a=>a.live)){ try { ended=!!(await wfEnded()); } catch(e){} }

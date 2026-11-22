@@ -25,6 +25,7 @@ scripts, one per tab plus `util`/`markdown`/`modal` (shared) and `boot` (startup
 - **No native `confirm`/`alert`/`prompt`** — Chrome skips them unseen: `askConfirm`/`toast` (`UiAssetLayoutTests`).
 - **`CSS.escape()` is for identifiers, never inside a quoted attribute selector** — `[data-x="${CSS.escape(p)}"]` injects backslashes the literal value doesn't have. Key a row's live cell by a `data-` attribute on the CELL, not on its buttons, which a busy state may not render.
 - **A repeating timer goes through `util.poll`, not a bare `setInterval`** — it pauses while `document.hidden` and doubles on consecutive failures (60s cap). Three outcomes: throw/`false` fails, `POLL_SKIP` (view elsewhere) holds the backoff, else success (`PollerBackoffTests`).
+- **A request a live view AWAITS goes through `util.fetchT`, never bare `fetch`** — on a suspended phone page one can hang forever, freezing the watcher and the open chat (`MobileChatFreshnessTests`).
 - **Onboarding applies a profile as a FULL assignment of its keys, only as previewed** (`onboarding.apply(expect=)`) — a delta strands a prior profile's values, a re-run must change nothing. Integrations are detected and pointed at, never configured (`OnboardingTests`).
 - **The global pause is a HEADER control, not an Admin one** (`applyEstop`, `.estopbar`) — a forgotten pause reads as "Otto stopped working", and a tab hides it until you already suspect it. Rides `/api/health`'s pollers, no fourth one (`EstopUiTests`).
 - **The mark and mascot wear the ACTIVE palette; the favicon cannot** — a `data:` URI is its own document, so `paintFavicon` repaints it from the resolved `--accent`/`--on-accent`/`--warn` at boot and each theme pick; the static `<link>` matches the default (`OttoMarkTests`).
@@ -41,8 +42,6 @@ scripts, one per tab plus `util`/`markdown`/`modal` (shared) and `boot` (startup
 
 ## Where the UI writes
 
-Admin tab edits `data/policy.json` (cap risk/enable), `data/models.json` (phase models), `data/board.json`, `data/settings.json` (runtime knobs — env still wins).
-
 Repo conventions UI: Admin → Project repos → Conventions column (`GET /api/conventions`, `POST /api/conventions/refresh`). `conventions.status` is cache-only; `conventions.refresh` is the only path that derives, resolving against `registry.projects()`, never the client.
 
-Portable snapshot: `share.js` (Admin → Share extensions) over `snapshot.py` — rules in `memory-privacy.md`.
+Admin → Share extensions (`share.js`): rules in `memory-privacy.md`.
