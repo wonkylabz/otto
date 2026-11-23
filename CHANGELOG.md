@@ -11,6 +11,8 @@ changelog that restates it is a second copy of `git log`.
 
 ## [Unreleased]
 
+## [0.17.4] - 2026-11-23
+
 ### Added
 
 - **Pull to refresh** in the web UI. Otto installed to a phone's home screen has no browser reload, so quitting the app was the only way to re-read it. Pull down from the top of the chat to re-read the open chat and reconnect to a running reply; on other tabs it reloads the page. Ships on a browser refresh.
@@ -801,7 +803,8 @@ Initial public release.
 - Model gateway with a local (OpenAI-compatible) backend beside the Claude one, MCP over
   stdio, and file-safety guardrails on both.
 
-[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.3...HEAD
+[Unreleased]: https://github.com/wonkylabz/otto/compare/v0.17.4...HEAD
+[0.17.4]: https://github.com/wonkylabz/otto/compare/v0.17.3...v0.17.4
 [0.17.3]: https://github.com/wonkylabz/otto/compare/v0.17.2...v0.17.3
 [0.17.2]: https://github.com/wonkylabz/otto/compare/v0.17.1...v0.17.2
 [0.17.1]: https://github.com/wonkylabz/otto/compare/v0.17.0...v0.17.1
